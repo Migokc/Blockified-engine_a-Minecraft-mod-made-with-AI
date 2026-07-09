@@ -58,7 +58,8 @@
       "Bash(python -)",
       "PowerShell(& .\\\\gradlew.bat compileJava --console=plain 2>&1 | Select-String -Pattern 'error:|BUILD |Task :compileJava|FAIL' | Select-Object -Last 25; \"EXIT: $LASTEXITCODE\")",
       "Bash(find ~/.gradle/caches -iname 'gson-*.jar' 2>/dev/null | grep -v sources | head -3)",
-      "Bash(python -c \"import json; d=json.load\\(open\\('charts/'+[f for f in __import__\\('os'\\).listdir\\('charts'\\)][0],encoding='utf-8'\\)\\); print\\('keys',list\\(d.keys\\(\\)\\)\\); [print\\('strum',i,'type',s.get\\('type'\\),'vocalsSuffix',repr\\(s.get\\('vocalsSuffix'\\)\\),'chars',s.get\\('characters'\\)\\) for i,s in enumerate\\(d.get\\('strumLines',[]\\)\\)] if 'strumLines' in d else print\\('legacy-wrapped', d.get\\('song',{}\\).get\\('needsVoices'\\)\\)\")"
+      "Bash(python -c \"import json; d=json.load\\(open\\('charts/'+[f for f in __import__\\('os'\\).listdir\\('charts'\\)][0],encoding='utf-8'\\)\\); print\\('keys',list\\(d.keys\\(\\)\\)\\); [print\\('strum',i,'type',s.get\\('type'\\),'vocalsSuffix',repr\\(s.get\\('vocalsSuffix'\\)\\),'chars',s.get\\('characters'\\)\\) for i,s in enumerate\\(d.get\\('strumLines',[]\\)\\)] if 'strumLines' in d else print\\('legacy-wrapped', d.get\\('song',{}\\).get\\('needsVoices'\\)\\)\")",
+      "PowerShell(& .\\\\gradlew.bat compileJava --console=plain 2>&1 | Select-String -Pattern 'error:|BUILD |Task :compileJava' | Select-Object -Last 10; \"EXIT: $LASTEXITCODE\")"
     ]
   }
 }
