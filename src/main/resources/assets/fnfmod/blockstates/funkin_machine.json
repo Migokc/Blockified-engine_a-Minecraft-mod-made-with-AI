@@ -1,0 +1,8 @@
+{
+  "variants": {
+    "facing=north": { "model": "fnfmod:block/funkin_machine" },
+    "facing=south": { "model": "fnfmod:block/funkin_machine", "y": 180 },
+    "facing=west": { "model": "fnfmod:block/funkin_machine", "y": 270 },
+    "facing=east": { "model": "fnfmod:block/funkin_machine", "y": 90 }
+  }
+}

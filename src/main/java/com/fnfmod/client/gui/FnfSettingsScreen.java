@@ -1,0 +1,597 @@
+package com.fnfmod.client.gui;
+
+import com.fnfmod.client.ClientOptions;
+import com.fnfmod.client.anim.CharacterAnimations;
+import com.fnfmod.client.audio.HitsoundPlayer;
+import com.fnfmod.client.render.NoteStyle;
+import com.fnfmod.song.SongLibrary;
+import net.minecraft.client.gui.GuiGraphics;
+import net.minecraft.client.gui.components.Button;
+import net.minecraft.client.gui.components.EditBox;
+import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.client.gui.screens.options.controls.KeyBindsScreen;
+import net.minecraft.network.chat.Component;
+
+import java.util.List;
+
+/**
+ * Options menu laid out like Psych Engine's: a category list
+ * (Controls / Adjust Delay and Combo / Visuals and UI / Gameplay),
+ * each opening its own page.
+ */
+public class FnfSettingsScreen extends Screen {
+
+    private final Screen parent;
+    /** null = category list, otherwise the open category */
+    private String category;
+
+    private static final double[] SCROLL_SPEEDS = {0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0};
+
+    public FnfSettingsScreen(Screen parent) {
+        super(Component.literal("Options"));
+        this.parent = parent;
+    }
+
+    @Override
+    protected void init() {
+        clearWidgets();
+        if (category == null) {
+            initCategories();
+        } else {
+            switch (category) {
+                case "delay" -> initDelay();
+                case "visuals" -> initVisuals();
+                case "gameplay" -> initGameplay();
+                case "folders" -> initFolders();
+                case "colors" -> initColors();
+            }
+            addRenderableWidget(Button.builder(Component.literal("Back"), b -> switchTo(null))
+                    .bounds(width / 2 - 60, height - 32, 120, 20).build());
+        }
+    }
+
+    private void switchTo(String newCategory) {
+        category = newCategory;
+        init();
+    }
+
+    private int rowY(int index) {
+        return 50 + index * 26;
+    }
+
+    // ------------------------------------------------------------------ pages
+
+    private void initCategories() {
+        int w = 160;
+        int x = width / 2 - w / 2;
+        addRenderableWidget(Button.builder(Component.literal("Note Colors"),
+                        b -> switchTo("colors"))
+                .bounds(x, rowY(0), w, 20).build());
+        addRenderableWidget(Button.builder(Component.literal("Controls"),
+                        b -> minecraft.setScreen(new KeyBindsScreen(this, minecraft.options)))
+                .bounds(x, rowY(1), w, 20).build());
+        addRenderableWidget(Button.builder(Component.literal("Adjust Delay and Combo"),
+                        b -> switchTo("delay"))
+                .bounds(x, rowY(2), w, 20).build());
+        addRenderableWidget(Button.builder(Component.literal("Visuals and UI"),
+                        b -> switchTo("visuals"))
+                .bounds(x, rowY(3), w, 20).build());
+        addRenderableWidget(Button.builder(Component.literal("Gameplay"),
+                        b -> switchTo("gameplay"))
+                .bounds(x, rowY(4), w, 20).build());
+        addRenderableWidget(Button.builder(Component.literal("Directories"),
+                        b -> switchTo("folders"))
+                .bounds(x, rowY(5), w, 20).build());
+        addRenderableWidget(Button.builder(Component.literal("Done"), b -> onClose())
+                .bounds(width / 2 - 60, height - 32, 120, 20).build());
+    }
+
+    // ------------------------------------------------------------------ note colors
+
+    private int selLane;
+    private boolean selOutline;
+    private float hue, sat, bri;
+    private EditBox hexBox;
+    private boolean updatingHex;
+    private boolean colorDirty;
+
+    private int sbX() { return width / 2 - 85; }
+    private int sbY() { return rowY(3); }
+    private int hueY() { return sbY() + 78; }
+
+    private void initColors() {
+        int w = 170;
+        int x = width / 2 - 85;
+
+        addRenderableWidget(Button.builder(coloredNotesLabel(), b -> {
+            ClientOptions.get().noteColorsEnabled = !ClientOptions.get().noteColorsEnabled;
+            ClientOptions.save();
+            b.setMessage(coloredNotesLabel());
+        }).bounds(x, rowY(0), w, 20).build());
+
+        String[] laneNames = {"Left", "Down", "Up", "Right"};
+        addRenderableWidget(Button.builder(Component.literal("Note: " + laneNames[selLane]), b -> {
+            selLane = (selLane + 1) % 4;
+            b.setMessage(Component.literal("Note: " + laneNames[selLane]));
+            loadSelectedColor();
+        }).bounds(x, rowY(1), 82, 20).build());
+
+        addRenderableWidget(Button.builder(Component.literal(selOutline ? "Part: Outline" : "Part: Base"), b -> {
+            selOutline = !selOutline;
+            b.setMessage(Component.literal(selOutline ? "Part: Outline" : "Part: Base"));
+            loadSelectedColor();
+        }).bounds(x + 88, rowY(1), 82, 20).build());
+
+        hexBox = addRenderableWidget(new EditBox(font, x + 20, rowY(2) + 2, 62, 16, Component.literal("hex")));
+        hexBox.setMaxLength(6);
+        hexBox.setResponder(s -> {
+            if (updatingHex) return;
+            if (s.matches("[0-9a-fA-F]{6}")) {
+                setSelectedColor(Integer.parseInt(s, 16));
+                float[] hsb = java.awt.Color.RGBtoHSB(
+                        (selectedColor() >> 16) & 0xFF, (selectedColor() >> 8) & 0xFF, selectedColor() & 0xFF, null);
+                hue = hsb[0]; sat = hsb[1]; bri = hsb[2];
+                applyColorNow();
+            }
+        });
+
+        addRenderableWidget(Button.builder(Component.literal("Reset Lane"), b -> {
+            ClientOptions.get().noteColorBase[selLane] = ClientOptions.defaultBase()[selLane];
+            ClientOptions.get().noteColorOutline[selLane] = ClientOptions.defaultOutline()[selLane];
+            ClientOptions.save();
+            NoteStyle.rebuildLaneColors(selLane);
+            loadSelectedColor();
+        }).bounds(x + 96, rowY(2), 74, 20).build());
+
+        loadSelectedColor();
+    }
+
+    private Component coloredNotesLabel() {
+        return Component.literal("Colored Notes: " + (ClientOptions.get().noteColorsEnabled ? "ON" : "OFF"));
+    }
+
+    private int selectedColor() {
+        var o = ClientOptions.get();
+        return (selOutline ? o.noteColorOutline : o.noteColorBase)[selLane] & 0xFFFFFF;
+    }
+
+    private void setSelectedColor(int rgb) {
+        var o = ClientOptions.get();
+        (selOutline ? o.noteColorOutline : o.noteColorBase)[selLane] = rgb & 0xFFFFFF;
+    }
+
+    private void loadSelectedColor() {
+        int c = selectedColor();
+        float[] hsb = java.awt.Color.RGBtoHSB((c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF, null);
+        hue = hsb[0]; sat = hsb[1]; bri = hsb[2];
+        if (hexBox != null) {
+            updatingHex = true;
+            hexBox.setValue(String.format("%06X", c));
+            updatingHex = false;
+        }
+    }
+
+    private void applyColorPreview() {
+        int rgb = java.awt.Color.HSBtoRGB(hue, sat, bri) & 0xFFFFFF;
+        setSelectedColor(rgb);
+        if (hexBox != null) {
+            updatingHex = true;
+            hexBox.setValue(String.format("%06X", rgb));
+            updatingHex = false;
+        }
+        colorDirty = true;
+    }
+
+    private void applyColorNow() {
+        ClientOptions.save();
+        NoteStyle.rebuildLaneColors(selLane);
+        colorDirty = false;
+    }
+
+    private boolean handleColorPick(double mx, double my) {
+        int sx = sbX(), sy = sbY();
+        if (mx >= sx && mx < sx + 72 && my >= sy && my < sy + 72) {
+            sat = (float) (mx - sx) / 72f;
+            bri = 1f - (float) (my - sy) / 72f;
+            applyColorPreview();
+            return true;
+        }
+        if (mx >= sx && mx < sx + 170 && my >= hueY() && my < hueY() + 10) {
+            hue = (float) (mx - sx) / 170f;
+            applyColorPreview();
+            return true;
+        }
+        // clicking a preview note selects that lane
+        for (int i = 0; i < 4; i++) {
+            int px = width / 2 + 8 + (i % 2) * 40;
+            int py = sbY() + 4 + (i / 2) * 40;
+            if (mx >= px && mx < px + 34 && my >= py && my < py + 34) {
+                selLane = i;
+                loadSelectedColor();
+                switchTo("colors");
+                return true;
+            }
+        }
+        return false;
+    }
+
+    @Override
+    public boolean mouseClicked(double mouseX, double mouseY, int button) {
+        if (super.mouseClicked(mouseX, mouseY, button)) return true;
+        return "colors".equals(category) && button == 0 && handleColorPick(mouseX, mouseY);
+    }
+
+    @Override
+    public boolean mouseDragged(double mouseX, double mouseY, int button, double dragX, double dragY) {
+        if ("colors".equals(category) && button == 0 && handleColorPick(mouseX, mouseY)) return true;
+        return super.mouseDragged(mouseX, mouseY, button, dragX, dragY);
+    }
+
+    @Override
+    public boolean mouseReleased(double mouseX, double mouseY, int button) {
+        // rebuilding the recolored sheets is heavy, so do it once the drag ends
+        if (colorDirty) applyColorNow();
+        return super.mouseReleased(mouseX, mouseY, button);
+    }
+
+    private void initFolders() {
+        addRenderableWidget(Button.builder(Component.literal("Add Folder..."), b -> pickFolder())
+                .bounds(width / 2 - 85, rowY(0), 170, 20).build());
+
+        long cacheBytes = SongLibrary.cacheSizeBytes();
+        addRenderableWidget(Button.builder(
+                Component.literal(String.format("Clear Download Cache (%.1f MB)", cacheBytes / 1048576.0)), b -> {
+                    SongLibrary.clearCache();
+                    switchTo("folders");
+                }).bounds(width / 2 - 85, height - 56, 170, 20).build());
+        List<String> folders = SongLibrary.getExternalFolders();
+        int row = 1;
+        for (String folder : folders) {
+            if (row > 6) break;
+            final String f = folder;
+            addRenderableWidget(Button.builder(Component.literal("X"), b -> {
+                var list = new java.util.ArrayList<>(SongLibrary.getExternalFolders());
+                list.remove(f);
+                SongLibrary.setExternalFolders(list);
+                SongLibrary.rescan();
+                switchTo("folders");
+            }).bounds(width / 2 + 100, rowY(row) , 20, 20).build());
+            row++;
+        }
+    }
+
+    private void pickFolder() {
+        // native dialog blocks, so it runs off-thread
+        new Thread(() -> {
+            String picked = org.lwjgl.util.tinyfd.TinyFileDialogs.tinyfd_selectFolderDialog(
+                    "Select a Psych Engine mod folder", System.getProperty("user.home", ""));
+            if (picked == null || picked.isBlank()) return;
+            minecraft.execute(() -> {
+                var list = new java.util.ArrayList<>(SongLibrary.getExternalFolders());
+                if (!list.contains(picked)) list.add(picked);
+                SongLibrary.setExternalFolders(list);
+                SongLibrary.rescan();
+                if (minecraft.screen == this && "folders".equals(category)) switchTo("folders");
+            });
+        }, "fnf-folder-picker").start();
+    }
+
+    private void initDelay() {
+        int y = rowY(1);
+        int cx = width / 2;
+        addRenderableWidget(Button.builder(Component.literal("-10"), b -> nudgeOffset(-10))
+                .bounds(cx - 90, y, 40, 20).build());
+        addRenderableWidget(Button.builder(Component.literal("-1"), b -> nudgeOffset(-1))
+                .bounds(cx - 46, y, 40, 20).build());
+        addRenderableWidget(Button.builder(Component.literal("+1"), b -> nudgeOffset(1))
+                .bounds(cx + 6, y, 40, 20).build());
+        addRenderableWidget(Button.builder(Component.literal("+10"), b -> nudgeOffset(10))
+                .bounds(cx + 50, y, 40, 20).build());
+    }
+
+    private void nudgeOffset(double delta) {
+        ClientOptions.get().offsetMs += delta;
+        ClientOptions.save();
+    }
+
+    private void initVisuals() {
+        int w = 170;
+        int x = width / 2 - w / 2;
+        addRenderableWidget(Button.builder(noteSkinLabel(), b ->
+                cycle(NoteStyle.listSkins(), ClientOptions.get().noteSkin, false, next -> {
+                    ClientOptions.get().noteSkin = next;
+                    ClientOptions.save();
+                    NoteStyle.reload();
+                    b.setMessage(noteSkinLabel());
+                })).bounds(x, rowY(0), w, 20).build());
+
+        Button splashBtn = addRenderableWidget(Button.builder(splashLabel(), b ->
+                cycle(NoteStyle.listSplashes(), ClientOptions.get().splashSkin, true, next -> {
+                    ClientOptions.get().splashSkin = next;
+                    ClientOptions.save();
+                    NoteStyle.reload();
+                    b.setMessage(splashLabel());
+                })).bounds(x, rowY(1), w, 20).build());
+        splashBtn.active = !NoteStyle.skinHasOwnSplash();
+
+        addRenderableWidget(Button.builder(animsLabel(), b ->
+                cycle(CharacterAnimations.listSets(), ClientOptions.get().animationSet, false, next -> {
+                    ClientOptions.get().animationSet = next;
+                    ClientOptions.save();
+                    b.setMessage(animsLabel());
+                })).bounds(x, rowY(2), w, 20).build());
+
+        addRenderableWidget(Button.builder(hudStyleLabel(), b ->
+                cycle(List.of("default", "abbreviated", "numbers", "vanilla", "fnf"),
+                        ClientOptions.get().hudStyle, false, next -> {
+                            ClientOptions.get().hudStyle = next;
+                            ClientOptions.save();
+                            b.setMessage(hudStyleLabel());
+                        })).bounds(x, rowY(3), w, 20).build());
+
+        // icon selectors open a searchable list
+        addRenderableWidget(Button.builder(iconLabel(true),
+                b -> minecraft.setScreen(new IconPickerScreen(this, true)))
+                .bounds(x, rowY(4), w, 20).build());
+        addRenderableWidget(Button.builder(iconLabel(false),
+                b -> minecraft.setScreen(new IconPickerScreen(this, false)))
+                .bounds(x, rowY(5), w, 20).build());
+        addRenderableWidget(Button.builder(Component.literal("Rating Position..."),
+                b -> minecraft.setScreen(new RatingPositionScreen(this)))
+                .bounds(x, rowY(6), w, 20).build());
+    }
+
+    private Component iconLabel(boolean player) {
+        String cur = player ? ClientOptions.get().playerIcon : ClientOptions.get().botIcon;
+        String shown = cur == null || cur.isEmpty() ? "none" : cur;
+        return Component.literal((player ? "Player Icon: " : "Bot Icon: ") + shown);
+    }
+
+    private Component hudStyleLabel() {
+        String s = ClientOptions.get().hudStyle;
+        String name = switch (s) {
+            case "abbreviated" -> "Abbreviated";
+            case "numbers" -> "Numbers";
+            case "vanilla" -> "Vanilla";
+            case "fnf" -> "FNF";
+            default -> "Default";
+        };
+        return Component.literal("HUD: " + name);
+    }
+
+    private Component splashLabel() {
+        if (NoteStyle.skinHasOwnSplash()) {
+            return Component.literal("Splashes: (from skin)");
+        }
+        String cur = ClientOptions.get().splashSkin;
+        return Component.literal("Splashes: " + (cur == null || cur.isEmpty() ? "OFF" : cur));
+    }
+
+    private void initGameplay() {
+        int w = 170;
+        int x = width / 2 - w / 2;
+        addRenderableWidget(Button.builder(toggleLabel("Downscroll", ClientOptions.get().downscroll), b -> {
+            ClientOptions.get().downscroll = !ClientOptions.get().downscroll;
+            ClientOptions.save();
+            b.setMessage(toggleLabel("Downscroll", ClientOptions.get().downscroll));
+        }).bounds(x, rowY(0), w, 20).build());
+
+        addRenderableWidget(Button.builder(toggleLabel("Middlescroll", ClientOptions.get().middlescroll), b -> {
+            ClientOptions.get().middlescroll = !ClientOptions.get().middlescroll;
+            ClientOptions.save();
+            b.setMessage(toggleLabel("Middlescroll", ClientOptions.get().middlescroll));
+        }).bounds(x, rowY(1), w, 20).build());
+
+        addRenderableWidget(Button.builder(toggleLabel("Ghost Tapping", ClientOptions.get().ghostTapping), b -> {
+            ClientOptions.get().ghostTapping = !ClientOptions.get().ghostTapping;
+            ClientOptions.save();
+            b.setMessage(toggleLabel("Ghost Tapping", ClientOptions.get().ghostTapping));
+        }).bounds(x, rowY(2), w, 20).build());
+
+        // scroll speed slider (0.35 - 6) + constant/multiplicative mode toggle
+        addRenderableWidget(new net.minecraft.client.gui.components.AbstractSliderButton(
+                x, rowY(3), w - 52, 20, scrollSpeedMsg(),
+                (ClientOptions.get().scrollSpeedMult - 0.35) / (6.0 - 0.35)) {
+            @Override protected void updateMessage() { setMessage(scrollSpeedMsg()); }
+            @Override protected void applyValue() {
+                ClientOptions.get().scrollSpeedMult = 0.35 + value * (6.0 - 0.35);
+                ClientOptions.save();
+            }
+        });
+        addRenderableWidget(Button.builder(scrollModeLabel(), b -> {
+            ClientOptions.get().constantScrollSpeed = !ClientOptions.get().constantScrollSpeed;
+            ClientOptions.save();
+            b.setMessage(scrollModeLabel());
+        }).bounds(x + w - 48, rowY(3), 48, 20).build());
+
+        addRenderableWidget(Button.builder(hitsoundLabel(), b ->
+                cycle(HitsoundPlayer.list(), ClientOptions.get().hitsound, true, next -> {
+                    ClientOptions.get().hitsound = next;
+                    ClientOptions.save();
+                    b.setMessage(hitsoundLabel());
+                    HitsoundPlayer.play();
+                })).bounds(x, rowY(4), w, 20).build());
+
+        // hitsound volume slider (0% - 100%)
+        addRenderableWidget(new net.minecraft.client.gui.components.AbstractSliderButton(
+                x, rowY(5), w, 20, hitsoundVolMsg(), ClientOptions.get().hitsoundVolume) {
+            @Override protected void updateMessage() { setMessage(hitsoundVolMsg()); }
+            @Override protected void applyValue() {
+                ClientOptions.get().hitsoundVolume = value;
+                ClientOptions.save();
+                HitsoundPlayer.play();
+            }
+        });
+    }
+
+    private Component scrollSpeedMsg() {
+        return Component.literal(String.format("Scroll Speed: %.2f", ClientOptions.get().scrollSpeedMult));
+    }
+
+    private Component scrollModeLabel() {
+        return Component.literal(ClientOptions.get().constantScrollSpeed ? "Const" : "Mult");
+    }
+
+    private Component hitsoundVolMsg() {
+        return Component.literal(String.format("Hitsound Volume: %d%%",
+                Math.round(ClientOptions.get().hitsoundVolume * 100)));
+    }
+
+    /** Cycles a value forward, or backward when Shift is held; "" = an OFF/none slot at the ends. */
+    private void cycle(List<String> options, String current, boolean hasOff, java.util.function.Consumer<String> setter) {
+        List<String> ring = new java.util.ArrayList<>();
+        if (hasOff) ring.add("");
+        ring.addAll(options);
+        int idx = Math.max(0, ring.indexOf(current == null ? "" : current));
+        int dir = hasShiftDown() ? -1 : 1;
+        int next = (idx + dir + ring.size()) % ring.size();
+        setter.accept(ring.get(next));
+    }
+
+    private void renderColorPicker(GuiGraphics gui) {
+        int sx = sbX(), sy = sbY();
+
+        gui.drawString(font, "Hex:", sx - 4, rowY(2) + 6, 0xFFFFFF);
+        gui.fill(sx + 86, rowY(2) + 2, sx + 86 + 16, rowY(2) + 18, 0xFF000000 | selectedColor());
+
+        // saturation/brightness square for the current hue
+        for (int col = 0; col < 72; col++) {
+            int c = java.awt.Color.HSBtoRGB(hue, col / 71f, 1f);
+            gui.fill(sx + col, sy, sx + col + 1, sy + 72, 0xFF000000 | (c & 0xFFFFFF));
+        }
+        gui.fillGradient(sx, sy, sx + 72, sy + 72, 0x00000000, 0xFF000000);
+        int cx = sx + (int) (sat * 71);
+        int cy = sy + (int) ((1 - bri) * 71);
+        gui.fill(cx - 2, cy - 2, cx + 3, cy + 3, 0xFFFFFFFF);
+        gui.fill(cx - 1, cy - 1, cx + 2, cy + 2, 0xFF000000 | selectedColor());
+
+        // hue bar
+        for (int col = 0; col < 170; col++) {
+            int c = java.awt.Color.HSBtoRGB(col / 169f, 1f, 1f);
+            gui.fill(sx + col, hueY(), sx + col + 1, hueY() + 10, 0xFF000000 | (c & 0xFFFFFF));
+        }
+        int hx = sx + (int) (hue * 169);
+        gui.fill(hx - 1, hueY() - 1, hx + 2, hueY() + 11, 0xFFFFFFFF);
+
+        // live note previews (click to select a lane)
+        for (int i = 0; i < 4; i++) {
+            int px = width / 2 + 8 + (i % 2) * 40;
+            int py = sy + 4 + (i / 2) * 40;
+            if (i == selLane) {
+                gui.fill(px - 2, py - 2, px + 36, py + 36, 0x66FFFFFF);
+            }
+            NoteStyle.drawNote(gui, i, px + 17, py + 17, 30);
+        }
+
+        if (!NoteStyle.skinIsColorable()) {
+            gui.drawCenteredString(font, "Current skin has no RGB template - colors won't apply to it.",
+                    width / 2, hueY() + 16, 0xFFFF8866);
+        }
+    }
+
+    /** Shortens a path from the front so its tail (the useful part) stays visible. */
+    private String shortenPath(String path, int maxWidth) {
+        if (font.width(path) <= maxWidth) return path;
+        String s = path;
+        while (s.length() > 4 && font.width("..." + s) > maxWidth) {
+            s = s.substring(1);
+        }
+        return "..." + s;
+    }
+
+    private Component hitsoundLabel() {
+        String cur = ClientOptions.get().hitsound;
+        return Component.literal("Hitsound: " + (cur == null || cur.isEmpty()
+                ? "OFF" : cur.replaceFirst("(?i)\\.ogg$", "")));
+    }
+
+    private Component hitsoundVolLabel() {
+        return Component.literal(String.format("Hitsound Volume: %d%%",
+                Math.round(ClientOptions.get().hitsoundVolume * 100)));
+    }
+
+    // ------------------------------------------------------------------ labels
+
+    private Component toggleLabel(String name, boolean v) {
+        return Component.literal(name + ": " + (v ? "ON" : "OFF"));
+    }
+
+    private Component noteSkinLabel() {
+        return Component.literal("Note Skin: " + ClientOptions.get().noteSkin);
+    }
+
+    private Component animsLabel() {
+        return Component.literal("Animations: " + ClientOptions.get().animationSet);
+    }
+
+    private Component scrollSpeedLabel() {
+        return Component.literal(String.format("Scroll Speed: x%.2f", ClientOptions.get().scrollSpeedMult));
+    }
+
+    // ------------------------------------------------------------------
+
+    @Override
+    public void render(GuiGraphics gui, int mouseX, int mouseY, float partialTick) {
+        super.render(gui, mouseX, mouseY, partialTick);
+        String title = switch (category == null ? "" : category) {
+            case "delay" -> "Adjust Delay and Combo";
+            case "visuals" -> "Visuals and UI";
+            case "gameplay" -> "Gameplay";
+            case "folders" -> "Directories";
+            case "colors" -> "Note Colors";
+            default -> "Options";
+        };
+        gui.drawCenteredString(font, title, width / 2, 20, 0xFFFFFF);
+
+        if ("colors".equals(category)) {
+            renderColorPicker(gui);
+        }
+
+        if ("folders".equals(category)) {
+            List<String> folders = SongLibrary.getExternalFolders();
+            int row = 1;
+            for (String folder : folders) {
+                if (row > 6) break;
+                gui.drawString(font, shortenPath(folder, 190), width / 2 - 105, rowY(row) + 6, 0xCCCCCC);
+                row++;
+            }
+            if (folders.isEmpty()) {
+                gui.drawCenteredString(font, "No folders added.", width / 2, rowY(1) + 6, 0x888888);
+            }
+            // folders has the Clear Cache button at height-56; sit the hint above it
+            gui.drawCenteredString(font, "Scans Psych (data/<song>/) and V-Slice (data/songs/<song>/) mod folders",
+                    width / 2, height - 68, 0xAAAAAA);
+        }
+
+        if ("delay".equals(category)) {
+            gui.drawCenteredString(font, String.format("Audio Offset: %.0f ms", ClientOptions.get().offsetMs),
+                    width / 2, rowY(0) + 6, 0xFFFF66);
+            gui.drawCenteredString(font, "Positive = notes judged later. Tune until hits feel centered.",
+                    width / 2, hintY(0), 0xAAAAAA);
+        } else if ("visuals".equals(category)) {
+            gui.drawCenteredString(font, "skins/  splashes/  animations/<name>/  icons/<pack>/<name>.png",
+                    width / 2, hintY(1), 0xAAAAAA);
+            gui.drawCenteredString(font, "All folders under config/fnfmod/",
+                    width / 2, hintY(0), 0xAAAAAA);
+        }
+    }
+
+    /** Y for a hint line sitting just above the Back button (line 0 = closest). */
+    private int hintY(int lineFromBottom) {
+        return (height - 32) - 12 - lineFromBottom * 10;
+    }
+
+    @Override
+    public void onClose() {
+        if (category != null) {
+            switchTo(null);
+        } else {
+            minecraft.setScreen(parent);
+        }
+    }
+
+    @Override
+    public boolean isPauseScreen() {
+        return false;
+    }
+}

@@ -1,0 +1,135 @@
+# Funkin' Machine (fnfmod)
+
+A Friday Night Funkin' rhythm game inside Minecraft — **NeoForge 1.21.1**.
+
+Requires: [playerAnimator](https://modrinth.com/mod/playeranimator) (2.0.0+ for 1.21.1) on the client.
+
+## What it does
+
+- **Funkin' Machine block** (Functional Blocks creative tab). Right-click it to open the song menu.
+- **Songs come from FNF mods**: drop charts + audio into `config/fnfmod/songs/<song-name>/`.
+- **4 keybinds** (default `D F J K`) — rebindable in *Options → Controls → Funkin' Machine*.
+- **Multiplayer**: the first player to click the machine picks the song ("Play VS"), the second player to click joins as the opponent side. On servers, only songs installed **on the server** are playable — the server streams the chart + audio to players who don't have them (cached in `config/fnfmod/cache/`).
+- **Chart editor**: `/fnf editor [song]` or the button in the song menu. Saves Psych Engine format.
+- `/fnf reload` re-scans songs, skins and animations without restarting.
+
+## Song folder format
+
+```
+config/fnfmod/songs/
+  my-song/
+    my-song.json            <- legacy FNF or Psych Engine chart ("normal")
+    my-song-hard.json       <- extra difficulties (optional)
+    Inst.ogg                <- instrumental (required)
+    Voices.ogg              <- single vocal track (optional)
+    Voices-Player.ogg       <- OR split vocals (optional)
+    Voices-Opponent.ogg
+```
+
+V-Slice (FNF 0.3+) is also supported — put the pair in the folder instead:
+
+```
+  my-song/
+    my-song-chart.json
+    my-song-metadata.json
+    Inst.ogg
+    Voices-Player.ogg / Voices-Opponent.ogg (or Voices.ogg)
+```
+
+All difficulties inside a V-Slice chart are selectable. Audio must be **OGG** (that's
+what FNF mods ship anyway). `inst.ogg` / `voices.ogg` lower-case also works;
+vocal files containing `player`/`bf` or `opponent`/`dad` in the name are split stems.
+
+Supported chart features: notes, sustains, BPM changes, `mustHitSection`,
+`altAnim`, `gfSection`, Psych note types (string or numeric — `Hurt Note` damages you),
+scroll speed. Psych **events are ignored** (no Lua).
+
+## Note skins (Sparrow XML!)
+
+Drop a Friday Night Funkin' spritesheet straight from any FNF mod into:
+
+```
+config/fnfmod/skins/<skin-name>/NOTE_assets.png
+config/fnfmod/skins/<skin-name>/NOTE_assets.xml
+```
+
+Each subfolder is a selectable skin — pick one in Settings → Visuals and UI.
+
+The Adobe Animate / Sparrow `<TextureAtlas><SubTexture .../>` XML is parsed,
+including `frameX/frameY` trim offsets. Base-game and Psych naming conventions
+are recognized (`purple0000`, `arrowLEFT`, `left confirm`, `purple hold piece`, ...).
+Without a skin, built-in procedurally drawn arrows are used.
+
+## Character animations (playerAnimator) + animation sets
+
+Put Emotecraft/Blockbench-exported animation `.json` files into
+`config/fnfmod/animations/`. Actions: `idle, idle2, left, down, up, right, miss`.
+`idle2` is optional — when present, idle and idle2 alternate every beat
+(FNF danceLeft/danceRight; those two names also work as aliases).
+
+**Animation sets:** each subfolder of `animations/` is a selectable character.
+Pick yours with the **"Anims:"** button in the Funkin' Machine menu — in VS mode
+each player uses their own set, and your partner sees it too (if they have the
+same set installed). Loose files in `animations/` itself form the `default` set.
+
+A set can include a `character.json` that also defines its **camera centers**:
+
+```json
+{
+  "cameraOffset": [0.0, 0.5],
+  "animations": {
+    "idle":  "my_idle",
+    "left":  { "anim": "my_left",  "cameraOffset": [-1.0, 0.0] },
+    "down":  { "anim": "my_down",  "cameraOffset": [0.0, -1.0] },
+    "up":    { "anim": "my_up",    "cameraOffset": [0.0,  1.0] },
+    "right": { "anim": "my_right", "cameraOffset": [1.0,  0.0] },
+    "miss":  "my_miss"
+  }
+}
+```
+
+`cameraOffset` values are in blocks: x = screen right, y = screen up. The top-level
+one is the character's camera center; per-animation ones nudge the camera while
+that animation plays (like FNF's sing offsets). Without `character.json`,
+animations named `fnf_idle`, `fnf_left`, ... (or just `idle`, `left`, ...) are
+picked up automatically. The legacy role-based `mapping.json`
+(`"player"`/`"opponent"`) still works for the default set.
+
+Animations play on the actual player entities during gameplay (both players in VS mode).
+
+## Camera
+
+During a song the camera pans FNF-style — X/Y only, in the screen plane. Nothing
+ever moves or lifts the characters; they stay on the ground and only the camera
+travels. Focus follows the chart: `mustHitSection` = camera on the player side,
+otherwise the opponent side (in solo the machine block stands in for the opponent).
+Each focus change eases with the curve set per section in the chart editor
+(**Cam Ease**: smooth / expo / linear / snap — stored as `fnfmodCamEase` in the
+chart json, which other engines ignore). First-person view is switched to
+third-person for the song and restored afterwards.
+
+## Chart editor
+
+`/fnf editor [song]` — Psych-style grid, left 4 columns = opponent, right 4 = player.
+
+- Click: place/remove note. Right-click: remove. Shift+click: select.
+- `E` / `Q`: lengthen / shorten selected note's sustain. `Del`: delete selected.
+- `A` / `D` (or arrows / mouse wheel): previous / next section. `Space`: play/pause audio.
+- Per-section: Must Hit, Alt Anim, GF Section, Change BPM (+ value), section beats,
+  copy/paste/clear/swap section. Note types via the Type field.
+- Snap: 4th–64th. Save writes `config/fnfmod/songs/<file>/<file>.json` (Psych format).
+
+## Gameplay options
+
+In the song select screen: **Play as** (Player / Opponent / Both — solo only;
+Both puts you center stage playing every note, and one keypress hits overlapping
+notes on both strumlines), Downscroll, Ghost Tapping. More in
+`config/fnfmod/options.json` (`offsetMs` for audio calibration, `scrollSpeedMult`).
+
+## Building
+
+```
+gradlew build
+```
+
+Output jar: `build/libs/fnfmod-<version>.jar`.
