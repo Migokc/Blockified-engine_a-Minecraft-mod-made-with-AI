@@ -52,7 +52,12 @@
       "Read(//c/Program Files/**)",
       "Read(//c/Users/OMEN/.gradle/jdks/**)",
       "Bash(cd \"/c/Users/OMEN/Downloads/Folders/mc mod\" && ls -la build/libs/ && echo \"---\" && stat -c '%y  %n' build/libs/*.jar)",
-      "PowerShell(& .\\\\gradlew.bat compileJava --console=plain 2>&1 | Select-Object -Last 30; \"EXIT: $LASTEXITCODE\")"
+      "PowerShell(& .\\\\gradlew.bat compileJava --console=plain 2>&1 | Select-Object -Last 30; \"EXIT: $LASTEXITCODE\")",
+      "Bash(cd \"/c/Users/OMEN/Downloads/Folders/FRIDAY NIGHT FUNKIN SHIT/Codename Engine\" && echo \"=== TOP: Codename.Engine-Windows ===\" && ls -la \"Codename.Engine-Windows\" 2>&1 | head -40 && echo \"\" && echo \"=== TOP: Myths Of Yamaha HOTFIX ===\" && ls -la \"Myths Of Yamaha HOTFIX\" 2>&1 | head -40)",
+      "Read(//c/Users/OMEN/Downloads/Folders/**)",
+      "Bash(python -)",
+      "PowerShell(& .\\\\gradlew.bat compileJava --console=plain 2>&1 | Select-String -Pattern 'error:|BUILD |Task :compileJava|FAIL' | Select-Object -Last 25; \"EXIT: $LASTEXITCODE\")",
+      "Bash(find ~/.gradle/caches -iname 'gson-*.jar' 2>/dev/null | grep -v sources | head -3)"
     ]
   }
 }

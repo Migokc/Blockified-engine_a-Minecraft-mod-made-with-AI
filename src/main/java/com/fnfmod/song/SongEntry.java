@@ -7,12 +7,14 @@ import java.util.List;
 import java.util.Map;
 
 public class SongEntry {
-    public enum Format { LEGACY, VSLICE }
+    public enum Format { LEGACY, VSLICE, CODENAME }
 
     public String id;
     public String displayName;
     public Path folder;
     public Format format = Format.LEGACY;
+    /** Codename Engine: the song's meta.json (bpm/needsVoices/icon live there, not in the chart). */
+    public Path metaFile;
     /** Opponent icon name (fallback lookup). */
     public String opponentIcon = "";
     /** Resolved opponent icon png from THIS song's own mod (avoids cross-mod name clashes). */
@@ -124,6 +126,7 @@ public class SongEntry {
             Path chart = legacyChartFiles.get(difficulty);
             if (chart == null && !legacyChartFiles.isEmpty()) chart = legacyChartFiles.values().iterator().next();
             addIf(out, chart);
+            addIf(out, metaFile); // Codename: needed to load the chart (null for legacy/Psych)
             addIf(out, instFile);
             addIf(out, voicesFile);
             addIf(out, voicesPlayerFile);

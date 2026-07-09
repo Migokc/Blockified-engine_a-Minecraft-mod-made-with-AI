@@ -1,6 +1,7 @@
 package com.fnfmod.song;
 
 import com.fnfmod.FnfMod;
+import com.fnfmod.chart.CodenameChartParser;
 import com.fnfmod.chart.LegacyChartParser;
 import com.fnfmod.chart.SongChart;
 import com.fnfmod.chart.VSliceChartParser;
@@ -174,13 +175,16 @@ public class SongLibrary {
         for (String sub : new String[]{"images/icons", "icons", "images/characters"}) {
             Path p = dir.resolve(sub);
             if (!Files.isDirectory(p)) continue;
+            boolean iconDir = sub.endsWith("icons"); // dedicated icon dirs also hold bare <name>.png (Codename)
             try (Stream<Path> files = Files.list(p)) {
                 files.filter(Files::isRegularFile).forEach(f -> {
-                    String n = f.getFileName().toString().toLowerCase(Locale.ROOT);
-                    if (n.startsWith("icon-") && n.endsWith(".png")) {
-                        String name = f.getFileName().toString();
-                        name = name.substring(5, name.length() - 4);
-                        icons.putIfAbsent(name, f);
+                    String orig = f.getFileName().toString();
+                    String n = orig.toLowerCase(Locale.ROOT);
+                    if (!n.endsWith(".png")) return;
+                    if (n.startsWith("icon-")) {
+                        icons.putIfAbsent(orig.substring(5, orig.length() - 4), f);
+                    } else if (iconDir) {
+                        icons.putIfAbsent(orig.substring(0, orig.length() - 4), f);
                     }
                 });
             } catch (IOException ignored) {}
@@ -299,6 +303,11 @@ public class SongLibrary {
 
     private static void scanPsychMod(Path mod, Map<String, SongEntry> found, Map<String, Path> icons) {
         collectIcons(mod, icons);
+        // Codename Engine: songs/<song>/{charts/,meta.json,song/} — check before Psych/V-Slice
+        if (isCodenameMod(mod)) {
+            scanCodenameMod(mod, found, icons);
+            return;
+        }
         Path data = mod.resolve("data");
         Path songsDir = mod.resolve("songs");
         // V-Slice keeps charts in data/songs/<song>/ instead of data/<song>/
@@ -406,6 +415,120 @@ public class SongLibrary {
         } catch (IOException ignored) {}
     }
 
+    // ------------------------------------------------------------ Codename Engine
+
+    /** A Codename mod keeps each song in songs/&lt;song&gt;/ with a meta.json and/or a charts/ folder. */
+    private static boolean isCodenameMod(Path mod) {
+        Path songs = mod.resolve("songs");
+        if (!Files.isDirectory(songs)) return false;
+        try (Stream<Path> s = Files.list(songs)) {
+            return s.filter(Files::isDirectory).anyMatch(d ->
+                    Files.isRegularFile(d.resolve("meta.json")) || Files.isDirectory(d.resolve("charts")));
+        } catch (IOException e) {
+            return false;
+        }
+    }
+
+    private static void scanCodenameMod(Path mod, Map<String, SongEntry> found, Map<String, Path> icons) {
+        Path songsRoot = mod.resolve("songs");
+        if (!Files.isDirectory(songsRoot)) return;
+        try (Stream<Path> dirs = Files.list(songsRoot)) {
+            dirs.filter(Files::isDirectory).sorted().forEach(songDir -> {
+                String id = songDir.getFileName().toString();
+                if (found.containsKey(id)) return; // earlier (local/config) songs win
+                SongEntry entry = scanCodenameSong(songDir, mod);
+                if (entry != null) found.put(id, entry);
+            });
+        } catch (IOException ignored) {}
+    }
+
+    /**
+     * Scans one Codename song folder. Charts live in charts/&lt;diff&gt;.json (mod layout)
+     * or directly in the folder (flattened download cache); audio in song/ or the folder
+     * itself; bpm/needsVoices/icon come from meta.json.
+     */
+    private static SongEntry scanCodenameSong(Path dir, Path modRoot) {
+        Path chartsDir = dir.resolve("charts");
+        Path chartSource = Files.isDirectory(chartsDir) ? chartsDir : dir;
+        Path metaFile = dir.resolve("meta.json");
+
+        SongEntry entry = new SongEntry();
+        entry.id = dir.getFileName().toString();
+        entry.displayName = entry.id;
+        entry.folder = dir;
+        entry.format = SongEntry.Format.CODENAME;
+        entry.modRoot = modRoot;
+        if (Files.isRegularFile(metaFile)) {
+            entry.metaFile = metaFile;
+            try {
+                JsonObject m = JsonParser.parseString(Files.readString(metaFile)).getAsJsonObject();
+                entry.displayName = LegacyChartParser.optString(m, "displayName",
+                        LegacyChartParser.optString(m, "name", entry.id));
+                entry.opponentIcon = LegacyChartParser.optString(m, "icon", "");
+            } catch (Exception ignored) {}
+        }
+
+        try (Stream<Path> files = Files.list(chartSource)) {
+            files.filter(f -> {
+                String l = f.getFileName().toString().toLowerCase(Locale.ROOT);
+                return l.endsWith(".json") && !l.equals("meta.json") && !l.equals("events.json")
+                        && !l.endsWith("-metadata.json") && !l.equals("metadata.json");
+            }).sorted().forEach(j -> {
+                String base = j.getFileName().toString();
+                base = base.substring(0, base.length() - 5).toLowerCase(Locale.ROOT);
+                try {
+                    JsonObject root = JsonParser.parseString(Files.readString(j)).getAsJsonObject();
+                    if (!CodenameChartParser.looksLikeCodename(root) && !LegacyChartParser.looksLikeLegacy(root)) {
+                        return;
+                    }
+                    String diff = difficultyFromFilename(base, entry.id.toLowerCase(Locale.ROOT));
+                    entry.legacyChartFiles.put(diff, j);
+                    // legacy-wrapped Codename charts carry their own title/opponent
+                    JsonObject songObj = root.has("song") && root.get("song").isJsonObject()
+                            ? root.getAsJsonObject("song") : null;
+                    if (songObj != null) {
+                        if (entry.displayName.equals(entry.id)) {
+                            entry.displayName = LegacyChartParser.optString(songObj, "song", entry.id);
+                        }
+                        if (entry.opponentIcon.isEmpty()) {
+                            entry.opponentIcon = LegacyChartParser.optString(songObj, "player2", "");
+                        }
+                    }
+                } catch (Exception ignored) {}
+            });
+        } catch (IOException ignored) {}
+        if (entry.legacyChartFiles.isEmpty()) return null;
+        orderDifficulties(entry);
+
+        Path songSub = dir.resolve("song");
+        Path audioDir = Files.isDirectory(songSub) ? songSub : dir;
+        try (Stream<Path> audio = Files.list(audioDir)) {
+            audio.filter(Files::isRegularFile).forEach(f -> {
+                String lower = f.getFileName().toString().toLowerCase(Locale.ROOT);
+                if (lower.endsWith(".ogg")) classifyAudio(entry, f, lower);
+            });
+        } catch (IOException ignored) {}
+        if (entry.instFile == null) {
+            FnfMod.LOGGER.warn("Codename song {} has no Inst.ogg — skipping", entry.id);
+            return null;
+        }
+        return entry;
+    }
+
+    /** Sorts a song's difficulties into a natural easy→normal→hard order. */
+    private static void orderDifficulties(SongEntry entry) {
+        List<String> order = List.of("easy", "normal", "hard", "erect", "nightmare");
+        List<String> keys = new ArrayList<>(entry.legacyChartFiles.keySet());
+        keys.sort((a, b) -> {
+            int ia = order.indexOf(a), ib = order.indexOf(b);
+            if (ia < 0) ia = order.size();
+            if (ib < 0) ib = order.size();
+            return ia != ib ? Integer.compare(ia, ib) : a.compareTo(b);
+        });
+        entry.difficulties.clear();
+        entry.difficulties.addAll(keys);
+    }
+
     public static synchronized Map<String, SongEntry> getSongs() {
         return songs;
     }
@@ -426,6 +549,12 @@ public class SongLibrary {
     }
 
     private static SongEntry scanSong(Path dir) {
+        // Codename Engine song folder: meta.json (+ charts/ or a flattened download cache)
+        if (Files.isRegularFile(dir.resolve("meta.json")) || Files.isDirectory(dir.resolve("charts"))) {
+            SongEntry cn = scanCodenameSong(dir, dir);
+            if (cn != null) return cn;
+        }
+
         SongEntry entry = new SongEntry();
         entry.id = dir.getFileName().toString();
         entry.displayName = entry.id;
@@ -733,6 +862,13 @@ public class SongLibrary {
             String chartJson = Files.readString(v.chartFile);
             String metaJson = Files.readString(v.metadataFile);
             return VSliceChartParser.parse(chartJson, metaJson, entry.realDifficulty(difficulty));
+        } else if (entry.format == SongEntry.Format.CODENAME) {
+            Path f = entry.legacyChartFiles.get(difficulty);
+            if (f == null && !entry.legacyChartFiles.isEmpty()) f = entry.legacyChartFiles.values().iterator().next();
+            if (f == null) throw new IOException("No chart for difficulty " + difficulty);
+            String metaJson = entry.metaFile != null && Files.isRegularFile(entry.metaFile)
+                    ? Files.readString(entry.metaFile) : null;
+            return CodenameChartParser.parse(Files.readString(f), metaJson, difficulty);
         } else {
             Path f = entry.legacyChartFiles.get(difficulty);
             if (f == null && !entry.legacyChartFiles.isEmpty()) {
