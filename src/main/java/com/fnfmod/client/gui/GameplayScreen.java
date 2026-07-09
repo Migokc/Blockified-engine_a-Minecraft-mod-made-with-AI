@@ -1031,7 +1031,16 @@ public class GameplayScreen extends Screen {
         for (int lane = 0; lane < 4; lane++) {
             float x = laneX(mine, lane);
             List<GameNote> list = lanes[lane];
-            for (int i = laneStart[lane]; i < list.size(); i++) {
+            // sweepMisses advances laneStart past a note the moment it's missed, so
+            // back up over any fully-missed long notes whose grey trail is still on-screen
+            // (drawn until 200ms after the note's end) — otherwise they'd just vanish.
+            int start = laneStart[lane];
+            while (start > 0) {
+                GameNote prev = list.get(start - 1);
+                if (prev.missed && prev.data.sustainMs > 30 && songPos - prev.endMs() <= 200) start--;
+                else break;
+            }
+            for (int i = start; i < list.size(); i++) {
                 GameNote n = list.get(i);
                 if (n.data.timeMs - songPos > visibleMs) break;
                 if (n.missed && songPos - n.endMs() > 200) continue;
