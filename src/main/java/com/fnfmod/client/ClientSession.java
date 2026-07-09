@@ -65,7 +65,7 @@ public final class ClientSession {
 
     public static void leave() {
         if (activePos != null) {
-            PacketDistributor.sendToServer(new FnfPayloads.LeaveC2S(activePos, false));
+            PacketDistributor.sendToServer(new FnfPayloads.LeaveC2S(activePos, false, false));
         }
         reset();
     }

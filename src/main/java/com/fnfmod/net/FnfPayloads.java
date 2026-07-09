@@ -288,14 +288,16 @@ public final class FnfPayloads {
         public Type<? extends CustomPacketPayload> type() { return TYPE; }
     }
 
-    public record LeaveC2S(BlockPos pos, boolean finishedOnly) implements CustomPacketPayload {
+    /** reopenMenu = after leaving, recreate the session and push the song menu instead of returning to the world. */
+    public record LeaveC2S(BlockPos pos, boolean finishedOnly, boolean reopenMenu) implements CustomPacketPayload {
         public static final Type<LeaveC2S> TYPE = new Type<>(FnfMod.id("leave"));
         public static final StreamCodec<FriendlyByteBuf, LeaveC2S> CODEC = StreamCodec.of(
                 (buf, v) -> {
                     buf.writeBlockPos(v.pos);
                     buf.writeBoolean(v.finishedOnly);
+                    buf.writeBoolean(v.reopenMenu);
                 },
-                buf -> new LeaveC2S(buf.readBlockPos(), buf.readBoolean()));
+                buf -> new LeaveC2S(buf.readBlockPos(), buf.readBoolean(), buf.readBoolean()));
 
         @Override
         public Type<? extends CustomPacketPayload> type() { return TYPE; }

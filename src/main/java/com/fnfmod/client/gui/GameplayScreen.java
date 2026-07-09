@@ -860,16 +860,18 @@ public class GameplayScreen extends Screen {
 
     private void exit() {
         GameplayCamera.end();
-        if (!endSent) {
-            ClientSession.leave();
-        } else {
-            // song completed normally: ask the server to put us back where we were
-            PacketDistributor.sendToServer(new FnfPayloads.LeaveC2S(machinePos, true));
-            ClientSession.reset();
-        }
+        // Solo play returns to the song menu instead of the world (on finish, quit, or death).
+        // Duet keeps returning to the world to avoid host/guest contention over one machine.
+        boolean reopenMenu = !duet;
+        // finishedOnly = the song ended normally (server already tore the session down on SongEnd);
+        // otherwise the server cancels the still-active session. Either way it then reopens the menu.
+        PacketDistributor.sendToServer(new FnfPayloads.LeaveC2S(machinePos, endSent, reopenMenu));
+        ClientSession.reset();
         songPlayer.dispose();
         if (minecraft.player != null) CharacterAnimations.stop(minecraft.player);
-        minecraft.setScreen(null);
+        minecraft.setScreen(reopenMenu
+                ? new WaitingScreen(Component.literal("Returning to song list..."))
+                : null);
     }
 
     @Override

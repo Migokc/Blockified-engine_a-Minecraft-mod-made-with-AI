@@ -28,6 +28,9 @@ public final class ClientNetHandler {
                         mc.player.displayClientMessage(Component.literal(
                                 "This Funkin' Machine is in use by " + p.hostName()), true);
                     }
+                    // a reopen-menu request that lost the machine to someone else: don't
+                    // strand the player on the "Returning to song list..." waiting screen
+                    if (mc.screen instanceof WaitingScreen) mc.setScreen(null);
                 }
                 default -> {}
             }
