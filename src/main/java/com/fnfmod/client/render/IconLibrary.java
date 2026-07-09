@@ -184,7 +184,9 @@ public final class IconLibrary {
         try (InputStream in = Files.newInputStream(src.png)) {
             NativeImage img = NativeImage.read(in);
             ResourceLocation id = FnfMod.id("icon/" + name.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9_]", "_"));
-            Minecraft.getInstance().getTextureManager().register(id, new DynamicTexture(img));
+            DynamicTexture tex = new DynamicTexture(img);
+            Minecraft.getInstance().getTextureManager().register(id, tex);
+            Textures.smooth(tex); // antialias health icons
             Icon icon = new Icon();
             icon.tex = id;
             icon.texW = img.getWidth();
@@ -217,7 +219,9 @@ public final class IconLibrary {
             try (InputStream in = Files.newInputStream(p)) {
                 NativeImage img = NativeImage.read(in);
                 ResourceLocation id = FnfMod.id("iconpath/" + Integer.toHexString(path.hashCode()));
-                Minecraft.getInstance().getTextureManager().register(id, new DynamicTexture(img));
+                DynamicTexture tex = new DynamicTexture(img);
+                Minecraft.getInstance().getTextureManager().register(id, tex);
+                Textures.smooth(tex); // antialias health icons
                 icon = new Icon();
                 icon.tex = id;
                 icon.texW = img.getWidth();

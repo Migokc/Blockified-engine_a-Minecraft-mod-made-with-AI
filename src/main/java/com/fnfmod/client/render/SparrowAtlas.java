@@ -64,7 +64,9 @@ public class SparrowAtlas {
                 image = NativeImage.read(in);
             }
             ResourceLocation id = FnfMod.id("atlas/" + NEXT_ID.incrementAndGet());
-            Minecraft.getInstance().getTextureManager().register(id, new DynamicTexture(image));
+            DynamicTexture tex = new DynamicTexture(image);
+            Minecraft.getInstance().getTextureManager().register(id, tex);
+            Textures.smooth(tex); // antialias custom skin art (default skin = procedural arrows, untouched)
 
             SparrowAtlas atlas = new SparrowAtlas(id, image.getWidth(), image.getHeight());
             atlas.image = image;
