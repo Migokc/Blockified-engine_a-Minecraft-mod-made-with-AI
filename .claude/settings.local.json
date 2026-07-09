@@ -50,7 +50,9 @@
       "Bash(python -c \"import pypdf; r=pypdf.PdfReader\\(r'C:/Users/OMEN/Downloads/Folders/CLAUDE STUFF/things fnf mc mod/FNFMOD_CHAT_SUMMARY.pdf'\\); print\\('\\\\n'.join\\(p.extract_text\\(\\) for p in r.pages\\)\\)\")",
       "Read(//c/Program Files/Eclipse Adoptium//**)",
       "Read(//c/Program Files/**)",
-      "Read(//c/Users/OMEN/.gradle/jdks/**)"
+      "Read(//c/Users/OMEN/.gradle/jdks/**)",
+      "Bash(cd \"/c/Users/OMEN/Downloads/Folders/mc mod\" && ls -la build/libs/ && echo \"---\" && stat -c '%y  %n' build/libs/*.jar)",
+      "PowerShell(& .\\\\gradlew.bat compileJava --console=plain 2>&1 | Select-Object -Last 30; \"EXIT: $LASTEXITCODE\")"
     ]
   }
 }

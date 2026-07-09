@@ -349,19 +349,21 @@ public final class SessionManager {
         }
     }
 
-    public static void onLeave(ServerPlayer player, BlockPos pos, boolean finishedOnly) {
+    public static void onLeave(ServerPlayer player, BlockPos pos, boolean finishedOnly, boolean reopenMenu) {
         if (finishedOnly) {
             restorePosition(player);
-            return;
+        } else {
+            Session session = SESSIONS.get(keyOf(player, pos));
+            if (session == null) {
+                restorePosition(player);
+            } else if (session.host == player || session.guest == player) {
+                cancel(session, player, player.getGameProfile().getName() + " left");
+            }
         }
-        Session session = SESSIONS.get(keyOf(player, pos));
-        if (session == null) {
-            restorePosition(player);
-            return;
-        }
-        if (session.host == player || session.guest == player) {
-            cancel(session, player, player.getGameProfile().getName() + " left");
-        }
+        // returning to the song menu instead of the world: with the old session now
+        // torn down, run the same path as clicking the block to create a fresh
+        // CHOOSING session and push the menu back to the player.
+        if (reopenMenu) onInteract(player, pos);
     }
 
     /** Teleports the player back to where they stood before the song, if recorded. */
