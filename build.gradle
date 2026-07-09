@@ -1,0 +1,70 @@
+plugins {
+    id 'java-library'
+    id 'net.neoforged.moddev' version '2.0.141'
+}
+
+version = mod_version
+group = mod_group_id
+
+base {
+    archivesName = mod_id
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+repositories {
+    mavenCentral()
+    maven { url = 'https://maven.kosmx.dev/' }
+}
+
+dependencies {
+    // playerAnimator (required at runtime, modid: playeranimator)
+    implementation "dev.kosmx.player-anim:player-animation-lib-forge:2.0.4+1.21.1"
+}
+
+neoForge {
+    version = project.neo_version
+
+    parchment {
+        // Using official Mojang mappings only
+    }
+
+    runs {
+        client {
+            client()
+        }
+        server {
+            server()
+            programArgument '--nogui'
+        }
+    }
+
+    mods {
+        "${mod_id}" {
+            sourceSet(sourceSets.main)
+        }
+    }
+}
+
+def generateModMetadata = tasks.register("generateModMetadata", ProcessResources) {
+    def replaceProperties = [
+            minecraft_version: minecraft_version,
+            neo_version      : neo_version,
+            mod_id           : mod_id,
+            mod_name         : mod_name,
+            mod_version      : mod_version,
+            mod_authors      : mod_authors,
+            mod_description  : mod_description
+    ]
+    inputs.properties replaceProperties
+    expand replaceProperties
+    from "src/main/templates"
+    into "build/generated/sources/modMetadata"
+}
+
+sourceSets.main.resources.srcDir generateModMetadata
+neoForge.ideSyncTask generateModMetadata
