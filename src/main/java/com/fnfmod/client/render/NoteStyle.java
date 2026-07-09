@@ -374,6 +374,7 @@ public final class NoteStyle {
             if (set.dyn[lane] != null) set.dyn[lane].close();
             set.dyn[lane] = new net.minecraft.client.renderer.texture.DynamicTexture(dst);
             Minecraft.getInstance().getTextureManager().register(set.id[lane], set.dyn[lane]);
+            Textures.smooth(set.dyn[lane]); // antialias recolored (RGB template) skin notes
         }
         for (int y = 0; y < set.src.getHeight(); y++) {
             for (int x = 0; x < set.src.getWidth(); x++) {
@@ -477,7 +478,7 @@ public final class NoteStyle {
         try (java.io.InputStream in = java.nio.file.Files.newInputStream(png)) {
             NativeImage img = NativeImage.read(in);
             holdSheetImage = img;
-            ResourceLocation id = registerGenerated("gen/hold/" + System.nanoTime(), img);
+            ResourceLocation id = registerGenerated("gen/hold/" + System.nanoTime(), img, true);
             int colW = img.getWidth() / 8;
             if (colW <= 0) return;
             // layout is interleaved per color: [piece, end, piece, end, ...]
@@ -577,8 +578,14 @@ public final class NoteStyle {
     }
 
     private static ResourceLocation registerGenerated(String path, NativeImage image) {
+        return registerGenerated(path, image, false);
+    }
+
+    private static ResourceLocation registerGenerated(String path, NativeImage image, boolean smooth) {
         ResourceLocation id = FnfMod.id(path);
-        Minecraft.getInstance().getTextureManager().register(id, new DynamicTexture(image));
+        DynamicTexture tex = new DynamicTexture(image);
+        Minecraft.getInstance().getTextureManager().register(id, tex);
+        if (smooth) Textures.smooth(tex); // custom skin art (hold sheet) — arrows stay crisp
         return id;
     }
 
