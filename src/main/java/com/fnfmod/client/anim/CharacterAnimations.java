@@ -6,12 +6,14 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import dev.kosmx.playerAnim.api.TransformType;
 import dev.kosmx.playerAnim.api.layered.IAnimation;
 import dev.kosmx.playerAnim.api.layered.KeyframeAnimationPlayer;
 import dev.kosmx.playerAnim.api.layered.ModifierLayer;
 import dev.kosmx.playerAnim.api.layered.modifier.AbstractFadeModifier;
 import dev.kosmx.playerAnim.api.layered.modifier.MirrorModifier;
 import dev.kosmx.playerAnim.core.util.Ease;
+import dev.kosmx.playerAnim.core.util.Vec3f;
 import dev.kosmx.playerAnim.core.data.KeyframeAnimation;
 import dev.kosmx.playerAnim.minecraftApi.PlayerAnimationAccess;
 import dev.kosmx.playerAnim.minecraftApi.PlayerAnimationFactory;
@@ -310,9 +312,12 @@ public final class CharacterAnimations {
                     && current.getData() == entry.anim && current.isActive() && entry.anim.isInfinite) {
                 return new float[]{mirror ? -entry.camX : entry.camX, entry.camY};
             }
-            IAnimation next = mirror
-                    ? new ModifierLayer<>(new KeyframeAnimationPlayer(entry.anim), new MirrorModifier())
+            // A non-looping idle that finishes before the next beat (low BPM) would ease
+            // back to the vanilla rest pose and "just end"; hold its last frame instead.
+            IAnimation base = isIdle && !entry.anim.isInfinite
+                    ? new HoldLastFrame(entry.anim)
                     : new KeyframeAnimationPlayer(entry.anim);
+            IAnimation next = mirror ? new ModifierLayer<>(base, new MirrorModifier()) : base;
             // short fade from the current pose instead of snapping through the rest pose
             layer.replaceAnimationWithFade(
                     AbstractFadeModifier.standardFadeIn(isIdle ? 4 : 2, Ease.INOUTSINE), next);
@@ -324,6 +329,52 @@ public final class CharacterAnimations {
 
     private static IAnimation unwrapPlayer(IAnimation anim) {
         return anim instanceof ModifierLayer<?> wrapped ? wrapped.getAnimation() : anim;
+    }
+
+    /**
+     * Plays a one-shot idle but, once it reaches its last content frame, freezes
+     * there instead of easing back to the vanilla rest pose. At a low BPM the idle
+     * bop finishes before the next beat re-triggers it; without this the character
+     * would snap to a standing pose in the gap. The next beat replaces it normally
+     * (and {@link #stop} clears it), so at higher BPM it never actually freezes.
+     */
+    private static final class HoldLastFrame implements IAnimation {
+        private final KeyframeAnimationPlayer player;
+        private final int holdTick;
+        private boolean holding;
+
+        HoldLastFrame(KeyframeAnimation anim) {
+            this.player = new KeyframeAnimationPlayer(anim);
+            // endTick = end of the main body, before any ease-out to rest; fall back
+            // to stopTick for animations that have no separate outro region.
+            int hold = anim.endTick > 0 ? anim.endTick : anim.stopTick;
+            this.holdTick = Math.max(1, hold);
+        }
+
+        @Override
+        public void tick() {
+            if (holding) return;
+            if (player.getCurrentTick() >= holdTick) {
+                holding = true; // reached the last frame — stop advancing and hold it
+                return;
+            }
+            player.tick();
+        }
+
+        @Override
+        public boolean isActive() {
+            return true; // never auto-ends; the next beat (or stop()) replaces it
+        }
+
+        @Override
+        public void setupAnim(float tickDelta) {
+            player.setupAnim(holding ? 0f : tickDelta);
+        }
+
+        @Override
+        public Vec3f get3DTransform(String modelName, TransformType type, float tickDelta, Vec3f value0) {
+            return player.get3DTransform(modelName, type, holding ? 0f : tickDelta, value0);
+        }
     }
 
     public static void stop(Player player) {
