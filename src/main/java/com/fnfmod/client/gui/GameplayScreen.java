@@ -764,7 +764,10 @@ public class GameplayScreen extends Screen {
         int lane = FnfKeys.laneForKey(keyCode, scanCode);
         if (lane >= 0 && !laneHeld[lane]) {
             laneHeld[lane] = true;
-            if (phase == Phase.PLAYING) {
+            // Judge input during the countdown too: notes at the very start of a chart
+            // otherwise only get the half of their hit window after the song begins
+            // (the earlier half falls during the countdown), which is an unfair miss.
+            if (phase == Phase.PLAYING || phase == Phase.COUNTDOWN) {
                 // a released hold in its grace window resumes on this press...
                 boolean resumed = false;
                 for (GameNote h : activeHolds[lane]) {
@@ -773,10 +776,11 @@ public class GameplayScreen extends Screen {
                         resumed = true;
                     }
                 }
-                // ...and the same press can still hit an overlapping note (no ghost-miss when resuming)
-                hitAttempt(lane, !resumed);
-            } else if (phase == Phase.COUNTDOWN) {
-                myStrumFlash[lane] = 40;
+                // ...and the same press can still hit an overlapping note. During the
+                // countdown, empty presses don't ghost-miss so warm-up taps before the
+                // song starts aren't punished.
+                hitAttempt(lane, phase == Phase.PLAYING && !resumed);
+                if (phase == Phase.COUNTDOWN) myStrumFlash[lane] = Math.max(myStrumFlash[lane], 40);
             }
             return true;
         }
