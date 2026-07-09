@@ -5,6 +5,7 @@ import com.fnfmod.chart.CodenameChartParser;
 import com.fnfmod.chart.LegacyChartParser;
 import com.fnfmod.chart.SongChart;
 import com.fnfmod.chart.VSliceChartParser;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import net.neoforged.fml.loading.FMLPaths;
@@ -502,17 +503,72 @@ public class SongLibrary {
 
         Path songSub = dir.resolve("song");
         Path audioDir = Files.isDirectory(songSub) ? songSub : dir;
-        try (Stream<Path> audio = Files.list(audioDir)) {
-            audio.filter(Files::isRegularFile).forEach(f -> {
+        Map<String, Path> audio = new LinkedHashMap<>();
+        try (Stream<Path> as = Files.list(audioDir)) {
+            as.filter(Files::isRegularFile).forEach(f -> {
                 String lower = f.getFileName().toString().toLowerCase(Locale.ROOT);
-                if (lower.endsWith(".ogg")) classifyAudio(entry, f, lower);
+                if (lower.endsWith(".ogg")) audio.put(lower, f);
             });
         } catch (IOException ignored) {}
+
+        entry.instFile = firstAudio(audio, "inst.ogg");
+        if (entry.instFile == null) {
+            for (var en : audio.entrySet()) {
+                if (en.getKey().startsWith("inst")) { entry.instFile = en.getValue(); break; }
+            }
+        }
+        // Codename names each vocal file after its strumline's vocalsSuffix
+        // (Voices<suffix>.ogg), which can be anything — "-Player"/"-Opponent" but also
+        // " boyfriend"/" smiley" or "-Pico". Resolve from the chart, not the filename.
+        resolveCodenameVocals(entry, audio);
+        // legacy-wrapped charts (or unresolved): fall back to name-based classification
+        if (entry.voicesFile == null && entry.voicesPlayerFile == null && entry.voicesOpponentFile == null) {
+            for (var en : audio.entrySet()) {
+                if (en.getKey().startsWith("voices") || en.getKey().startsWith("vocals")) {
+                    classifyAudio(entry, en.getValue(), en.getKey());
+                }
+            }
+        }
         if (entry.instFile == null) {
             FnfMod.LOGGER.warn("Codename song {} has no Inst.ogg — skipping", entry.id);
             return null;
         }
         return entry;
+    }
+
+    /**
+     * Resolves a Codename song's vocals from its chart's strumLines: each line's
+     * {@code vocalsSuffix} names its file (Voices&lt;suffix&gt;.ogg) and its
+     * {@code type} (0 = opponent, 1 = player) picks the side. An empty suffix is
+     * a single combined Voices.ogg. Only reads a modern chart; legacy-wrapped
+     * charts have no strumLines and fall back to name-based classification.
+     */
+    private static void resolveCodenameVocals(SongEntry entry, Map<String, Path> audio) {
+        for (Path chartFile : entry.legacyChartFiles.values()) {
+            JsonObject root;
+            try {
+                root = JsonParser.parseString(Files.readString(chartFile)).getAsJsonObject();
+            } catch (Exception e) {
+                continue;
+            }
+            if (!root.has("strumLines") || !root.get("strumLines").isJsonArray()) continue;
+            for (JsonElement slEl : root.getAsJsonArray("strumLines")) {
+                if (!slEl.isJsonObject()) continue;
+                JsonObject sl = slEl.getAsJsonObject();
+                boolean player = (int) LegacyChartParser.optDouble(sl, "type", 0) == 1;
+                String suffix = LegacyChartParser.optString(sl, "vocalsSuffix", "");
+                Path f = audio.get(("voices" + suffix + ".ogg").toLowerCase(Locale.ROOT));
+                if (f == null) continue;
+                if (suffix.isEmpty()) {
+                    entry.voicesFile = f;              // single combined track
+                } else if (player) {
+                    entry.voicesPlayerFile = f;
+                } else {
+                    entry.voicesOpponentFile = f;
+                }
+            }
+            return; // one chart's strumlines define the vocals for the whole song
+        }
     }
 
     /** Sorts a song's difficulties into a natural easy→normal→hard order. */
