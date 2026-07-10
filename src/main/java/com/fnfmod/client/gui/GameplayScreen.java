@@ -38,6 +38,7 @@ public class GameplayScreen extends Screen {
 
     // Psych Engine default judgement windows (ms)
     private static final double SICK = 45, GOOD = 90, BAD = 135, SHIT = 166;
+    private static final double HOLD_RELEASE_GRACE_MS = 300;
     private static final String[] DIR_NAMES = {"left", "down", "up", "right"};
 
     private final BlockPos machinePos;
@@ -305,9 +306,16 @@ public class GameplayScreen extends Screen {
                 GameNote hold = it.next();
                 double end = hold.endMs();
                 if (songPos >= end) {
-                    hold.holdComplete = true;
                     it.remove();
-                    spawnCoverEnd(lane);
+                    if (laneHeld[lane]) {
+                        hold.holdComplete = true;
+                        spawnCoverEnd(lane);
+                    } else {
+                        // Releasing near the tail is still allowed to use the grace
+                        // window, but the sustain must be held when its end is reached.
+                        hold.holdDropped = true;
+                        missHold(lane, hold);
+                    }
                 } else if (laneHeld[lane]) {
                     hold.releasedMs = -1; // holding (or resumed within grace)
                     health = Math.min(2f, health + (float) (0.02 * dtMs / 1000.0));
@@ -322,9 +330,9 @@ public class GameplayScreen extends Screen {
                         }
                     }
                 } else {
-                    // Psych: released — 0.5s window to press again and keep the hold
+                    // Released — 0.3s window to press again and keep the hold
                     if (hold.releasedMs < 0) hold.releasedMs = songPos;
-                    if (songPos - hold.releasedMs > 500) {
+                    if (songPos - hold.releasedMs > HOLD_RELEASE_GRACE_MS) {
                         // grace expired: the remaining trail disappears, counts as a miss
                         hold.holdDropped = true;
                         it.remove();
@@ -771,7 +779,7 @@ public class GameplayScreen extends Screen {
                 // a released hold in its grace window resumes on this press...
                 boolean resumed = false;
                 for (GameNote h : activeHolds[lane]) {
-                    if (h.releasedMs >= 0 && songPos - h.releasedMs <= 500) {
+                    if (h.releasedMs >= 0 && songPos - h.releasedMs <= HOLD_RELEASE_GRACE_MS) {
                         h.releasedMs = -1;
                         resumed = true;
                     }
