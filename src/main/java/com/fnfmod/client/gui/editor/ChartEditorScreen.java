@@ -741,7 +741,7 @@ public class ChartEditorScreen extends Screen {
             }
         }
 
-        // Notes and receptors use the user's currently selected skin.
+        // Placed chart notes use the user's currently selected skin.
         float noteSize = Math.min(cw - 3, 24);
         for (SongChart.Note n : chart.notes) {
             double nBeat = conductor.beatAt(n.timeMs);
@@ -767,10 +767,13 @@ public class ChartEditorScreen extends Screen {
 
         gui.disableScissor();
 
-        // receptors, side divider, and fixed playhead
+        // Neutral editor receptors, side divider, and fixed playhead. The
+        // selected skin is previewed at the playhead only in Vortex mode.
         gui.fill(gx + 4 * cw - 1, top - cw, gx + 4 * cw + 1, bottom, 0xFF222222);
+        String[] receptorGlyphs = {"<", "v", "^", ">"};
         for (int c = 0; c < 8; c++) {
-            NoteStyle.drawReceptor(gui, c % 4, gx + c * cw + cw / 2f, top - cw / 2f, noteSize, 0);
+            gui.drawCenteredString(font, receptorGlyphs[c % 4], gx + c * cw + cw / 2,
+                    top - cw / 2 - font.lineHeight / 2, 0xFF9A9A9A);
         }
         int py = centerY();
         gui.fill(gx, py, gx + gridW, py + 1, 0xFF9D3D3D);
@@ -782,8 +785,12 @@ public class ChartEditorScreen extends Screen {
         // vortex hints
         if (vortex) {
             gui.drawString(font, "VORTEX", gx, top - 10, 0xFFFF66FF);
+            gui.fill(gx, py - cw / 2, gx + gridW, py + cw / 2, 0x22FFFFFF);
             for (int c = 0; c < 8; c++) {
-                gui.drawCenteredString(font, String.valueOf(c + 1), gx + c * cw + cw / 2, py + 4, 0xAAFFFFFF);
+                int centerX = gx + c * cw + cw / 2;
+                NoteStyle.drawNote(gui, c % 4, centerX, py, noteSize);
+                gui.drawString(font, String.valueOf(c + 1), gx + c * cw + 2,
+                        py + cw / 2 - font.lineHeight, 0xFFFFFFFF);
             }
         }
 
