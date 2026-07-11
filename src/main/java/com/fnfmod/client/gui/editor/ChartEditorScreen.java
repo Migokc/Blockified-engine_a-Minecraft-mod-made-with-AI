@@ -61,6 +61,11 @@ public class ChartEditorScreen extends Screen {
     private enum TopMenu { NONE, FILE, EDIT, VIEW }
     private EditorTab activeTab = EditorTab.SONG;
     private TopMenu topMenu = TopMenu.NONE;
+    private int infoPanelX = -1;
+    private int infoPanelY = -1;
+    private boolean draggingInfoPanel;
+    private double infoDragOffsetX;
+    private double infoDragOffsetY;
 
     // widgets
     private EditBox titleBox, bpmBox, speedBox, noteTypeBox, sectionBpmBox, sectionBeatsBox, saveNameBox;
@@ -78,6 +83,15 @@ public class ChartEditorScreen extends Screen {
     protected void init() {
         if (chart == null) {
             loadInitial();
+        }
+        int infoW = infoWidth();
+        int infoH = infoHeight();
+        if (infoPanelX < 0 || infoPanelY < 0) {
+            infoPanelX = 16;
+            infoPanelY = 34;
+        } else if (infoW > 0) {
+            infoPanelX = Mth.clamp(infoPanelX, 0, Math.max(0, width - infoW));
+            infoPanelY = Mth.clamp(infoPanelY, 22, Math.max(22, height - infoH - 12));
         }
         buildWidgets();
     }
@@ -350,6 +364,7 @@ public class ChartEditorScreen extends Screen {
     private int panelWidth() { return Mth.clamp(width / 3, 180, 300); }
     private int panelX() { return width - panelWidth() - 12; }
     private int infoWidth() { return width >= 560 ? Mth.clamp(width / 6, 105, 150) : 0; }
+    private int infoHeight() { return Math.min(150, height - 64); }
     private int cellW() {
         int room = Math.min(width / 2 - infoWidth() - 22, panelX() - width / 2 - 18) * 2;
         return Mth.clamp(room / 8, 14, 30);
@@ -652,6 +667,17 @@ public class ChartEditorScreen extends Screen {
 
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
+        int infoW = infoWidth();
+        int infoH = infoHeight();
+        if (infoW > 0 && mouseX >= infoPanelX && mouseX < infoPanelX + infoW
+                && mouseY >= infoPanelY && mouseY < infoPanelY + infoH) {
+            if (button == 0 && mouseY < infoPanelY + 16) {
+                draggingInfoPanel = true;
+                infoDragOffsetX = mouseX - infoPanelX;
+                infoDragOffsetY = mouseY - infoPanelY;
+            }
+            return true;
+        }
         int gx = gridX(), cw = cellW();
         if (mouseX >= gx && mouseX < gx + 8 * cw && mouseY >= gridTop() && mouseY < gridBottom()) {
             int col = (int) ((mouseX - gx) / cw);
@@ -674,6 +700,27 @@ public class ChartEditorScreen extends Screen {
             return true;
         }
         return super.mouseClicked(mouseX, mouseY, button);
+    }
+
+    @Override
+    public boolean mouseDragged(double mouseX, double mouseY, int button, double dragX, double dragY) {
+        if (draggingInfoPanel && button == 0) {
+            int w = infoWidth();
+            int h = infoHeight();
+            infoPanelX = Mth.clamp((int) Math.round(mouseX - infoDragOffsetX), 0, Math.max(0, width - w));
+            infoPanelY = Mth.clamp((int) Math.round(mouseY - infoDragOffsetY), 22, Math.max(22, height - h - 12));
+            return true;
+        }
+        return super.mouseDragged(mouseX, mouseY, button, dragX, dragY);
+    }
+
+    @Override
+    public boolean mouseReleased(double mouseX, double mouseY, int button) {
+        if (button == 0 && draggingInfoPanel) {
+            draggingInfoPanel = false;
+            return true;
+        }
+        return super.mouseReleased(mouseX, mouseY, button);
     }
 
     @Override
@@ -794,7 +841,6 @@ public class ChartEditorScreen extends Screen {
             }
         }
 
-        renderInformationPanel(gui);
         renderRightPanel(gui);
         if (topMenu != TopMenu.NONE) gui.fill(14, 22, 142, Math.min(height - 16, 126), 0xEE090909);
 
@@ -808,26 +854,29 @@ public class ChartEditorScreen extends Screen {
         for (var renderable : renderables) {
             renderable.render(gui, mouseX, mouseY, partialTick);
         }
+        // Movable window renders last so it stays above the grid and controls.
+        renderInformationPanel(gui);
     }
 
     private void renderInformationPanel(GuiGraphics gui) {
         int w = infoWidth();
         if (w <= 0) return;
-        int x = 16, y = 34, h = Math.min(150, height - 64);
+        int x = infoPanelX, y = infoPanelY, h = infoHeight();
         gui.fill(x, y, x + w, y + h, 0xDD080808);
         gui.fill(x, y, x + w, y + 16, 0xFFF1F1F1);
-        gui.drawCenteredString(font, "Information", x + w / 2, y + 4, 0xFF111111);
+        String title = "Information";
+        gui.drawString(font, title, x + (w - font.width(title)) / 2, y + 4, 0xFF111111, false);
 
         int ty = y + 24;
         double duration = audio == null ? 0 : audio.durationMs();
-        gui.drawString(font, formatTime(viewPosMs) + " / " + formatTime(duration), x + 8, ty, 0xFFFFFFFF);
+        gui.drawString(font, formatTime(viewPosMs) + " / " + formatTime(duration), x + 8, ty, 0xFFFFFFFF, false);
         ty += 24;
         double beat = conductor.beatAt(Math.max(0, viewPosMs));
-        gui.drawString(font, "Section: " + sectionIndexAt(viewPosMs), x + 8, ty, 0xFFFFFFFF); ty += 11;
-        gui.drawString(font, "Beat: " + (int) Math.floor(beat), x + 8, ty, 0xFFFFFFFF); ty += 11;
-        gui.drawString(font, "Step: " + (int) Math.floor(beat * 4), x + 8, ty, 0xFFFFFFFF); ty += 22;
-        gui.drawString(font, "Beat Snap: " + SNAPS[snapIndex] + " / " + SNAPS[snapIndex], x + 8, ty, 0xFFFFFFFF); ty += 11;
-        gui.drawString(font, "Selected: " + (selectedNote == null ? 0 : 1), x + 8, ty, 0xFFFFFFFF);
+        gui.drawString(font, "Section: " + sectionIndexAt(viewPosMs), x + 8, ty, 0xFFFFFFFF, false); ty += 11;
+        gui.drawString(font, "Beat: " + (int) Math.floor(beat), x + 8, ty, 0xFFFFFFFF, false); ty += 11;
+        gui.drawString(font, "Step: " + (int) Math.floor(beat * 4), x + 8, ty, 0xFFFFFFFF, false); ty += 22;
+        gui.drawString(font, "Beat Snap: " + SNAPS[snapIndex] + " / " + SNAPS[snapIndex], x + 8, ty, 0xFFFFFFFF, false); ty += 11;
+        gui.drawString(font, "Selected: " + (selectedNote == null ? 0 : 1), x + 8, ty, 0xFFFFFFFF, false);
     }
 
     private void renderRightPanel(GuiGraphics gui) {
