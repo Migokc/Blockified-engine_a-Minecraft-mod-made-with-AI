@@ -62,8 +62,9 @@ are recognized (`purple0000`, `arrowLEFT`, `left confirm`, `purple hold piece`, 
 Without a skin, built-in procedurally drawn arrows are used.
 
 Optional `skin.json` values can adjust each part's scale, opacity, and position.
-Position values are GUI-pixel offsets from normal placement; negative X moves
-left and negative Y moves up.
+Position values are offsets in the part's source-art pixels. They scale with the
+part, resolution, and vanilla GUI scale, preserving the same relative alignment.
+Negative X moves left and negative Y moves up.
 
 ```json
 {
