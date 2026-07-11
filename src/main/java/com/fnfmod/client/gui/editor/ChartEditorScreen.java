@@ -45,6 +45,9 @@ public final class ChartEditorScreen extends Screen {
     private record UiLabel(String text, int x, int y, int color, boolean centered) {}
 
     private final String requestedSongId;
+    private final String requestedDifficulty;
+    private final SongChart suppliedChart;
+    private final Path suppliedSongFolder;
     private final List<UiLabel> labels = new ArrayList<>();
     private final List<SongChart.Note> sectionClipboard = new ArrayList<>();
 
@@ -54,6 +57,7 @@ public final class ChartEditorScreen extends Screen {
     private SongPlayer audio;
     private String songId;
     private String saveId;
+    private String loadedDifficulty = "normal";
     private String defaultNoteType = "";
 
     private double viewPositionMs;
@@ -89,8 +93,16 @@ public final class ChartEditorScreen extends Screen {
     private EditBox saveIdField;
 
     public ChartEditorScreen(String songId) {
+        this(songId, null, null, null);
+    }
+
+    /** Opens the exact chart currently held by gameplay, including its active difficulty. */
+    public ChartEditorScreen(String songId, String difficulty, SongChart chart, Path songFolder) {
         super(Component.literal("FNF Chart Editor"));
         this.requestedSongId = songId;
+        this.requestedDifficulty = difficulty;
+        this.suppliedChart = chart;
+        this.suppliedSongFolder = songFolder;
         this.songId = songId;
     }
 
@@ -103,16 +115,25 @@ public final class ChartEditorScreen extends Screen {
 
     private void loadChart() {
         SongLibrary.rescan();
-        String difficulty = "normal";
-        if (requestedSongId != null) {
+        String difficulty = requestedDifficulty == null || requestedDifficulty.isBlank()
+                ? "normal" : requestedDifficulty;
+        if (suppliedSongFolder != null) {
+            entry = SongLibrary.scanSongDir(suppliedSongFolder);
+        }
+        if (entry == null && requestedSongId != null) {
             entry = SongLibrary.get(requestedSongId);
-            if (entry != null) {
-                try {
+        }
+        if (suppliedChart != null) {
+            chart = suppliedChart;
+        }
+        if (chart == null && entry != null) {
+            try {
+                if (!entry.difficulties.contains(difficulty)) {
                     difficulty = entry.difficulties.contains("normal") ? "normal" : entry.difficulties.get(0);
-                    chart = SongLibrary.loadChart(entry, difficulty);
-                } catch (Exception e) {
-                    FnfMod.LOGGER.warn("Editor: failed to load {}: {}", requestedSongId, e.toString());
                 }
+                chart = SongLibrary.loadChart(entry, difficulty);
+            } catch (Exception e) {
+                FnfMod.LOGGER.warn("Editor: failed to load {}: {}", requestedSongId, e.toString());
             }
         }
 
@@ -127,6 +148,7 @@ public final class ChartEditorScreen extends Screen {
         chart.rebuildBpmMap();
         conductor = new Conductor(chart);
         saveId = songId == null ? sanitizeId(chart.title) : songId;
+        loadedDifficulty = difficulty;
 
         if (entry != null && entry.instFor(difficulty) != null) {
             try {
@@ -595,7 +617,9 @@ public final class ChartEditorScreen extends Screen {
         try {
             Path directory = SongLibrary.songsDir().resolve(id);
             Files.createDirectories(directory);
-            Path file = directory.resolve(id + ".json");
+            String difficultySuffix = loadedDifficulty.equalsIgnoreCase("normal")
+                    ? "" : "-" + sanitizeId(loadedDifficulty);
+            Path file = directory.resolve(id + difficultySuffix + ".json");
             Files.writeString(file, PsychChartWriter.write(chart));
             songId = saveId = id;
             SongLibrary.rescan();
