@@ -37,6 +37,23 @@ public final class HitsoundPlayer {
 
     private HitsoundPlayer() {}
 
+    /** Drops the current OpenAL buffer so the selected file is decoded again on next hit. */
+    public static void reload() {
+        try {
+            if (sources != null) {
+                for (int source : sources) {
+                    AL10.alSourceStop(source);
+                    AL10.alSourcei(source, AL10.AL_BUFFER, 0);
+                }
+            }
+            if (buffer != 0) AL10.alDeleteBuffers(buffer);
+        } catch (Throwable ignored) {
+            // Audio reload must not break command handling.
+        }
+        buffer = 0;
+        loadedName = "";
+    }
+
     /** .ogg files directly inside the hitsounds folder. */
     public static List<String> list() {
         List<String> out = new ArrayList<>();

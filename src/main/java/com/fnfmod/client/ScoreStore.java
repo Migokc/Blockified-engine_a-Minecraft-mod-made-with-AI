@@ -43,6 +43,12 @@ public final class ScoreStore {
 
     private ScoreStore() {}
 
+    /** For manual edits to scores.json. */
+    public static synchronized void reload() {
+        records = null;
+        map();
+    }
+
     private static Path file() {
         return SongLibrary.root().resolve("scores.json");
     }

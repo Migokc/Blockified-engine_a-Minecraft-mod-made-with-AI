@@ -11,7 +11,8 @@ Requires: [playerAnimator](https://modrinth.com/mod/playeranimator) (2.0.0+ for 
 - **4 keybinds** (default `D F J K`) — rebindable in *Options → Controls → Funkin' Machine*.
 - **Multiplayer**: the first player to click the machine picks the song ("Play VS"), the second player to click joins as the opponent side. On servers, only songs installed **on the server** are playable — the server streams the chart + audio to players who don't have them (cached in `config/fnfmod/cache/`).
 - **Chart editor**: `/fnf editor [song]` or the button in the song menu. Saves Psych Engine format.
-- `/fnf reload` re-scans songs, skins and animations without restarting.
+- `/fnf reload` reloads all FNF content without restarting. Targeted forms:
+  `/fnf reload songs|skins|splashes|animations|icons|hitsounds|options|scores`.
 
 ## Song folder format
 
