@@ -128,6 +128,8 @@ public class GameplayScreen extends Screen {
     private boolean endSent;
     private int pauseSelection;
     private long pausedAtMs;
+    /** Prevents one held Enter press from pausing and then confirming Resume via key repeat. */
+    private boolean enterReady = true;
 
     public GameplayScreen(BlockPos machinePos, SongChart chart, SongPlayer songPlayer,
                           PlayMode mode, UUID partnerId, String partnerName,
@@ -755,23 +757,32 @@ public class GameplayScreen extends Screen {
 
     @Override
     public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
+        boolean enter = keyCode == GLFW.GLFW_KEY_ENTER || keyCode == GLFW.GLFW_KEY_KP_ENTER;
         if (keyCode == GLFW.GLFW_KEY_ESCAPE) {
             handleEscape();
+            return true;
+        }
+        if (enter && enterReady && !duet && (phase == Phase.PLAYING || phase == Phase.COUNTDOWN)) {
+            enterReady = false;
+            pauseSong();
             return true;
         }
         if (phase == Phase.PAUSED) {
             if (keyCode == GLFW.GLFW_KEY_UP) pauseSelection = Math.max(0, pauseSelection - 1);
             if (keyCode == GLFW.GLFW_KEY_DOWN) pauseSelection = Math.min(duet ? 1 : 2, pauseSelection + 1);
-            if (keyCode == GLFW.GLFW_KEY_ENTER) activatePauseOption();
+            if (enter && enterReady) {
+                enterReady = false;
+                activatePauseOption();
+            }
             return true;
         }
         if (phase == Phase.GAMEOVER) {
             if (keyCode == GLFW.GLFW_KEY_R && !duet) restart();
-            if (keyCode == GLFW.GLFW_KEY_ENTER || keyCode == GLFW.GLFW_KEY_BACKSPACE) exit();
+            if (enter || keyCode == GLFW.GLFW_KEY_BACKSPACE) exit();
             return true;
         }
         if (phase == Phase.RESULTS) {
-            if (keyCode == GLFW.GLFW_KEY_ENTER || keyCode == GLFW.GLFW_KEY_SPACE) exit();
+            if (enter || keyCode == GLFW.GLFW_KEY_SPACE) exit();
             return true;
         }
 
@@ -803,6 +814,9 @@ public class GameplayScreen extends Screen {
 
     @Override
     public boolean keyReleased(int keyCode, int scanCode, int modifiers) {
+        if (keyCode == GLFW.GLFW_KEY_ENTER || keyCode == GLFW.GLFW_KEY_KP_ENTER) {
+            enterReady = true;
+        }
         int lane = FnfKeys.laneForKey(keyCode, scanCode);
         if (lane >= 0) {
             laneHeld[lane] = false;
@@ -817,15 +831,19 @@ public class GameplayScreen extends Screen {
                 if (duet) {
                     exit();
                 } else {
-                    phase = Phase.PAUSED;
-                    pausedAtMs = System.currentTimeMillis();
-                    pauseSelection = 0;
-                    songPlayer.pause();
+                    pauseSong();
                 }
             }
             case PAUSED -> resumeFromPause();
             case GAMEOVER, RESULTS -> exit();
         }
+    }
+
+    private void pauseSong() {
+        phase = Phase.PAUSED;
+        pausedAtMs = System.currentTimeMillis();
+        pauseSelection = 0;
+        songPlayer.pause();
     }
 
     private void resumeFromPause() {
