@@ -353,14 +353,14 @@ public class GameplayScreen extends Screen {
                 double end = hold.endMs();
                 if (songPos >= end) {
                     it.remove();
-                    if (laneHeld[lane]) {
-                        hold.holdComplete = true;
-                        spawnCoverEnd(lane);
-                    } else {
-                        // Releasing near the tail is still allowed to use the grace
-                        // window, but the sustain must be held when its end is reached.
+                    boolean graceExpiredBeforeEnd = hold.releasedMs >= 0
+                            && end - hold.releasedMs > HOLD_RELEASE_GRACE_MS;
+                    if (graceExpiredBeforeEnd) {
                         hold.holdDropped = true;
                         missHold(lane, hold);
+                    } else {
+                        hold.holdComplete = true;
+                        if (laneHeld[lane]) spawnCoverEnd(lane);
                     }
                 } else if (laneHeld[lane]) {
                     hold.releasedMs = -1; // holding (or resumed within grace)
