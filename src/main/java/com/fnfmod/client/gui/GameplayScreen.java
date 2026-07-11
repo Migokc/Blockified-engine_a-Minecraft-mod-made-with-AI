@@ -692,7 +692,13 @@ public class GameplayScreen extends Screen {
         r.missed = misses;
         r.totalNotes = totalMyNotes;
         if (!ClientSession.songId.isEmpty()) {
-            com.fnfmod.client.ScoreStore.submit(ClientSession.songId, ClientSession.difficulty, r);
+            int playMode = switch (mode) {
+                case PLAYER -> 0;
+                case OPPONENT -> 1;
+                case BOTH -> 2;
+            };
+            com.fnfmod.client.ScoreStore.submit(
+                    ClientSession.songId, ClientSession.difficulty, playMode, r);
         }
     }
 
