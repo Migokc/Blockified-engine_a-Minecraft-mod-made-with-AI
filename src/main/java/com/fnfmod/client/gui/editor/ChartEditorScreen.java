@@ -200,6 +200,7 @@ public class ChartEditorScreen extends Screen {
         y += 16;
         addRenderableWidget(Button.builder(Component.literal("Snap: " + SNAPS[snapIndex]), b -> {
             snapIndex = (snapIndex + 1) % SNAPS.length;
+            if (vortex && !isPlaying()) snapPlayheadToGrid();
             b.setMessage(Component.literal("Snap: " + SNAPS[snapIndex]));
         }).bounds(x, y, w, 14).build());
         y += 16;
@@ -208,6 +209,7 @@ public class ChartEditorScreen extends Screen {
         Button vortexBtn = addRenderableWidget(Button.builder(
                 Component.literal("Vortex: " + (vortex ? "ON" : "OFF")), b -> {
                     vortex = !vortex;
+                    if (vortex && !isPlaying()) snapPlayheadToGrid();
                     b.setMessage(Component.literal("Vortex: " + (vortex ? "ON" : "OFF")));
                 }).bounds(x, y, w, 14).build());
         vortexBtn.setTooltip(Tooltip.create(Component.literal("Keys 1-8 place notes at the playhead (V toggles)")));
@@ -430,7 +432,9 @@ public class ChartEditorScreen extends Screen {
             return;
         }
         if (isPlaying()) {
+            viewPosMs = audio.positionMs();
             audio.pause();
+            if (vortex) snapPlayheadToGrid();
         } else if (audio.isPaused()) {
             audio.seekMs(viewPosMs);
             audio.resume();
@@ -440,6 +444,13 @@ public class ChartEditorScreen extends Screen {
             audio.seekMs(viewPosMs);
             resetTickIndex(viewPosMs);
         }
+    }
+
+    /** Aligns the fixed playhead to the active snap division, including across BPM changes. */
+    private void snapPlayheadToGrid() {
+        double beat = conductor.beatAt(Math.max(0, viewPosMs));
+        double snappedBeat = Math.max(0, Math.round(beat / lineStepBeats()) * lineStepBeats());
+        seekTo(conductor.timeOfBeat(snappedBeat));
     }
 
     /** Moves the playhead; running playback continues from there. */
@@ -521,6 +532,7 @@ public class ChartEditorScreen extends Screen {
             case GLFW.GLFW_KEY_SPACE -> { togglePlay(); return true; }
             case GLFW.GLFW_KEY_V -> {
                 vortex = !vortex;
+                if (vortex && !isPlaying()) snapPlayheadToGrid();
                 buildWidgets();
                 return true;
             }
