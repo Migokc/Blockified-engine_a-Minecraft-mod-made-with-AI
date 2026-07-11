@@ -11,6 +11,7 @@ import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.gui.screens.options.controls.KeyBindsScreen;
 import net.minecraft.network.chat.Component;
+import net.minecraft.util.Mth;
 
 import java.util.List;
 
@@ -26,6 +27,9 @@ public class FnfSettingsScreen extends Screen {
     private String category;
 
     private static final double[] SCROLL_SPEEDS = {0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0};
+    private static final int FOLDER_ROW_H = 26;
+    private int folderScroll;
+    private boolean draggingFolderThumb;
 
     public FnfSettingsScreen(Screen parent) {
         super(Component.literal("Options"));
@@ -217,21 +221,41 @@ public class FnfSettingsScreen extends Screen {
 
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
+        if ("folders".equals(category) && button == 0 && clickFolderScrollbar(mouseX, mouseY)) return true;
         if (super.mouseClicked(mouseX, mouseY, button)) return true;
         return "colors".equals(category) && button == 0 && handleColorPick(mouseX, mouseY);
     }
 
     @Override
     public boolean mouseDragged(double mouseX, double mouseY, int button, double dragX, double dragY) {
+        if ("folders".equals(category) && draggingFolderThumb) {
+            scrollFoldersTo(mouseY);
+            return true;
+        }
         if ("colors".equals(category) && button == 0 && handleColorPick(mouseX, mouseY)) return true;
         return super.mouseDragged(mouseX, mouseY, button, dragX, dragY);
     }
 
     @Override
     public boolean mouseReleased(double mouseX, double mouseY, int button) {
+        draggingFolderThumb = false;
         // rebuilding the recolored sheets is heavy, so do it once the drag ends
         if (colorDirty) applyColorNow();
         return super.mouseReleased(mouseX, mouseY, button);
+    }
+
+    @Override
+    public boolean mouseScrolled(double mouseX, double mouseY, double scrollX, double scrollY) {
+        if ("folders".equals(category)) {
+            if (scrollY == 0) return super.mouseScrolled(mouseX, mouseY, scrollX, scrollY);
+            int old = folderScroll;
+            int step = Math.max(1, (int) Math.ceil(Math.abs(scrollY)));
+            folderScroll = Mth.clamp(folderScroll - (scrollY > 0 ? step : -step),
+                    0, folderMaxScroll(SongLibrary.getExternalFolders().size()));
+            if (folderScroll != old) init();
+            return true;
+        }
+        return super.mouseScrolled(mouseX, mouseY, scrollX, scrollY);
     }
 
     private void initFolders() {
@@ -245,9 +269,12 @@ public class FnfSettingsScreen extends Screen {
                     switchTo("folders");
                 }).bounds(width / 2 - 85, height - 56, 170, 20).build());
         List<String> folders = SongLibrary.getExternalFolders();
-        int row = 1;
-        for (String folder : folders) {
-            if (row > 6) break;
+        folderScroll = Mth.clamp(folderScroll, 0, folderMaxScroll(folders.size()));
+        int visible = folderVisibleRows();
+        int listX = folderListX();
+        int listW = folderListWidth();
+        for (int row = 0; row < visible && folderScroll + row < folders.size(); row++) {
+            String folder = folders.get(folderScroll + row);
             final String f = folder;
             addRenderableWidget(Button.builder(Component.literal("X"), b -> {
                 var list = new java.util.ArrayList<>(SongLibrary.getExternalFolders());
@@ -255,9 +282,49 @@ public class FnfSettingsScreen extends Screen {
                 SongLibrary.setExternalFolders(list);
                 SongLibrary.rescan();
                 switchTo("folders");
-            }).bounds(width / 2 + 100, rowY(row) , 20, 20).build());
-            row++;
+            }).bounds(listX + listW - 22, folderListTop() + row * FOLDER_ROW_H, 20, 20).build());
         }
+    }
+
+    private int folderListTop() { return rowY(1); }
+    private int folderListBottom() { return Math.max(folderListTop(), height - 76); }
+    private int folderListWidth() { return Math.min(360, Math.max(170, width - 40)); }
+    private int folderListX() { return width / 2 - folderListWidth() / 2; }
+    private int folderVisibleRows() {
+        return Math.max(1, (folderListBottom() - folderListTop()) / FOLDER_ROW_H);
+    }
+    private int folderMaxScroll(int total) { return Math.max(0, total - folderVisibleRows()); }
+    private int folderScrollbarX() { return folderListX() + folderListWidth() + 4; }
+
+    private int folderThumbHeight(int total) {
+        int trackH = folderListBottom() - folderListTop();
+        return Math.max(16, trackH * folderVisibleRows() / Math.max(1, total));
+    }
+
+    private void scrollFoldersTo(double mouseY) {
+        int total = SongLibrary.getExternalFolders().size();
+        int max = folderMaxScroll(total);
+        if (max <= 0) return;
+        int top = folderListTop();
+        int trackH = folderListBottom() - top;
+        int thumbH = folderThumbHeight(total);
+        double fraction = (mouseY - top - thumbH / 2.0) / Math.max(1, trackH - thumbH);
+        int next = Mth.clamp((int) Math.round(fraction * max), 0, max);
+        if (next != folderScroll) {
+            folderScroll = next;
+            init();
+        }
+    }
+
+    private boolean clickFolderScrollbar(double mouseX, double mouseY) {
+        int total = SongLibrary.getExternalFolders().size();
+        if (folderMaxScroll(total) <= 0) return false;
+        int x = folderScrollbarX();
+        if (mouseX < x - 2 || mouseX >= x + 8
+                || mouseY < folderListTop() || mouseY >= folderListBottom()) return false;
+        draggingFolderThumb = true;
+        scrollFoldersTo(mouseY);
+        return true;
     }
 
     private void pickFolder() {
@@ -271,6 +338,7 @@ public class FnfSettingsScreen extends Screen {
                 if (!list.contains(picked)) list.add(picked);
                 SongLibrary.setExternalFolders(list);
                 SongLibrary.rescan();
+                folderScroll = folderMaxScroll(list.size());
                 if (minecraft.screen == this && "folders".equals(category)) switchTo("folders");
             });
         }, "fnf-folder-picker").start();
@@ -549,17 +617,28 @@ public class FnfSettingsScreen extends Screen {
 
         if ("folders".equals(category)) {
             List<String> folders = SongLibrary.getExternalFolders();
-            int row = 1;
-            for (String folder : folders) {
-                if (row > 6) break;
-                gui.drawString(font, shortenPath(folder, 190), width / 2 - 105, rowY(row) + 6, 0xCCCCCC);
-                row++;
+            int visible = folderVisibleRows();
+            int listX = folderListX();
+            int listW = folderListWidth();
+            for (int row = 0; row < visible && folderScroll + row < folders.size(); row++) {
+                String folder = folders.get(folderScroll + row);
+                int y = folderListTop() + row * FOLDER_ROW_H;
+                gui.drawString(font, shortenPath(folder, listW - 30), listX + 4, y + 6, 0xCCCCCC);
             }
             if (folders.isEmpty()) {
-                gui.drawCenteredString(font, "No folders added.", width / 2, rowY(1) + 6, 0x888888);
+                gui.drawCenteredString(font, "No folders added.", width / 2, folderListTop() + 6, 0x888888);
+            } else if (folderMaxScroll(folders.size()) > 0) {
+                int trackX = folderScrollbarX();
+                int trackTop = folderListTop();
+                int trackH = folderListBottom() - trackTop;
+                int thumbH = folderThumbHeight(folders.size());
+                int thumbY = trackTop + (int) ((trackH - thumbH)
+                        * (folderScroll / (double) folderMaxScroll(folders.size())));
+                gui.fill(trackX, trackTop, trackX + 5, folderListBottom(), 0x55000000);
+                gui.fill(trackX, thumbY, trackX + 5, thumbY + thumbH, 0xFFAAAAAA);
             }
             // folders has the Clear Cache button at height-56; sit the hint above it
-            gui.drawCenteredString(font, "Scans Psych (data/<song>/) and V-Slice (data/songs/<song>/) mod folders",
+            gui.drawCenteredString(font, "Scans Psych, V-Slice, and Codename Engine mod folders",
                     width / 2, height - 68, 0xAAAAAA);
         }
 
