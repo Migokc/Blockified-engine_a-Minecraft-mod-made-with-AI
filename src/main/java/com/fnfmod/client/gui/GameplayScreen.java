@@ -1072,24 +1072,25 @@ public class GameplayScreen extends Screen {
             float x = laneX(mine, lane);
             List<GameNote> list = lanes[lane];
             // sweepMisses advances laneStart past a note the moment it's missed, so
-            // back up over any fully-missed long notes whose grey trail is still on-screen
+            // back up over any missed/dropped long notes whose grey trail is still on-screen
             // (drawn until 200ms after the note's end) — otherwise they'd just vanish.
             int start = laneStart[lane];
             while (start > 0) {
                 GameNote prev = list.get(start - 1);
-                if (prev.missed && prev.data.sustainMs > 30 && songPos - prev.endMs() <= 200) start--;
+                if ((prev.missed || prev.holdDropped) && prev.data.sustainMs > 30
+                        && songPos - prev.endMs() <= 200) start--;
                 else break;
             }
             for (int i = start; i < list.size(); i++) {
                 GameNote n = list.get(i);
                 if (n.data.timeMs - songPos > visibleMs) break;
-                if (n.missed && songPos - n.endMs() > 200) continue;
+                if ((n.missed || n.holdDropped) && songPos - n.endMs() > 200) continue;
 
                 boolean beingHeld = activeHolds[lane].contains(n);
                 if (n.hit && !beingHeld && n.data.sustainMs <= 30) continue;
                 if (n.hit && !beingHeld && (n.holdComplete || songPos > n.endMs())) continue;
-                // a fully-missed long note is grayed out and translucent
-                boolean missedLong = n.missed && n.data.sustainMs > 30;
+                // Fully missed and dropped long notes share the gray/translucent trail style.
+                boolean missedLong = (n.missed || n.holdDropped) && n.data.sustainMs > 30;
                 if (missedLong) NoteStyle.setMissed(true);
 
                 // sustain trail (missed long notes still show the remaining gray trail)
@@ -1100,7 +1101,9 @@ public class GameplayScreen extends Screen {
                     NoteStyle.drawHoldPiece(gui, lane, x, Math.min(y1, y2), Math.max(y1, y2), noteSize, down);
                 }
 
-                if ((!n.hit && !n.missed) || missedLong) {
+                // A dropped hold already had its head hit; only restore the head when
+                // the entire long note was missed from the start.
+                if (!n.hit && (!n.missed || missedLong)) {
                     float y = noteY(n.data.timeMs);
                     if (y > -noteSize && y < height + noteSize) {
                         NoteStyle.drawNote(gui, lane, x, y, noteSize);
