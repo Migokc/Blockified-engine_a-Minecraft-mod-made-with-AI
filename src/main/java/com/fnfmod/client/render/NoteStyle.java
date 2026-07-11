@@ -77,6 +77,9 @@ public final class NoteStyle {
     /** per-skin opacity multipliers from skin.json (default fully opaque) */
     private static float noteAlpha = 1f, sustainAlpha = 1f, receptorAlpha = 1f,
             splashAlpha = 1f, holdCoverAlpha = 1f;
+    /** per-part GUI-pixel position offsets from skin.json */
+    private static float noteX, noteY, receptorX, receptorY, sustainX, sustainY,
+            splashX, splashY, holdCoverX, holdCoverY;
     /** external alpha multiplier for everything drawn (middlescroll opponent fade) */
     private static float extAlpha = 1f;
     private static float drawAlpha = 1f;
@@ -160,9 +163,11 @@ public final class NoteStyle {
         }
         Path skinDir = SongLibrary.skinsDir().resolve(com.fnfmod.client.ClientOptions.get().noteSkin);
 
-        // optional per-skin size/opacity multipliers: skins/<name>/skin.json
+        // optional per-skin size/opacity/position values: skins/<name>/skin.json
         noteScale = receptorScale = holdWidthScale = splashScale = holdCoverScale = 1f;
         noteAlpha = sustainAlpha = receptorAlpha = splashAlpha = holdCoverAlpha = 1f;
+        noteX = noteY = receptorX = receptorY = sustainX = sustainY = 0f;
+        splashX = splashY = holdCoverX = holdCoverY = 0f;
         Path skinCfg = skinDir.resolve("skin.json");
         if (java.nio.file.Files.isRegularFile(skinCfg)) {
             try {
@@ -177,6 +182,16 @@ public final class NoteStyle {
                 receptorAlpha = optA(o, "receptorAlpha");
                 splashAlpha = optA(o, "splashAlpha");
                 holdCoverAlpha = optA(o, "holdCoverAlpha");
+                noteX = optP(o, "noteX");
+                noteY = optP(o, "noteY");
+                receptorX = optP(o, "receptorX");
+                receptorY = optP(o, "receptorY");
+                sustainX = optP(o, "sustainX");
+                sustainY = optP(o, "sustainY");
+                splashX = optP(o, "splashX");
+                splashY = optP(o, "splashY");
+                holdCoverX = optP(o, "holdCoverX");
+                holdCoverY = optP(o, "holdCoverY");
             } catch (Exception e) {
                 FnfMod.LOGGER.warn("Bad skin.json in {}: {}", skinDir, e.toString());
             }
@@ -463,6 +478,16 @@ public final class NoteStyle {
         return 1f;
     }
 
+    private static float optP(com.google.gson.JsonObject o, String key) {
+        try {
+            if (o.has(key) && o.get(key).isJsonPrimitive()) {
+                float value = o.get(key).getAsFloat();
+                if (Float.isFinite(value)) return Math.max(-4096f, Math.min(4096f, value));
+            }
+        } catch (Exception ignored) {}
+        return 0f;
+    }
+
     private static HoldSprite toSprite(SparrowAtlas atlas, String anim) {
         if (atlas == null || anim == null) return null;
         SparrowAtlas.Frame f = atlas.frame(anim, 0);
@@ -551,7 +576,9 @@ public final class NoteStyle {
         applyAlpha(holdCoverAlpha);
         float g = receptorSize / 104f;
         float pixelScale = 0.7f * g * holdCoverScale;
-        coverAtlases[lane].drawScaled(gui, f, receptorX - 12f * g, receptorY + 15.4f * g, pixelScale);
+        coverAtlases[lane].drawScaled(gui, f,
+                receptorX - 12f * g + holdCoverX,
+                receptorY + 15.4f * g + holdCoverY, pixelScale);
     }
 
     /** Number of splash animation variants for a lane (0 = no splashes available). */
@@ -573,7 +600,7 @@ public final class NoteStyle {
         if (frameIndex < 0 || frameIndex >= frames.size()) return;
         applyAlpha(splashAlpha);
         SparrowAtlas.Frame f = frames.get(frameIndex);
-        splashAtlas.drawScaled(gui, f, centerX, centerY,
+        splashAtlas.drawScaled(gui, f, centerX + splashX, centerY + splashY,
                 size * splashScale / Math.max(1, Math.max(f.frameW, f.frameH)), laneTex(splashRGB, lane));
     }
 
@@ -629,11 +656,12 @@ public final class NoteStyle {
         load();
         applyAlpha(noteAlpha);
         if (noteAtlas != null && noteAnims[lane] != null) {
-            noteAtlas.drawScaled(gui, noteAtlas.frame(noteAnims[lane], 0), centerX, centerY,
+            noteAtlas.drawScaled(gui, noteAtlas.frame(noteAnims[lane], 0),
+                    centerX + noteX, centerY + noteY,
                     size * noteScale / noteRefPx, laneTex(noteRGB, lane));
             return;
         }
-        drawArrow(gui, arrowTexture, lane, centerX, centerY, size * noteScale,
+        drawArrow(gui, arrowTexture, lane, centerX + noteX, centerY + noteY, size * noteScale,
                 missedTint ? 0xFF808080 : LANE_COLORS[lane]);
     }
 
@@ -651,7 +679,8 @@ public final class NoteStyle {
                 // Psych applies the RGB palette to press/confirm but leaves the static frame raw
                 ResourceLocation rgb = state == 0 ? null : laneTex(strumRGB, lane);
                 strumAtlas.drawScaled(gui, strumAtlas.frame(anim, state == 0 ? 0 : 1),
-                        centerX, centerY, size * receptorScale / strumRefPx, rgb);
+                        centerX + receptorX, centerY + receptorY,
+                        size * receptorScale / strumRefPx, rgb);
                 return;
             }
         }
@@ -660,7 +689,8 @@ public final class NoteStyle {
             case 2 -> LANE_COLORS[lane];
             default -> 0xFFB0B0B0;
         };
-        drawArrow(gui, state == 0 ? arrowOutlineTexture : arrowTexture, lane, centerX, centerY,
+        drawArrow(gui, state == 0 ? arrowOutlineTexture : arrowTexture, lane,
+                centerX + receptorX, centerY + receptorY,
                 size * (state == 2 ? 1.1f : 1f), color);
     }
 
@@ -670,6 +700,9 @@ public final class NoteStyle {
         load();
         if (yBottom <= yTop) return;
         applyAlpha(sustainAlpha);
+        centerX += sustainX;
+        yTop += sustainY;
+        yBottom += sustainY;
 
         HoldSprite piece = holdPieces[lane];
         if (piece == null) {

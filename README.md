@@ -60,6 +60,39 @@ including `frameX/frameY` trim offsets. Base-game and Psych naming conventions
 are recognized (`purple0000`, `arrowLEFT`, `left confirm`, `purple hold piece`, ...).
 Without a skin, built-in procedurally drawn arrows are used.
 
+Optional `skin.json` values can adjust each part's scale, opacity, and position.
+Position values are GUI-pixel offsets from normal placement; negative X moves
+left and negative Y moves up.
+
+```json
+{
+  "noteScale": 1.0,
+  "noteAlpha": 1.0,
+  "noteX": 0,
+  "noteY": 0,
+
+  "receptorScale": 1.0,
+  "receptorAlpha": 1.0,
+  "receptorX": 0,
+  "receptorY": 0,
+
+  "holdWidthScale": 1.0,
+  "sustainAlpha": 1.0,
+  "sustainX": 0,
+  "sustainY": 0,
+
+  "splashScale": 1.0,
+  "splashAlpha": 1.0,
+  "splashX": 0,
+  "splashY": 0,
+
+  "holdCoverScale": 1.0,
+  "holdCoverAlpha": 1.0,
+  "holdCoverX": 0,
+  "holdCoverY": 0
+}
+```
+
 ## Character animations (playerAnimator) + animation sets
 
 Put Emotecraft/Blockbench-exported animation `.json` files into
