@@ -77,7 +77,7 @@ public final class NoteStyle {
     /** per-skin opacity multipliers from skin.json (default fully opaque) */
     private static float noteAlpha = 1f, sustainAlpha = 1f, receptorAlpha = 1f,
             splashAlpha = 1f, holdCoverAlpha = 1f;
-    /** per-part GUI-pixel position offsets from skin.json */
+    /** per-part source-art-pixel offsets from skin.json, scaled with each sprite */
     private static float noteX, noteY, receptorX, receptorY, sustainX, sustainY,
             splashX, splashY, holdCoverX, holdCoverY;
     /** external alpha multiplier for everything drawn (middlescroll opponent fade) */
@@ -578,8 +578,8 @@ public final class NoteStyle {
         float g = receptorSize / 104f;
         float pixelScale = 0.7f * g * holdCoverScale;
         coverAtlases[lane].drawScaled(gui, f,
-                receptorX - 12f * g + holdCoverX,
-                receptorY + 15.4f * g + holdCoverY, pixelScale);
+                receptorX - 12f * g + holdCoverX * pixelScale,
+                receptorY + 15.4f * g + holdCoverY * pixelScale, pixelScale);
     }
 
     /** Number of splash animation variants for a lane (0 = no splashes available). */
@@ -601,8 +601,10 @@ public final class NoteStyle {
         if (frameIndex < 0 || frameIndex >= frames.size()) return;
         applyAlpha(splashAlpha);
         SparrowAtlas.Frame f = frames.get(frameIndex);
-        splashAtlas.drawScaled(gui, f, centerX + splashX, centerY + splashY,
-                size * splashScale / Math.max(1, Math.max(f.frameW, f.frameH)), laneTex(splashRGB, lane));
+        float pixelScale = size * splashScale / Math.max(1, Math.max(f.frameW, f.frameH));
+        splashAtlas.drawScaled(gui, f,
+                centerX + splashX * pixelScale, centerY + splashY * pixelScale,
+                pixelScale, laneTex(splashRGB, lane));
     }
 
     private static ResourceLocation registerGenerated(String path, NativeImage image) {
@@ -657,12 +659,15 @@ public final class NoteStyle {
         load();
         applyAlpha(noteAlpha);
         if (noteAtlas != null && noteAnims[lane] != null) {
+            float pixelScale = size * noteScale / noteRefPx;
             noteAtlas.drawScaled(gui, noteAtlas.frame(noteAnims[lane], 0),
-                    centerX + noteX, centerY + noteY,
-                    size * noteScale / noteRefPx, laneTex(noteRGB, lane));
+                    centerX + noteX * pixelScale, centerY + noteY * pixelScale,
+                    pixelScale, laneTex(noteRGB, lane));
             return;
         }
-        drawArrow(gui, arrowTexture, lane, centerX + noteX, centerY + noteY, size * noteScale,
+        float pixelScale = size * noteScale / 32f;
+        drawArrow(gui, arrowTexture, lane,
+                centerX + noteX * pixelScale, centerY + noteY * pixelScale, size * noteScale,
                 missedTint ? 0xFF808080 : LANE_COLORS[lane]);
     }
 
@@ -679,9 +684,10 @@ public final class NoteStyle {
             if (anim != null) {
                 // Psych applies the RGB palette to press/confirm but leaves the static frame raw
                 ResourceLocation rgb = state == 0 ? null : laneTex(strumRGB, lane);
+                float pixelScale = size * receptorScale / strumRefPx;
                 strumAtlas.drawScaled(gui, strumAtlas.frame(anim, state == 0 ? 0 : 1),
-                        centerX + receptorX, centerY + receptorY,
-                        size * receptorScale / strumRefPx, rgb);
+                        centerX + receptorX * pixelScale, centerY + receptorY * pixelScale,
+                        pixelScale, rgb);
                 return;
             }
         }
@@ -690,8 +696,9 @@ public final class NoteStyle {
             case 2 -> LANE_COLORS[lane];
             default -> 0xFFB0B0B0;
         };
+        float arrowScale = size * (state == 2 ? 1.1f : 1f) / 32f;
         drawArrow(gui, state == 0 ? arrowOutlineTexture : arrowTexture, lane,
-                centerX + receptorX, centerY + receptorY,
+                centerX + receptorX * arrowScale, centerY + receptorY * arrowScale,
                 size * (state == 2 ? 1.1f : 1f), color);
     }
 
@@ -701,13 +708,14 @@ public final class NoteStyle {
         load();
         if (yBottom <= yTop) return;
         applyAlpha(sustainAlpha);
-        centerX += sustainX;
-        yTop += sustainY;
-        yBottom += sustainY;
 
         HoldSprite piece = holdPieces[lane];
         if (piece == null) {
             float w = size * 0.36f * holdWidthScale;
+            float pixelScale = size / Math.max(1f, noteRefPx);
+            centerX += sustainX * pixelScale;
+            yTop += sustainY * pixelScale;
+            yBottom += sustainY * pixelScale;
             int alpha = (int) (255 * drawAlpha) << 24;
             int baseCol = missedTint ? 0x808080 : LANE_COLORS[lane];
             int color = alpha | (baseCol & 0xFFFFFF);
@@ -719,6 +727,10 @@ public final class NoteStyle {
 
         HoldSprite end = holdEnds[lane];
         float w = size * 0.34f * holdWidthScale;
+        float pixelScale = w / Math.max(1, piece.w());
+        centerX += sustainX * pixelScale;
+        yTop += sustainY * pixelScale;
+        yBottom += sustainY * pixelScale;
         float x = centerX - w / 2;
         float endH = end != null ? end.h() * (w / end.w()) : 0;
         float tileH = Math.max(1, piece.h() * (w / piece.w()));
