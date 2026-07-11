@@ -27,6 +27,9 @@ import java.util.stream.Stream;
  */
 public class SongLibrary {
 
+    /** A chart-only local override uses this file to inherit assets from its original mod. */
+    public static final String ORIGINAL_DIRECTORY_FILE = "original_directory.txt";
+
     public static Path root() {
         return FMLPaths.CONFIGDIR.get().resolve("fnfmod");
     }
@@ -327,6 +330,7 @@ public class SongLibrary {
                 entry.displayName = id;
                 entry.folder = songDir;
                 entry.format = SongEntry.Format.LEGACY;
+                entry.modRoot = mod;
 
                 try (Stream<Path> files = Files.list(songDir)) {
                     files.filter(f -> f.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".json"))
@@ -674,13 +678,82 @@ public class SongLibrary {
             } catch (Exception ignored) {}
         }
         entry.difficulties.addAll(entry.legacyChartFiles.keySet());
-        if (entry.difficulties.isEmpty() || entry.instFile == null) {
+        if (entry.difficulties.isEmpty()) return null;
+
+        SongEntry linked = linkChartOverrideToOriginal(dir, entry);
+        if (linked != null) return linked;
+
+        if (entry.instFile == null) {
             if (entry.instFile == null && !entry.difficulties.isEmpty()) {
                 FnfMod.LOGGER.warn("Song {} has charts but no Inst.ogg — skipping", entry.id);
             }
-            return entry.difficulties.isEmpty() ? null : entry;
+            return entry;
         }
         return entry;
+    }
+
+    /** Combines a local edited chart with audio and assets from its referenced source mod. */
+    private static SongEntry linkChartOverrideToOriginal(Path localDir, SongEntry override) {
+        Path referenceFile = localDir.resolve(ORIGINAL_DIRECTORY_FILE);
+        if (!Files.isRegularFile(referenceFile)) return null;
+        try {
+            String raw = Files.readString(referenceFile).trim();
+            if (raw.isEmpty()) return null;
+            Path source = Path.of(raw);
+            if (!source.isAbsolute()) source = localDir.resolve(source);
+            source = source.toAbsolutePath().normalize();
+            if (source.equals(localDir.toAbsolutePath().normalize()) || !Files.isDirectory(source)) return null;
+
+            Map<String, SongEntry> sourceSongs = new LinkedHashMap<>();
+            scanPsychRoot(source, sourceSongs, new LinkedHashMap<>());
+            SongEntry original = sourceSongs.get(override.id);
+            if (original == null) {
+                original = sourceSongs.entrySet().stream()
+                        .filter(e -> e.getKey().equalsIgnoreCase(override.id)
+                                || normalizedDifficultyKey(e.getKey()).equals(normalizedDifficultyKey(override.id)))
+                        .map(Map.Entry::getValue).findFirst().orElse(null);
+            }
+            if (original == null) original = scanSongDir(source);
+            if (original == null) {
+                FnfMod.LOGGER.warn("Chart override {} references {}, but no matching song was found",
+                        override.id, source);
+                return null;
+            }
+
+            // V-Slice stores audio per variation, so flatten the matching variation
+            // before the edited Psych chart becomes the authoritative chart source.
+            if (original.isVslice()) {
+                finalizeVSlice(original);
+                String difficulty = override.difficulties.isEmpty() ? "normal" : override.difficulties.get(0);
+                String normalizedDifficulty = normalizedDifficultyKey(difficulty);
+                difficulty = original.difficulties.stream()
+                        .filter(d -> normalizedDifficultyKey(d).equals(normalizedDifficulty))
+                        .findFirst().orElse(difficulty);
+                SongEntry.VSliceVariation variation = original.variationFor(difficulty);
+                if (variation != null) {
+                    original.instFile = variation.instFile;
+                    original.voicesFile = variation.voicesFile;
+                    original.voicesPlayerFile = variation.voicesPlayerFile;
+                    original.voicesOpponentFile = variation.voicesOpponentFile;
+                }
+            }
+
+            original.format = SongEntry.Format.LEGACY;
+            original.folder = localDir;
+            original.legacyChartFiles.clear();
+            original.legacyChartFiles.putAll(override.legacyChartFiles);
+            original.difficulties.clear();
+            original.difficulties.addAll(override.difficulties);
+            FnfMod.LOGGER.info("Chart override {} inherits assets from {}", override.id, source);
+            return original;
+        } catch (Exception e) {
+            FnfMod.LOGGER.warn("Could not resolve chart override source for {}: {}", override.id, e.toString());
+            return null;
+        }
+    }
+
+    private static String normalizedDifficultyKey(String value) {
+        return value.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9_-]", "-");
     }
 
     /**

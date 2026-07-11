@@ -48,6 +48,7 @@ public final class ChartEditorScreen extends Screen {
     private final String requestedDifficulty;
     private final SongChart suppliedChart;
     private final Path suppliedSongFolder;
+    private final Path suppliedOriginalDirectory;
     private final List<UiLabel> labels = new ArrayList<>();
     private final List<SongChart.Note> sectionClipboard = new ArrayList<>();
 
@@ -59,6 +60,7 @@ public final class ChartEditorScreen extends Screen {
     private String saveId;
     private String loadedDifficulty = "normal";
     private String defaultNoteType = "";
+    private Path originalDirectory;
 
     private double viewPositionMs;
     private int snapIndex = 3;
@@ -93,16 +95,23 @@ public final class ChartEditorScreen extends Screen {
     private EditBox saveIdField;
 
     public ChartEditorScreen(String songId) {
-        this(songId, null, null, null);
+        this(songId, null, null, null, null);
     }
 
     /** Opens the exact chart currently held by gameplay, including its active difficulty. */
     public ChartEditorScreen(String songId, String difficulty, SongChart chart, Path songFolder) {
+        this(songId, difficulty, chart, songFolder, songFolder);
+    }
+
+    /** Opens gameplay's chart while retaining the original mod root used for inherited assets. */
+    public ChartEditorScreen(String songId, String difficulty, SongChart chart,
+                             Path songFolder, Path originalDirectory) {
         super(Component.literal("FNF Chart Editor"));
         this.requestedSongId = songId;
         this.requestedDifficulty = difficulty;
         this.suppliedChart = chart;
         this.suppliedSongFolder = songFolder;
+        this.suppliedOriginalDirectory = originalDirectory;
         this.songId = songId;
     }
 
@@ -122,6 +131,10 @@ public final class ChartEditorScreen extends Screen {
         }
         if (entry == null && requestedSongId != null) {
             entry = SongLibrary.get(requestedSongId);
+        }
+        originalDirectory = suppliedOriginalDirectory;
+        if (originalDirectory == null && entry != null) {
+            originalDirectory = entry.modRoot != null ? entry.modRoot : entry.folder;
         }
         if (suppliedChart != null) {
             chart = suppliedChart;
@@ -621,6 +634,10 @@ public final class ChartEditorScreen extends Screen {
                     ? "" : "-" + sanitizeId(loadedDifficulty);
             Path file = directory.resolve(id + difficultySuffix + ".json");
             Files.writeString(file, PsychChartWriter.write(chart));
+            if (originalDirectory != null) {
+                Files.writeString(directory.resolve(SongLibrary.ORIGINAL_DIRECTORY_FILE),
+                        originalDirectory.toAbsolutePath().normalize().toString());
+            }
             songId = saveId = id;
             SongLibrary.rescan();
             setStatus("Saved " + file.getFileName());
