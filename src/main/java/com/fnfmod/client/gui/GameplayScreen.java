@@ -9,6 +9,7 @@ import com.fnfmod.client.anim.CharacterAnimations;
 import com.fnfmod.client.audio.SongPlayer;
 import com.fnfmod.block.FunkinMachineBlock;
 import com.fnfmod.client.camera.GameplayCamera;
+import com.fnfmod.client.gui.editor.ChartEditorScreen;
 import net.minecraft.client.Minecraft;
 import net.minecraft.core.Direction;
 import net.minecraft.world.phys.Vec3;
@@ -769,7 +770,7 @@ public class GameplayScreen extends Screen {
         }
         if (phase == Phase.PAUSED) {
             if (keyCode == GLFW.GLFW_KEY_UP) pauseSelection = Math.max(0, pauseSelection - 1);
-            if (keyCode == GLFW.GLFW_KEY_DOWN) pauseSelection = Math.min(duet ? 1 : 2, pauseSelection + 1);
+            if (keyCode == GLFW.GLFW_KEY_DOWN) pauseSelection = Math.min(pauseOptionCount() - 1, pauseSelection + 1);
             if (enter && enterReady) {
                 enterReady = false;
                 activatePauseOption();
@@ -858,14 +859,36 @@ public class GameplayScreen extends Screen {
     }
 
     private void activatePauseOption() {
+        if (duet) {
+            if (pauseSelection == 0) resumeFromPause();
+            else exit();
+            return;
+        }
         switch (pauseSelection) {
             case 0 -> resumeFromPause();
-            case 1 -> {
-                if (duet) exit();
-                else restart();
-            }
-            case 2 -> exit();
+            case 1 -> restart();
+            case 2 -> openCurrentChartInEditor();
+            case 3 -> exit();
         }
+    }
+
+    private int pauseOptionCount() {
+        return duet ? 2 : 4;
+    }
+
+    private void openCurrentChartInEditor() {
+        String currentSongId = ClientSession.songId == null || ClientSession.songId.isBlank()
+                ? chart.title : ClientSession.songId;
+        ChartEditorScreen editor = new ChartEditorScreen(currentSongId,
+                ClientSession.difficulty, chart, ClientSession.resolvedFolder);
+
+        GameplayCamera.end();
+        PacketDistributor.sendToServer(new FnfPayloads.LeaveC2S(machinePos, false, false));
+        ClientSession.reset();
+        if (minecraft.player != null) CharacterAnimations.stop(minecraft.player);
+        // setScreen removes this gameplay screen, which disposes its SongPlayer;
+        // the editor loads its own audio streams from the captured song folder.
+        minecraft.setScreen(editor);
     }
 
     private void restart() {
@@ -928,7 +951,7 @@ public class GameplayScreen extends Screen {
     }
 
     private int pauseOptionAt(double mouseY) {
-        int count = duet ? 2 : 3;
+        int count = pauseOptionCount();
         int startY = height / 2 - 10;
         for (int i = 0; i < count; i++) {
             int y = startY + i * 16;
@@ -1325,7 +1348,7 @@ public class GameplayScreen extends Screen {
 
         String[] options = duet
                 ? new String[]{"Resume", "Quit"}
-                : new String[]{"Resume", "Restart", "Quit"};
+                : new String[]{"Resume", "Restart", "Edit Chart", "Quit"};
         int startY = height / 2 - 10;
         for (int i = 0; i < options.length; i++) {
             int color = i == pauseSelection ? 0xFFFFFF66 : 0xFFAAAAAA;
