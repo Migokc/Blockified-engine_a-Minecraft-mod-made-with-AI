@@ -134,6 +134,10 @@ public class GameplayScreen extends Screen {
     private long pausedAtMs;
     /** Prevents one held Enter press from pausing and then confirming Resume via key repeat. */
     private boolean enterReady = true;
+    private boolean editorPlaytest;
+    private boolean editorPreview;
+    private double editorStartMs;
+    private Supplier<Screen> editorReturnFactory;
 
     public GameplayScreen(BlockPos machinePos, SongChart chart, SongPlayer songPlayer,
                           PlayMode mode, UUID partnerId, String partnerName,
@@ -193,6 +197,38 @@ public class GameplayScreen extends Screen {
         lastFrameNano = System.nanoTime();
     }
 
+    /** Standalone chart-editor playtest. It never creates or leaves a server song session. */
+    public static GameplayScreen editorPlaytest(BlockPos machinePos, SongChart chart, SongPlayer player,
+                                                double startMs, boolean preview, Supplier<Screen> returnFactory) {
+        GameplayScreen screen = new GameplayScreen(machinePos, chart, player, PlayMode.PLAYER,
+                null, "", CharacterAnimations.DEFAULT_SET, System.currentTimeMillis() + 1000);
+        screen.editorPlaytest = true;
+        screen.editorPreview = preview;
+        screen.editorStartMs = Math.max(0, startMs);
+        screen.editorReturnFactory = returnFactory;
+        screen.prepareEditorStart();
+        return screen;
+    }
+
+    private void prepareEditorStart() {
+        if (!editorPlaytest || editorStartMs <= 0) return;
+        double cutoff = editorStartMs - SHIT;
+        for (int lane = 0; lane < 4; lane++) {
+            myLaneIndex[lane] = skipNotesBefore(myLanes[lane], cutoff);
+            otherLaneIndex[lane] = skipNotesBefore(otherLanes[lane], cutoff);
+        }
+    }
+
+    private static int skipNotesBefore(List<GameNote> notes, double cutoff) {
+        int index = 0;
+        while (index < notes.size() && notes.get(index).endMs() < cutoff) {
+            GameNote note = notes.get(index++);
+            note.hit = true;
+            note.holdComplete = true;
+        }
+        return index;
+    }
+
     private void beginCamera() {
         Minecraft mc = Minecraft.getInstance();
         if (mc.player == null || mc.level == null) return;
@@ -250,9 +286,13 @@ public class GameplayScreen extends Screen {
     private void updateSongPos() {
         if (phase == Phase.PAUSED || phase == Phase.GAMEOVER) return;
         if (!songPlayer.isStarted()) {
-            songPos = (System.currentTimeMillis() - startAtEpochMs);
-            if (songPos >= 0 && phase == Phase.COUNTDOWN) {
+            double countdownTime = System.currentTimeMillis() - startAtEpochMs;
+            songPos = countdownTime + (editorPlaytest ? editorStartMs : 0);
+            if (countdownTime >= 0 && phase == Phase.COUNTDOWN) {
                 songPlayer.start();
+                if (editorPlaytest && editorStartMs > 0) {
+                    songPlayer.seekMs(editorStartMs + chart.offsetMs - ClientOptions.get().offsetMs);
+                }
                 phase = Phase.PLAYING;
             }
         }
@@ -678,6 +718,11 @@ public class GameplayScreen extends Screen {
     }
 
     private void finishSong(boolean failed) {
+        if (editorPlaytest) {
+            endSent = true;
+            if (!failed) phase = Phase.RESULTS;
+            return;
+        }
         if (!endSent) {
             endSent = true;
             PacketDistributor.sendToServer(new FnfPayloads.SongEndC2S(
@@ -761,6 +806,10 @@ public class GameplayScreen extends Screen {
 
     @Override
     public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
+        if (editorPreview && (keyCode == GLFW.GLFW_KEY_F12 || keyCode == GLFW.GLFW_KEY_ESCAPE)) {
+            exit();
+            return true;
+        }
         boolean enter = keyCode == GLFW.GLFW_KEY_ENTER || keyCode == GLFW.GLFW_KEY_KP_ENTER;
         if (keyCode == GLFW.GLFW_KEY_ESCAPE) {
             handleEscape();
@@ -862,6 +911,14 @@ public class GameplayScreen extends Screen {
     }
 
     private void activatePauseOption() {
+        if (editorPlaytest) {
+            switch (pauseSelection) {
+                case 0 -> resumeFromPause();
+                case 1 -> restart();
+                case 2 -> exit();
+            }
+            return;
+        }
         if (duet) {
             if (pauseSelection == 0) resumeFromPause();
             else exit();
@@ -876,7 +933,7 @@ public class GameplayScreen extends Screen {
     }
 
     private int pauseOptionCount() {
-        return duet ? 2 : 4;
+        return editorPlaytest ? 3 : (duet ? 2 : 4);
     }
 
     private void openCurrentChartInEditor() {
@@ -886,7 +943,7 @@ public class GameplayScreen extends Screen {
         Path originalDirectory = sourceEntry == null ? ClientSession.resolvedFolder
                 : (sourceEntry.modRoot != null ? sourceEntry.modRoot : sourceEntry.folder);
         ChartEditorScreen editor = new ChartEditorScreen(currentSongId,
-                ClientSession.difficulty, chart, ClientSession.resolvedFolder, originalDirectory);
+                ClientSession.difficulty, chart, ClientSession.resolvedFolder, originalDirectory, machinePos);
 
         GameplayCamera.end();
         PacketDistributor.sendToServer(new FnfPayloads.LeaveC2S(machinePos, false, false));
@@ -919,12 +976,19 @@ public class GameplayScreen extends Screen {
         songPlayer.setOpponentVoiceVolume(1f);
         camSection = -1; // re-evaluate camera focus from the top of the chart
         startAtEpochMs = System.currentTimeMillis() + 2000;
+        if (editorPlaytest) prepareEditorStart();
         phase = Phase.COUNTDOWN;
         lastFrameNano = System.nanoTime();
     }
 
     private void exit() {
         GameplayCamera.end();
+        if (editorPlaytest) {
+            songPlayer.dispose();
+            if (minecraft.player != null) CharacterAnimations.stop(minecraft.player);
+            minecraft.setScreen(editorReturnFactory == null ? null : editorReturnFactory.get());
+            return;
+        }
         // Solo play returns to the song menu instead of the world (on finish, quit, or death).
         // Duet keeps returning to the world to avoid host/guest contention over one machine.
         boolean reopenMenu = !duet;
@@ -1352,9 +1416,10 @@ public class GameplayScreen extends Screen {
         gui.drawCenteredString(font, "PAUSED", 0, 0, 0xFFFFFF);
         gui.pose().popPose();
 
-        String[] options = duet
-                ? new String[]{"Resume", "Quit"}
-                : new String[]{"Resume", "Restart", "Edit Chart", "Quit"};
+        String[] options = editorPlaytest
+                ? new String[]{"Resume", "Restart", "Return to Editor"}
+                : (duet ? new String[]{"Resume", "Quit"}
+                : new String[]{"Resume", "Restart", "Edit Chart", "Quit"});
         int startY = height / 2 - 10;
         for (int i = 0; i < options.length; i++) {
             int color = i == pauseSelection ? 0xFFFFFF66 : 0xFFAAAAAA;
