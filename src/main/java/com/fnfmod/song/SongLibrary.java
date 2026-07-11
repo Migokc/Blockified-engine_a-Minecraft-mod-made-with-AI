@@ -338,7 +338,10 @@ public class SongLibrary {
                             .forEach(j -> {
                                 String base = j.getFileName().toString();
                                 base = base.substring(0, base.length() - 5).toLowerCase(Locale.ROOT);
-                                if (base.equals("events")) return;
+                                if (base.equals("events")) {
+                                    entry.eventsFile = j;
+                                    return;
+                                }
                                 try {
                                     JsonObject chartRoot = JsonParser.parseString(Files.readString(j)).getAsJsonObject();
                                     if (!LegacyChartParser.looksLikeLegacy(chartRoot)) return;
@@ -413,6 +416,12 @@ public class SongLibrary {
                 } else if (entry.format != SongEntry.Format.VSLICE) {
                     return; // don't mix with a legacy song of the same id
                 }
+                for (Path json : jsons) {
+                    if (json.getFileName().toString().equalsIgnoreCase("events.json")) {
+                        entry.eventsFile = json;
+                        break;
+                    }
+                }
                 Path audioDir = Files.isDirectory(audioRoot.resolve(id)) ? audioRoot.resolve(id) : songDir;
                 buildVSliceVariations(entry, jsons, audioDir, mod);
                 if (isNew && !entry.rawVars.isEmpty()) found.put(id, entry);
@@ -463,6 +472,8 @@ public class SongLibrary {
         entry.folder = dir;
         entry.format = SongEntry.Format.CODENAME;
         entry.modRoot = modRoot;
+        Path eventsFile = chartSource.resolve("events.json");
+        if (Files.isRegularFile(eventsFile)) entry.eventsFile = eventsFile;
         if (Files.isRegularFile(metaFile)) {
             entry.metaFile = metaFile;
             try {
@@ -635,6 +646,9 @@ public class SongLibrary {
             return null;
         }
 
+        jsons.stream().filter(j -> j.getFileName().toString().equalsIgnoreCase("events.json"))
+                .findFirst().ifPresent(j -> entry.eventsFile = j);
+
         // V-Slice? any *-chart[-variation].json present. Audio lives in the same folder.
         boolean hasVslice = jsons.stream().anyMatch(j -> {
             String l = j.getFileName().toString().toLowerCase(Locale.ROOT);
@@ -659,7 +673,10 @@ public class SongLibrary {
             base = base.substring(0, base.length() - 5); // strip .json
             String lower = base.toLowerCase(Locale.ROOT);
             if (lower.endsWith("-metadata") || lower.equals("metadata")) continue;
-            if (lower.equals("events")) continue;
+            if (lower.equals("events")) {
+                entry.eventsFile = j;
+                continue;
+            }
             try {
                 JsonObject root = JsonParser.parseString(Files.readString(j)).getAsJsonObject();
                 if (!LegacyChartParser.looksLikeLegacy(root)) continue;
@@ -742,6 +759,7 @@ public class SongLibrary {
             original.folder = localDir;
             original.legacyChartFiles.clear();
             original.legacyChartFiles.putAll(override.legacyChartFiles);
+            if (override.eventsFile != null) original.eventsFile = override.eventsFile;
             original.difficulties.clear();
             original.difficulties.addAll(override.difficulties);
             FnfMod.LOGGER.info("Chart override {} inherits assets from {}", override.id, source);
@@ -985,26 +1003,43 @@ public class SongLibrary {
 
     /** Loads and parses a chart for the given difficulty. */
     public static SongChart loadChart(SongEntry entry, String difficulty) throws IOException {
+        SongChart chart;
         if (entry.format == SongEntry.Format.VSLICE) {
             SongEntry.VSliceVariation v = entry.variationFor(difficulty);
             if (v == null) throw new IOException("No variation for difficulty " + difficulty);
             String chartJson = Files.readString(v.chartFile);
             String metaJson = Files.readString(v.metadataFile);
-            return VSliceChartParser.parse(chartJson, metaJson, entry.realDifficulty(difficulty));
+            chart = VSliceChartParser.parse(chartJson, metaJson, entry.realDifficulty(difficulty));
         } else if (entry.format == SongEntry.Format.CODENAME) {
             Path f = entry.legacyChartFiles.get(difficulty);
             if (f == null && !entry.legacyChartFiles.isEmpty()) f = entry.legacyChartFiles.values().iterator().next();
             if (f == null) throw new IOException("No chart for difficulty " + difficulty);
             String metaJson = entry.metaFile != null && Files.isRegularFile(entry.metaFile)
                     ? Files.readString(entry.metaFile) : null;
-            return CodenameChartParser.parse(Files.readString(f), metaJson, difficulty);
+            chart = CodenameChartParser.parse(Files.readString(f), metaJson, difficulty);
         } else {
             Path f = entry.legacyChartFiles.get(difficulty);
             if (f == null && !entry.legacyChartFiles.isEmpty()) {
                 f = entry.legacyChartFiles.values().iterator().next();
             }
             if (f == null) throw new IOException("No chart for difficulty " + difficulty);
-            return LegacyChartParser.parse(Files.readString(f));
+            chart = LegacyChartParser.parse(Files.readString(f));
+        }
+        if (entry.eventsFile != null && Files.isRegularFile(entry.eventsFile)) {
+            mergeEvents(chart, LegacyChartParser.parseEvents(Files.readString(entry.eventsFile)));
+        }
+        chart.sortEvents();
+        return chart;
+    }
+
+    private static void mergeEvents(SongChart chart, List<SongChart.Event> loaded) {
+        for (SongChart.Event event : loaded) {
+            boolean duplicate = chart.events.stream().anyMatch(existing ->
+                    Math.abs(existing.timeMs - event.timeMs) < 0.001
+                            && existing.name.equals(event.name)
+                            && existing.value1.equals(event.value1)
+                            && existing.value2.equals(event.value2));
+            if (!duplicate) chart.events.add(event);
         }
     }
 }

@@ -115,6 +115,8 @@ public final class CodenameChartParser {
         chart.needsVoices = metaNeedsVoices || anyVocalLine || meta == null;
 
         chart.sortNotes();
+        chart.events.addAll(LegacyChartParser.parseEvents(chartJson));
+        chart.sortEvents();
         buildBpmMap(chart, root);
         synthesizeSections(chart);
         return chart;
