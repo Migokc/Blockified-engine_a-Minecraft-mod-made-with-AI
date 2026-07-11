@@ -1018,7 +1018,9 @@ public class GameplayScreen extends Screen {
         // hold covers: looping effect over the receptor while a sustain is held
         for (int lane = 0; lane < 4; lane++) {
             if (!activeHolds[lane].isEmpty() && laneHeld[lane] && NoteStyle.hasHoldCover(lane)) {
-                int frame = (int) (nowMs * SPLASH_FPS / 1000.0);
+                // Epoch milliseconds at 24 FPS exceeds int range and used to clamp
+                // at Integer.MAX_VALUE, selecting the same atlas frame forever.
+                long frame = (long) (nowMs * SPLASH_FPS / 1000.0);
                 NoteStyle.drawHoldCover(gui, lane, frame, laneX(true, lane), receptorY(), noteSize);
             }
         }

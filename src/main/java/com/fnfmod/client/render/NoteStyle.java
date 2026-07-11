@@ -545,11 +545,12 @@ public final class NoteStyle {
     }
 
     /** receptorSize = the receptor's on-screen size; cover placement derives from it. */
-    public static void drawHoldCover(GuiGraphics gui, int lane, int frameIndex, float x, float y, float receptorSize) {
+    public static void drawHoldCover(GuiGraphics gui, int lane, long frameIndex, float x, float y, float receptorSize) {
         if (!hasHoldCover(lane)) return;
         var frames = coverAtlases[lane].frames(coverAnims[lane]);
         if (frames.isEmpty()) return;
-        drawCoverFrame(gui, lane, frames.get(Math.floorMod(frameIndex, frames.size())), x, y, receptorSize);
+        int frame = (int) Math.floorMod(frameIndex, (long) frames.size());
+        drawCoverFrame(gui, lane, frames.get(frame), x, y, receptorSize);
     }
 
     public static int holdCoverEndFrames(int lane) {
