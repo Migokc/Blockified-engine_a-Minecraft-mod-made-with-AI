@@ -274,8 +274,15 @@ public class FnfSettingsScreen extends Screen {
         int listX = folderListX();
         int listW = folderListWidth();
         for (int row = 0; row < visible && folderScroll + row < folders.size(); row++) {
-            String folder = folders.get(folderScroll + row);
+            int folderIndex = folderScroll + row;
+            String folder = folders.get(folderIndex);
             final String f = folder;
+            Button up = addRenderableWidget(Button.builder(Component.literal("↑"), b -> moveFolder(f, -1))
+                    .bounds(listX + listW - 64, folderListTop() + row * FOLDER_ROW_H, 20, 20).build());
+            up.active = folderIndex > 0;
+            Button down = addRenderableWidget(Button.builder(Component.literal("↓"), b -> moveFolder(f, 1))
+                    .bounds(listX + listW - 43, folderListTop() + row * FOLDER_ROW_H, 20, 20).build());
+            down.active = folderIndex < folders.size() - 1;
             addRenderableWidget(Button.builder(Component.literal("X"), b -> {
                 var list = new java.util.ArrayList<>(SongLibrary.getExternalFolders());
                 list.remove(f);
@@ -284,6 +291,21 @@ public class FnfSettingsScreen extends Screen {
                 switchTo("folders");
             }).bounds(listX + listW - 22, folderListTop() + row * FOLDER_ROW_H, 20, 20).build());
         }
+    }
+
+    private void moveFolder(String folder, int direction) {
+        var folders = new java.util.ArrayList<>(SongLibrary.getExternalFolders());
+        int index = folders.indexOf(folder);
+        int next = index + direction;
+        if (index < 0 || next < 0 || next >= folders.size()) return;
+        java.util.Collections.swap(folders, index, next);
+        SongLibrary.setExternalFolders(folders);
+        SongLibrary.rescan();
+
+        int visible = folderVisibleRows();
+        if (next < folderScroll) folderScroll = next;
+        else if (next >= folderScroll + visible) folderScroll = next - visible + 1;
+        switchTo("folders");
     }
 
     private int folderListTop() { return rowY(1); }
@@ -623,7 +645,7 @@ public class FnfSettingsScreen extends Screen {
             for (int row = 0; row < visible && folderScroll + row < folders.size(); row++) {
                 String folder = folders.get(folderScroll + row);
                 int y = folderListTop() + row * FOLDER_ROW_H;
-                gui.drawString(font, shortenPath(folder, listW - 30), listX + 4, y + 6, 0xCCCCCC);
+                gui.drawString(font, shortenPath(folder, listW - 72), listX + 4, y + 6, 0xCCCCCC);
             }
             if (folders.isEmpty()) {
                 gui.drawCenteredString(font, "No folders added.", width / 2, folderListTop() + 6, 0x888888);
@@ -638,7 +660,7 @@ public class FnfSettingsScreen extends Screen {
                 gui.fill(trackX, thumbY, trackX + 5, thumbY + thumbH, 0xFFAAAAAA);
             }
             // folders has the Clear Cache button at height-56; sit the hint above it
-            gui.drawCenteredString(font, "Scans Psych, V-Slice, and Codename Engine mod folders",
+            gui.drawCenteredString(font, "Top = highest priority. Psych / V-Slice / Codename",
                     width / 2, height - 68, 0xAAAAAA);
         }
 
