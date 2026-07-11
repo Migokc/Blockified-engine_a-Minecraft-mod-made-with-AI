@@ -568,7 +568,10 @@ public class ChartEditorScreen extends Screen {
         if (mouseX >= gx && mouseX < gx + 8 * cw && mouseY >= gridTop() && mouseY < gridBottom()) {
             int col = (int) ((mouseX - gx) / cw);
             double beat = yToBeat(mouseY);
-            double snapped = Math.max(0, Math.round(beat / lineStepBeats()) * lineStepBeats());
+            // Grid lines are cell boundaries. Rounding sends clicks in the lower
+            // half of a box into the next box; floor selects the box under cursor.
+            double snapped = Math.max(0,
+                    Math.floor(beat / lineStepBeats() + 1.0e-6) * lineStepBeats());
             double t = conductor.timeOfBeat(snapped);
             if (button == 0 && hasShiftDown()) {
                 SongChart.Note n = findNoteAt(col, t, stepMs() / 2);
