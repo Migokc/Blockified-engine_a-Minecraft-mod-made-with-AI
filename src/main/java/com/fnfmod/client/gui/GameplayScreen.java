@@ -17,6 +17,8 @@ import net.minecraft.world.phys.Vec3;
 import java.util.function.Supplier;
 import com.fnfmod.client.render.NoteStyle;
 import com.fnfmod.net.FnfPayloads;
+import com.fnfmod.song.SongEntry;
+import com.fnfmod.song.SongLibrary;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.core.BlockPos;
@@ -28,6 +30,7 @@ import org.lwjgl.glfw.GLFW;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import java.nio.file.Path;
 
 /** The rhythm gameplay screen. */
 public class GameplayScreen extends Screen {
@@ -879,8 +882,11 @@ public class GameplayScreen extends Screen {
     private void openCurrentChartInEditor() {
         String currentSongId = ClientSession.songId == null || ClientSession.songId.isBlank()
                 ? chart.title : ClientSession.songId;
+        SongEntry sourceEntry = SongLibrary.get(currentSongId);
+        Path originalDirectory = sourceEntry == null ? ClientSession.resolvedFolder
+                : (sourceEntry.modRoot != null ? sourceEntry.modRoot : sourceEntry.folder);
         ChartEditorScreen editor = new ChartEditorScreen(currentSongId,
-                ClientSession.difficulty, chart, ClientSession.resolvedFolder);
+                ClientSession.difficulty, chart, ClientSession.resolvedFolder, originalDirectory);
 
         GameplayCamera.end();
         PacketDistributor.sendToServer(new FnfPayloads.LeaveC2S(machinePos, false, false));
