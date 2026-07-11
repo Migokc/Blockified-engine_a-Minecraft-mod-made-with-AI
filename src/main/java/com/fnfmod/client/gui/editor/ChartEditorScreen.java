@@ -57,8 +57,14 @@ public class ChartEditorScreen extends Screen {
     /** section the panel widgets currently show */
     private int widgetSection = -1;
 
+    private enum EditorTab { CHARTING, DATA, EVENTS, NOTE, SECTION, SONG }
+    private enum TopMenu { NONE, FILE, EDIT, VIEW }
+    private EditorTab activeTab = EditorTab.SONG;
+    private TopMenu topMenu = TopMenu.NONE;
+
     // widgets
     private EditBox titleBox, bpmBox, speedBox, noteTypeBox, sectionBpmBox, sectionBeatsBox, saveNameBox;
+    private EditBox sustainBox, hitTimeBox;
     private List<SongChart.Note> clipboard = new ArrayList<>();
     // label rows recorded while building so text can't drift from the widgets
     private int ySong, yBpm, ySecBpm, yBeats, yType, yFile;
@@ -115,131 +121,194 @@ public class ChartEditorScreen extends Screen {
     private void buildWidgets() {
         clearWidgets();
         widgetSection = sectionIndexAt(viewPosMs);
-        int x = panelX();
-        int w = 96;
-        int y = 18;
+        titleBox = bpmBox = speedBox = noteTypeBox = sectionBpmBox = sectionBeatsBox = saveNameBox = null;
+        sustainBox = hitTimeBox = null;
 
-        ySong = y + 2;
-        titleBox = addRenderableWidget(new EditBox(font, x + 34, y, w - 34, 12, Component.literal("title")));
-        titleBox.setValue(chart.title);
-        y += 16;
-        yBpm = y + 2;
-        bpmBox = addRenderableWidget(new EditBox(font, x + 34, y, 40, 12, Component.literal("bpm")));
-        bpmBox.setValue(trim(chart.startBpm));
-        speedBox = addRenderableWidget(new EditBox(font, x + 34 + 56, y, 30, 12, Component.literal("speed")));
-        speedBox.setValue(trim(chart.speed));
-        y += 16;
-        addRenderableWidget(Button.builder(voicesLabel(), b -> {
+        int menuX = 16;
+        String[] menuNames = {"File", "Edit", "View"};
+        TopMenu[] menus = {TopMenu.FILE, TopMenu.EDIT, TopMenu.VIEW};
+        for (int i = 0; i < menuNames.length; i++) {
+            final TopMenu menu = menus[i];
+            addRenderableWidget(Button.builder(Component.literal(menuNames[i]), b -> {
+                topMenu = topMenu == menu ? TopMenu.NONE : menu;
+                buildWidgets();
+            }).bounds(menuX + i * 62, 8, 62, 14).build());
+        }
+
+        int px = panelX(), pw = panelWidth();
+        EditorTab[] tabs = EditorTab.values();
+        for (int i = 0; i < tabs.length; i++) {
+            final EditorTab tab = tabs[i];
+            String label = pw < 240 ? switch (tab) {
+                case CHARTING -> "Chart"; case EVENTS -> "Event"; case SECTION -> "Sect";
+                default -> titleCase(tab.name());
+            } : titleCase(tab.name());
+            int x0 = px + i * pw / tabs.length;
+            int x1 = px + (i + 1) * pw / tabs.length;
+            Button button = addRenderableWidget(Button.builder(Component.literal(label), b -> {
+                applyBoxes();
+                activeTab = tab;
+                topMenu = TopMenu.NONE;
+                buildWidgets();
+            }).bounds(x0, 24, Math.max(1, x1 - x0), 14).build());
+            button.active = tab != activeTab;
+        }
+
+        switch (activeTab) {
+            case CHARTING -> buildChartingTab(px, pw);
+            case DATA -> buildDataTab(px, pw);
+            case EVENTS -> buildEventsTab(px, pw);
+            case NOTE -> buildNoteTab(px, pw);
+            case SECTION -> buildSectionTab(px, pw);
+            case SONG -> buildSongTab(px, pw);
+        }
+        buildTopMenu(menuX);
+    }
+
+    private static String titleCase(String s) {
+        return s.substring(0, 1) + s.substring(1).toLowerCase(Locale.ROOT);
+    }
+
+    private EditBox box(int x, int y, int w, String value, String hint) {
+        EditBox b = addRenderableWidget(new EditBox(font, x, y, w, 14, Component.literal(hint)));
+        b.setValue(value == null ? "" : value);
+        if (!hint.isEmpty()) b.setHint(Component.literal(hint));
+        return b;
+    }
+
+    private Button button(int x, int y, int w, String text, Button.OnPress action) {
+        return addRenderableWidget(Button.builder(Component.literal(text), action).bounds(x, y, w, 14).build());
+    }
+
+    private void buildSongTab(int x, int w) {
+        int y = 54;
+        titleBox = box(x + 8, y, w - 16, chart.title, "Song Name");
+        y += 20;
+        bpmBox = box(x + 8, y, (w - 24) / 2, trim(chart.startBpm), "BPM");
+        speedBox = box(x + 16 + (w - 24) / 2, y, (w - 24) / 2, trim(chart.speed), "Scroll Speed");
+        y += 20;
+        button(x + 8, y, w - 16, voicesLabel().getString(), b -> {
             chart.needsVoices = !chart.needsVoices;
             b.setMessage(voicesLabel());
-        }).bounds(x, y, w, 14).build());
-        y += 20;
+        });
+    }
 
-        // section flags (for the section at the playhead)
-        addRenderableWidget(Button.builder(flagLabel("MustHit", sec().mustHit), b -> {
-            sec().mustHit = !sec().mustHit;
-            b.setMessage(flagLabel("MustHit", sec().mustHit));
-        }).bounds(x, y, w, 14).build());
-        y += 16;
-        addRenderableWidget(Button.builder(flagLabel("AltAnim", sec().altAnim), b -> {
-            sec().altAnim = !sec().altAnim;
-            b.setMessage(flagLabel("AltAnim", sec().altAnim));
-        }).bounds(x, y, w, 14).build());
-        y += 16;
-        addRenderableWidget(Button.builder(flagLabel("GF Section", sec().gfSection), b -> {
-            sec().gfSection = !sec().gfSection;
-            b.setMessage(flagLabel("GF Section", sec().gfSection));
-        }).bounds(x, y, w, 14).build());
-        y += 16;
-        addRenderableWidget(Button.builder(flagLabel("ChangeBPM", sec().changeBPM), b -> {
+    private void buildSectionTab(int x, int w) {
+        int y = 50, half = (w - 20) / 2;
+        button(x + 8, y, half, flagLabel("Must Hit", sec().mustHit).getString(), b -> {
+            sec().mustHit = !sec().mustHit; b.setMessage(flagLabel("Must Hit", sec().mustHit));
+        });
+        button(x + 12 + half, y, half, flagLabel("GF Section", sec().gfSection).getString(), b -> {
+            sec().gfSection = !sec().gfSection; b.setMessage(flagLabel("GF Section", sec().gfSection));
+        });
+        y += 18;
+        button(x + 8, y, half, flagLabel("Alt Anim", sec().altAnim).getString(), b -> {
+            sec().altAnim = !sec().altAnim; b.setMessage(flagLabel("Alt Anim", sec().altAnim));
+        });
+        button(x + 12 + half, y, half, flagLabel("Change BPM", sec().changeBPM).getString(), b -> {
             sec().changeBPM = !sec().changeBPM;
             if (sec().changeBPM && sec().bpm <= 0) sec().bpm = chart.bpmForSection(widgetSection);
-            sectionBpmBox.setValue(trim(sec().bpm));
-            chart.rebuildBpmMap();
-            b.setMessage(flagLabel("ChangeBPM", sec().changeBPM));
-        }).bounds(x, y, w, 14).build());
-        y += 16;
-        ySecBpm = y + 2;
-        sectionBpmBox = addRenderableWidget(new EditBox(font, x + 34, y, 40, 12, Component.literal("secBpm")));
-        sectionBpmBox.setValue(sec().changeBPM ? trim(sec().bpm) : "");
-        y += 16;
-        yBeats = y + 2;
-        sectionBeatsBox = addRenderableWidget(new EditBox(font, x + 34, y, 40, 12, Component.literal("beats")));
-        sectionBeatsBox.setValue(trim(sec().sectionBeats));
-        y += 16;
-        addRenderableWidget(Button.builder(camEaseLabel(), b -> {
+            chart.rebuildBpmMap(); buildWidgets();
+        });
+        y += 20;
+        sectionBpmBox = box(x + 8, y, half, sec().changeBPM ? trim(sec().bpm) : "", "Section BPM");
+        sectionBeatsBox = box(x + 12 + half, y, half, trim(sec().sectionBeats), "Beats per Section");
+        y += 20;
+        button(x + 8, y, half, "Copy Section", b -> copySection());
+        button(x + 12 + half, y, half, "Paste Section", b -> pasteSection());
+        y += 18;
+        button(x + 8, y, half, "Clear", b -> clearSection());
+        Button events = button(x + 12 + half, y, half, "Events: OFF", b -> {});
+        events.active = false;
+        y += 18;
+        button(x + 8, y, half, "Swap Section", b -> swapSection());
+        button(x + 12 + half, y, half, camEaseLabel().getString(), b -> {
             String[] eases = GameplayCamera.EASES;
             int i = 0;
-            for (int k = 0; k < eases.length; k++) {
-                if (eases[k].equals(sec().camEase)) {
-                    i = k;
-                    break;
-                }
-            }
-            sec().camEase = eases[(i + 1) % eases.length];
-            b.setMessage(camEaseLabel());
-        }).bounds(x, y, w, 14).build());
-        y += 18;
+            for (int k = 0; k < eases.length; k++) if (eases[k].equals(sec().camEase)) i = k;
+            sec().camEase = eases[(i + 1) % eases.length]; b.setMessage(camEaseLabel());
+        });
+    }
 
-        addRenderableWidget(Button.builder(Component.literal("Copy Section"), b -> copySection())
-                .bounds(x, y, w, 14).build());
-        y += 16;
-        addRenderableWidget(Button.builder(Component.literal("Paste Section"), b -> pasteSection())
-                .bounds(x, y, w, 14).build());
-        y += 16;
-        addRenderableWidget(Button.builder(Component.literal("Clear Section"), b -> clearSection())
-                .bounds(x, y, w, 14).build());
-        y += 16;
-        addRenderableWidget(Button.builder(Component.literal("Swap Sides"), b -> swapSection())
-                .bounds(x, y, w, 14).build());
+    private void buildNoteTab(int x, int w) {
+        int y = 54;
+        sustainBox = box(x + 8, y, w - 16, selectedNote == null ? "" : trim(selectedNote.sustainMs), "Sustain length (ms)");
         y += 20;
+        hitTimeBox = box(x + 8, y, w - 16, selectedNote == null ? "" : trim(selectedNote.timeMs), "Note hit time (ms)");
+        y += 20;
+        noteTypeBox = box(x + 8, y, w - 16,
+                selectedNote == null || selectedNote.noteType == null ? "" : selectedNote.noteType, "Note Type");
+    }
 
-        yType = y + 2;
-        noteTypeBox = addRenderableWidget(new EditBox(font, x + 34, y, w - 34, 12, Component.literal("type")));
-        noteTypeBox.setHint(Component.literal("note type"));
-        y += 16;
-        addRenderableWidget(Button.builder(Component.literal("Snap: " + SNAPS[snapIndex]), b -> {
+    private void buildChartingTab(int x, int w) {
+        int y = 54;
+        Button rate = button(x + 8, y, w - 16, "Playback Rate: 1.0", b -> {});
+        rate.active = false;
+        y += 20;
+        button(x + 8, y, w - 16, "Beat Snap: " + SNAPS[snapIndex] + " / " + SNAPS[snapIndex], b -> {
             snapIndex = (snapIndex + 1) % SNAPS.length;
             if (vortex && !isPlaying()) snapPlayheadToGrid();
-            b.setMessage(Component.literal("Snap: " + SNAPS[snapIndex]));
-        }).bounds(x, y, w, 14).build());
-        y += 16;
-
+            b.setMessage(Component.literal("Beat Snap: " + SNAPS[snapIndex] + " / " + SNAPS[snapIndex]));
+        });
+        y += 18;
+        Button vortexBtn = button(x + 8, y, w - 16, "Vortex Editor: " + (vortex ? "ON" : "OFF"), b -> {
+            vortex = !vortex;
+            if (vortex && !isPlaying()) snapPlayheadToGrid();
+            b.setMessage(Component.literal("Vortex Editor: " + (vortex ? "ON" : "OFF")));
+        });
+        vortexBtn.setTooltip(Tooltip.create(Component.literal("Keys 1-8 place notes at the playhead")));
+        y += 22;
         var opts = com.fnfmod.client.ClientOptions.get();
-        Button vortexBtn = addRenderableWidget(Button.builder(
-                Component.literal("Vortex: " + (vortex ? "ON" : "OFF")), b -> {
-                    vortex = !vortex;
-                    if (vortex && !isPlaying()) snapPlayheadToGrid();
-                    b.setMessage(Component.literal("Vortex: " + (vortex ? "ON" : "OFF")));
-                }).bounds(x, y, w, 14).build());
-        vortexBtn.setTooltip(Tooltip.create(Component.literal("Keys 1-8 place notes at the playhead (V toggles)")));
-        y += 16;
+        int half = (w - 20) / 2;
+        button(x + 8, y, half, "Hitsound P: " + (opts.editorHitsoundPlayer ? "ON" : "OFF"), b -> {
+            opts.editorHitsoundPlayer = !opts.editorHitsoundPlayer; com.fnfmod.client.ClientOptions.save(); buildWidgets();
+        });
+        button(x + 12 + half, y, half, "Hitsound O: " + (opts.editorHitsoundOpponent ? "ON" : "OFF"), b -> {
+            opts.editorHitsoundOpponent = !opts.editorHitsoundOpponent; com.fnfmod.client.ClientOptions.save(); buildWidgets();
+        });
+    }
 
-        Button hsPlayer = addRenderableWidget(Button.builder(
-                Component.literal("P:" + (opts.editorHitsoundPlayer ? "ON" : "OFF")), b -> {
-                    opts.editorHitsoundPlayer = !opts.editorHitsoundPlayer;
-                    com.fnfmod.client.ClientOptions.save();
-                    b.setMessage(Component.literal("P:" + (opts.editorHitsoundPlayer ? "ON" : "OFF")));
-                }).bounds(x, y, w / 2 - 2, 14).build());
-        hsPlayer.setTooltip(Tooltip.create(Component.literal("Player note hitsounds during playback")));
-        Button hsOpp = addRenderableWidget(Button.builder(
-                Component.literal("O:" + (opts.editorHitsoundOpponent ? "ON" : "OFF")), b -> {
-                    opts.editorHitsoundOpponent = !opts.editorHitsoundOpponent;
-                    com.fnfmod.client.ClientOptions.save();
-                    b.setMessage(Component.literal("O:" + (opts.editorHitsoundOpponent ? "ON" : "OFF")));
-                }).bounds(x + w / 2 + 2, y, w / 2 - 2, 14).build());
-        hsOpp.setTooltip(Tooltip.create(Component.literal("Opponent note hitsounds during playback")));
-        y += 20;
+    private void buildDataTab(int x, int w) {
+        int y = 54;
+        String[] hints = {"Game Over Character", "Death Sound", "Loop Music", "Retry Music", "Note Texture", "Note Splashes Texture"};
+        for (String hint : hints) {
+            EditBox b = box(x + 8, y, w - 16, "", hint);
+            b.active = false;
+            y += 20;
+        }
+    }
 
-        yFile = y + 2;
-        saveNameBox = addRenderableWidget(new EditBox(font, x + 34, y, w - 34, 12, Component.literal("file")));
-        saveNameBox.setValue(songId != null ? songId : sanitizeId(chart.title));
-        y += 16;
-        addRenderableWidget(Button.builder(Component.literal("Save Chart"), b -> save())
-                .bounds(x, y, w, 14).build());
-        y += 16;
-        addRenderableWidget(Button.builder(Component.literal("Exit"), b -> onClose())
-                .bounds(x, y, w, 14).build());
+    private void buildEventsTab(int x, int w) {
+        int y = 54;
+        EditBox event = box(x + 8, y, w - 80, "", "Event"); event.active = false;
+        Button minus = button(x + w - 66, y, 26, "-", b -> {}); minus.active = false;
+        Button plus = button(x + w - 36, y, 26, "+", b -> {}); plus.active = false;
+        y += 26;
+        int half = (w - 20) / 2;
+        EditBox v1 = box(x + 8, y, half, "", "Value 1"); v1.active = false;
+        EditBox v2 = box(x + 12 + half, y, half, "", "Value 2"); v2.active = false;
+    }
+
+    private void buildTopMenu(int x) {
+        if (topMenu == TopMenu.NONE) return;
+        int y = 24, w = 124;
+        if (topMenu == TopMenu.FILE) {
+            saveNameBox = box(x, y, w, songId != null ? songId : sanitizeId(chart.title), "Chart filename");
+            y += 18;
+            button(x, y, w, "Save", b -> save()); y += 16;
+            Button eventOpen = button(x, y, w, "Open Events...", b -> {}); eventOpen.active = false; y += 16;
+            Button eventSave = button(x, y, w, "Save Events...", b -> {}); eventSave.active = false; y += 16;
+            button(x, y, w, "Exit", b -> onClose());
+        } else if (topMenu == TopMenu.EDIT) {
+            button(x, y, w, "Copy Section", b -> copySection()); y += 16;
+            button(x, y, w, "Paste Section", b -> pasteSection()); y += 16;
+            button(x, y, w, "Clear All Notes", b -> { chart.notes.clear(); selectedNote = null; }); y += 16;
+            Button clearEvents = button(x, y, w, "Clear All Events", b -> {}); clearEvents.active = false;
+        } else {
+            button(x, y, w, "Beat Snap: " + SNAPS[snapIndex], b -> { snapIndex = (snapIndex + 1) % SNAPS.length; buildWidgets(); }); y += 16;
+            button(x, y, w, "Vortex Editor " + (vortex ? "ON" : "OFF"), b -> { vortex = !vortex; buildWidgets(); }); y += 16;
+            Button wave = button(x, y, w, "Waveform...", b -> {}); wave.active = false;
+        }
     }
 
     private Component voicesLabel() {
@@ -278,12 +347,17 @@ public class ChartEditorScreen extends Screen {
 
     // ------------------------------------------------------------------ layout
 
-    private int gridX() { return 24; }
-    private int cellW() { return 24; }
-    private int gridTop() { return 24; }
-    private int gridBottom() { return height - 30; }
+    private int panelWidth() { return Mth.clamp(width / 3, 180, 300); }
+    private int panelX() { return width - panelWidth() - 12; }
+    private int infoWidth() { return width >= 560 ? Mth.clamp(width / 6, 105, 150) : 0; }
+    private int cellW() {
+        int room = Math.min(width / 2 - infoWidth() - 22, panelX() - width / 2 - 18) * 2;
+        return Mth.clamp(room / 8, 14, 30);
+    }
+    private int gridX() { return width / 2 - 4 * cellW(); }
+    private int gridTop() { return 58; }
+    private int gridBottom() { return height - 24; }
     private int centerY() { return (gridTop() + gridBottom()) / 2; }
-    private int panelX() { return gridX() + 8 * cellW() + 40; }
 
     private double lineStepBeats() {
         return 4.0 / SNAPS[snapIndex];
@@ -308,17 +382,29 @@ public class ChartEditorScreen extends Screen {
     // ------------------------------------------------------------------ edit ops
 
     private void applyBoxes() {
-        chart.title = titleBox.getValue().isBlank() ? chart.title : titleBox.getValue();
-        try { chart.startBpm = Double.parseDouble(bpmBox.getValue()); } catch (NumberFormatException ignored) {}
-        try { chart.speed = Double.parseDouble(speedBox.getValue()); } catch (NumberFormatException ignored) {}
+        if (titleBox != null && !titleBox.getValue().isBlank()) chart.title = titleBox.getValue();
+        try { if (bpmBox != null) chart.startBpm = Double.parseDouble(bpmBox.getValue()); } catch (NumberFormatException ignored) {}
+        try { if (speedBox != null) chart.speed = Double.parseDouble(speedBox.getValue()); } catch (NumberFormatException ignored) {}
         try {
-            double b = Double.parseDouble(sectionBpmBox.getValue());
-            if (sec().changeBPM && b > 0) sec().bpm = b;
+            if (sectionBpmBox != null) {
+                double b = Double.parseDouble(sectionBpmBox.getValue());
+                if (sec().changeBPM && b > 0) sec().bpm = b;
+            }
         } catch (NumberFormatException ignored) {}
         try {
-            double beats = Double.parseDouble(sectionBeatsBox.getValue());
-            if (beats > 0 && beats <= 64) sec().sectionBeats = beats;
+            if (sectionBeatsBox != null) {
+                double beats = Double.parseDouble(sectionBeatsBox.getValue());
+                if (beats > 0 && beats <= 64) sec().sectionBeats = beats;
+            }
         } catch (NumberFormatException ignored) {}
+        if (selectedNote != null) {
+            try { if (sustainBox != null) selectedNote.sustainMs = Math.max(0, Double.parseDouble(sustainBox.getValue())); }
+            catch (NumberFormatException ignored) {}
+            try { if (hitTimeBox != null) selectedNote.timeMs = Math.max(0, Double.parseDouble(hitTimeBox.getValue())); }
+            catch (NumberFormatException ignored) {}
+            if (noteTypeBox != null) selectedNote.noteType = noteTypeBox.getValue().trim();
+            chart.sortNotes();
+        }
         chart.rebuildBpmMap();
     }
 
@@ -353,7 +439,8 @@ public class ChartEditorScreen extends Screen {
             return;
         }
         if (removeOnly) return;
-        SongChart.Note n = new SongChart.Note(timeMs, col % 4, col >= 4, 0, noteTypeBox.getValue().trim());
+        String noteType = noteTypeBox == null ? "" : noteTypeBox.getValue().trim();
+        SongChart.Note n = new SongChart.Note(timeMs, col % 4, col >= 4, 0, noteType);
         chart.notes.add(n);
         chart.sortNotes();
         selectedNote = n;
@@ -399,7 +486,8 @@ public class ChartEditorScreen extends Screen {
 
     private void save() {
         applyBoxes();
-        String id = sanitizeId(saveNameBox.getValue().isBlank() ? chart.title : saveNameBox.getValue());
+        String requested = saveNameBox == null || saveNameBox.getValue().isBlank() ? chart.title : saveNameBox.getValue();
+        String id = sanitizeId(requested);
         if (id.isBlank()) id = "unnamed";
         try {
             Path dir = SongLibrary.songsDir().resolve(id);
@@ -577,7 +665,7 @@ public class ChartEditorScreen extends Screen {
                 SongChart.Note n = findNoteAt(col, t, stepMs() / 2);
                 if (n != null) {
                     selectedNote = n;
-                    noteTypeBox.setValue(n.noteType == null ? "" : n.noteType);
+                    if (noteTypeBox != null) noteTypeBox.setValue(n.noteType == null ? "" : n.noteType);
                     setStatus("Selected note (E/Q sustain, Del remove)");
                 }
             } else {
@@ -615,12 +703,9 @@ public class ChartEditorScreen extends Screen {
         int gridW = 8 * cw;
         double lineStep = lineStepBeats();
 
-        // column backgrounds
-        for (int c = 0; c < 8; c++) {
-            int color = (c % 2 == 0) ? 0xAA202020 : 0xAA2A2A2A;
-            if (c >= 4) color += 0x000A0A00;
-            gui.fill(gx + c * cw, top, gx + (c + 1) * cw, bottom, color);
-        }
+        // Psych-style white receptor strip and checkerboard chart grid.
+        gui.fill(gx, top - cw, gx + gridW, top, 0xFFE8E8E8);
+        gui.fill(gx, top, gx + gridW, bottom, 0xFFE0E0E0);
 
         gui.enableScissor(gx, top, gx + gridW, bottom);
 
@@ -628,11 +713,20 @@ public class ChartEditorScreen extends Screen {
         double topBeat = yToBeat(top);
         double bottomBeat = yToBeat(bottom);
         long firstLine = (long) Math.ceil(Math.max(0, topBeat) / lineStep - 1.0e-6);
+        long firstBand = (long) Math.floor(topBeat / lineStep);
+        for (long k = firstBand; k * lineStep <= bottomBeat; k++) {
+            int y0 = (int) beatToY(k * lineStep);
+            int y1 = (int) beatToY((k + 1) * lineStep);
+            for (int c = 0; c < 8; c++) {
+                int color = ((c + k) & 1) == 0 ? 0xFFCBCBCB : 0xFFE4E4E4;
+                gui.fill(gx + c * cw, Math.max(top, y0), gx + (c + 1) * cw, Math.min(bottom, y1), color);
+            }
+        }
         for (long k = firstLine; k * lineStep <= bottomBeat; k++) {
             double beat = k * lineStep;
             int y = (int) beatToY(beat);
             boolean wholeBeat = Math.abs(beat - Math.round(beat)) < 1.0e-6;
-            gui.fill(gx, y, gx + gridW, y + 1, wholeBeat ? 0x77FFFFFF : 0x2AFFFFFF);
+            gui.fill(gx, y, gx + gridW, y + 1, wholeBeat ? 0x66444444 : 0x22444444);
         }
 
         // section boundaries + labels
@@ -643,45 +737,47 @@ public class ChartEditorScreen extends Screen {
             if (start > bottomTime) break;
             int y = (int) beatToY(conductor.beatAt(start));
             if (y >= top - 12 && y <= bottom + 12) {
-                gui.fill(gx, y, gx + gridW, y + 2, 0xCCFFFFFF);
-                boolean mustHit = i < chart.sections.size() ? chart.sections.get(i).mustHit : true;
-                gui.drawString(font, "S" + i + (mustHit ? " >P" : " >O"), gx + gridW + 4, y - 3, 0xFFAAAAAA);
+                gui.fill(gx, y, gx + gridW, y + 1, 0xFF9D3D3D);
             }
         }
 
-        // notes
-        int noteH = 14;
+        // Notes and receptors use the user's currently selected skin.
+        float noteSize = Math.min(cw - 3, 24);
         for (SongChart.Note n : chart.notes) {
             double nBeat = conductor.beatAt(n.timeMs);
             if (nBeat < topBeat - 8 || nBeat > bottomBeat + 1) continue;
             int y = (int) beatToY(nBeat);
             int col = (n.playerSide ? 4 : 0) + n.lane;
             int x = gx + col * cw;
-            int color = NoteStyle.LANE_COLORS[n.lane];
             if (n.sustainMs > 0) {
                 int y2 = (int) beatToY(conductor.beatAt(n.timeMs + n.sustainMs));
-                gui.fill(x + cw / 2 - 2, y, x + cw / 2 + 2, Math.max(y2, y + noteH), 0xAA000000 | (color & 0xFFFFFF));
+                NoteStyle.drawHoldPiece(gui, n.lane, x + cw / 2f, Math.min(y, y2), Math.max(y, y2), noteSize, y2 < y);
             }
-            if (y2InRange(y, top, bottom, noteH)) {
-                gui.fill(x + 1, y, x + cw - 1, y + noteH, color);
+            if (y2InRange(y - (int) noteSize / 2, top, bottom, (int) noteSize)) {
+                NoteStyle.drawNote(gui, n.lane, x + cw / 2f, y, noteSize);
                 if (n == selectedNote) {
-                    gui.fill(x, y - 1, x + cw, y, 0xFFFFFFFF);
-                    gui.fill(x, y + noteH, x + cw, y + noteH + 1, 0xFFFFFFFF);
-                    gui.fill(x, y, x + 1, y + noteH, 0xFFFFFFFF);
-                    gui.fill(x + cw - 1, y, x + cw, y + noteH, 0xFFFFFFFF);
+                    int r = (int) noteSize / 2 + 2;
+                    gui.renderOutline(x + cw / 2 - r, y - r, r * 2, r * 2, 0xFFFFFFFF);
                 }
                 if (n.noteType != null && !n.noteType.isEmpty()) {
-                    gui.drawString(font, "*", x + cw - 6, y + 2, 0xFF000000);
+                    gui.drawString(font, "*", x + cw - 6, y - 4, 0xFF000000);
                 }
             }
         }
 
         gui.disableScissor();
 
-        // side divider + centered playhead (always in the middle)
-        gui.fill(gx + 4 * cw - 1, top, gx + 4 * cw + 1, bottom, 0xCCFFFFFF);
+        // receptors, side divider, and fixed playhead
+        gui.fill(gx + 4 * cw - 1, top - cw, gx + 4 * cw + 1, bottom, 0xFF222222);
+        for (int c = 0; c < 8; c++) {
+            NoteStyle.drawReceptor(gui, c % 4, gx + c * cw + cw / 2f, top - cw / 2f, noteSize, 0);
+        }
         int py = centerY();
-        gui.fill(gx - 6, py - 1, gx + gridW + 6, py + 1, 0xFFFF3333);
+        gui.fill(gx, py, gx + gridW, py + 1, 0xFF9D3D3D);
+
+        // Reserved event lane. It is deliberately display-only for now.
+        gui.fill(gx - 10, top, gx - 8, bottom, 0xFF222222);
+        gui.fill(gx - 16, py - 3, gx - 10, py + 3, 0xFFFFB000);
 
         // vortex hints
         if (vortex) {
@@ -689,29 +785,14 @@ public class ChartEditorScreen extends Screen {
             for (int c = 0; c < 8; c++) {
                 gui.drawCenteredString(font, String.valueOf(c + 1), gx + c * cw + cw / 2, py + 4, 0xAAFFFFFF);
             }
-        } else {
-            gui.drawString(font, "OPPONENT", gx, top - 10, 0xFFDD8888);
-            gui.drawString(font, "PLAYER", gx + 4 * cw + 4, top - 10, 0xFF88DD88);
         }
 
-        // header info
-        int curSection = sectionIndexAt(viewPosMs);
-        String mh = sec().mustHit ? " (cam: player)" : " (cam: opponent)";
-        gui.drawString(font, String.format("%.2fs  Section %d%s", viewPosMs / 1000.0, curSection, mh),
-                gx + gridW + 40, top - 10, 0xFFFFFFFF);
-
-        // panel labels
-        int px = panelX();
-        gui.drawString(font, "Song:", px, ySong, 0xFFFFFF);
-        gui.drawString(font, "BPM:", px, yBpm, 0xFFFFFF);
-        gui.drawString(font, "Spd:", px + 34 + 42, yBpm, 0xFFFFFF);
-        gui.drawString(font, "BPM:", px, ySecBpm, 0xFFFFFF);
-        gui.drawString(font, "Beats:", px, yBeats, 0xFFFFFF);
-        gui.drawString(font, "Type:", px, yType, 0xFFFFFF);
-        gui.drawString(font, "File:", px, yFile, 0xFFFFFF);
+        renderInformationPanel(gui);
+        renderRightPanel(gui);
+        if (topMenu != TopMenu.NONE) gui.fill(14, 22, 142, Math.min(height - 16, 126), 0xEE090909);
 
         // footer
-        String help = "Wheel/W/S: scrub | Space: play | V+1-8: vortex | Click: place | Shift+Click: select | E/Q: sustain | A/D: section";
+        String help = "Wheel/W/S scrub | Space play | Click place | Shift+Click select | E/Q sustain | A/D section";
         gui.drawString(font, help, 8, height - 12, 0xFF999999);
         if (System.currentTimeMillis() < statusUntil) {
             gui.drawString(font, status, 8, height - 24, 0xFFFFFF66);
@@ -720,6 +801,56 @@ public class ChartEditorScreen extends Screen {
         for (var renderable : renderables) {
             renderable.render(gui, mouseX, mouseY, partialTick);
         }
+    }
+
+    private void renderInformationPanel(GuiGraphics gui) {
+        int w = infoWidth();
+        if (w <= 0) return;
+        int x = 16, y = 34, h = Math.min(150, height - 64);
+        gui.fill(x, y, x + w, y + h, 0xDD080808);
+        gui.fill(x, y, x + w, y + 16, 0xFFF1F1F1);
+        gui.drawCenteredString(font, "Information", x + w / 2, y + 4, 0xFF111111);
+
+        int ty = y + 24;
+        double duration = audio == null ? 0 : audio.durationMs();
+        gui.drawString(font, formatTime(viewPosMs) + " / " + formatTime(duration), x + 8, ty, 0xFFFFFFFF);
+        ty += 24;
+        double beat = conductor.beatAt(Math.max(0, viewPosMs));
+        gui.drawString(font, "Section: " + sectionIndexAt(viewPosMs), x + 8, ty, 0xFFFFFFFF); ty += 11;
+        gui.drawString(font, "Beat: " + (int) Math.floor(beat), x + 8, ty, 0xFFFFFFFF); ty += 11;
+        gui.drawString(font, "Step: " + (int) Math.floor(beat * 4), x + 8, ty, 0xFFFFFFFF); ty += 22;
+        gui.drawString(font, "Beat Snap: " + SNAPS[snapIndex] + " / " + SNAPS[snapIndex], x + 8, ty, 0xFFFFFFFF); ty += 11;
+        gui.drawString(font, "Selected: " + (selectedNote == null ? 0 : 1), x + 8, ty, 0xFFFFFFFF);
+    }
+
+    private void renderRightPanel(GuiGraphics gui) {
+        int x = panelX(), w = panelWidth();
+        int bottom = Math.min(height - 24, 220);
+        gui.fill(x, 40, x + w, bottom, 0xE60A0A0A);
+        int color = 0xFFDDDDDD;
+        switch (activeTab) {
+            case CHARTING -> {
+                gui.drawCenteredString(font, "Editor-only playback options", x + w / 2, 42, color);
+                gui.drawString(font, "Hitsounds", x + 8, 126, 0xFFAAAAAA);
+            }
+            case DATA -> gui.drawString(font, "Song data overrides", x + 8, 42, color);
+            case EVENTS -> {
+                gui.drawString(font, "Events", x + 8, 42, color);
+                gui.drawString(font, "Events are not enabled yet.", x + 8, 106, 0xFF888888);
+            }
+            case NOTE -> gui.drawString(font, selectedNote == null ? "Select a note to edit it" : "Selected note", x + 8, 42, color);
+            case SECTION -> gui.drawString(font, "Section " + sectionIndexAt(viewPosMs), x + 8, 42, color);
+            case SONG -> gui.drawString(font, "Song", x + 8, 42, color);
+        }
+    }
+
+    private static String formatTime(double ms) {
+        if (ms <= 0) return "0:00.00";
+        long total = (long) ms;
+        long minutes = total / 60000;
+        long seconds = (total / 1000) % 60;
+        long hundredths = (total % 1000) / 10;
+        return String.format(Locale.ROOT, "%d:%02d.%02d", minutes, seconds, hundredths);
     }
 
     private static boolean y2InRange(int y, int top, int bottom, int h) {
