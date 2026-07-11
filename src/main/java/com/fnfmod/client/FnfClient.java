@@ -2,7 +2,9 @@ package com.fnfmod.client;
 
 import com.fnfmod.FnfMod;
 import com.fnfmod.client.anim.CharacterAnimations;
+import com.fnfmod.client.audio.HitsoundPlayer;
 import com.fnfmod.client.gui.editor.ChartEditorScreen;
+import com.fnfmod.client.render.IconLibrary;
 import com.fnfmod.client.render.NoteStyle;
 import com.fnfmod.net.FnfPayloads;
 import com.fnfmod.song.SongLibrary;
@@ -103,17 +105,73 @@ public final class FnfClient {
                                         return 1;
                                     })))
                     .then(literal("reload")
-                            .executes(ctx -> {
-                                SongLibrary.rescan();
-                                com.fnfmod.client.render.IconLibrary.rescan();
+                            .executes(ctx -> reloadAll(ctx.getSource()))
+                            .then(literal("all").executes(ctx -> reloadAll(ctx.getSource())))
+                            .then(literal("songs").executes(ctx -> reloadSongs(ctx.getSource())))
+                            .then(literal("skins").executes(ctx -> reloadSkins(ctx.getSource(), "skins")))
+                            .then(literal("splashes").executes(ctx -> reloadSkins(ctx.getSource(), "splashes")))
+                            .then(literal("animations").executes(ctx -> {
                                 CharacterAnimations.reload();
-                                NoteStyle.reload();
-                                feedback(ctx.getSource(), "Reloaded songs, skins and animations. "
-                                        + SongLibrary.getSongs().size() + " song(s) found.");
-                                // also ask the server to rescan its library (op-gated on dedicated)
-                                PacketDistributor.sendToServer(new FnfPayloads.ReloadC2S());
+                                feedback(ctx.getSource(), "Reloaded animations.");
                                 return 1;
-                            })));
+                            }))
+                            .then(literal("icons").executes(ctx -> {
+                                IconLibrary.rescan();
+                                feedback(ctx.getSource(), "Reloaded icons.");
+                                return 1;
+                            }))
+                            .then(literal("hitsounds").executes(ctx -> {
+                                HitsoundPlayer.reload();
+                                feedback(ctx.getSource(), "Reloaded hitsounds.");
+                                return 1;
+                            }))
+                            .then(literal("options").executes(ctx -> {
+                                ClientOptions.load();
+                                NoteStyle.reload();
+                                HitsoundPlayer.reload();
+                                feedback(ctx.getSource(), "Reloaded options.");
+                                return 1;
+                            }))
+                            .then(literal("scores").executes(ctx -> {
+                                ScoreStore.reload();
+                                feedback(ctx.getSource(), "Reloaded scores.");
+                                return 1;
+                            }))));
+        }
+
+        private static int reloadAll(CommandSourceStack source) {
+            ClientOptions.load();
+            SongLibrary.rescan();
+            IconLibrary.rescan();
+            CharacterAnimations.reload();
+            NoteStyle.reload();
+            HitsoundPlayer.reload();
+            ScoreStore.reload();
+            feedback(source, "Reloaded all FNF content. "
+                    + SongLibrary.getSongs().size() + " song(s) found.");
+            requestServerSongReload();
+            return 1;
+        }
+
+        private static int reloadSongs(CommandSourceStack source) {
+            SongLibrary.rescan();
+            // Song/mod folders can also provide icons.
+            IconLibrary.rescan();
+            feedback(source, "Reloaded songs. " + SongLibrary.getSongs().size() + " song(s) found.");
+            requestServerSongReload();
+            return 1;
+        }
+
+        private static int reloadSkins(CommandSourceStack source, String label) {
+            // Skin and splash atlases share NoteStyle's loaded texture state.
+            NoteStyle.reload();
+            feedback(source, "Reloaded " + label + ".");
+            return 1;
+        }
+
+        private static void requestServerSongReload() {
+            // Server library is authoritative; dedicated servers require op.
+            PacketDistributor.sendToServer(new FnfPayloads.ReloadC2S());
         }
 
         private static void openEditor(String songId) {
