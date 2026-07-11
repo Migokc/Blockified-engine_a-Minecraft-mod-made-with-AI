@@ -41,6 +41,7 @@ public class SongPlayer {
     private boolean started;
     private boolean paused;
     private boolean disposed;
+    private float playbackRate = 1.0f;
 
     // position smoothing (AL updates in mixer-sized steps)
     private double lastRawMs = -1;
@@ -88,6 +89,7 @@ public class SongPlayer {
                 AL10.alSourcei(t.source, AL10.AL_SOURCE_RELATIVE, AL10.AL_TRUE);
                 AL10.alSource3f(t.source, AL10.AL_POSITION, 0, 0, 0);
                 AL10.alSourcef(t.source, AL10.AL_ROLLOFF_FACTOR, 0);
+                AL10.alSourcef(t.source, AL10.AL_PITCH, playbackRate);
                 t.durationMs = (double) (pcm.limit() / ch) / rate * 1000.0;
                 int err = AL10.alGetError();
                 if (err != AL10.AL_NO_ERROR) {
@@ -179,7 +181,7 @@ public class SongPlayer {
             // avoid jumping backwards from mixer jitter
             if (raw > smoothedMs || raw < smoothedMs - 60) smoothedMs = raw;
         } else {
-            double extrapolated = raw + (now - lastRawNano) / 1_000_000.0;
+            double extrapolated = raw + (now - lastRawNano) / 1_000_000.0 * playbackRate;
             if (extrapolated > smoothedMs) smoothedMs = extrapolated;
         }
         return smoothedMs;
@@ -208,6 +210,18 @@ public class SongPlayer {
 
     public void setOpponentVoiceVolume(float volume) {
         setRoleVolume(Role.VOICES_OPPONENT, volume);
+    }
+
+    /** Changes playback speed and pitch for every synchronized stem. */
+    public void setPlaybackRate(float rate) {
+        playbackRate = Math.max(0.1f, Math.min(5.0f, rate));
+        if (disposed) return;
+        for (Track t : tracks) AL10.alSourcef(t.source, AL10.AL_PITCH, playbackRate);
+        lastRawMs = -1;
+    }
+
+    public float playbackRate() {
+        return playbackRate;
     }
 
     private void setRoleVolume(Role role, float volume) {
