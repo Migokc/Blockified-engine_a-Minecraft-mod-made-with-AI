@@ -260,6 +260,8 @@ public final class SessionManager {
 
     /** Spawns the decorative bot armor stand on the opposite stage spot from the player. */
     private static void spawnBotStand(Session session, BlockPos machinePos) {
+        // BOTH mode centers the player and has no unplayed side to represent.
+        if (session.playSide == 2) return;
         ServerPlayer host = session.host;
         if (!(host.level() instanceof ServerLevel level)) return;
         Direction facing = Direction.NORTH;
