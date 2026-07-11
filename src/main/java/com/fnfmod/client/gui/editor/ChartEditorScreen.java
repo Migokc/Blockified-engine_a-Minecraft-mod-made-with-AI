@@ -84,9 +84,10 @@ public final class ChartEditorScreen extends Screen {
     private boolean helpVisible;
     private boolean selectingBox;
     private double selectionStartX;
-    private double selectionStartY;
+    /** Vertical selection bounds are chart beats so scrolling cannot move the anchor. */
+    private double selectionStartBeat;
     private double selectionEndX;
-    private double selectionEndY;
+    private double selectionEndBeat;
 
     private EditorTab activeTab = EditorTab.SONG;
     private TopMenu openMenu = TopMenu.NONE;
@@ -1049,7 +1050,7 @@ public final class ChartEditorScreen extends Screen {
             if (button == 1) {
                 selectingBox = true;
                 selectionStartX = selectionEndX = mouseX;
-                selectionStartY = selectionEndY = mouseY;
+                selectionStartBeat = selectionEndBeat = selectionBeatAtScreenY(mouseY);
                 return true;
             }
             int column = (int) ((mouseX - gx) / cw);
@@ -1081,7 +1082,7 @@ public final class ChartEditorScreen extends Screen {
         }
         if (selectingBox && button == 1) {
             selectionEndX = Mth.clamp(mouseX, gridX(), gridX() + 8 * cellWidth());
-            selectionEndY = Mth.clamp(mouseY, gridTop(), gridBottom());
+            selectionEndBeat = selectionBeatAtScreenY(Mth.clamp(mouseY, gridTop(), gridBottom()));
             return true;
         }
         return super.mouseDragged(mouseX, mouseY, button, dragX, dragY);
@@ -1094,8 +1095,8 @@ public final class ChartEditorScreen extends Screen {
             return true;
         }
         if (selectingBox && button == 1) {
-            selectionEndX = mouseX;
-            selectionEndY = mouseY;
+            selectionEndX = Mth.clamp(mouseX, gridX(), gridX() + 8 * cellWidth());
+            selectionEndBeat = selectionBeatAtScreenY(Mth.clamp(mouseY, gridTop(), gridBottom()));
             finishBoxSelection();
             selectingBox = false;
             return true;
@@ -1107,6 +1108,13 @@ public final class ChartEditorScreen extends Screen {
     public boolean mouseScrolled(double mouseX, double mouseY, double scrollX, double scrollY) {
         if (helpVisible) return true;
         if (insideInfo(mouseX, mouseY)) return true;
+        if (selectingBox && mouseX >= gridX() && mouseX < gridX() + 8 * cellWidth()) {
+            double multiplier = (hasShiftDown() ? 4.0 : 1.0) / (hasAltDown() ? 4.0 : 1.0);
+            scrub(scrollY * multiplier);
+            selectionEndX = Mth.clamp(mouseX, gridX(), gridX() + 8 * cellWidth());
+            selectionEndBeat = selectionBeatAtScreenY(Mth.clamp(mouseY, gridTop(), gridBottom()));
+            return true;
+        }
         if (mouseX >= gridX() && mouseX < gridX() + 8 * cellWidth()
                 && mouseY >= gridTop() && mouseY < gridBottom()) {
             double multiplier = (hasShiftDown() ? 4.0 : 1.0) / (hasAltDown() ? 4.0 : 1.0);
@@ -1119,16 +1127,16 @@ public final class ChartEditorScreen extends Screen {
     private void finishBoxSelection() {
         double left = Math.min(selectionStartX, selectionEndX);
         double right = Math.max(selectionStartX, selectionEndX);
-        double top = Math.min(selectionStartY, selectionEndY);
-        double bottom = Math.max(selectionStartY, selectionEndY);
+        double firstBeat = Math.min(selectionStartBeat, selectionEndBeat);
+        double lastBeat = Math.max(selectionStartBeat, selectionEndBeat);
         if (!hasShiftDown() && !hasAltDown()) clearSelection();
         int gx = gridX();
         int cw = cellWidth();
         for (SongChart.Note note : chart.notes) {
             int column = (note.playerSide ? 4 : 0) + note.lane;
             double x = gx + column * cw + cw / 2.0;
-            double y = beatToY(conductor.beatAt(note.timeMs)) + cw / 2.0;
-            if (x >= left && x <= right && y >= top && y <= bottom) {
+            double noteBeat = conductor.beatAt(note.timeMs);
+            if (x >= left && x <= right && noteBeat >= firstBeat && noteBeat <= lastBeat) {
                 if (hasAltDown()) selectedNotes.remove(note);
                 else selectedNotes.add(note);
             }
@@ -1257,8 +1265,10 @@ public final class ChartEditorScreen extends Screen {
         if (selectingBox) {
             int left = (int) Math.min(selectionStartX, selectionEndX);
             int right = (int) Math.max(selectionStartX, selectionEndX);
-            int topY = (int) Math.min(selectionStartY, selectionEndY);
-            int bottomY = (int) Math.max(selectionStartY, selectionEndY);
+            int startY = (int) selectionScreenY(selectionStartBeat);
+            int endY = (int) selectionScreenY(selectionEndBeat);
+            int topY = Mth.clamp(Math.min(startY, endY), top, bottom);
+            int bottomY = Mth.clamp(Math.max(startY, endY), top, bottom);
             gui.fill(left, topY, right, bottomY, 0x5533CCFF);
             gui.renderOutline(left, topY, Math.max(1, right - left), Math.max(1, bottomY - topY), 0xFF66DDFF);
         }
@@ -1395,6 +1405,15 @@ public final class ChartEditorScreen extends Screen {
     private double yToBeat(double y) {
         double viewBeat = conductor.beatAt(Math.max(0, viewPositionMs));
         return viewBeat + (y - centerY()) / pixelsPerBeat;
+    }
+
+    /** Converts the visual center of a note cell into its stable chart beat. */
+    private double selectionBeatAtScreenY(double screenY) {
+        return yToBeat(screenY - cellWidth() / 2.0);
+    }
+
+    private double selectionScreenY(double beat) {
+        return beatToY(beat) + cellWidth() / 2.0;
     }
 
     private double stepMs() {
