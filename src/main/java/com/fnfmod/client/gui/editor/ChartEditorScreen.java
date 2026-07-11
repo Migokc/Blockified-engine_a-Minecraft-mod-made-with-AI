@@ -448,6 +448,10 @@ public final class ChartEditorScreen extends Screen {
                 clearSelection();
                 setStatus("Cleared all notes");
             }); y += 16;
+            Button removeAllCustom = button(x + 4, y, w - 8, "Remove All Custom Notes", b -> removeAllCustomNotes());
+            removeAllCustom.active = chart.notes.stream().anyMatch(this::isCustomNote); y += 16;
+            Button removeSelectedTypes = button(x + 4, y, w - 8, "Remove Selected Types", b -> removeSelectedCustomNoteTypes());
+            removeSelectedTypes.active = selectedNotes.stream().anyMatch(this::isCustomNote); y += 16;
             Button clearEvents = button(x + 4, y, w - 8, "Clear All Events", b -> {}); clearEvents.active = false;
         } else {
             button(x + 4, y, w - 8, "Beat Snap: " + snapText(), b -> cycleSnap()); y += 16;
@@ -782,6 +786,45 @@ public final class ChartEditorScreen extends Screen {
         selectedNote = selectedNotes.stream().findFirst().orElse(null);
         setStatus("Selected " + selectedNotes.size() + " note(s)");
         if (activeTab == EditorTab.NOTE) rebuildUi();
+    }
+
+    private boolean isCustomNote(SongChart.Note note) {
+        return note != null && note.noteType != null && !note.noteType.isBlank();
+    }
+
+    private void removeAllCustomNotes() {
+        List<SongChart.Note> removed = chart.notes.stream().filter(this::isCustomNote).toList();
+        removeCustomNotes(removed, "all custom note types");
+    }
+
+    private void removeSelectedCustomNoteTypes() {
+        Set<String> selectedTypes = selectedNotes.stream()
+                .filter(this::isCustomNote)
+                .map(note -> note.noteType.trim())
+                .collect(java.util.stream.Collectors.toSet());
+        if (selectedTypes.isEmpty()) {
+            setStatus("Select at least one custom note type first");
+            return;
+        }
+        List<SongChart.Note> removed = chart.notes.stream()
+                .filter(note -> isCustomNote(note) && selectedTypes.contains(note.noteType.trim()))
+                .toList();
+        removeCustomNotes(removed, selectedTypes.size() + " selected custom type(s)");
+    }
+
+    private void removeCustomNotes(List<SongChart.Note> removed, String description) {
+        if (removed.isEmpty()) {
+            setStatus("No matching custom notes found");
+            return;
+        }
+        recordNoteChange();
+        chart.notes.removeAll(removed);
+        selectedNotes.removeAll(removed);
+        if (removed.contains(selectedNote)) {
+            selectedNote = selectedNotes.stream().reduce((a, b) -> b).orElse(null);
+        }
+        setStatus("Removed " + removed.size() + " note(s) from " + description);
+        rebuildUi();
     }
 
     private void saveChart() {
@@ -1303,7 +1346,7 @@ public final class ChartEditorScreen extends Screen {
         };
         int height = switch (openMenu) {
             case FILE -> 88;
-            case EDIT -> 104;
+            case EDIT -> 136;
             case VIEW -> 56;
             default -> 0;
         };
