@@ -11,8 +11,11 @@ import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.Map;
 
-/** Per-song best scores, stored in config/fnfmod/scores.json. Client-side / personal. */
+/** Per-song, difficulty, and play-mode best scores. Client-side / personal. */
 public final class ScoreStore {
+
+    private static final String[] MODE_KEYS = {"player", "opponent", "both"};
+    private static final String[] MODE_NAMES = {"Player", "Opponent", "Both"};
 
     public static final class Record {
         public int score;
@@ -44,8 +47,20 @@ public final class ScoreStore {
         return SongLibrary.root().resolve("scores.json");
     }
 
-    private static String key(String songId, String difficulty) {
+    private static int normalizeMode(int playMode) {
+        return Math.max(0, Math.min(MODE_KEYS.length - 1, playMode));
+    }
+
+    private static String key(String songId, String difficulty, int playMode) {
+        return songId + "|" + difficulty + "|" + MODE_KEYS[normalizeMode(playMode)];
+    }
+
+    private static String legacyKey(String songId, String difficulty) {
         return songId + "|" + difficulty;
+    }
+
+    public static String modeName(int playMode) {
+        return MODE_NAMES[normalizeMode(playMode)];
     }
 
     private static synchronized Map<String, Record> map() {
@@ -65,15 +80,20 @@ public final class ScoreStore {
         return records;
     }
 
-    public static Record get(String songId, String difficulty) {
-        return map().get(key(songId, difficulty));
+    public static Record get(String songId, String difficulty, int playMode) {
+        Record record = map().get(key(songId, difficulty, playMode));
+        // Scores saved before play-mode separation belonged to normal Player mode.
+        if (record == null && normalizeMode(playMode) == 0) {
+            record = map().get(legacyKey(songId, difficulty));
+        }
+        return record;
     }
 
-    /** Saves the record if it beats the stored score for this song+difficulty. */
-    public static void submit(String songId, String difficulty, Record r) {
-        Record existing = map().get(key(songId, difficulty));
+    /** Saves the record if it beats this song+difficulty+mode's stored score. */
+    public static void submit(String songId, String difficulty, int playMode, Record r) {
+        Record existing = get(songId, difficulty, playMode);
         if (existing != null && existing.score >= r.score) return;
-        map().put(key(songId, difficulty), r);
+        map().put(key(songId, difficulty, playMode), r);
         try {
             Files.createDirectories(file().getParent());
             Files.writeString(file(), GSON.toJson(map()));

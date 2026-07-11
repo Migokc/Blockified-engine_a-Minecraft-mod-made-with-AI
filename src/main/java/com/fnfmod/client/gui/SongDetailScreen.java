@@ -105,9 +105,11 @@ public class SongDetailScreen extends Screen {
         int px = cx - panelW / 2;
         int py = height / 2 - 74;
         gui.fill(px, py, px + panelW, py + 78, LAYER);
-        gui.drawCenteredString(font, "Best Score - " + difficulty(), cx, py + 5, 0xFFFFDD66);
+        int playMode = ClientOptions.get().playAs % 3;
+        gui.drawCenteredString(font, "Best Score - " + difficulty() + " - "
+                + ScoreStore.modeName(playMode), cx, py + 5, 0xFFFFDD66);
 
-        ScoreStore.Record r = ScoreStore.get(song.id(), difficulty());
+        ScoreStore.Record r = ScoreStore.get(song.id(), difficulty(), playMode);
         if (r == null) {
             gui.drawCenteredString(font, "No score yet", cx, py + 34, 0xFFAAAAAA);
         } else {
