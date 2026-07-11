@@ -110,6 +110,8 @@ public final class VSliceChartParser {
             }
         }
         chart.sortNotes();
+        chart.events.addAll(LegacyChartParser.parseEvents(chartJson));
+        chart.sortEvents();
 
         // Build synthetic 4-beat sections for the editor / legacy conversion.
         buildSections(chart);

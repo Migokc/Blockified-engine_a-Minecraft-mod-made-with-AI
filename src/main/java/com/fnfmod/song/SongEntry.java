@@ -15,6 +15,8 @@ public class SongEntry {
     public Format format = Format.LEGACY;
     /** Codename Engine: the song's meta.json (bpm/needsVoices/icon live there, not in the chart). */
     public Path metaFile;
+    /** Optional separate Psych/Codename event timeline. */
+    public Path eventsFile;
     /** Opponent icon name (fallback lookup). */
     public String opponentIcon = "";
     /** Resolved opponent icon png from THIS song's own mod (avoids cross-mod name clashes). */
@@ -132,6 +134,7 @@ public class SongEntry {
             addIf(out, voicesPlayerFile);
             addIf(out, voicesOpponentFile);
         }
+        addIf(out, eventsFile);
         return out;
     }
 

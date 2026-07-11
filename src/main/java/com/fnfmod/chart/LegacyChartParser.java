@@ -78,18 +78,19 @@ public final class LegacyChartParser {
                     if (!noteEl.isJsonArray()) continue;
                     JsonArray n = noteEl.getAsJsonArray();
                     if (n.size() < 2) continue;
-                    double time = n.get(0).getAsDouble();
-                    int data;
-                    try {
-                        data = n.get(1).getAsInt();
-                    } catch (Exception e) {
-                        continue;
-                    }
+                    Double timeValue = number(n.get(0));
+                    Integer dataValue = integer(n.get(1));
+                    if (timeValue == null || dataValue == null) continue;
+                    double time = timeValue;
+                    int data = dataValue;
                     // Psych event notes use data == -1 inside sectionNotes (old format); skip.
                     if (data < 0 || data > 7) continue;
 
-                    double sustain = n.size() > 2 && n.get(2).isJsonPrimitive()
-                            ? Math.max(0, n.get(2).getAsDouble()) : 0;
+                    Double sustainValue = n.size() > 2 ? number(n.get(2)) : Double.valueOf(0.0);
+                    // Some event exporters use a note-shaped row whose third item
+                    // is the event name. It is not a malformed sustain note.
+                    if (sustainValue == null) continue;
+                    double sustain = Math.max(0, sustainValue);
 
                     String type = "";
                     if (n.size() > 3 && n.get(3).isJsonPrimitive()) {
@@ -118,8 +119,144 @@ public final class LegacyChartParser {
         if (chart.bpmChanges.isEmpty() || chart.bpmChanges.get(0).timeMs > 0) {
             chart.bpmChanges.add(0, new SongChart.BpmChange(0, chart.startBpm));
         }
+        chart.events.addAll(parseEvents(json));
+        chart.sortEvents();
         chart.sortNotes();
         return chart;
+    }
+
+    /** Extracts Psych events without attempting to interpret them as gameplay notes. */
+    public static java.util.List<SongChart.Event> parseEvents(String json) {
+        java.util.List<SongChart.Event> out = new java.util.ArrayList<>();
+        try {
+            JsonObject root = JsonParser.parseString(json).getAsJsonObject();
+            JsonObject song = root.has("song") && root.get("song").isJsonObject()
+                    ? root.getAsJsonObject("song") : root;
+
+            if (song.has("events")) parseEventContainer(song.get("events"), out);
+            if (root != song && root.has("events")) parseEventContainer(root.get("events"), out);
+
+            JsonArray sections = song.has("notes") && song.get("notes").isJsonArray()
+                    ? song.getAsJsonArray("notes") : new JsonArray();
+            for (JsonElement sectionEl : sections) {
+                if (!sectionEl.isJsonObject()) continue;
+                JsonObject section = sectionEl.getAsJsonObject();
+                if (!section.has("sectionNotes") || !section.get("sectionNotes").isJsonArray()) continue;
+                for (JsonElement rowEl : section.getAsJsonArray("sectionNotes")) {
+                    if (!rowEl.isJsonArray()) continue;
+                    JsonArray row = rowEl.getAsJsonArray();
+                    if (row.size() < 2) continue;
+                    Double time = number(row.get(0));
+                    Integer data = integer(row.get(1));
+                    if (time == null) continue;
+                    if (data != null && data < 0) {
+                        if (row.size() > 2) parseEventPayload(time, row.get(2), out);
+                        if (row.size() > 2 && row.get(2).isJsonPrimitive()) addDirectEvent(time, row, 2, out);
+                    } else if (data != null && row.size() > 2 && number(row.get(2)) == null) {
+                        // Nonstandard but common: [time, lane, "Event Name", value1, value2].
+                        addDirectEvent(time, row, 2, out);
+                    } else if (data == null && row.get(1).isJsonPrimitive()) {
+                        addDirectEvent(time, row, 1, out);
+                    }
+                }
+            }
+        } catch (Exception ignored) {}
+        out.sort(java.util.Comparator.comparingDouble(e -> e.timeMs));
+        return out;
+    }
+
+    private static void parseEventContainer(JsonElement element, java.util.List<SongChart.Event> out) {
+        if (element == null || element.isJsonNull()) return;
+        if (element.isJsonObject()) {
+            JsonObject object = element.getAsJsonObject();
+            // V-Slice/per-difficulty containers and object-form Codename events.
+            if (object.has("time") || object.has("t") || object.has("strumTime")) {
+                double time = optDouble(object, "time", optDouble(object, "t", optDouble(object, "strumTime", -1)));
+                String name = optString(object, "name", optString(object, "event", optString(object, "type", "")));
+                String value1 = optString(object, "value1", "");
+                String value2 = optString(object, "value2", "");
+                if (object.has("params") && object.get("params").isJsonArray()) {
+                    JsonArray params = object.getAsJsonArray("params");
+                    if (!params.isEmpty()) value1 = text(params.get(0));
+                    if (params.size() > 1) value2 = text(params.get(1));
+                }
+                addEvent(out, time, name, value1, value2);
+            } else {
+                for (var child : object.entrySet()) parseEventContainer(child.getValue(), out);
+            }
+            return;
+        }
+        if (!element.isJsonArray()) return;
+        JsonArray array = element.getAsJsonArray();
+        for (JsonElement rowEl : array) {
+            if (rowEl.isJsonObject()) {
+                parseEventContainer(rowEl, out);
+                continue;
+            }
+            if (!rowEl.isJsonArray()) continue;
+            JsonArray row = rowEl.getAsJsonArray();
+            if (row.isEmpty()) continue;
+            Double time = number(row.get(0));
+            if (time == null) continue;
+            if (row.size() > 1) {
+                JsonElement payload = row.get(1);
+                if (payload.isJsonArray()) parseEventPayload(time, payload, out);
+                else if (payload.isJsonPrimitive()) addDirectEvent(time, row, 1, out);
+            }
+        }
+    }
+
+    private static void parseEventPayload(double time, JsonElement payload, java.util.List<SongChart.Event> out) {
+        if (!payload.isJsonArray()) return;
+        JsonArray array = payload.getAsJsonArray();
+        if (!array.isEmpty() && array.get(0).isJsonArray()) {
+            for (JsonElement event : array) parseEventPayload(time, event, out);
+            return;
+        }
+        if (!array.isEmpty()) addDirectEvent(time, array, 0, out);
+    }
+
+    private static void addDirectEvent(double time, JsonArray row, int nameIndex,
+                                       java.util.List<SongChart.Event> out) {
+        String name = row.size() > nameIndex ? text(row.get(nameIndex)) : "";
+        String value1 = row.size() > nameIndex + 1 ? text(row.get(nameIndex + 1)) : "";
+        String value2 = row.size() > nameIndex + 2 ? text(row.get(nameIndex + 2)) : "";
+        addEvent(out, time, name, value1, value2);
+    }
+
+    private static void addEvent(java.util.List<SongChart.Event> out, double time,
+                                 String name, String value1, String value2) {
+        if (time < 0 || name == null || name.isBlank()) return;
+        for (SongChart.Event existing : out) {
+            if (Math.abs(existing.timeMs - time) < 0.001 && existing.name.equals(name)
+                    && existing.value1.equals(value1) && existing.value2.equals(value2)) return;
+        }
+        out.add(new SongChart.Event(time, name, value1, value2));
+    }
+
+    private static Double number(JsonElement element) {
+        try {
+            if (element == null || !element.isJsonPrimitive()) return null;
+            var primitive = element.getAsJsonPrimitive();
+            if (primitive.isNumber()) return primitive.getAsDouble();
+            if (primitive.isString()) return Double.parseDouble(primitive.getAsString().trim());
+            return null;
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private static Integer integer(JsonElement element) {
+        Double value = number(element);
+        return value == null ? null : value.intValue();
+    }
+
+    private static String text(JsonElement element) {
+        try {
+            return element != null && element.isJsonPrimitive() ? element.getAsString() : "";
+        } catch (Exception ignored) {
+            return "";
+        }
     }
 
     public static String optString(JsonObject o, String key, String def) {

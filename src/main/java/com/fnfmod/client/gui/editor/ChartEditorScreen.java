@@ -1180,12 +1180,15 @@ public final class ChartEditorScreen extends Screen {
         int top = gridTop();
         int bottom = gridBottom();
         int gridWidth = cw * 8;
+        int eventX = gx - cw;
         float noteSize = Math.min(cw - 3, 24);
         double step = snapStepBeats();
 
+        gui.fill(eventX, top - cw, gx, top, 0xFFD0D0D0);
+        gui.fill(eventX, top, gx, bottom, 0xFFB8B8B8);
         gui.fill(gx, top - cw, gx + gridWidth, top, 0xFFE8E8E8);
         gui.fill(gx, top, gx + gridWidth, bottom, 0xFFE0E0E0);
-        gui.enableScissor(gx, top, gx + gridWidth, bottom);
+        gui.enableScissor(eventX, top, gx + gridWidth, bottom);
 
         double topBeat = yToBeat(top);
         double bottomBeat = yToBeat(bottom);
@@ -1213,7 +1216,17 @@ public final class ChartEditorScreen extends Screen {
             double time = chart.sectionStartMs(section);
             if (time > bottomTime) break;
             int y = (int) beatToY(conductor.beatAt(time));
-            if (y >= top - 1 && y <= bottom + 1) gui.fill(gx, y, gx + gridWidth, y + 1, 0xFF9D3D3D);
+            if (y >= top - 1 && y <= bottom + 1) gui.fill(eventX, y, gx + gridWidth, y + 1, 0xFF9D3D3D);
+        }
+
+        // Events are intentionally display-only. Their dedicated column is not
+        // part of grid hit-testing, so they cannot be edited yet.
+        for (SongChart.Event event : chart.events) {
+            double beat = conductor.beatAt(event.timeMs);
+            if (beat < topBeat - 1 || beat > bottomBeat + 1) continue;
+            int eventY = (int) beatToY(beat) + cw / 2;
+            gui.fill(eventX + 3, eventY - 4, gx - 3, eventY + 4, 0xFFFFA000);
+            drawCentered(gui, "E", eventX + cw / 2, eventY - font.lineHeight / 2, 0xFF201000);
         }
 
         for (SongChart.Note note : chart.notes) {
@@ -1239,7 +1252,9 @@ public final class ChartEditorScreen extends Screen {
         }
         gui.disableScissor();
 
+        gui.fill(gx - 1, top - cw, gx + 1, bottom, 0xFF222222);
         gui.fill(gx + 4 * cw - 1, top - cw, gx + 4 * cw + 1, bottom, 0xFF222222);
+        drawCentered(gui, "EV", eventX + cw / 2, top - cw / 2 - font.lineHeight / 2, 0xFF555555);
         String[] glyphs = {"<", "v", "^", ">"};
         for (int column = 0; column < 8; column++) {
             drawCentered(gui, glyphs[column % 4], gx + column * cw + cw / 2,
@@ -1247,9 +1262,7 @@ public final class ChartEditorScreen extends Screen {
         }
 
         int playheadY = centerY();
-        gui.fill(gx, playheadY, gx + gridWidth, playheadY + 1, 0xFFFF3333);
-        gui.fill(gx - 10, top, gx - 8, bottom, 0xFF222222);
-        gui.fill(gx - 16, playheadY - 3, gx - 10, playheadY + 3, 0xFFFFB000);
+        gui.fill(eventX, playheadY, gx + gridWidth, playheadY + 1, 0xFFFF3333);
 
         if (vortex) {
             draw(gui, "VORTEX", gx, top - 10, 0xFFFF66FF);

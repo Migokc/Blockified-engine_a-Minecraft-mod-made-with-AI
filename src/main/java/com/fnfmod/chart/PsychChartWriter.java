@@ -29,7 +29,21 @@ public final class PsychChartWriter {
         song.addProperty("gfVersion", "gf");
         song.addProperty("stage", "stage");
         song.addProperty("validScore", true);
-        song.add("events", new JsonArray());
+        chart.sortEvents();
+        JsonArray events = new JsonArray();
+        for (SongChart.Event event : chart.events) {
+            JsonArray row = new JsonArray();
+            row.add(event.timeMs);
+            JsonArray payloads = new JsonArray();
+            JsonArray payload = new JsonArray();
+            payload.add(event.name);
+            payload.add(event.value1);
+            payload.add(event.value2);
+            payloads.add(payload);
+            row.add(payloads);
+            events.add(row);
+        }
+        song.add("events", events);
 
         JsonArray sectionsArr = new JsonArray();
         double bpm = chart.startBpm;

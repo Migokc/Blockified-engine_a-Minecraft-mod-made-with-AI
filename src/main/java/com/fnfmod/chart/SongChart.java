@@ -21,6 +21,8 @@ public class SongChart {
     public final List<BpmChange> bpmChanges = new ArrayList<>();
     /** All notes, sorted by time. */
     public final List<Note> notes = new ArrayList<>();
+    /** Timeline events loaded from embedded Psych data or a separate events.json. */
+    public final List<Event> events = new ArrayList<>();
     /** Sections, kept for editor round-trips and legacy saving. */
     public final List<Section> sections = new ArrayList<>();
 
@@ -62,6 +64,24 @@ public class SongChart {
         public String camEase = "smooth";
     }
 
+    public static class Event {
+        public double timeMs;
+        public String name = "";
+        public String value1 = "";
+        public String value2 = "";
+
+        public Event(double timeMs, String name, String value1, String value2) {
+            this.timeMs = timeMs;
+            this.name = name == null ? "" : name;
+            this.value1 = value1 == null ? "" : value1;
+            this.value2 = value2 == null ? "" : value2;
+        }
+
+        public Event copy() {
+            return new Event(timeMs, name, value1, value2);
+        }
+    }
+
     public static class BpmChange {
         public double timeMs;
         public double bpm;
@@ -74,6 +94,10 @@ public class SongChart {
 
     public void sortNotes() {
         notes.sort(Comparator.comparingDouble(n -> n.timeMs));
+    }
+
+    public void sortEvents() {
+        events.sort(Comparator.comparingDouble(e -> e.timeMs));
     }
 
     /** Rebuilds bpmChanges from startBpm + section changeBPM flags. */
@@ -121,6 +145,7 @@ public class SongChart {
     public double lastNoteTimeMs() {
         double t = 0;
         for (Note n : notes) t = Math.max(t, n.timeMs + Math.max(0, n.sustainMs));
+        for (Event e : events) t = Math.max(t, e.timeMs);
         return t;
     }
 
