@@ -881,21 +881,22 @@ public final class ChartEditorScreen extends Screen {
         for (SongChart.Note note : chart.notes) {
             double beat = conductor.beatAt(note.timeMs);
             if (beat < topBeat - 8 || beat > bottomBeat + 1) continue;
-            int y = (int) beatToY(beat);
+            int timeLineY = (int) beatToY(beat);
+            int noteY = timeLineY + cw / 2;
             int column = (note.playerSide ? 4 : 0) + note.lane;
             int x = gx + column * cw;
             if (note.sustainMs > 0) {
-                int endY = (int) beatToY(conductor.beatAt(note.timeMs + note.sustainMs));
+                int endY = (int) beatToY(conductor.beatAt(note.timeMs + note.sustainMs)) + cw / 2;
                 NoteStyle.drawHoldPiece(gui, note.lane, x + cw / 2f,
-                        Math.min(y, endY), Math.max(y, endY), noteSize, endY < y);
+                        Math.min(noteY, endY), Math.max(noteY, endY), noteSize, endY < noteY);
             }
-            if (y + noteSize / 2 >= top && y - noteSize / 2 <= bottom) {
-                NoteStyle.drawNote(gui, note.lane, x + cw / 2f, y, noteSize);
+            if (noteY + noteSize / 2 >= top && noteY - noteSize / 2 <= bottom) {
+                NoteStyle.drawNote(gui, note.lane, x + cw / 2f, noteY, noteSize);
                 if (note == selectedNote) {
                     int radius = (int) noteSize / 2 + 2;
-                    gui.renderOutline(x + cw / 2 - radius, y - radius, radius * 2, radius * 2, 0xFFFFFFFF);
+                    gui.renderOutline(x + cw / 2 - radius, noteY - radius, radius * 2, radius * 2, 0xFFFFFFFF);
                 }
-                if (note.noteType != null && !note.noteType.isEmpty()) draw(gui, "*", x + cw - 6, y - 4, 0xFF111111);
+                if (note.noteType != null && !note.noteType.isEmpty()) draw(gui, "*", x + cw - 6, noteY - 4, 0xFF111111);
             }
         }
         gui.disableScissor();
@@ -914,12 +915,13 @@ public final class ChartEditorScreen extends Screen {
 
         if (vortex) {
             draw(gui, "VORTEX", gx, top - 10, 0xFFFF66FF);
-            gui.fill(gx, playheadY - cw / 2, gx + gridWidth, playheadY + cw / 2, 0x22FFFFFF);
+            int previewY = playheadY + cw / 2;
+            gui.fill(gx, playheadY, gx + gridWidth, playheadY + cw, 0x22FFFFFF);
             for (int column = 0; column < 8; column++) {
                 int centerX = gx + column * cw + cw / 2;
-                NoteStyle.drawNote(gui, column % 4, centerX, playheadY, noteSize);
+                NoteStyle.drawNote(gui, column % 4, centerX, previewY, noteSize);
                 draw(gui, String.valueOf(column + 1), gx + column * cw + 2,
-                        playheadY + cw / 2 - font.lineHeight, 0xFFFFFFFF);
+                        previewY + cw / 2 - font.lineHeight, 0xFFFFFFFF);
             }
         }
     }
