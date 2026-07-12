@@ -25,7 +25,10 @@ public final class CommandEventEditorScreen extends Screen {
             "<backward:1>",
             "<up:1>",
             "<down:1>",
+            "<forward:2,left:5>",
             CommandEventPlaceholders.CAMERA_ROTATION);
+    private static final List<String> DIRECTION_MACROS = List.of(
+            "left:1>", "right:1>", "forward:1>", "backward:1>", "up:1>", "down:1>");
 
     private final Screen parent;
     private final String initialCommand;
@@ -82,9 +85,22 @@ public final class CommandEventEditorScreen extends Screen {
         int start = value.lastIndexOf('<', Math.max(0, cursor - 1));
         if (start >= 0) {
             String fragment = value.substring(start, cursor).toLowerCase();
-            if (!fragment.contains(" ") && !fragment.contains(">")) {
+            if (!fragment.contains(">")) {
                 placeholderStart = start;
-                if (fragment.matches("<(left|right|forward|backward|up|down):-?\\d*(?:\\.\\d*)?")) {
+                int comma = fragment.lastIndexOf(',');
+                if (comma >= 0) {
+                    String prefix = fragment.substring(0, comma + 1);
+                    String afterComma = fragment.substring(comma + 1);
+                    String spacing = afterComma.startsWith(" ") ? " " : "";
+                    String tail = afterComma.trim();
+                    if (tail.matches("(left|right|forward|backward|up|down):-?\\d*(?:\\.\\d*)?")) {
+                        placeholderSuggestions.add(prefix + spacing + tail + ">");
+                    } else {
+                        DIRECTION_MACROS.stream().filter(candidate -> candidate.startsWith(tail))
+                                .map(candidate -> prefix + spacing + candidate)
+                                .forEach(placeholderSuggestions::add);
+                    }
+                } else if (fragment.matches("<(left|right|forward|backward|up|down):-?\\d*(?:\\.\\d*)?")) {
                     placeholderSuggestions.add(fragment + ">");
                 } else {
                     PLACEHOLDERS.stream().filter(candidate -> candidate.startsWith(fragment))
@@ -184,7 +200,7 @@ public final class CommandEventEditorScreen extends Screen {
                 Math.max(16, width / 20), 132, 0xFFBBBBBB, false);
         gui.drawString(font, "<speakers> = invisible target at the Funkin' Machine",
                 Math.max(16, width / 20), 143, 0xFFBBBBBB, false);
-        gui.drawString(font, "<left:N>/<right:N>/<forward:N>/<backward:N> = camera-relative XYZ",
+        gui.drawString(font, "Directions = camera-relative XYZ; combine: <forward:2,left:5>",
                 Math.max(16, width / 20), 154, 0xFFBBBBBB, false);
         gui.drawString(font, "<camera_rotation> = camera yaw and pitch (use after XYZ in tp)",
                 Math.max(16, width / 20), 165, 0xFFBBBBBB, false);

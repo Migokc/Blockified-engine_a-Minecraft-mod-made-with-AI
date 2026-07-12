@@ -14,8 +14,9 @@ public final class CommandEventPlaceholders {
     public static final String OPPONENT = "<opponent>";
     public static final String SPEAKERS = "<speakers>";
     public static final String CAMERA_ROTATION = "<camera_rotation>";
-    private static final Pattern POSITION_MACRO = Pattern.compile(
-            "<(left|right|forward|backward|up|down)(?::(-?\\d+(?:\\.\\d+)?))?>",
+    private static final Pattern ANGLE_MACRO = Pattern.compile("<([^<>]+)>");
+    private static final Pattern POSITION_PART = Pattern.compile(
+            "(left|right|forward|backward|up|down)(?::(-?\\d+(?:\\.\\d+)?))?",
             Pattern.CASE_INSENSITIVE);
 
     private CommandEventPlaceholders() {}
@@ -38,31 +39,43 @@ public final class CommandEventPlaceholders {
                 .replace(SPEAKERS, selector(machinePos, "speakers"))
                 .replace(CAMERA_ROTATION, trim(facing.getOpposite().toYRot()) + " 0");
 
-        Matcher matcher = POSITION_MACRO.matcher(expanded);
+        Matcher matcher = ANGLE_MACRO.matcher(expanded);
         StringBuffer out = new StringBuffer();
         while (matcher.find()) {
-            String kind = matcher.group(1).toLowerCase(Locale.ROOT);
-            double distance = matcher.group(2) == null ? 1.0 : Double.parseDouble(matcher.group(2));
-            String replacement = position(kind, distance, facing);
+            String replacement = combinedPosition(matcher.group(1), facing);
+            if (replacement == null) replacement = matcher.group();
             matcher.appendReplacement(out, Matcher.quoteReplacement(replacement));
         }
         matcher.appendTail(out);
         return out.toString();
     }
 
-    private static String position(String kind, double distance, Direction facing) {
-        if (kind.equals("up")) return "~ " + relative(distance) + " ~";
-        if (kind.equals("down")) return "~ " + relative(-distance) + " ~";
-
-        Direction direction = switch (kind) {
-            case "left" -> facing.getClockWise();
-            case "right" -> facing.getCounterClockWise();
-            case "forward" -> facing.getOpposite();
-            case "backward" -> facing;
-            default -> facing.getOpposite();
-        };
-        return relative(direction.getStepX() * distance) + " ~ "
-                + relative(direction.getStepZ() * distance);
+    private static String combinedPosition(String body, Direction facing) {
+        double x = 0, y = 0, z = 0;
+        String[] parts = body.split(",");
+        if (parts.length == 0) return null;
+        for (String rawPart : parts) {
+            Matcher part = POSITION_PART.matcher(rawPart.trim());
+            if (!part.matches()) return null;
+            String kind = part.group(1).toLowerCase(Locale.ROOT);
+            double distance = part.group(2) == null ? 1.0 : Double.parseDouble(part.group(2));
+            if (kind.equals("up")) {
+                y += distance;
+            } else if (kind.equals("down")) {
+                y -= distance;
+            } else {
+                Direction direction = switch (kind) {
+                    case "left" -> facing.getClockWise();
+                    case "right" -> facing.getCounterClockWise();
+                    case "forward" -> facing.getOpposite();
+                    case "backward" -> facing;
+                    default -> facing.getOpposite();
+                };
+                x += direction.getStepX() * distance;
+                z += direction.getStepZ() * distance;
+            }
+        }
+        return relative(x) + " " + relative(y) + " " + relative(z);
     }
 
     private static String relative(double value) {
