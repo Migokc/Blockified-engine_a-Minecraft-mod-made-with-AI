@@ -4,6 +4,7 @@ import com.fnfmod.FnfMod;
 import com.fnfmod.block.FunkinMachineBlock;
 import com.fnfmod.chart.SongChart;
 import com.fnfmod.chart.CommandEventPlaceholders;
+import com.fnfmod.character.CharacterTransform;
 import com.fnfmod.net.FnfPayloads;
 import com.fnfmod.song.SongEntry;
 import com.fnfmod.song.SongLibrary;
@@ -59,6 +60,8 @@ public final class SessionManager {
         boolean hostEnded, guestEnded;
         String hostAnimSet = "default";
         String guestAnimSet = "default";
+        CharacterTransform hostTransform = CharacterTransform.DEFAULT;
+        CharacterTransform guestTransform = CharacterTransform.DEFAULT;
         /** solo only: 0 = player, 1 = opponent, 2 = both */
         byte playSide = 0;
         /** decorative bot armor stand in solo play */
@@ -213,16 +216,18 @@ public final class SessionManager {
         if (session.host == player) {
             session.hostReady = true;
             session.hostAnimSet = payload.animSet();
+            session.hostTransform = transformFrom(payload);
         }
         if (session.guest == player) {
             session.guestReady = true;
             session.guestAnimSet = payload.animSet();
+            session.guestTransform = transformFrom(payload);
         }
 
         if (!session.duet && session.hostReady) {
             session.state = State.PLAYING;
             long startAt = 1500; // relative delay in ms
-            placeOnStage(session.host, payload.pos(), session.playSide);
+            placeOnStage(session.host, payload.pos(), session.playSide, session.hostTransform);
             spawnBotStand(session, payload.pos());
             prepareCommandTargets(session, payload.pos());
             PacketDistributor.sendToPlayer(session.host, new FnfPayloads.StartSongS2C(
@@ -230,8 +235,8 @@ public final class SessionManager {
         } else if (session.duet && session.hostReady && session.guestReady && session.guest != null) {
             session.state = State.PLAYING;
             long startAt = 3000; // relative delay in ms
-            placeOnStage(session.host, payload.pos(), (byte) 0);
-            placeOnStage(session.guest, payload.pos(), (byte) 1);
+            placeOnStage(session.host, payload.pos(), (byte) 0, session.hostTransform);
+            placeOnStage(session.guest, payload.pos(), (byte) 1, session.guestTransform);
             prepareCommandTargets(session, payload.pos());
             UUID hostId = session.host.getUUID();
             UUID guestId = session.guest.getUUID();
@@ -244,12 +249,22 @@ public final class SessionManager {
         }
     }
 
+    private static CharacterTransform transformFrom(FnfPayloads.ReadyC2S payload) {
+        Vec3 offset = new Vec3(payload.offsetX(), payload.offsetY(), payload.offsetZ());
+        if (!Double.isFinite(offset.x) || !Double.isFinite(offset.y) || !Double.isFinite(offset.z)
+                || !Float.isFinite(payload.rotationOffset())) {
+            return CharacterTransform.DEFAULT;
+        }
+        return new CharacterTransform(offset, payload.rotationOffset());
+    }
+
     /**
      * Puts a participant on the stage: 2 blocks in front of the machine (its
      * FACING direction), player side to the camera's right, opponent to the
      * left, both facing away from the machine (toward the camera).
      */
-    private static void placeOnStage(ServerPlayer player, BlockPos machinePos, byte playSide) {
+    private static void placeOnStage(ServerPlayer player, BlockPos machinePos, byte playSide,
+                                     CharacterTransform transform) {
         RETURN_POINTS.putIfAbsent(player.getUUID(), new ReturnPoint(
                 player.getX(), player.getY(), player.getZ(), player.getYRot(), player.getXRot()));
 
@@ -260,11 +275,18 @@ public final class SessionManager {
         }
         // camera looks back toward the machine; its screen-right is facing.getCounterClockWise()
         Direction right = facing.getCounterClockWise();
+        Vec3 posOffset = transform.positionOffset();
         double side = playSide == 0 ? 1.5 : playSide == 1 ? -1.5 : 0.0; // both = center stage
-        double x = machinePos.getX() + 0.5 + facing.getStepX() * 2.0 + right.getStepX() * side;
-        double z = machinePos.getZ() + 0.5 + facing.getStepZ() * 2.0 + right.getStepZ() * side;
-        float yaw = facing.toYRot(); // face away from the machine = toward the camera
-        player.teleportTo(player.serverLevel(), x, machinePos.getY(), z, yaw, 0f);
+        double x = machinePos.getX() + 0.5 + facing.getStepX() * 2.0
+                + right.getStepX() * side + posOffset.x;
+        double y = machinePos.getY() + posOffset.y;
+        double z = machinePos.getZ() + 0.5 + facing.getStepZ() * 2.0
+                + right.getStepZ() * side + posOffset.z;
+        // character rotation is an offset from the stage's existing default angle
+        float yaw = facing.toYRot() + transform.rotationOffset();
+        player.teleportTo(player.serverLevel(), x, y, z, yaw, 0f);
+        player.setYBodyRot(yaw);
+        player.setYHeadRot(yaw);
         // non-interactive while playing (no incoming damage); restored on session end
         INVULN_BEFORE.putIfAbsent(player.getUUID(), player.isInvulnerable());
         player.setInvulnerable(true);

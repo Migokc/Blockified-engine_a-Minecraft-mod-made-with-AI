@@ -218,14 +218,20 @@ public final class FnfPayloads {
         public Type<? extends CustomPacketPayload> type() { return TYPE; }
     }
 
-    public record ReadyC2S(BlockPos pos, String animSet) implements CustomPacketPayload {
+    public record ReadyC2S(BlockPos pos, String animSet, double offsetX, double offsetY,
+                           double offsetZ, float rotationOffset) implements CustomPacketPayload {
         public static final Type<ReadyC2S> TYPE = new Type<>(FnfMod.id("ready"));
         public static final StreamCodec<FriendlyByteBuf, ReadyC2S> CODEC = StreamCodec.of(
                 (buf, v) -> {
                     buf.writeBlockPos(v.pos);
                     buf.writeUtf(v.animSet);
+                    buf.writeDouble(v.offsetX);
+                    buf.writeDouble(v.offsetY);
+                    buf.writeDouble(v.offsetZ);
+                    buf.writeFloat(v.rotationOffset);
                 },
-                buf -> new ReadyC2S(buf.readBlockPos(), buf.readUtf()));
+                buf -> new ReadyC2S(buf.readBlockPos(), buf.readUtf(), buf.readDouble(),
+                        buf.readDouble(), buf.readDouble(), buf.readFloat()));
 
         @Override
         public Type<? extends CustomPacketPayload> type() { return TYPE; }

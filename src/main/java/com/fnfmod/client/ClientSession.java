@@ -1,6 +1,8 @@
 package com.fnfmod.client;
 
 import com.fnfmod.FnfMod;
+import com.fnfmod.block.FunkinMachineBlock;
+import com.fnfmod.character.CharacterTransform;
 import com.fnfmod.chart.SongChart;
 import com.fnfmod.client.audio.SongPlayer;
 import com.fnfmod.client.gui.GameplayScreen;
@@ -11,7 +13,9 @@ import com.fnfmod.song.SongEntry;
 import com.fnfmod.song.SongLibrary;
 import net.minecraft.client.Minecraft;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.network.chat.Component;
+import net.minecraft.world.level.block.state.BlockState;
 import net.neoforged.neoforge.network.PacketDistributor;
 
 import java.io.IOException;
@@ -190,8 +194,18 @@ public final class ClientSession {
                     chart.needsVoices ? entry.voicesPlayerFor(difficulty) : null,
                     chart.needsVoices ? entry.voicesOpponentFor(difficulty) : null);
 
-            PacketDistributor.sendToServer(new FnfPayloads.ReadyC2S(activePos,
-                    ClientOptions.get().animationSet));
+            String animationSet = ClientOptions.get().animationSet;
+            Direction facing = Direction.NORTH;
+            if (Minecraft.getInstance().level != null) {
+                BlockState state = Minecraft.getInstance().level.getBlockState(activePos);
+                if (state.hasProperty(FunkinMachineBlock.FACING)) {
+                    facing = state.getValue(FunkinMachineBlock.FACING);
+                }
+            }
+            CharacterTransform transform = CharacterTransform.load(animationSet, facing);
+            PacketDistributor.sendToServer(new FnfPayloads.ReadyC2S(activePos, animationSet,
+                    transform.positionOffset().x, transform.positionOffset().y,
+                    transform.positionOffset().z, transform.rotationOffset()));
             Minecraft.getInstance().setScreen(new WaitingScreen(Component.literal(
                     duet ? "Waiting for the other player..." : "Get ready...")));
         } catch (Exception e) {

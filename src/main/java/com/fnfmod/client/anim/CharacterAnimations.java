@@ -41,6 +41,8 @@ import java.util.stream.Stream;
  *
  * A set's character.json configures the camera and which animation plays per action:
  * {
+ *   "pos": "<forward:0,left:0,up:0>",               // offset from the default stage position
+ *   "rotation": 0,                                  // added to the default body rotation in degrees
  *   "cameraOffset": [0.0, 0.0],                      // base camera center for this character (blocks: x=right, y=up)
  *   "animations": {
  *     "idle":  "my_idle",
