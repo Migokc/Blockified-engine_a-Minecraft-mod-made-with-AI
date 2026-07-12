@@ -422,13 +422,30 @@ public final class ChartEditorScreen extends Screen {
         int w = controlWidth() - 20;
         int y = 52;
         if (!eventDraftInitialized) setEventDraft(selectedEvent);
+        List<SongChart.Event> pointEvents = eventsAtSelectedPoint();
+        int pointIndex = selectedEvent == null ? -1 : pointEvents.indexOf(selectedEvent);
         label("Event", x, 43, 0xFFDDDDDD, false);
-        label("Event", x, y, 0xFFDDDDDD, false);
-        button(x, y + 10, w, eventTypeDraft + "  v", b -> {
+        label(selectedEvent == null ? "Event" : "Event " + (pointIndex + 1) + " / " + pointEvents.size(),
+                x, y, 0xFFDDDDDD, false);
+        int small = 22;
+        int gap = 2;
+        int typeWidth = Math.max(40, w - 4 * (small + gap));
+        button(x, y + 10, typeWidth, eventTypeDraft + "  v", b -> {
             commitVisibleFields();
             eventDropdownOpen = !eventDropdownOpen;
             rebuildUi();
         });
+        int actionX = x + typeWidth + gap;
+        Button removePointEvent = button(actionX, y + 10, small, "-", b -> removeEventFromPoint());
+        removePointEvent.active = selectedEvent != null;
+        actionX += small + gap;
+        button(actionX, y + 10, small, "+", b -> addEventToPoint());
+        actionX += small + gap;
+        Button previousPointEvent = button(actionX, y + 10, small, "<", b -> cyclePointEvent(-1));
+        previousPointEvent.active = pointEvents.size() > 1;
+        actionX += small + gap;
+        Button nextPointEvent = button(actionX, y + 10, small, ">", b -> cyclePointEvent(1));
+        nextPointEvent.active = pointEvents.size() > 1;
         button(x, y + 27, w, "Trigger: " + (eventBeforeSongDraft ? "Before Song" : "Timeline"), b -> {
             commitVisibleFields();
             eventBeforeSongDraft = !eventBeforeSongDraft;
@@ -485,7 +502,7 @@ public final class ChartEditorScreen extends Screen {
         if (eventDropdownOpen) {
             for (int i = 0; i < EVENT_TYPES.size(); i++) {
                 String type = EVENT_TYPES.get(i);
-                button(x, y + 24 + i * 14, w, type, b -> {
+                button(x, y + 24 + i * 14, typeWidth, type, b -> {
                     boolean changed = !type.equals(eventTypeDraft);
                     eventTypeDraft = type;
                     eventDropdownOpen = false;
@@ -1674,6 +1691,71 @@ public final class ChartEditorScreen extends Screen {
     private void addEventAtFieldTime() {
         commitVisibleFields();
         addEventAt(eventTimeDraft);
+    }
+
+    private List<SongChart.Event> eventsAtSelectedPoint() {
+        if (selectedEvent == null) return List.of();
+        double time = selectedEvent.timeMs;
+        List<SongChart.Event> result = new ArrayList<>();
+        for (SongChart.Event event : chart.events) {
+            if (Math.abs(event.timeMs - time) < 0.001) result.add(event);
+        }
+        return result;
+    }
+
+    private void selectPointEvent(SongChart.Event event) {
+        selectedEvents.clear();
+        selectedEvent = event;
+        if (event != null) {
+            selectedEvents.add(event);
+            setEventDraft(event);
+            eventTimeDraft = event.timeMs;
+        }
+        activeTab = EditorTab.EVENTS;
+    }
+
+    private void addEventToPoint() {
+        commitVisibleFields();
+        SongChart.Event added;
+        if (selectedEvent != null) {
+            added = selectedEvent.copy();
+        } else {
+            String value2 = eventValue2Draft.isBlank()
+                    ? defaultEventValue2(eventTypeDraft, eventValue1Draft) : eventValue2Draft;
+            added = new SongChart.Event(Math.max(0, eventTimeDraft), eventTypeDraft,
+                    eventValue1Draft, value2, eventBeforeSongDraft);
+        }
+        chart.events.add(added);
+        chart.sortEvents();
+        selectPointEvent(added);
+        setStatus("Added event at same point");
+        rebuildUi();
+    }
+
+    private void removeEventFromPoint() {
+        if (selectedEvent == null) return;
+        commitVisibleFields();
+        List<SongChart.Event> group = eventsAtSelectedPoint();
+        int index = group.indexOf(selectedEvent);
+        SongChart.Event removed = selectedEvent;
+        chart.events.remove(removed);
+        group.remove(removed);
+        SongChart.Event next = group.isEmpty() ? null : group.get(Math.min(index, group.size() - 1));
+        selectPointEvent(next);
+        setStatus("Removed event from point");
+        rebuildUi();
+    }
+
+    private void cyclePointEvent(int direction) {
+        if (selectedEvent == null) return;
+        commitVisibleFields();
+        List<SongChart.Event> group = eventsAtSelectedPoint();
+        if (group.size() < 2) return;
+        int index = group.indexOf(selectedEvent);
+        selectPointEvent(group.get(Math.floorMod(index + direction, group.size())));
+        setStatus("Selected event " + (Math.floorMod(index + direction, group.size()) + 1)
+                + " / " + group.size());
+        rebuildUi();
     }
 
     private void addEventAt(double time) {

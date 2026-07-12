@@ -7,6 +7,7 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonPrimitive;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 
 /** Serializes a normalized SongChart back to Psych Engine / legacy-compatible JSON. */
@@ -106,20 +107,26 @@ public final class PsychChartWriter {
     }
 
     private static JsonArray eventArray(SongChart chart) {
-        chart.sortEvents();
         JsonArray events = new JsonArray();
-        for (SongChart.Event event : chart.events) {
-            JsonArray row = new JsonArray();
-            row.add(event.timeMs);
-            JsonArray payloads = new JsonArray();
+        List<SongChart.Event> ordered = new ArrayList<>(chart.events);
+        ordered.sort(Comparator.comparingDouble(event -> event.timeMs));
+        double pointTime = Double.NaN;
+        JsonArray payloads = null;
+        for (SongChart.Event event : ordered) {
+            if (payloads == null || Math.abs(event.timeMs - pointTime) >= 0.001) {
+                pointTime = event.timeMs;
+                JsonArray row = new JsonArray();
+                row.add(pointTime);
+                payloads = new JsonArray();
+                row.add(payloads);
+                events.add(row);
+            }
             JsonArray payload = new JsonArray();
             payload.add(event.name);
             payload.add(event.value1);
             payload.add(event.value2);
             if (event.beforeSong) payload.add("load");
             payloads.add(payload);
-            row.add(payloads);
-            events.add(row);
         }
         return events;
     }
