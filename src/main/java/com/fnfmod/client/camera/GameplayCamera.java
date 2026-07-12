@@ -8,9 +8,9 @@ import org.joml.Vector3f;
 import java.util.function.Supplier;
 
 /**
- * FNF-style camera: only pans in the camera's screen plane (X/Y), never moves
- * or rotates anything else. Characters are never repositioned — they stay on
- * the ground; the camera does all the work.
+ * FNF-style camera: follows focused characters in 3D while applying animation
+ * nudges in the camera's screen plane. Its viewing direction remains tied to
+ * the stage rather than a character's custom body rotation.
  *
  * Focus follows the chart (mustHitSection = player focused). Each character
  * side has a base camera offset plus a per-animation nudge (both from the
@@ -23,6 +23,8 @@ public final class GameplayCamera {
 
     private static boolean active;
     private static Vec3 anchor = Vec3.ZERO;
+    /** Entity yaw the stage camera used before character.json rotation offsets. */
+    private static float stageViewYaw;
     private static Supplier<Vec3> cameraEntityPos;
     private static Supplier<Vec3> playerSidePos;
     private static Supplier<Vec3> opponentSidePos;
@@ -47,10 +49,11 @@ public final class GameplayCamera {
 
     private GameplayCamera() {}
 
-    public static void begin(Vec3 anchorPos, Supplier<Vec3> cameraEntity,
+    public static void begin(Vec3 anchorPos, float fixedStageYaw, Supplier<Vec3> cameraEntity,
                              Supplier<Vec3> playerSide, Supplier<Vec3> opponentSide,
                              float[] playerBase, float[] opponentBase) {
         anchor = anchorPos;
+        stageViewYaw = fixedStageYaw;
         cameraEntityPos = cameraEntity;
         playerSidePos = playerSide;
         opponentSidePos = opponentSide;
@@ -84,6 +87,11 @@ public final class GameplayCamera {
 
     public static boolean isActive() {
         return active;
+    }
+
+    /** Fixed entity yaw used to build the detached front camera during songs. */
+    public static float stageViewYaw() {
+        return stageViewYaw;
     }
 
     /** Switch camera focus (called on chart section changes). */

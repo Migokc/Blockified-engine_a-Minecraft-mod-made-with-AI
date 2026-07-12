@@ -266,7 +266,7 @@ public class GameplayScreen extends Screen {
         if (playBoth) {
             // one character center stage playing everything: camera just stays on them
             Vec3 anchor = new Vec3(cx, cy, cz);
-            GameplayCamera.begin(anchor, mePos, mePos, mePos, myBase, myBase);
+            GameplayCamera.begin(anchor, facing.toYRot(), mePos, mePos, mePos, myBase, myBase);
             return;
         }
 
@@ -285,7 +285,7 @@ public class GameplayScreen extends Screen {
             otherPos = () -> botSpot;
         }
         float[] partnerBase = CharacterAnimations.baseCameraOffset(partnerAnimSet);
-        GameplayCamera.begin(anchor, mePos,
+        GameplayCamera.begin(anchor, facing.toYRot(), mePos,
                 myChartSideIsPlayer ? mePos : otherPos,
                 myChartSideIsPlayer ? otherPos : mePos,
                 myChartSideIsPlayer ? myBase : partnerBase,
