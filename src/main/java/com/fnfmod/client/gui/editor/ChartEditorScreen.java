@@ -116,7 +116,9 @@ public final class ChartEditorScreen extends Screen {
     private EditBox noteTypeField;
     private EditBox saveIdField;
     private EditBox eventTimeField;
-    private EditBox eventCommandField;
+    private EditBox eventNameField;
+    private EditBox eventValue1Field;
+    private EditBox eventValue2Field;
 
     public ChartEditorScreen(String songId) {
         this(songId, null, null, null, null, null);
@@ -231,7 +233,7 @@ public final class ChartEditorScreen extends Screen {
         songNameField = songBpmField = songSpeedField = songOffsetField = null;
         playerField = opponentField = sectionBpmField = sectionBeatsField = null;
         noteTimeField = sustainField = noteTypeField = saveIdField = null;
-        eventTimeField = eventCommandField = null;
+        eventTimeField = eventNameField = eventValue1Field = eventValue2Field = null;
     }
 
     private void buildTopBar() {
@@ -408,24 +410,29 @@ public final class ChartEditorScreen extends Screen {
         int x = controlX() + 10;
         int w = controlWidth() - 20;
         int y = 52;
-        label("Minecraft Command Event", x, 43, 0xFFDDDDDD, false);
-        eventTimeField = labeledBox("Time (ms)", x, y, w,
+        label("Event", x, 43, 0xFFDDDDDD, false);
+        eventNameField = labeledBox("Event", x, y, w,
+                selectedEvent == null ? MINECRAFT_COMMAND_EVENT : selectedEvent.name, "event name");
+        eventTimeField = labeledBox("Time (ms)", x, y + 27, w,
                 trim(selectedEvent == null ? viewPositionMs : selectedEvent.timeMs), "event time");
-        eventCommandField = labeledBox("Command", x, y + 31, w,
+        eventValue1Field = labeledBox("Value 1", x, y + 54, w,
                 selectedEvent == null ? "" : selectedEvent.value1, "command without /");
-        eventCommandField.setMaxLength(2048);
+        eventValue1Field.setMaxLength(2048);
+        eventValue2Field = labeledBox("Value 2", x, y + 81, w,
+                selectedEvent == null ? "player" : selectedEvent.value2, "player or server");
+        eventValue2Field.setMaxLength(64);
         int half = (w - 4) / 2;
-        button(x, y + 62, half, "Add at Time", b -> addCommandEvent());
-        Button apply = button(x + half + 4, y + 62, half, "Apply Selected", b -> {
+        button(x, y + 108, half, "Add at Time", b -> addEventAtFieldTime());
+        Button apply = button(x + half + 4, y + 108, half, "Apply Selected", b -> {
             commitVisibleFields();
-            setStatus("Command event updated");
+            setStatus("Event updated");
             rebuildUi();
         });
         apply.active = selectedEvent != null;
-        Button remove = button(x, y + 80, w, "Delete Selected Event", b -> deleteSelectedEvent());
+        Button remove = button(x, y + 126, w, "Delete Selected Event", b -> deleteSelectedEvent());
         remove.active = selectedEvent != null;
-        label("The command runs as the player; server permissions still apply.",
-                x, y + 101, 0xFFBBBBBB, false);
+        label("Minecraft Command: Value 1 = command, Value 2 = player/server",
+                x, y + 147, 0xFFBBBBBB, false);
     }
 
     private void buildOpenMenu() {
@@ -529,11 +536,12 @@ public final class ChartEditorScreen extends Screen {
             }
         }
 
-        if (selectedEvent != null && eventTimeField != null && eventCommandField != null) {
+        if (selectedEvent != null && eventTimeField != null && eventNameField != null
+                && eventValue1Field != null && eventValue2Field != null) {
             selectedEvent.timeMs = Math.max(0, parseNumber(eventTimeField, selectedEvent.timeMs));
-            selectedEvent.name = MINECRAFT_COMMAND_EVENT;
-            selectedEvent.value1 = eventCommandField.getValue().trim();
-            selectedEvent.value2 = "";
+            selectedEvent.name = eventNameField.getValue().trim();
+            selectedEvent.value1 = eventValue1Field.getValue().trim();
+            selectedEvent.value2 = eventValue2Field.getValue().trim();
             chart.sortEvents();
         }
 
@@ -1118,7 +1126,7 @@ public final class ChartEditorScreen extends Screen {
         int gx = gridX();
         int cw = cellWidth();
         int eventX = gx - cw;
-        if (button == 0 && mouseX >= eventX && mouseX < gx
+        if ((button == 0 || button == 1) && mouseX >= eventX && mouseX < gx
                 && mouseY >= gridTop() && mouseY < gridBottom()) {
             double clickedBeat = yToBeat(mouseY - cw / 2.0);
             SongChart.Event closest = null;
@@ -1130,14 +1138,26 @@ public final class ChartEditorScreen extends Screen {
                     closest = event;
                 }
             }
-            if (closest != null && closestPixels <= Math.max(7, cw / 2.0)) {
+            boolean hitEvent = closest != null && closestPixels <= Math.max(7, cw / 2.0);
+            if (button == 1) {
+                if (hitEvent) {
+                    chart.events.remove(closest);
+                    if (selectedEvent == closest) selectedEvent = null;
+                    setStatus("Removed event");
+                    rebuildUi();
+                }
+                return true;
+            }
+            if (hitEvent) {
                 selectedEvent = closest;
                 activeTab = EditorTab.EVENTS;
                 openMenu = TopMenu.NONE;
                 setStatus("Selected event at " + trim(closest.timeMs) + " ms");
                 rebuildUi();
             } else {
-                setStatus("No event at this position");
+                double beat = yToBeat(mouseY);
+                double snapped = Math.max(0, Math.floor(beat / snapStepBeats() + 1.0e-6) * snapStepBeats());
+                addEventAt(conductor.timeOfBeat(snapped));
             }
             return true;
         }
@@ -1291,6 +1311,8 @@ public final class ChartEditorScreen extends Screen {
         for (long band = firstBand; band * step <= bottomBeat; band++) {
             int y0 = (int) beatToY(band * step);
             int y1 = (int) beatToY((band + 1) * step);
+            int eventColor = (band & 1) == 0 ? 0xFFC4C4C4 : 0xFFDADADA;
+            gui.fill(eventX, Math.max(top, y0), gx, Math.min(bottom, y1), eventColor);
             for (int column = 0; column < 8; column++) {
                 int color = ((column + band) & 1) == 0 ? 0xFFCBCBCB : 0xFFE4E4E4;
                 gui.fill(gx + column * cw, Math.max(top, y0), gx + (column + 1) * cw, Math.min(bottom, y1), color);
@@ -1302,7 +1324,7 @@ public final class ChartEditorScreen extends Screen {
             double beat = line * step;
             int y = (int) beatToY(beat);
             boolean wholeBeat = Math.abs(beat - Math.round(beat)) < 1.0e-6;
-            gui.fill(gx, y, gx + gridWidth, y + 1, wholeBeat ? 0x66444444 : 0x22444444);
+            gui.fill(eventX, y, gx + gridWidth, y + 1, wholeBeat ? 0x66444444 : 0x22444444);
         }
 
         double bottomTime = conductor.timeOfBeat(Math.max(0, bottomBeat));
@@ -1346,6 +1368,7 @@ public final class ChartEditorScreen extends Screen {
         }
         gui.disableScissor();
 
+        gui.fill(eventX - 1, top - cw, eventX + 1, bottom, 0xFF222222);
         gui.fill(gx - 1, top - cw, gx + 1, bottom, 0xFF222222);
         gui.fill(gx + 4 * cw - 1, top - cw, gx + 4 * cw + 1, bottom, 0xFF222222);
         drawCentered(gui, "EV", eventX + cw / 2, top - cw / 2 - font.lineHeight / 2, 0xFF555555);
@@ -1539,17 +1562,22 @@ public final class ChartEditorScreen extends Screen {
                 originalDirectory.toAbsolutePath().normalize() + System.lineSeparator() + "chart=" + chartName);
     }
 
-    private void addCommandEvent() {
-        String command = eventCommandField == null ? "" : eventCommandField.getValue().trim();
-        if (command.isEmpty()) {
-            setStatus("Enter a Minecraft command first");
-            return;
-        }
+    private void addEventAtFieldTime() {
         double time = Math.max(0, parseNumber(eventTimeField, viewPositionMs));
-        selectedEvent = new SongChart.Event(time, MINECRAFT_COMMAND_EVENT, command, "");
+        addEventAt(time);
+    }
+
+    private void addEventAt(double time) {
+        String name = eventNameField == null || eventNameField.getValue().isBlank()
+                ? MINECRAFT_COMMAND_EVENT : eventNameField.getValue().trim();
+        String value1 = eventValue1Field == null ? "" : eventValue1Field.getValue().trim();
+        String value2 = eventValue2Field == null || eventValue2Field.getValue().isBlank()
+                ? "player" : eventValue2Field.getValue().trim();
+        selectedEvent = new SongChart.Event(Math.max(0, time), name, value1, value2);
         chart.events.add(selectedEvent);
         chart.sortEvents();
-        setStatus("Added command event");
+        activeTab = EditorTab.EVENTS;
+        setStatus("Added event");
         rebuildUi();
     }
 

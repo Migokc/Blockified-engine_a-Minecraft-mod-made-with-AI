@@ -453,9 +453,14 @@ public class GameplayScreen extends Screen {
 
     private void processEvents() {
         while (eventIndex < chart.events.size() && chart.events.get(eventIndex).timeMs <= songPos) {
-            SongChart.Event event = chart.events.get(eventIndex++);
-            if (isMinecraftCommandEvent(event) && (!duet || mode != PlayMode.OPPONENT)) {
-                runMinecraftCommand(event.value1);
+            int currentEventIndex = eventIndex++;
+            SongChart.Event event = chart.events.get(currentEventIndex);
+            if (isMinecraftCommandEvent(event)) {
+                if ("server".equalsIgnoreCase(event.value2.trim())) {
+                    PacketDistributor.sendToServer(new FnfPayloads.CommandEventC2S(machinePos, currentEventIndex));
+                } else {
+                    runPlayerCommand(event.value1);
+                }
             }
         }
     }
@@ -465,7 +470,7 @@ public class GameplayScreen extends Screen {
                 || event.name.equalsIgnoreCase("Run Minecraft Command"));
     }
 
-    private void runMinecraftCommand(String rawCommand) {
+    private void runPlayerCommand(String rawCommand) {
         if (minecraft.player == null || minecraft.player.connection == null || rawCommand == null) return;
         String command = rawCommand.trim();
         while (command.startsWith("/")) command = command.substring(1).trim();

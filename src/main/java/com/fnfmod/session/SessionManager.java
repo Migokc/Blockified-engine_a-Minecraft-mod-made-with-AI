@@ -2,6 +2,7 @@ package com.fnfmod.session;
 
 import com.fnfmod.FnfMod;
 import com.fnfmod.block.FunkinMachineBlock;
+import com.fnfmod.chart.SongChart;
 import com.fnfmod.net.FnfPayloads;
 import com.fnfmod.song.SongEntry;
 import com.fnfmod.song.SongLibrary;
@@ -26,9 +27,11 @@ import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 /** Server-side: one session per Funkin' Machine block. */
@@ -58,6 +61,8 @@ public final class SessionManager {
         byte playSide = 0;
         /** decorative bot armor stand in solo play */
         ArmorStand botStand;
+        /** Prevents duet clients or duplicate packets from running a server event twice. */
+        final Set<Integer> executedServerEvents = new HashSet<>();
     }
 
     private static final Map<Key, Session> SESSIONS = new HashMap<>();
@@ -146,6 +151,7 @@ public final class SessionManager {
         session.playSide = payload.duet() ? 0 : (byte) Math.max(0, Math.min(2, payload.playSide()));
         session.hostReady = false;
         session.guestReady = false;
+        session.executedServerEvents.clear();
 
         if (payload.duet()) {
             session.state = State.WAITING_GUEST;
@@ -294,6 +300,41 @@ public final class SessionManager {
             session.botStand.discard();
             session.botStand = null;
         }
+    }
+
+    public static void onCommandEvent(ServerPlayer player, FnfPayloads.CommandEventC2S payload) {
+        Session session = SESSIONS.get(keyOf(player, payload.pos()));
+        if (session == null || session.state != State.PLAYING
+                || (session.host != player && session.guest != player)) return;
+
+        SongEntry entry = SongLibrary.get(session.songId);
+        if (entry == null) return;
+
+        try {
+            SongChart chart = SongLibrary.loadChart(entry, session.difficulty);
+            if (payload.eventIndex() < 0 || payload.eventIndex() >= chart.events.size()) return;
+            SongChart.Event event = chart.events.get(payload.eventIndex());
+            if (!isMinecraftCommandEvent(event.name) || !"server".equalsIgnoreCase(event.value2.trim())) {
+                FnfMod.LOGGER.warn("Rejected unlisted server command event from {} for song {}",
+                        player.getGameProfile().getName(), session.songId);
+                return;
+            }
+            if (!session.executedServerEvents.add(payload.eventIndex())) return;
+
+            String command = event.value1.trim();
+            while (command.startsWith("/")) command = command.substring(1).trim();
+            if (command.isEmpty() || player.getServer() == null) return;
+            player.getServer().getCommands().performPrefixedCommand(
+                    player.getServer().createCommandSourceStack(), command);
+        } catch (Exception e) {
+            FnfMod.LOGGER.warn("Could not run server command event for {}: {}",
+                    session.songId, e.toString());
+        }
+    }
+
+    private static boolean isMinecraftCommandEvent(String name) {
+        return name != null && (name.equalsIgnoreCase("Minecraft Command")
+                || name.equalsIgnoreCase("Run Minecraft Command"));
     }
 
     public static void onNoteEvent(ServerPlayer player, FnfPayloads.NoteEventC2S payload) {
