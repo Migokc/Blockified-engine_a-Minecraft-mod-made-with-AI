@@ -1180,10 +1180,22 @@ public final class ChartEditorScreen extends Screen {
             }
             boolean hitEvent = closest != null && closestPixels <= Math.max(7, cw / 2.0);
             if (hitEvent) {
-                if (!hasShiftDown() && !hasAltDown()) clearSelection();
-                if (hasAltDown()) selectedEvents.remove(closest);
-                else if (hasShiftDown() && !selectedEvents.add(closest)) selectedEvents.remove(closest);
-                else selectedEvents.add(closest);
+                if (!hasShiftDown() && !hasAltDown()) {
+                    chart.events.remove(closest);
+                    selectedEvents.remove(closest);
+                    if (selectedEvent == closest) {
+                        selectedEvent = selectedEvents.stream().reduce((a, b) -> b).orElse(null);
+                        if (selectedEvent != null) setEventDraft(selectedEvent);
+                    }
+                    setStatus("Removed event");
+                    rebuildUi();
+                    return true;
+                }
+                if (hasShiftDown()) {
+                    if (!selectedEvents.add(closest)) selectedEvents.remove(closest);
+                } else {
+                    selectedEvents.add(closest);
+                }
                 selectedEvent = selectedEvents.stream().reduce((a, b) -> b).orElse(null);
                 if (selectedEvent != null) setEventDraft(selectedEvent);
                 activeTab = EditorTab.EVENTS;
