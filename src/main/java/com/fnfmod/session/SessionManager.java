@@ -3,6 +3,7 @@ package com.fnfmod.session;
 import com.fnfmod.FnfMod;
 import com.fnfmod.block.FunkinMachineBlock;
 import com.fnfmod.chart.SongChart;
+import com.fnfmod.chart.CommandEventPlaceholders;
 import com.fnfmod.net.FnfPayloads;
 import com.fnfmod.song.SongEntry;
 import com.fnfmod.song.SongLibrary;
@@ -15,6 +16,7 @@ import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.phys.Vec3;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.neoforge.event.entity.player.PlayerEvent;
@@ -61,6 +63,8 @@ public final class SessionManager {
         byte playSide = 0;
         /** decorative bot armor stand in solo play */
         ArmorStand botStand;
+        /** invisible command target at the Funkin' Machine/speakers. */
+        ArmorStand speakersMarker;
         /** Prevents duet clients or duplicate packets from running a server event twice. */
         final Set<Integer> executedServerEvents = new HashSet<>();
     }
@@ -220,6 +224,7 @@ public final class SessionManager {
             long startAt = 1500; // relative delay in ms
             placeOnStage(session.host, payload.pos(), session.playSide);
             spawnBotStand(session, payload.pos());
+            prepareCommandTargets(session, payload.pos());
             PacketDistributor.sendToPlayer(session.host, new FnfPayloads.StartSongS2C(
                     payload.pos(), session.songId, session.difficulty, true, Optional.empty(), "", "", startAt));
         } else if (session.duet && session.hostReady && session.guestReady && session.guest != null) {
@@ -227,6 +232,7 @@ public final class SessionManager {
             long startAt = 3000; // relative delay in ms
             placeOnStage(session.host, payload.pos(), (byte) 0);
             placeOnStage(session.guest, payload.pos(), (byte) 1);
+            prepareCommandTargets(session, payload.pos());
             UUID hostId = session.host.getUUID();
             UUID guestId = session.guest.getUUID();
             PacketDistributor.sendToPlayer(session.host, new FnfPayloads.StartSongS2C(
@@ -302,6 +308,56 @@ public final class SessionManager {
         }
     }
 
+    private static void prepareCommandTargets(Session session, BlockPos machinePos) {
+        String playerTag = CommandEventPlaceholders.tag(machinePos, "player");
+        String opponentTag = CommandEventPlaceholders.tag(machinePos, "opponent");
+        String speakersTag = CommandEventPlaceholders.tag(machinePos, "speakers");
+
+        if (session.duet) {
+            session.host.addTag(playerTag);
+            if (session.guest != null) session.guest.addTag(opponentTag);
+        } else if (session.playSide == 0) {
+            session.host.addTag(playerTag);
+            if (session.botStand != null) session.botStand.addTag(opponentTag);
+        } else if (session.playSide == 1) {
+            session.host.addTag(opponentTag);
+            if (session.botStand != null) session.botStand.addTag(playerTag);
+        } else {
+            session.host.addTag(playerTag);
+            session.host.addTag(opponentTag);
+        }
+
+        ServerLevel level = session.host.serverLevel();
+        ArmorStand marker = new ArmorStand(level,
+                machinePos.getX() + 0.5, machinePos.getY() + 0.5, machinePos.getZ() + 0.5);
+        marker.setInvisible(true);
+        marker.setNoGravity(true);
+        marker.setInvulnerable(true);
+        marker.setNoBasePlate(true);
+        marker.addTag(speakersTag);
+        if (level.addFreshEntity(marker)) session.speakersMarker = marker;
+    }
+
+    private static void clearCommandTargets(Session session) {
+        if (session == null) return;
+        BlockPos pos = session.key.pos();
+        for (ServerPlayer participant : new ServerPlayer[]{session.host, session.guest}) {
+            if (participant == null) continue;
+            participant.removeTag(CommandEventPlaceholders.tag(pos, "player"));
+            participant.removeTag(CommandEventPlaceholders.tag(pos, "opponent"));
+            participant.removeTag(CommandEventPlaceholders.tag(pos, "speakers"));
+        }
+        if (session.speakersMarker != null) {
+            session.speakersMarker.discard();
+            session.speakersMarker = null;
+        }
+    }
+
+    private static void clearSessionActors(Session session) {
+        clearCommandTargets(session);
+        removeBotStand(session);
+    }
+
     public static void onCommandEvent(ServerPlayer player, FnfPayloads.CommandEventC2S payload) {
         Session session = SESSIONS.get(keyOf(player, payload.pos()));
         if (session == null || session.state != State.PLAYING
@@ -321,11 +377,13 @@ public final class SessionManager {
             }
             if (!session.executedServerEvents.add(payload.eventIndex())) return;
 
-            String command = event.value1.trim();
+            String command = CommandEventPlaceholders.expand(event.value1, payload.pos()).trim();
             while (command.startsWith("/")) command = command.substring(1).trim();
             if (command.isEmpty() || player.getServer() == null) return;
             player.getServer().getCommands().performPrefixedCommand(
-                    player.getServer().createCommandSourceStack(), command);
+                    player.getServer().createCommandSourceStack()
+                            .withLevel(player.serverLevel())
+                            .withPosition(Vec3.atCenterOf(payload.pos())), command);
         } catch (Exception e) {
             FnfMod.LOGGER.warn("Could not run server command event for {}: {}",
                     session.songId, e.toString());
@@ -360,7 +418,7 @@ public final class SessionManager {
         }
         boolean allEnded = session.hostEnded && (session.guest == null || session.guestEnded || !session.duet);
         if (allEnded) {
-            removeBotStand(session);
+            clearSessionActors(session);
             SESSIONS.remove(session.key);
         }
     }
@@ -444,7 +502,7 @@ public final class SessionManager {
 
     private static void cancel(Session session, ServerPlayer leaver, String reason) {
         if (session == null) return;
-        removeBotStand(session);
+        clearSessionActors(session);
         SESSIONS.remove(session.key);
         for (ServerPlayer p : new ServerPlayer[]{session.host, session.guest}) {
             if (p == null) continue;
