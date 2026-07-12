@@ -89,6 +89,7 @@ public final class ChartEditorScreen extends Screen {
     private String eventValue1Draft = "";
     private String eventValue2Draft = "player";
     private double eventTimeDraft;
+    private boolean eventBeforeSongDraft;
     private double pixelsPerBeat = DEFAULT_PIXELS_PER_BEAT;
     private float playbackRate = 1.0f;
     private boolean helpVisible;
@@ -425,32 +426,39 @@ public final class ChartEditorScreen extends Screen {
             eventDropdownOpen = !eventDropdownOpen;
             rebuildUi();
         });
-        eventTimeField = labeledBox("Time (ms)", x, y + 27, w,
+        button(x, y + 27, w, "Trigger: " + (eventBeforeSongDraft ? "Before Song" : "Timeline"), b -> {
+            commitVisibleFields();
+            eventBeforeSongDraft = !eventBeforeSongDraft;
+            if (selectedEvent != null) selectedEvent.beforeSong = eventBeforeSongDraft;
+            rebuildUi();
+        });
+        eventTimeField = labeledBox("Time (ms)", x, y + 45, w,
                 trim(eventTimeDraft), "event time");
+        eventTimeField.active = !eventBeforeSongDraft;
         if (isMinecraftCommandType(eventTypeDraft)) {
-            label("Value 1", x, y + 54, 0xFFDDDDDD, false);
+            label("Value 1", x, y + 72, 0xFFDDDDDD, false);
             String preview = eventValue1Draft.isBlank() ? "Click to edit command..." : eventValue1Draft;
-            button(x, y + 64, w, font.plainSubstrByWidth(preview, Math.max(8, w - 12)),
+            button(x, y + 82, w, font.plainSubstrByWidth(preview, Math.max(8, w - 12)),
                     b -> openCommandEditor());
         } else {
-            eventValue1Field = labeledBox("Value 1", x, y + 54, w, eventValue1Draft, "value 1");
+            eventValue1Field = labeledBox("Value 1", x, y + 72, w, eventValue1Draft, "value 1");
             eventValue1Field.setMaxLength(Integer.MAX_VALUE);
         }
-        eventValue2Field = labeledBox("Value 2", x, y + 81, w,
+        eventValue2Field = labeledBox("Value 2", x, y + 99, w,
                 eventValue2Draft, "player or server");
         eventValue2Field.setMaxLength(64);
         int half = (w - 4) / 2;
-        button(x, y + 108, half, "Add at Time", b -> addEventAtFieldTime());
-        Button apply = button(x + half + 4, y + 108, half, "Apply Selected", b -> {
+        button(x, y + 126, half, "Add Event", b -> addEventAtFieldTime());
+        Button apply = button(x + half + 4, y + 126, half, "Apply Selected", b -> {
             commitVisibleFields();
             setStatus("Event updated");
             rebuildUi();
         });
         apply.active = selectedEvent != null;
-        Button remove = button(x, y + 126, w, "Delete Selected Event", b -> deleteSelectedEvent());
+        Button remove = button(x, y + 144, w, "Delete Selected Event", b -> deleteSelectedEvent());
         remove.active = selectedEvent != null;
         label("Minecraft Command: Value 1 = command, Value 2 = player/server",
-                x, y + 147, 0xFFBBBBBB, false);
+                x, y + 165, 0xFFBBBBBB, false);
         if (eventDropdownOpen) {
             for (int i = 0; i < EVENT_TYPES.size(); i++) {
                 String type = EVENT_TYPES.get(i);
@@ -574,6 +582,7 @@ public final class ChartEditorScreen extends Screen {
             selectedEvent.name = eventTypeDraft;
             selectedEvent.value1 = eventValue1Draft;
             selectedEvent.value2 = eventValue2Draft;
+            selectedEvent.beforeSong = eventBeforeSongDraft;
             chart.sortEvents();
         }
 
@@ -1400,7 +1409,8 @@ public final class ChartEditorScreen extends Screen {
             double beat = conductor.beatAt(event.timeMs);
             if (beat < topBeat - 1 || beat > bottomBeat + 1) continue;
             int eventY = (int) beatToY(beat) + cw / 2;
-            int color = selectedEvents.contains(event) || event == selectedEvent ? 0xFFFFFF44 : 0xFFFFA000;
+            int color = selectedEvents.contains(event) || event == selectedEvent
+                    ? 0xFFFFFF44 : event.beforeSong ? 0xFF55DDFF : 0xFFFFA000;
             gui.fill(eventX + 3, eventY - 4, gx - 3, eventY + 4, color);
             drawCentered(gui, "E", eventX + cw / 2, eventY - font.lineHeight / 2, 0xFF201000);
         }
@@ -1631,7 +1641,8 @@ public final class ChartEditorScreen extends Screen {
     private void addEventAt(double time) {
         commitVisibleFields();
         String value2 = eventValue2Draft.isBlank() ? "player" : eventValue2Draft;
-        selectedEvent = new SongChart.Event(Math.max(0, time), eventTypeDraft, eventValue1Draft, value2);
+        selectedEvent = new SongChart.Event(Math.max(0, time), eventTypeDraft,
+                eventValue1Draft, value2, eventBeforeSongDraft);
         setEventDraft(selectedEvent);
         chart.events.add(selectedEvent);
         chart.sortEvents();
@@ -1645,6 +1656,7 @@ public final class ChartEditorScreen extends Screen {
         eventValue1Draft = event == null ? "" : event.value1;
         eventValue2Draft = event == null || event.value2.isBlank() ? "player" : event.value2;
         eventTimeDraft = event == null ? Math.max(0, viewPositionMs) : event.timeMs;
+        eventBeforeSongDraft = event != null && event.beforeSong;
         eventDraftInitialized = true;
         eventDropdownOpen = false;
     }

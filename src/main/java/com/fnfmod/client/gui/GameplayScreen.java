@@ -126,6 +126,7 @@ public class GameplayScreen extends Screen {
     private static final double SPLASH_FPS = 24.0;
     private int lastBeat = -1;
     private int eventIndex;
+    private boolean preSongEventsProcessed;
     private long lastSingMs;
     private long partnerLastSingMs;
     private int lastSentHealthHalf = Integer.MIN_VALUE;
@@ -220,7 +221,11 @@ public class GameplayScreen extends Screen {
             myLaneIndex[lane] = skipNotesBefore(myLanes[lane], cutoff);
             otherLaneIndex[lane] = skipNotesBefore(otherLanes[lane], cutoff);
         }
-        while (eventIndex < chart.events.size() && chart.events.get(eventIndex).timeMs < editorStartMs) {
+        while (eventIndex < chart.events.size() && chart.events.get(eventIndex).beforeSong) {
+            eventIndex++;
+        }
+        while (eventIndex < chart.events.size() && !chart.events.get(eventIndex).beforeSong
+                && chart.events.get(eventIndex).timeMs < editorStartMs) {
             eventIndex++;
         }
     }
@@ -321,6 +326,8 @@ public class GameplayScreen extends Screen {
         lastFrameNano = now;
         if (dtMs > 100) dtMs = 100;
 
+        // Load-triggered events must run before updateSongPos can start audio.
+        if (!preSongEventsProcessed && phase == Phase.COUNTDOWN) processPreSongEvents();
         updateSongPos();
         songPlayer.applyVolumes();
         syncVanillaHealth();
@@ -456,12 +463,27 @@ public class GameplayScreen extends Screen {
         while (eventIndex < chart.events.size() && chart.events.get(eventIndex).timeMs <= songPos) {
             int currentEventIndex = eventIndex++;
             SongChart.Event event = chart.events.get(currentEventIndex);
-            if (isMinecraftCommandEvent(event)) {
-                if ("server".equalsIgnoreCase(event.value2.trim())) {
-                    PacketDistributor.sendToServer(new FnfPayloads.CommandEventC2S(machinePos, currentEventIndex));
-                } else {
-                    runPlayerCommand(event.value1);
-                }
+            if (!event.beforeSong) executeEvent(currentEventIndex, event);
+        }
+    }
+
+    private void processPreSongEvents() {
+        preSongEventsProcessed = true;
+        for (int i = 0; i < chart.events.size(); i++) {
+            SongChart.Event event = chart.events.get(i);
+            if (event.beforeSong) executeEvent(i, event);
+        }
+        while (eventIndex < chart.events.size() && chart.events.get(eventIndex).beforeSong) {
+            eventIndex++;
+        }
+    }
+
+    private void executeEvent(int eventIndex, SongChart.Event event) {
+        if (isMinecraftCommandEvent(event)) {
+            if ("server".equalsIgnoreCase(event.value2.trim())) {
+                PacketDistributor.sendToServer(new FnfPayloads.CommandEventC2S(machinePos, eventIndex));
+            } else {
+                runPlayerCommand(event.value1);
             }
         }
     }
