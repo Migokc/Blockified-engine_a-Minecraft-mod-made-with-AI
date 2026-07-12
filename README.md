@@ -130,6 +130,8 @@ Minecraft Command events. Directions can be combined, for example
 `"<forward:2,left:0.5,up:1>"`. `rotation` is a degree offset added to the normal
 character rotation, so `0` preserves the default and negative values rotate the other way.
 It rotates only the character; the gameplay camera keeps the stage's normal direction.
+Command events can use `<character_rotation:degrees>` for the same additive angle,
+for example `execute as <player> at @s run tp @s ~ ~ ~ <character_rotation:90>`.
 
 `cameraOffset` values are in blocks: x = screen right, y = screen up. The top-level
 one is the character's camera center; per-animation ones nudge the camera while

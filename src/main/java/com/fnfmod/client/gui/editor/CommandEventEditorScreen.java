@@ -26,6 +26,7 @@ public final class CommandEventEditorScreen extends Screen {
             "<up:1>",
             "<down:1>",
             "<forward:2,left:5>",
+            CommandEventPlaceholders.CHARACTER_ROTATION,
             CommandEventPlaceholders.CAMERA_ROTATION);
     private static final List<String> DIRECTION_MACROS = List.of(
             "left:1>", "right:1>", "forward:1>", "backward:1>", "up:1>", "down:1>");
@@ -222,6 +223,8 @@ public final class CommandEventEditorScreen extends Screen {
                 Math.max(16, width / 20), 154, 0xFFBBBBBB, false);
         gui.drawString(font, "<camera_rotation> = camera yaw and pitch (use after XYZ in tp)",
                 Math.max(16, width / 20), 165, 0xFFBBBBBB, false);
+        gui.drawString(font, "<character_rotation:0> = stage character yaw + degrees (use after XYZ in tp)",
+                Math.max(16, width / 20), 176, 0xFFBBBBBB, false);
         if (commandBox != null) {
             gui.drawString(font, "Characters: " + commandBox.getValue().length(),
                     Math.max(16, width / 20), 76, 0xFF888888, false);

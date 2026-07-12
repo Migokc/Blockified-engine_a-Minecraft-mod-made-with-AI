@@ -15,10 +15,13 @@ public final class CommandEventPlaceholders {
     public static final String OPPONENT = "<opponent>";
     public static final String SPEAKERS = "<speakers>";
     public static final String CAMERA_ROTATION = "<camera_rotation>";
+    public static final String CHARACTER_ROTATION = "<character_rotation:0>";
     private static final Pattern ANGLE_MACRO = Pattern.compile("<([^<>]+)>");
     private static final Pattern POSITION_PART = Pattern.compile(
             "(left|right|forward|backward|up|down)(?::(-?\\d+(?:\\.\\d+)?))?",
             Pattern.CASE_INSENSITIVE);
+    private static final Pattern CHARACTER_ROTATION_BODY = Pattern.compile(
+            "character_rotation(?::(-?\\d+(?:\\.\\d+)?))?", Pattern.CASE_INSENSITIVE);
 
     private CommandEventPlaceholders() {}
 
@@ -46,9 +49,16 @@ public final class CommandEventPlaceholders {
         Matcher matcher = ANGLE_MACRO.matcher(parsed);
         StringBuffer out = new StringBuffer();
         while (matcher.find()) {
-            if (matcher.group().length() < 5
-                    || combinedPosition(matcher.group(1), Direction.NORTH) == null) continue;
-            matcher.appendReplacement(out, Matcher.quoteReplacement(dummyPosition(matcher.group().length())));
+            String replacement;
+            if (characterRotation(matcher.group(1), Direction.NORTH) != null) {
+                replacement = dummyRotation(matcher.group().length());
+            } else if (matcher.group().length() >= 5
+                    && combinedPosition(matcher.group(1), Direction.NORTH) != null) {
+                replacement = dummyPosition(matcher.group().length());
+            } else {
+                continue;
+            }
+            matcher.appendReplacement(out, Matcher.quoteReplacement(replacement));
         }
         matcher.appendTail(out);
         return out.toString();
@@ -67,7 +77,8 @@ public final class CommandEventPlaceholders {
         Matcher matcher = ANGLE_MACRO.matcher(expanded);
         StringBuffer out = new StringBuffer();
         while (matcher.find()) {
-            String replacement = combinedPosition(matcher.group(1), facing);
+            String replacement = characterRotation(matcher.group(1), facing);
+            if (replacement == null) replacement = combinedPosition(matcher.group(1), facing);
             if (replacement == null) replacement = matcher.group();
             matcher.appendReplacement(out, Matcher.quoteReplacement(replacement));
         }
@@ -79,6 +90,19 @@ public final class CommandEventPlaceholders {
         Vec3 offset = positionOffset(body, facing);
         if (offset == null) return null;
         return relative(offset.x) + " " + relative(offset.y) + " " + relative(offset.z);
+    }
+
+    /** Character yaw relative to the stage's normal performer rotation, plus pitch 0. */
+    private static String characterRotation(String body, Direction facing) {
+        Matcher matcher = CHARACTER_ROTATION_BODY.matcher(body.trim());
+        if (!matcher.matches()) return null;
+        try {
+            double offset = matcher.group(1) == null ? 0.0 : Double.parseDouble(matcher.group(1));
+            double rotation = facing.toYRot() + offset;
+            return Double.isFinite(rotation) ? trim(rotation) + " 0" : null;
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
     }
 
     /**
