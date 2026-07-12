@@ -446,6 +446,13 @@ public final class ChartEditorScreen extends Screen {
         actionX += small + gap;
         Button nextPointEvent = button(actionX, y + 10, small, ">", b -> cyclePointEvent(1));
         nextPointEvent.active = pointEvents.size() > 1;
+        if (eventDropdownOpen) {
+            for (int i = 0; i < EVENT_TYPES.size(); i++) {
+                String type = EVENT_TYPES.get(i);
+                button(x, y + 24 + i * 14, typeWidth, type, b -> selectEventType(type));
+            }
+            return;
+        }
         button(x, y + 27, w, "Trigger: " + (eventBeforeSongDraft ? "Before Song" : "Timeline"), b -> {
             commitVisibleFields();
             eventBeforeSongDraft = !eventBeforeSongDraft;
@@ -499,32 +506,6 @@ public final class ChartEditorScreen extends Screen {
                         ? "Camera Focus: target + easing; empty values restore Must Hit"
                         : "Minecraft Command: Value 1 = command, Value 2 = player/server",
                 x, y + 165, 0xFFBBBBBB, false);
-        if (eventDropdownOpen) {
-            for (int i = 0; i < EVENT_TYPES.size(); i++) {
-                String type = EVENT_TYPES.get(i);
-                button(x, y + 24 + i * 14, typeWidth, type, b -> {
-                    boolean changed = !type.equals(eventTypeDraft);
-                    eventTypeDraft = type;
-                    eventDropdownOpen = false;
-                    if (changed && isCameraZoomType(type)) {
-                        eventValue1Draft = "0";
-                        eventValue2Draft = "smooth";
-                    } else if (changed && isCameraFocusType(type)) {
-                        eventValue1Draft = "player";
-                        eventValue2Draft = "smooth";
-                    } else if (changed && isMinecraftCommandType(type)) {
-                        eventValue1Draft = "";
-                        eventValue2Draft = "player";
-                    }
-                    if (selectedEvent != null) {
-                        selectedEvent.name = type;
-                        selectedEvent.value1 = eventValue1Draft;
-                        selectedEvent.value2 = eventValue2Draft;
-                    }
-                    rebuildUi();
-                });
-            }
-        }
     }
 
     private void buildOpenMenu() {
@@ -1786,6 +1767,28 @@ public final class ChartEditorScreen extends Screen {
     private static boolean isMinecraftCommandType(String name) {
         return name != null && (name.equalsIgnoreCase(MINECRAFT_COMMAND_EVENT)
                 || name.equalsIgnoreCase("Run Minecraft Command"));
+    }
+
+    private void selectEventType(String type) {
+        boolean changed = !type.equals(eventTypeDraft);
+        eventTypeDraft = type;
+        eventDropdownOpen = false;
+        if (changed && isCameraZoomType(type)) {
+            eventValue1Draft = "0";
+            eventValue2Draft = "smooth";
+        } else if (changed && isCameraFocusType(type)) {
+            eventValue1Draft = "player";
+            eventValue2Draft = "smooth";
+        } else if (changed && isMinecraftCommandType(type)) {
+            eventValue1Draft = "";
+            eventValue2Draft = "player";
+        }
+        if (selectedEvent != null) {
+            selectedEvent.name = type;
+            selectedEvent.value1 = eventValue1Draft;
+            selectedEvent.value2 = eventValue2Draft;
+        }
+        rebuildUi();
     }
 
     private static boolean isCameraZoomType(String name) {
