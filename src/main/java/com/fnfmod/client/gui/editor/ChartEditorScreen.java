@@ -45,7 +45,9 @@ public final class ChartEditorScreen extends Screen {
     private static final int CONTROL_TOP = 40;
     private static final String MINECRAFT_COMMAND_EVENT = "Minecraft Command";
     private static final String CAMERA_ZOOM_EVENT = "Camera Zoom";
-    private static final List<String> EVENT_TYPES = List.of(MINECRAFT_COMMAND_EVENT, CAMERA_ZOOM_EVENT);
+    private static final String CAMERA_FOCUS_EVENT = "Camera Focus";
+    private static final List<String> EVENT_TYPES = List.of(
+            MINECRAFT_COMMAND_EVENT, CAMERA_ZOOM_EVENT, CAMERA_FOCUS_EVENT);
 
     private enum EditorTab { CHARTING, DATA, EVENTS, NOTE, SECTION, SONG }
     private enum TopMenu { NONE, FILE, EDIT, VIEW }
@@ -437,19 +439,28 @@ public final class ChartEditorScreen extends Screen {
                 trim(eventTimeDraft), "event time");
         eventTimeField.active = !eventBeforeSongDraft;
         boolean cameraZoom = isCameraZoomType(eventTypeDraft);
+        boolean cameraFocus = isCameraFocusType(eventTypeDraft);
         if (isMinecraftCommandType(eventTypeDraft)) {
             label("Value 1", x, y + 72, 0xFFDDDDDD, false);
             String preview = eventValue1Draft.isBlank() ? "Click to edit command..." : eventValue1Draft;
             button(x, y + 82, w, font.plainSubstrByWidth(preview, Math.max(8, w - 12)),
                     b -> openCommandEditor());
+        } else if (cameraFocus) {
+            label("Value 1", x, y + 72, 0xFFDDDDDD, false);
+            String target = eventValue1Draft.isBlank() ? "Normal (Must Hit)" : eventValue1Draft;
+            button(x, y + 82, w, "Target: " + target, b -> cycleCameraFocusTarget());
         } else {
             eventValue1Field = labeledBox("Value 1", x, y + 72, w, eventValue1Draft,
                     cameraZoom ? "zoom amount" : "value 1");
             eventValue1Field.setMaxLength(Integer.MAX_VALUE);
         }
-        if (cameraZoom) {
+        if (cameraZoom || cameraFocus) {
             label("Value 2", x, y + 99, 0xFFDDDDDD, false);
-            button(x, y + 109, w, "Easing: " + normalizedEase(eventValue2Draft), b -> cycleEventEase());
+            Button easing = button(x, y + 109, w,
+                    cameraFocus && eventValue1Draft.isBlank()
+                            ? "Easing: (empty)" : "Easing: " + normalizedEase(eventValue2Draft),
+                    b -> cycleEventEase());
+            easing.active = !cameraFocus || !eventValue1Draft.isBlank();
         } else {
             eventValue2Field = labeledBox("Value 2", x, y + 99, w,
                     eventValue2Draft, "player or server");
@@ -467,6 +478,8 @@ public final class ChartEditorScreen extends Screen {
         remove.active = selectedEvent != null;
         label(cameraZoom
                         ? "Camera Zoom: Value 1 = amount, Value 2 = easing (500ms)"
+                        : cameraFocus
+                        ? "Camera Focus: target + easing; empty values restore Must Hit"
                         : "Minecraft Command: Value 1 = command, Value 2 = player/server",
                 x, y + 165, 0xFFBBBBBB, false);
         if (eventDropdownOpen) {
@@ -478,6 +491,9 @@ public final class ChartEditorScreen extends Screen {
                     eventDropdownOpen = false;
                     if (changed && isCameraZoomType(type)) {
                         eventValue1Draft = "0";
+                        eventValue2Draft = "smooth";
+                    } else if (changed && isCameraFocusType(type)) {
+                        eventValue1Draft = "player";
                         eventValue2Draft = "smooth";
                     } else if (changed && isMinecraftCommandType(type)) {
                         eventValue1Draft = "";
@@ -1663,7 +1679,7 @@ public final class ChartEditorScreen extends Screen {
     private void addEventAt(double time) {
         commitVisibleFields();
         String value2 = eventValue2Draft.isBlank()
-                ? (isCameraZoomType(eventTypeDraft) ? "smooth" : "player") : eventValue2Draft;
+                ? defaultEventValue2(eventTypeDraft, eventValue1Draft) : eventValue2Draft;
         selectedEvent = new SongChart.Event(Math.max(0, time), eventTypeDraft,
                 eventValue1Draft, value2, eventBeforeSongDraft);
         setEventDraft(selectedEvent);
@@ -1678,7 +1694,7 @@ public final class ChartEditorScreen extends Screen {
         eventTypeDraft = event == null || event.name.isBlank() ? MINECRAFT_COMMAND_EVENT : event.name;
         eventValue1Draft = event == null ? "" : event.value1;
         eventValue2Draft = event == null || event.value2.isBlank()
-                ? (isCameraZoomType(eventTypeDraft) ? "smooth" : "player") : event.value2;
+                ? defaultEventValue2(eventTypeDraft, eventValue1Draft) : event.value2;
         eventTimeDraft = event == null ? Math.max(0, viewPositionMs) : event.timeMs;
         eventBeforeSongDraft = event != null && event.beforeSong;
         eventDraftInitialized = true;
@@ -1692,6 +1708,16 @@ public final class ChartEditorScreen extends Screen {
 
     private static boolean isCameraZoomType(String name) {
         return name != null && name.equalsIgnoreCase(CAMERA_ZOOM_EVENT);
+    }
+
+    private static boolean isCameraFocusType(String name) {
+        return name != null && name.equalsIgnoreCase(CAMERA_FOCUS_EVENT);
+    }
+
+    private static String defaultEventValue2(String eventType, String value1) {
+        if (isCameraZoomType(eventType)) return "smooth";
+        if (isCameraFocusType(eventType)) return value1 == null || value1.isBlank() ? "" : "smooth";
+        return "player";
     }
 
     private static String normalizedEase(String value) {
@@ -1715,6 +1741,23 @@ public final class ChartEditorScreen extends Screen {
         }
         eventValue2Draft = GameplayCamera.EASES[(index + 1) % GameplayCamera.EASES.length];
         if (selectedEvent != null) selectedEvent.value2 = eventValue2Draft;
+        rebuildUi();
+    }
+
+    private void cycleCameraFocusTarget() {
+        commitVisibleFields();
+        String current = eventValue1Draft == null ? "" : eventValue1Draft.trim().toLowerCase(Locale.ROOT);
+        eventValue1Draft = switch (current) {
+            case "player" -> "opponent";
+            case "opponent" -> "";
+            default -> "player";
+        };
+        if (eventValue1Draft.isBlank()) eventValue2Draft = "";
+        else if (eventValue2Draft.isBlank()) eventValue2Draft = "smooth";
+        if (selectedEvent != null) {
+            selectedEvent.value1 = eventValue1Draft;
+            selectedEvent.value2 = eventValue2Draft;
+        }
         rebuildUi();
     }
 
