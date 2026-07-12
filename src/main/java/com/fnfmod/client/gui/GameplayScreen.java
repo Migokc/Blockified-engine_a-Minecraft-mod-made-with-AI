@@ -68,6 +68,8 @@ public class GameplayScreen extends Screen {
     private final String[] secEase;
     private final double[] secBeatMs;
     private int camSection = -1;
+    /** Null follows Must Hit sections; otherwise an event owns camera focus. */
+    private Boolean cameraFocusOverride;
 
     private static class GameNote {
         final SongChart.Note data;
@@ -436,7 +438,9 @@ public class GameplayScreen extends Screen {
         while (idx + 1 < secStarts.length && camPos >= secStarts[idx + 1]) idx++;
         if (idx != camSection) {
             camSection = idx;
-            GameplayCamera.focus(secFocusPlayer[idx], secEase[idx], Math.min(700, secBeatMs[idx] * 2));
+            if (cameraFocusOverride == null) {
+                GameplayCamera.focus(secFocusPlayer[idx], secEase[idx], Math.min(700, secBeatMs[idx] * 2));
+            }
         }
 
         // idle bounce on beat (idle/idle2 alternate when both exist)
@@ -495,6 +499,8 @@ public class GameplayScreen extends Screen {
             try {
                 GameplayCamera.zoomTo(Float.parseFloat(event.value1.trim()), event.value2);
             } catch (NumberFormatException ignored) {}
+        } else if (isCameraFocusEvent(event)) {
+            applyCameraFocusEvent(event);
         }
     }
 
@@ -505,6 +511,29 @@ public class GameplayScreen extends Screen {
 
     private static boolean isCameraZoomEvent(SongChart.Event event) {
         return event != null && event.name.equalsIgnoreCase("Camera Zoom");
+    }
+
+    private static boolean isCameraFocusEvent(SongChart.Event event) {
+        return event != null && event.name.equalsIgnoreCase("Camera Focus");
+    }
+
+    private void applyCameraFocusEvent(SongChart.Event event) {
+        String target = event.value1 == null ? "" : event.value1.trim();
+        if (target.isEmpty()) {
+            cameraFocusOverride = null;
+            int section = camSection < 0 ? 0 : Math.min(camSection, secFocusPlayer.length - 1);
+            GameplayCamera.focus(secFocusPlayer[section], secEase[section],
+                    Math.min(700, secBeatMs[section] * 2));
+            return;
+        }
+
+        boolean player;
+        if (target.equalsIgnoreCase("player")) player = true;
+        else if (target.equalsIgnoreCase("opponent")) player = false;
+        else return;
+        cameraFocusOverride = player;
+        String eventEase = event.value2 == null || event.value2.isBlank() ? "smooth" : event.value2;
+        GameplayCamera.focus(player, eventEase, 500);
     }
 
     private void runPlayerCommand(String rawCommand) {
@@ -1055,6 +1084,7 @@ public class GameplayScreen extends Screen {
         voicesMutedUntil = -1;
         songPlayer.setOpponentVoiceVolume(1f);
         camSection = -1; // re-evaluate camera focus from the top of the chart
+        cameraFocusOverride = null;
         startAtEpochMs = System.currentTimeMillis() + 2000;
         if (editorPlaytest) prepareEditorStart();
         phase = Phase.COUNTDOWN;
