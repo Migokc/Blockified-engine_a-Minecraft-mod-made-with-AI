@@ -10,6 +10,7 @@ import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.Redirect;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 @Mixin(Camera.class)
@@ -22,6 +23,16 @@ public abstract class CameraMixin {
     @Shadow public abstract Vector3f getLeftVector();
 
     @Shadow protected abstract void setPosition(double x, double y, double z);
+
+    /**
+     * The character may have a custom body rotation, but the gameplay camera
+     * must retain the stage's original viewing direction.
+     */
+    @Redirect(method = "setup", at = @At(value = "INVOKE",
+            target = "Lnet/minecraft/world/entity/Entity;getViewYRot(F)F"))
+    private float fnfmod$fixedGameplayYaw(Entity entity, float partialTick) {
+        return GameplayCamera.isActive() ? GameplayCamera.stageViewYaw() : entity.getViewYRot(partialTick);
+    }
 
     @Inject(method = "setup", at = @At("TAIL"))
     private void fnfmod$applyGameplayPan(BlockGetter level, Entity entity, boolean detached,
