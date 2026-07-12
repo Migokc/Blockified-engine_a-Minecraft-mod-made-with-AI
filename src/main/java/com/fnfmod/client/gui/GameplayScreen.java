@@ -124,6 +124,7 @@ public class GameplayScreen extends Screen {
     private final List<CoverEnd> coverEnds = new ArrayList<>();
     private static final double SPLASH_FPS = 24.0;
     private int lastBeat = -1;
+    private int eventIndex;
     private long lastSingMs;
     private long partnerLastSingMs;
     private int lastSentHealthHalf = Integer.MIN_VALUE;
@@ -174,6 +175,7 @@ public class GameplayScreen extends Screen {
                 otherLanes[n.lane].add(gn);
             }
         }
+        chart.sortEvents();
 
         // camera focus timeline from chart sections
         int n = Math.max(1, chart.sections.size());
@@ -216,6 +218,9 @@ public class GameplayScreen extends Screen {
         for (int lane = 0; lane < 4; lane++) {
             myLaneIndex[lane] = skipNotesBefore(myLanes[lane], cutoff);
             otherLaneIndex[lane] = skipNotesBefore(otherLanes[lane], cutoff);
+        }
+        while (eventIndex < chart.events.size() && chart.events.get(eventIndex).timeMs < editorStartMs) {
+            eventIndex++;
         }
     }
 
@@ -328,6 +333,7 @@ public class GameplayScreen extends Screen {
         if (phase != Phase.PLAYING && phase != Phase.COUNTDOWN) return;
 
         songPlayer.resync();
+        if (phase == Phase.PLAYING) processEvents();
 
         // un-mute vocals after miss
         if (voicesMutedUntil >= 0 && songPos > voicesMutedUntil) {
@@ -442,6 +448,33 @@ public class GameplayScreen extends Screen {
         // song end
         if (phase == Phase.PLAYING && songPlayer.isFinished()) {
             if (!anyNotesLeft(myLanes, myLaneIndex)) finishSong(false);
+        }
+    }
+
+    private void processEvents() {
+        while (eventIndex < chart.events.size() && chart.events.get(eventIndex).timeMs <= songPos) {
+            SongChart.Event event = chart.events.get(eventIndex++);
+            if (isMinecraftCommandEvent(event) && (!duet || mode != PlayMode.OPPONENT)) {
+                runMinecraftCommand(event.value1);
+            }
+        }
+    }
+
+    private static boolean isMinecraftCommandEvent(SongChart.Event event) {
+        return event != null && (event.name.equalsIgnoreCase("Minecraft Command")
+                || event.name.equalsIgnoreCase("Run Minecraft Command"));
+    }
+
+    private void runMinecraftCommand(String rawCommand) {
+        if (minecraft.player == null || minecraft.player.connection == null || rawCommand == null) return;
+        String command = rawCommand.trim();
+        while (command.startsWith("/")) command = command.substring(1).trim();
+        if (command.isEmpty()) return;
+        try {
+            minecraft.player.connection.sendCommand(command);
+        } catch (Exception e) {
+            minecraft.player.displayClientMessage(
+                    Component.literal("FNF event command failed: " + e.getMessage()), false);
         }
     }
 

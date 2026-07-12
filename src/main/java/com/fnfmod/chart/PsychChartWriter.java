@@ -30,20 +30,7 @@ public final class PsychChartWriter {
         song.addProperty("stage", "stage");
         song.addProperty("validScore", true);
         chart.sortEvents();
-        JsonArray events = new JsonArray();
-        for (SongChart.Event event : chart.events) {
-            JsonArray row = new JsonArray();
-            row.add(event.timeMs);
-            JsonArray payloads = new JsonArray();
-            JsonArray payload = new JsonArray();
-            payload.add(event.name);
-            payload.add(event.value1);
-            payload.add(event.value2);
-            payloads.add(payload);
-            row.add(payloads);
-            events.add(row);
-        }
-        song.add("events", events);
+        song.add("events", eventArray(chart));
 
         JsonArray sectionsArr = new JsonArray();
         double bpm = chart.startBpm;
@@ -110,5 +97,29 @@ public final class PsychChartWriter {
         root.add("song", song);
         Gson gson = new GsonBuilder().create();
         return gson.toJson(root);
+    }
+
+    public static String writeEvents(SongChart chart) {
+        JsonObject root = new JsonObject();
+        root.add("events", eventArray(chart));
+        return new GsonBuilder().create().toJson(root);
+    }
+
+    private static JsonArray eventArray(SongChart chart) {
+        chart.sortEvents();
+        JsonArray events = new JsonArray();
+        for (SongChart.Event event : chart.events) {
+            JsonArray row = new JsonArray();
+            row.add(event.timeMs);
+            JsonArray payloads = new JsonArray();
+            JsonArray payload = new JsonArray();
+            payload.add(event.name);
+            payload.add(event.value1);
+            payload.add(event.value2);
+            payloads.add(payload);
+            row.add(payloads);
+            events.add(row);
+        }
+        return events;
     }
 }
