@@ -267,6 +267,20 @@ public final class FnfPayloads {
         public Type<? extends CustomPacketPayload> type() { return TYPE; }
     }
 
+    /** Requests one server-run command event; the server validates it against the active chart. */
+    public record CommandEventC2S(BlockPos pos, int eventIndex) implements CustomPacketPayload {
+        public static final Type<CommandEventC2S> TYPE = new Type<>(FnfMod.id("command_event"));
+        public static final StreamCodec<FriendlyByteBuf, CommandEventC2S> CODEC = StreamCodec.of(
+                (buf, v) -> {
+                    buf.writeBlockPos(v.pos);
+                    buf.writeVarInt(v.eventIndex());
+                },
+                buf -> new CommandEventC2S(buf.readBlockPos(), buf.readVarInt()));
+
+        @Override
+        public Type<? extends CustomPacketPayload> type() { return TYPE; }
+    }
+
     /** Asks the server to rescan its song library (requires op on dedicated servers). */
     public record ReloadC2S() implements CustomPacketPayload {
         public static final Type<ReloadC2S> TYPE = new Type<>(FnfMod.id("reload"));
