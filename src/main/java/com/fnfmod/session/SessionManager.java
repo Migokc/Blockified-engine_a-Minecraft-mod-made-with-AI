@@ -230,8 +230,10 @@ public final class SessionManager {
             placeOnStage(session.host, payload.pos(), session.playSide, session.hostTransform);
             spawnBotStand(session, payload.pos());
             prepareCommandTargets(session, payload.pos());
+            int botEntityId = session.botStand == null ? -1 : session.botStand.getId();
             PacketDistributor.sendToPlayer(session.host, new FnfPayloads.StartSongS2C(
-                    payload.pos(), session.songId, session.difficulty, true, Optional.empty(), "", "", startAt));
+                    payload.pos(), session.songId, session.difficulty, true, Optional.empty(), "", "",
+                    botEntityId, startAt));
         } else if (session.duet && session.hostReady && session.guestReady && session.guest != null) {
             session.state = State.PLAYING;
             long startAt = 3000; // relative delay in ms
@@ -242,10 +244,10 @@ public final class SessionManager {
             UUID guestId = session.guest.getUUID();
             PacketDistributor.sendToPlayer(session.host, new FnfPayloads.StartSongS2C(
                     payload.pos(), session.songId, session.difficulty, true, Optional.of(guestId),
-                    session.guest.getGameProfile().getName(), session.guestAnimSet, startAt));
+                    session.guest.getGameProfile().getName(), session.guestAnimSet, -1, startAt));
             PacketDistributor.sendToPlayer(session.guest, new FnfPayloads.StartSongS2C(
                     payload.pos(), session.songId, session.difficulty, false, Optional.of(hostId),
-                    session.host.getGameProfile().getName(), session.hostAnimSet, startAt));
+                    session.host.getGameProfile().getName(), session.hostAnimSet, -1, startAt));
         }
     }
 
