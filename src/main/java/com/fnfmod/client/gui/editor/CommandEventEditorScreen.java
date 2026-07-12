@@ -3,12 +3,14 @@ package com.fnfmod.client.gui.editor;
 import com.fnfmod.chart.CommandEventPlaceholders;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;
+import net.minecraft.client.gui.components.CommandSuggestions;
 import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
 import org.lwjgl.glfw.GLFW;
 
 import java.util.List;
+import java.util.ArrayList;
 import java.util.function.Consumer;
 
 /** Opaque, dedicated editor for command-event Value 1. */
@@ -22,6 +24,13 @@ public final class CommandEventEditorScreen extends Screen {
     private final String initialCommand;
     private final Consumer<String> onSave;
     private EditBox commandBox;
+    private CommandSuggestions commandSuggestions;
+    private final List<String> placeholderSuggestions = new ArrayList<>();
+    private int placeholderStart = -1;
+    private int placeholderSelection;
+    private int suggestionX;
+    private int suggestionY;
+    private int suggestionWidth;
 
     public CommandEventEditorScreen(Screen parent, String initialCommand, Consumer<String> onSave) {
         super(Component.literal("Minecraft Command Event"));
@@ -39,18 +48,17 @@ public final class CommandEventEditorScreen extends Screen {
         commandBox.setMaxLength(Integer.MAX_VALUE);
         commandBox.setValue(initialCommand);
         commandBox.setCursorPosition(initialCommand.length());
+        commandBox.setResponder(value -> updateSuggestions());
         setInitialFocus(commandBox);
 
-        int suggestionY = 104;
-        int gap = 6;
-        int suggestionWidth = Math.max(70, (boxWidth - gap * 2) / 3);
-        for (int i = 0; i < PLACEHOLDERS.size(); i++) {
-            String placeholder = PLACEHOLDERS.get(i);
-            addRenderableWidget(Button.builder(Component.literal(placeholder),
-                            b -> insertPlaceholder(placeholder))
-                    .bounds(margin + i * (suggestionWidth + gap), suggestionY, suggestionWidth, 20)
-                    .build());
-        }
+        commandSuggestions = new CommandSuggestions(minecraft, this, commandBox, font,
+                true, true, 0, 10, false, 0xD0000000);
+        commandSuggestions.setAllowSuggestions(true);
+        commandSuggestions.setAllowHiding(false);
+        suggestionX = margin;
+        suggestionY = 76;
+        suggestionWidth = Math.max(100, Math.min(220, boxWidth));
+        updateSuggestions();
 
         int buttonY = Math.max(146, height - 34);
         addRenderableWidget(Button.builder(Component.literal("Save"), b -> saveAndClose())
@@ -59,29 +67,39 @@ public final class CommandEventEditorScreen extends Screen {
                 .bounds(width / 2 + 4, buttonY, 100, 20).build());
     }
 
-    private void insertPlaceholder(String placeholder) {
-        if (commandBox == null) return;
-        int cursor = commandBox.getCursorPosition();
-        String value = commandBox.getValue();
-        commandBox.setValue(value.substring(0, cursor) + placeholder + value.substring(cursor));
-        commandBox.setCursorPosition(cursor + placeholder.length());
-        setFocused(commandBox);
-    }
-
-    private boolean autocompletePlaceholder() {
-        if (commandBox == null) return false;
+    private void updateSuggestions() {
+        if (commandBox == null || commandSuggestions == null) return;
+        placeholderSuggestions.clear();
         int cursor = commandBox.getCursorPosition();
         String value = commandBox.getValue();
         int start = value.lastIndexOf('<', Math.max(0, cursor - 1));
-        String fragment = start >= 0 ? value.substring(start, cursor).toLowerCase() : "";
-        String match = PLACEHOLDERS.stream()
-                .filter(candidate -> fragment.isEmpty() || candidate.startsWith(fragment))
-                .findFirst().orElse(null);
-        if (match == null) return false;
-        if (start < 0) start = cursor;
-        commandBox.setValue(value.substring(0, start) + match + value.substring(cursor));
-        commandBox.setCursorPosition(start + match.length());
-        return true;
+        if (start >= 0) {
+            String fragment = value.substring(start, cursor).toLowerCase();
+            if (!fragment.contains(" ") && !fragment.contains(">")) {
+                placeholderStart = start;
+                PLACEHOLDERS.stream().filter(candidate -> candidate.startsWith(fragment))
+                        .forEach(placeholderSuggestions::add);
+            }
+        }
+        placeholderSelection = Math.min(placeholderSelection, Math.max(0, placeholderSuggestions.size() - 1));
+        if (placeholderSuggestions.isEmpty()) {
+            placeholderStart = -1;
+            commandSuggestions.setAllowSuggestions(true);
+            commandSuggestions.updateCommandInfo();
+        } else {
+            commandSuggestions.hide();
+        }
+    }
+
+    private void applyPlaceholderSuggestion() {
+        if (placeholderSuggestions.isEmpty() || placeholderStart < 0) return;
+        String placeholder = placeholderSuggestions.get(placeholderSelection);
+        int cursor = commandBox.getCursorPosition();
+        String value = commandBox.getValue();
+        commandBox.setValue(value.substring(0, placeholderStart) + placeholder + value.substring(cursor));
+        commandBox.setCursorPosition(placeholderStart + placeholder.length());
+        setFocused(commandBox);
+        updateSuggestions();
     }
 
     private void saveAndClose() {
@@ -91,7 +109,22 @@ public final class CommandEventEditorScreen extends Screen {
 
     @Override
     public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
-        if (keyCode == GLFW.GLFW_KEY_TAB && autocompletePlaceholder()) return true;
+        if (!placeholderSuggestions.isEmpty()) {
+            if (keyCode == GLFW.GLFW_KEY_UP) {
+                placeholderSelection = Math.floorMod(placeholderSelection - 1, placeholderSuggestions.size());
+                return true;
+            }
+            if (keyCode == GLFW.GLFW_KEY_DOWN) {
+                placeholderSelection = (placeholderSelection + 1) % placeholderSuggestions.size();
+                return true;
+            }
+            if (keyCode == GLFW.GLFW_KEY_TAB || keyCode == GLFW.GLFW_KEY_ENTER
+                    || keyCode == GLFW.GLFW_KEY_KP_ENTER) {
+                applyPlaceholderSuggestion();
+                return true;
+            }
+        }
+        if (commandSuggestions != null && commandSuggestions.keyPressed(keyCode, scanCode, modifiers)) return true;
         if (keyCode == GLFW.GLFW_KEY_ENTER || keyCode == GLFW.GLFW_KEY_KP_ENTER) {
             saveAndClose();
             return true;
@@ -104,13 +137,37 @@ public final class CommandEventEditorScreen extends Screen {
     }
 
     @Override
+    public boolean mouseClicked(double mouseX, double mouseY, int button) {
+        if (!placeholderSuggestions.isEmpty() && button == 0
+                && mouseX >= suggestionX && mouseX < suggestionX + suggestionWidth
+                && mouseY >= suggestionY && mouseY < suggestionY + placeholderSuggestions.size() * 12) {
+            placeholderSelection = (int) ((mouseY - suggestionY) / 12);
+            applyPlaceholderSuggestion();
+            return true;
+        }
+        if (commandSuggestions != null && commandSuggestions.mouseClicked(mouseX, mouseY, button)) return true;
+        return super.mouseClicked(mouseX, mouseY, button);
+    }
+
+    @Override
+    public boolean mouseScrolled(double mouseX, double mouseY, double scrollX, double scrollY) {
+        if (!placeholderSuggestions.isEmpty()) {
+            placeholderSelection = Math.floorMod(placeholderSelection - (int) Math.signum(scrollY),
+                    placeholderSuggestions.size());
+            return true;
+        }
+        if (commandSuggestions != null && commandSuggestions.mouseScrolled(scrollY)) return true;
+        return super.mouseScrolled(mouseX, mouseY, scrollX, scrollY);
+    }
+
+    @Override
     public void render(GuiGraphics gui, int mouseX, int mouseY, float partialTick) {
         // Fully opaque so the chart editor cannot show through long command text or suggestions.
         gui.fill(0, 0, width, height, 0xFF07070A);
         gui.drawCenteredString(font, "Minecraft Command Event - Value 1", width / 2, 18, 0xFFFFFFFF);
         gui.drawString(font, "Command (no practical character limit)", Math.max(16, width / 20), 42,
                 0xFFDDDDDD, false);
-        gui.drawString(font, "Event autocomplete - click a placeholder or type '<' and press Tab:",
+        gui.drawString(font, "Minecraft autocomplete; type '<' for FNF role targets:",
                 Math.max(16, width / 20), 88, 0xFFFFFFFF, false);
         gui.drawString(font, "<player> = player-side performer   <opponent> = opponent-side performer",
                 Math.max(16, width / 20), 132, 0xFFBBBBBB, false);
@@ -121,6 +178,25 @@ public final class CommandEventEditorScreen extends Screen {
                     Math.max(16, width / 20), 76, 0xFF888888, false);
         }
         super.render(gui, mouseX, mouseY, partialTick);
+        gui.pose().pushPose();
+        gui.pose().translate(0, 0, 300);
+        if (placeholderSuggestions.isEmpty()) {
+            if (commandSuggestions != null) commandSuggestions.render(gui, mouseX, mouseY);
+        } else {
+            renderPlaceholderSuggestions(gui);
+        }
+        gui.pose().popPose();
+    }
+
+    private void renderPlaceholderSuggestions(GuiGraphics gui) {
+        int width = placeholderSuggestions.stream().mapToInt(font::width).max().orElse(80) + 10;
+        suggestionWidth = Math.max(100, Math.min(this.width - suggestionX - 8, width));
+        for (int i = 0; i < placeholderSuggestions.size(); i++) {
+            int y = suggestionY + i * 12;
+            gui.fill(suggestionX, y, suggestionX + suggestionWidth, y + 12,
+                    i == placeholderSelection ? 0xE0666666 : 0xE0101010);
+            gui.drawString(font, placeholderSuggestions.get(i), suggestionX + 4, y + 2, 0xFFFFFFFF, false);
+        }
     }
 
     @Override
