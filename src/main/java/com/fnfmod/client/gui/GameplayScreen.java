@@ -1,6 +1,7 @@
 package com.fnfmod.client.gui;
 
 import com.fnfmod.chart.Conductor;
+import com.fnfmod.chart.CommandEventPlaceholders;
 import com.fnfmod.chart.SongChart;
 import com.fnfmod.client.ClientOptions;
 import com.fnfmod.client.ClientSession;
@@ -472,7 +473,7 @@ public class GameplayScreen extends Screen {
 
     private void runPlayerCommand(String rawCommand) {
         if (minecraft.player == null || minecraft.player.connection == null || rawCommand == null) return;
-        String command = rawCommand.trim();
+        String command = CommandEventPlaceholders.expand(rawCommand, machinePos).trim();
         while (command.startsWith("/")) command = command.substring(1).trim();
         if (command.isEmpty()) return;
         try {

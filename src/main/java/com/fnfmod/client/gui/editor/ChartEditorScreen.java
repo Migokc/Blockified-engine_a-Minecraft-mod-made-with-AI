@@ -44,6 +44,7 @@ public final class ChartEditorScreen extends Screen {
     private static final int TAB_Y = 24;
     private static final int CONTROL_TOP = 40;
     private static final String MINECRAFT_COMMAND_EVENT = "Minecraft Command";
+    private static final List<String> EVENT_TYPES = List.of(MINECRAFT_COMMAND_EVENT);
 
     private enum EditorTab { CHARTING, DATA, EVENTS, NOTE, SECTION, SONG }
     private enum TopMenu { NONE, FILE, EDIT, VIEW }
@@ -81,6 +82,12 @@ public final class ChartEditorScreen extends Screen {
     private boolean vortex;
     private SongChart.Note selectedNote;
     private SongChart.Event selectedEvent;
+    private boolean eventDropdownOpen;
+    private boolean eventDraftInitialized;
+    private String eventTypeDraft = MINECRAFT_COMMAND_EVENT;
+    private String eventValue1Draft = "";
+    private String eventValue2Draft = "player";
+    private double eventTimeDraft;
     private double pixelsPerBeat = DEFAULT_PIXELS_PER_BEAT;
     private float playbackRate = 1.0f;
     private boolean helpVisible;
@@ -116,7 +123,6 @@ public final class ChartEditorScreen extends Screen {
     private EditBox noteTypeField;
     private EditBox saveIdField;
     private EditBox eventTimeField;
-    private EditBox eventNameField;
     private EditBox eventValue1Field;
     private EditBox eventValue2Field;
 
@@ -233,7 +239,7 @@ public final class ChartEditorScreen extends Screen {
         songNameField = songBpmField = songSpeedField = songOffsetField = null;
         playerField = opponentField = sectionBpmField = sectionBeatsField = null;
         noteTimeField = sustainField = noteTypeField = saveIdField = null;
-        eventTimeField = eventNameField = eventValue1Field = eventValue2Field = null;
+        eventTimeField = eventValue1Field = eventValue2Field = null;
     }
 
     private void buildTopBar() {
@@ -410,16 +416,27 @@ public final class ChartEditorScreen extends Screen {
         int x = controlX() + 10;
         int w = controlWidth() - 20;
         int y = 52;
+        if (!eventDraftInitialized) setEventDraft(selectedEvent);
         label("Event", x, 43, 0xFFDDDDDD, false);
-        eventNameField = labeledBox("Event", x, y, w,
-                selectedEvent == null ? MINECRAFT_COMMAND_EVENT : selectedEvent.name, "event name");
+        label("Event", x, y, 0xFFDDDDDD, false);
+        button(x, y + 10, w, eventTypeDraft + "  v", b -> {
+            commitVisibleFields();
+            eventDropdownOpen = !eventDropdownOpen;
+            rebuildUi();
+        });
         eventTimeField = labeledBox("Time (ms)", x, y + 27, w,
-                trim(selectedEvent == null ? viewPositionMs : selectedEvent.timeMs), "event time");
-        eventValue1Field = labeledBox("Value 1", x, y + 54, w,
-                selectedEvent == null ? "" : selectedEvent.value1, "command without /");
-        eventValue1Field.setMaxLength(2048);
+                trim(eventTimeDraft), "event time");
+        if (isMinecraftCommandType(eventTypeDraft)) {
+            label("Value 1", x, y + 54, 0xFFDDDDDD, false);
+            String preview = eventValue1Draft.isBlank() ? "Click to edit command..." : eventValue1Draft;
+            button(x, y + 64, w, font.plainSubstrByWidth(preview, Math.max(8, w - 12)),
+                    b -> openCommandEditor());
+        } else {
+            eventValue1Field = labeledBox("Value 1", x, y + 54, w, eventValue1Draft, "value 1");
+            eventValue1Field.setMaxLength(Integer.MAX_VALUE);
+        }
         eventValue2Field = labeledBox("Value 2", x, y + 81, w,
-                selectedEvent == null ? "player" : selectedEvent.value2, "player or server");
+                eventValue2Draft, "player or server");
         eventValue2Field.setMaxLength(64);
         int half = (w - 4) / 2;
         button(x, y + 108, half, "Add at Time", b -> addEventAtFieldTime());
@@ -433,6 +450,17 @@ public final class ChartEditorScreen extends Screen {
         remove.active = selectedEvent != null;
         label("Minecraft Command: Value 1 = command, Value 2 = player/server",
                 x, y + 147, 0xFFBBBBBB, false);
+        if (eventDropdownOpen) {
+            for (int i = 0; i < EVENT_TYPES.size(); i++) {
+                String type = EVENT_TYPES.get(i);
+                button(x, y + 24 + i * 14, w, type, b -> {
+                    eventTypeDraft = type;
+                    eventDropdownOpen = false;
+                    if (selectedEvent != null) selectedEvent.name = type;
+                    rebuildUi();
+                });
+            }
+        }
     }
 
     private void buildOpenMenu() {
@@ -536,12 +564,14 @@ public final class ChartEditorScreen extends Screen {
             }
         }
 
-        if (selectedEvent != null && eventTimeField != null && eventNameField != null
-                && eventValue1Field != null && eventValue2Field != null) {
-            selectedEvent.timeMs = Math.max(0, parseNumber(eventTimeField, selectedEvent.timeMs));
-            selectedEvent.name = eventNameField.getValue().trim();
-            selectedEvent.value1 = eventValue1Field.getValue().trim();
-            selectedEvent.value2 = eventValue2Field.getValue().trim();
+        if (eventTimeField != null) eventTimeDraft = Math.max(0, parseNumber(eventTimeField, eventTimeDraft));
+        if (eventValue1Field != null) eventValue1Draft = eventValue1Field.getValue();
+        if (eventValue2Field != null) eventValue2Draft = eventValue2Field.getValue().trim();
+        if (selectedEvent != null && eventDraftInitialized) {
+            selectedEvent.timeMs = eventTimeDraft;
+            selectedEvent.name = eventTypeDraft;
+            selectedEvent.value1 = eventValue1Draft;
+            selectedEvent.value2 = eventValue2Draft;
             chart.sortEvents();
         }
 
@@ -1150,6 +1180,7 @@ public final class ChartEditorScreen extends Screen {
             }
             if (hitEvent) {
                 selectedEvent = closest;
+                setEventDraft(closest);
                 activeTab = EditorTab.EVENTS;
                 openMenu = TopMenu.NONE;
                 setStatus("Selected event at " + trim(closest.timeMs) + " ms");
@@ -1563,22 +1594,42 @@ public final class ChartEditorScreen extends Screen {
     }
 
     private void addEventAtFieldTime() {
-        double time = Math.max(0, parseNumber(eventTimeField, viewPositionMs));
-        addEventAt(time);
+        commitVisibleFields();
+        addEventAt(eventTimeDraft);
     }
 
     private void addEventAt(double time) {
-        String name = eventNameField == null || eventNameField.getValue().isBlank()
-                ? MINECRAFT_COMMAND_EVENT : eventNameField.getValue().trim();
-        String value1 = eventValue1Field == null ? "" : eventValue1Field.getValue().trim();
-        String value2 = eventValue2Field == null || eventValue2Field.getValue().isBlank()
-                ? "player" : eventValue2Field.getValue().trim();
-        selectedEvent = new SongChart.Event(Math.max(0, time), name, value1, value2);
+        commitVisibleFields();
+        String value2 = eventValue2Draft.isBlank() ? "player" : eventValue2Draft;
+        selectedEvent = new SongChart.Event(Math.max(0, time), eventTypeDraft, eventValue1Draft, value2);
+        setEventDraft(selectedEvent);
         chart.events.add(selectedEvent);
         chart.sortEvents();
         activeTab = EditorTab.EVENTS;
         setStatus("Added event");
         rebuildUi();
+    }
+
+    private void setEventDraft(SongChart.Event event) {
+        eventTypeDraft = event == null || event.name.isBlank() ? MINECRAFT_COMMAND_EVENT : event.name;
+        eventValue1Draft = event == null ? "" : event.value1;
+        eventValue2Draft = event == null || event.value2.isBlank() ? "player" : event.value2;
+        eventTimeDraft = event == null ? Math.max(0, viewPositionMs) : event.timeMs;
+        eventDraftInitialized = true;
+        eventDropdownOpen = false;
+    }
+
+    private static boolean isMinecraftCommandType(String name) {
+        return name != null && (name.equalsIgnoreCase(MINECRAFT_COMMAND_EVENT)
+                || name.equalsIgnoreCase("Run Minecraft Command"));
+    }
+
+    private void openCommandEditor() {
+        commitVisibleFields();
+        minecraft.setScreen(new CommandEventEditorScreen(this, eventValue1Draft, command -> {
+            eventValue1Draft = command;
+            if (selectedEvent != null) selectedEvent.value1 = command;
+        }));
     }
 
     private void deleteSelectedEvent() {
