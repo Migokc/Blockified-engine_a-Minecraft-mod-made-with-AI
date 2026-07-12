@@ -118,7 +118,7 @@ public final class FnfPayloads {
 
     public record StartSongS2C(BlockPos pos, String songId, String difficulty, boolean playerSide,
                                Optional<UUID> partnerId, String partnerName, String partnerAnimSet,
-                               long startDelayMs)
+                               int botEntityId, long startDelayMs)
             implements CustomPacketPayload {
         public static final Type<StartSongS2C> TYPE = new Type<>(FnfMod.id("start_song"));
         public static final StreamCodec<FriendlyByteBuf, StartSongS2C> CODEC = StreamCodec.of(
@@ -130,10 +130,12 @@ public final class FnfPayloads {
                     buf.writeOptional(v.partnerId, (b, u) -> b.writeUUID(u));
                     buf.writeUtf(v.partnerName);
                     buf.writeUtf(v.partnerAnimSet);
+                    buf.writeVarInt(v.botEntityId + 1);
                     buf.writeLong(v.startDelayMs);
                 },
                 buf -> new StartSongS2C(buf.readBlockPos(), buf.readUtf(), buf.readUtf(), buf.readBoolean(),
-                        buf.readOptional(b -> b.readUUID()), buf.readUtf(), buf.readUtf(), buf.readLong()));
+                        buf.readOptional(b -> b.readUUID()), buf.readUtf(), buf.readUtf(),
+                        buf.readVarInt() - 1, buf.readLong()));
 
         @Override
         public Type<? extends CustomPacketPayload> type() { return TYPE; }

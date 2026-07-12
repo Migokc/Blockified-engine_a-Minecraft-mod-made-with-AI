@@ -236,7 +236,7 @@ public final class ClientSession {
         }
         Minecraft.getInstance().setScreen(new GameplayScreen(
                 payload.pos(), chart, player, mode,
-                partner, payload.partnerName(), payload.partnerAnimSet(), startAt));
+                partner, payload.partnerName(), payload.partnerAnimSet(), payload.botEntityId(), startAt));
     }
 
     public static void onCancel(FnfPayloads.SessionCancelS2C payload) {

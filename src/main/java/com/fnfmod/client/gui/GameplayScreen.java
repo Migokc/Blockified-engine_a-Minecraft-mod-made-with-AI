@@ -53,6 +53,7 @@ public class GameplayScreen extends Screen {
     private final boolean playBoth;
     private final boolean myChartSideIsPlayer;
     private final UUID partnerId;
+    private final int botEntityId;
     private final String partnerName;
     private final String partnerAnimSet;
     private final String myAnimSet;
@@ -144,7 +145,7 @@ public class GameplayScreen extends Screen {
 
     public GameplayScreen(BlockPos machinePos, SongChart chart, SongPlayer songPlayer,
                           PlayMode mode, UUID partnerId, String partnerName,
-                          String partnerAnimSet, long startAtEpochMs) {
+                          String partnerAnimSet, int botEntityId, long startAtEpochMs) {
         super(Component.literal("FNF"));
         this.machinePos = machinePos;
         this.chart = chart;
@@ -153,6 +154,7 @@ public class GameplayScreen extends Screen {
         this.playBoth = mode == PlayMode.BOTH;
         this.myChartSideIsPlayer = mode != PlayMode.OPPONENT;
         this.partnerId = partnerId;
+        this.botEntityId = botEntityId;
         this.partnerName = partnerName == null ? "" : partnerName;
         this.partnerAnimSet = partnerAnimSet == null || partnerAnimSet.isEmpty()
                 ? CharacterAnimations.DEFAULT_SET : partnerAnimSet;
@@ -205,7 +207,7 @@ public class GameplayScreen extends Screen {
     public static GameplayScreen editorPlaytest(BlockPos machinePos, SongChart chart, SongPlayer player,
                                                 double startMs, boolean preview, Supplier<Screen> returnFactory) {
         GameplayScreen screen = new GameplayScreen(machinePos, chart, player, PlayMode.PLAYER,
-                null, "", CharacterAnimations.DEFAULT_SET, System.currentTimeMillis() + 1000);
+                null, "", CharacterAnimations.DEFAULT_SET, -1, System.currentTimeMillis() + 1000);
         screen.editorPlaytest = true;
         screen.editorPreview = preview;
         screen.editorStartMs = Math.max(0, startMs);
@@ -280,9 +282,13 @@ public class GameplayScreen extends Screen {
                 return p == null ? fallback : p.position().add(0, 1.0, 0);
             };
         } else {
-            // solo: the bot's empty slot on the stage (opposite side from the one I play)
+            // Solo: follow the exact bot armor stand; fall back until its spawn packet arrives.
             Vec3 botSpot = myChartSideIsPlayer ? opponentSpot : playerSpot;
-            otherPos = () -> botSpot;
+            otherPos = () -> {
+                var level = Minecraft.getInstance().level;
+                var bot = level == null || botEntityId < 0 ? null : level.getEntity(botEntityId);
+                return bot == null || bot.isRemoved() ? botSpot : bot.position().add(0, 1.0, 0);
+            };
         }
         float[] partnerBase = CharacterAnimations.baseCameraOffset(partnerAnimSet);
         GameplayCamera.begin(anchor, facing.toYRot(), mePos,
