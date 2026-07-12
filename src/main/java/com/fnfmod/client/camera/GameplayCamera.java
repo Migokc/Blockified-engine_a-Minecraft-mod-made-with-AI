@@ -23,13 +23,15 @@ public final class GameplayCamera {
 
     private static boolean active;
     private static Vec3 anchor = Vec3.ZERO;
+    private static Supplier<Vec3> cameraEntityPos;
     private static Supplier<Vec3> playerSidePos;
     private static Supplier<Vec3> opponentSidePos;
     private static float playerBaseX, playerBaseY, oppBaseX, oppBaseY;
 
     private static boolean focusPlayer = true;
-    private static float fromX, fromY;
-    private static float curX, curY;
+    private static Vec3 fromOffset = Vec3.ZERO;
+    private static Vec3 curOffset = Vec3.ZERO;
+    private static boolean offsetInitialized;
     private static long transStart;
     private static double transDurMs = 500;
     private static String ease = "smooth";
@@ -45,9 +47,11 @@ public final class GameplayCamera {
 
     private GameplayCamera() {}
 
-    public static void begin(Vec3 anchorPos, Supplier<Vec3> playerSide, Supplier<Vec3> opponentSide,
+    public static void begin(Vec3 anchorPos, Supplier<Vec3> cameraEntity,
+                             Supplier<Vec3> playerSide, Supplier<Vec3> opponentSide,
                              float[] playerBase, float[] opponentBase) {
         anchor = anchorPos;
+        cameraEntityPos = cameraEntity;
         playerSidePos = playerSide;
         opponentSidePos = opponentSide;
         playerBaseX = playerBase[0];
@@ -56,8 +60,8 @@ public final class GameplayCamera {
         oppBaseY = opponentBase[1];
         focusPlayer = true;
         pNudgeX = pNudgeY = oNudgeX = oNudgeY = 0;
-        curX = fromX = playerBaseX;
-        curY = fromY = playerBaseY;
+        curOffset = fromOffset = Vec3.ZERO;
+        offsetInitialized = false;
         transStart = 0;
         lastFrameNano = System.nanoTime();
         active = true;
@@ -86,8 +90,7 @@ public final class GameplayCamera {
     public static void focus(boolean player, String easeName, double durationMs) {
         if (!active || player == focusPlayer) return;
         focusPlayer = player;
-        fromX = curX;
-        fromY = curY;
+        fromOffset = curOffset;
         ease = easeName == null ? "smooth" : easeName;
         transDurMs = Math.max(50, durationMs);
         transStart = System.currentTimeMillis();
@@ -128,7 +131,8 @@ public final class GameplayCamera {
 
     /**
      * Called from the Camera mixin every frame. Returns the world-space offset
-     * to add to the camera position, restricted to the camera's right/up plane.
+     * to add to the camera position. Character tracking uses all three world
+     * axes; configured camera offsets and animation nudges use screen right/up.
      */
     public static Vec3 worldOffset(Vector3f leftVec, Vector3f upVec) {
         if (!active) return null;
@@ -152,25 +156,34 @@ public final class GameplayCamera {
         Supplier<Vec3> sup = focusPlayer ? playerSidePos : opponentSidePos;
         if (sup != null) focusPos = sup.get();
         if (focusPos == null) focusPos = anchor;
-        Vec3 d = focusPos.subtract(anchor);
+        Vec3 cameraBase = cameraEntityPos == null ? null : cameraEntityPos.get();
+        if (cameraBase == null) cameraBase = anchor;
 
-        float targetX = (float) (d.x * rx + d.y * ry + d.z * rz)
-                + (focusPlayer ? playerBaseX + pNudgeX : oppBaseX + oNudgeX);
-        float targetY = (float) (d.x * ux + d.y * uy + d.z * uz)
-                + (focusPlayer ? playerBaseY + pNudgeY : oppBaseY + oNudgeY);
+        // Minecraft's base camera already follows cameraBase. Subtracting its
+        // current position prevents local movement from being counted twice.
+        Vec3 characterDelta = focusPos.subtract(cameraBase);
+        float frameX = focusPlayer ? playerBaseX + pNudgeX : oppBaseX + oNudgeX;
+        float frameY = focusPlayer ? playerBaseY + pNudgeY : oppBaseY + oNudgeY;
+        Vec3 targetOffset = characterDelta.add(
+                rx * frameX + ux * frameY,
+                ry * frameX + uy * frameY,
+                rz * frameX + uz * frameY);
+
+        if (!offsetInitialized) {
+            curOffset = fromOffset = targetOffset;
+            offsetInitialized = true;
+        }
 
         double t = transStart == 0 ? 1 : (System.currentTimeMillis() - transStart) / transDurMs;
         if (t < 1) {
             float f = easeF(t);
-            curX = fromX + (targetX - fromX) * f;
-            curY = fromY + (targetY - fromY) * f;
+            curOffset = fromOffset.lerp(targetOffset, f);
         } else {
             // FNF-style continuous follow once the focus transition is done
             float follow = (float) Math.min(1, dt * 6);
-            curX += (targetX - curX) * follow;
-            curY += (targetY - curY) * follow;
+            curOffset = curOffset.lerp(targetOffset, follow);
         }
 
-        return new Vec3(rx * curX + ux * curY, ry * curX + uy * curY, rz * curX + uz * curY);
+        return curOffset;
     }
 }
