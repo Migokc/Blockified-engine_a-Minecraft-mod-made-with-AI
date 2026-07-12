@@ -18,7 +18,14 @@ public final class CommandEventEditorScreen extends Screen {
     private static final List<String> PLACEHOLDERS = List.of(
             CommandEventPlaceholders.PLAYER,
             CommandEventPlaceholders.OPPONENT,
-            CommandEventPlaceholders.SPEAKERS);
+            CommandEventPlaceholders.SPEAKERS,
+            "<left:1>",
+            "<right:1>",
+            "<forward:1>",
+            "<backward:1>",
+            "<up:1>",
+            "<down:1>",
+            CommandEventPlaceholders.CAMERA_ROTATION);
 
     private final Screen parent;
     private final String initialCommand;
@@ -77,8 +84,12 @@ public final class CommandEventEditorScreen extends Screen {
             String fragment = value.substring(start, cursor).toLowerCase();
             if (!fragment.contains(" ") && !fragment.contains(">")) {
                 placeholderStart = start;
-                PLACEHOLDERS.stream().filter(candidate -> candidate.startsWith(fragment))
-                        .forEach(placeholderSuggestions::add);
+                if (fragment.matches("<(left|right|forward|backward|up|down):-?\\d*(?:\\.\\d*)?")) {
+                    placeholderSuggestions.add(fragment + ">");
+                } else {
+                    PLACEHOLDERS.stream().filter(candidate -> candidate.startsWith(fragment))
+                            .forEach(placeholderSuggestions::add);
+                }
             }
         }
         placeholderSelection = Math.min(placeholderSelection, Math.max(0, placeholderSuggestions.size() - 1));
@@ -167,12 +178,16 @@ public final class CommandEventEditorScreen extends Screen {
         gui.drawCenteredString(font, "Minecraft Command Event - Value 1", width / 2, 18, 0xFFFFFFFF);
         gui.drawString(font, "Command (no practical character limit)", Math.max(16, width / 20), 42,
                 0xFFDDDDDD, false);
-        gui.drawString(font, "Minecraft autocomplete; type '<' for FNF role targets:",
+        gui.drawString(font, "Minecraft + FNF autocomplete; type '<' for FNF targets/macros:",
                 Math.max(16, width / 20), 88, 0xFFFFFFFF, false);
         gui.drawString(font, "<player> = player-side performer   <opponent> = opponent-side performer",
                 Math.max(16, width / 20), 132, 0xFFBBBBBB, false);
         gui.drawString(font, "<speakers> = invisible target at the Funkin' Machine",
                 Math.max(16, width / 20), 143, 0xFFBBBBBB, false);
+        gui.drawString(font, "<left:N>/<right:N>/<forward:N>/<backward:N> = camera-relative XYZ",
+                Math.max(16, width / 20), 154, 0xFFBBBBBB, false);
+        gui.drawString(font, "<camera_rotation> = camera yaw and pitch (use after XYZ in tp)",
+                Math.max(16, width / 20), 165, 0xFFBBBBBB, false);
         if (commandBox != null) {
             gui.drawString(font, "Characters: " + commandBox.getValue().length(),
                     Math.max(16, width / 20), 76, 0xFF888888, false);

@@ -377,7 +377,11 @@ public final class SessionManager {
             }
             if (!session.executedServerEvents.add(payload.eventIndex())) return;
 
-            String command = CommandEventPlaceholders.expand(event.value1, payload.pos()).trim();
+            BlockState machineState = player.serverLevel().getBlockState(payload.pos());
+            Direction machineFacing = machineState.hasProperty(FunkinMachineBlock.FACING)
+                    ? machineState.getValue(FunkinMachineBlock.FACING) : Direction.NORTH;
+            String command = CommandEventPlaceholders.expand(
+                    event.value1, payload.pos(), machineFacing).trim();
             while (command.startsWith("/")) command = command.substring(1).trim();
             if (command.isEmpty() || player.getServer() == null) return;
             player.getServer().getCommands().performPrefixedCommand(
