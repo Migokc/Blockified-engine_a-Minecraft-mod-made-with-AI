@@ -44,7 +44,8 @@ public final class ChartEditorScreen extends Screen {
     private static final int TAB_Y = 24;
     private static final int CONTROL_TOP = 40;
     private static final String MINECRAFT_COMMAND_EVENT = "Minecraft Command";
-    private static final List<String> EVENT_TYPES = List.of(MINECRAFT_COMMAND_EVENT);
+    private static final String CAMERA_ZOOM_EVENT = "Camera Zoom";
+    private static final List<String> EVENT_TYPES = List.of(MINECRAFT_COMMAND_EVENT, CAMERA_ZOOM_EVENT);
 
     private enum EditorTab { CHARTING, DATA, EVENTS, NOTE, SECTION, SONG }
     private enum TopMenu { NONE, FILE, EDIT, VIEW }
@@ -435,18 +436,25 @@ public final class ChartEditorScreen extends Screen {
         eventTimeField = labeledBox("Time (ms)", x, y + 45, w,
                 trim(eventTimeDraft), "event time");
         eventTimeField.active = !eventBeforeSongDraft;
+        boolean cameraZoom = isCameraZoomType(eventTypeDraft);
         if (isMinecraftCommandType(eventTypeDraft)) {
             label("Value 1", x, y + 72, 0xFFDDDDDD, false);
             String preview = eventValue1Draft.isBlank() ? "Click to edit command..." : eventValue1Draft;
             button(x, y + 82, w, font.plainSubstrByWidth(preview, Math.max(8, w - 12)),
                     b -> openCommandEditor());
         } else {
-            eventValue1Field = labeledBox("Value 1", x, y + 72, w, eventValue1Draft, "value 1");
+            eventValue1Field = labeledBox("Value 1", x, y + 72, w, eventValue1Draft,
+                    cameraZoom ? "zoom amount" : "value 1");
             eventValue1Field.setMaxLength(Integer.MAX_VALUE);
         }
-        eventValue2Field = labeledBox("Value 2", x, y + 99, w,
-                eventValue2Draft, "player or server");
-        eventValue2Field.setMaxLength(64);
+        if (cameraZoom) {
+            label("Value 2", x, y + 99, 0xFFDDDDDD, false);
+            button(x, y + 109, w, "Easing: " + normalizedEase(eventValue2Draft), b -> cycleEventEase());
+        } else {
+            eventValue2Field = labeledBox("Value 2", x, y + 99, w,
+                    eventValue2Draft, "player or server");
+            eventValue2Field.setMaxLength(64);
+        }
         int half = (w - 4) / 2;
         button(x, y + 126, half, "Add Event", b -> addEventAtFieldTime());
         Button apply = button(x + half + 4, y + 126, half, "Apply Selected", b -> {
@@ -457,15 +465,29 @@ public final class ChartEditorScreen extends Screen {
         apply.active = selectedEvent != null;
         Button remove = button(x, y + 144, w, "Delete Selected Event", b -> deleteSelectedEvent());
         remove.active = selectedEvent != null;
-        label("Minecraft Command: Value 1 = command, Value 2 = player/server",
+        label(cameraZoom
+                        ? "Camera Zoom: Value 1 = amount, Value 2 = easing (500ms)"
+                        : "Minecraft Command: Value 1 = command, Value 2 = player/server",
                 x, y + 165, 0xFFBBBBBB, false);
         if (eventDropdownOpen) {
             for (int i = 0; i < EVENT_TYPES.size(); i++) {
                 String type = EVENT_TYPES.get(i);
                 button(x, y + 24 + i * 14, w, type, b -> {
+                    boolean changed = !type.equals(eventTypeDraft);
                     eventTypeDraft = type;
                     eventDropdownOpen = false;
-                    if (selectedEvent != null) selectedEvent.name = type;
+                    if (changed && isCameraZoomType(type)) {
+                        eventValue1Draft = "0";
+                        eventValue2Draft = "smooth";
+                    } else if (changed && isMinecraftCommandType(type)) {
+                        eventValue1Draft = "";
+                        eventValue2Draft = "player";
+                    }
+                    if (selectedEvent != null) {
+                        selectedEvent.name = type;
+                        selectedEvent.value1 = eventValue1Draft;
+                        selectedEvent.value2 = eventValue2Draft;
+                    }
                     rebuildUi();
                 });
             }
@@ -1640,7 +1662,8 @@ public final class ChartEditorScreen extends Screen {
 
     private void addEventAt(double time) {
         commitVisibleFields();
-        String value2 = eventValue2Draft.isBlank() ? "player" : eventValue2Draft;
+        String value2 = eventValue2Draft.isBlank()
+                ? (isCameraZoomType(eventTypeDraft) ? "smooth" : "player") : eventValue2Draft;
         selectedEvent = new SongChart.Event(Math.max(0, time), eventTypeDraft,
                 eventValue1Draft, value2, eventBeforeSongDraft);
         setEventDraft(selectedEvent);
@@ -1654,7 +1677,8 @@ public final class ChartEditorScreen extends Screen {
     private void setEventDraft(SongChart.Event event) {
         eventTypeDraft = event == null || event.name.isBlank() ? MINECRAFT_COMMAND_EVENT : event.name;
         eventValue1Draft = event == null ? "" : event.value1;
-        eventValue2Draft = event == null || event.value2.isBlank() ? "player" : event.value2;
+        eventValue2Draft = event == null || event.value2.isBlank()
+                ? (isCameraZoomType(eventTypeDraft) ? "smooth" : "player") : event.value2;
         eventTimeDraft = event == null ? Math.max(0, viewPositionMs) : event.timeMs;
         eventBeforeSongDraft = event != null && event.beforeSong;
         eventDraftInitialized = true;
@@ -1664,6 +1688,34 @@ public final class ChartEditorScreen extends Screen {
     private static boolean isMinecraftCommandType(String name) {
         return name != null && (name.equalsIgnoreCase(MINECRAFT_COMMAND_EVENT)
                 || name.equalsIgnoreCase("Run Minecraft Command"));
+    }
+
+    private static boolean isCameraZoomType(String name) {
+        return name != null && name.equalsIgnoreCase(CAMERA_ZOOM_EVENT);
+    }
+
+    private static String normalizedEase(String value) {
+        if (value != null) {
+            for (String candidate : GameplayCamera.EASES) {
+                if (candidate.equalsIgnoreCase(value.trim())) return candidate;
+            }
+        }
+        return "smooth";
+    }
+
+    private void cycleEventEase() {
+        commitVisibleFields();
+        String current = normalizedEase(eventValue2Draft);
+        int index = 0;
+        for (int i = 0; i < GameplayCamera.EASES.length; i++) {
+            if (GameplayCamera.EASES[i].equals(current)) {
+                index = i;
+                break;
+            }
+        }
+        eventValue2Draft = GameplayCamera.EASES[(index + 1) % GameplayCamera.EASES.length];
+        if (selectedEvent != null) selectedEvent.value2 = eventValue2Draft;
+        rebuildUi();
     }
 
     private void openCommandEditor() {

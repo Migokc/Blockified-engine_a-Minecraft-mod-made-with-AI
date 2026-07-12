@@ -41,7 +41,12 @@ public final class GameplayCamera {
     // per-side sing nudges (decay over time)
     private static float pNudgeX, pNudgeY, oNudgeX, oNudgeY;
     // beat-hit zoom (FOV pinch that decays, like FNF's camZoom bump)
-    private static float zoom;
+    private static float beatZoom;
+    // persistent event zoom, tweened to a target over a fixed short transition
+    private static float eventZoom, eventZoomFrom, eventZoomTarget;
+    private static long eventZoomStart;
+    private static String eventZoomEase = "smooth";
+    private static final double EVENT_ZOOM_DURATION_MS = 500.0;
     private static long lastFrameNano;
 
     private static CameraType previousCameraType;
@@ -63,6 +68,9 @@ public final class GameplayCamera {
         oppBaseY = opponentBase[1];
         focusPlayer = true;
         pNudgeX = pNudgeY = oNudgeX = oNudgeY = 0;
+        beatZoom = 0;
+        eventZoom = eventZoomFrom = eventZoomTarget = 0;
+        eventZoomStart = 0;
         curOffset = fromOffset = Vec3.ZERO;
         offsetInitialized = false;
         transStart = 0;
@@ -119,22 +127,50 @@ public final class GameplayCamera {
     /** FNF-style beat zoom bump; decays over the following beats. */
     public static void bumpZoom(float amount) {
         if (!active) return;
-        zoom = Math.min(0.25f, zoom + amount);
+        beatZoom = Math.min(0.25f, beatZoom + amount);
+    }
+
+    /** Tweens to a persistent FOV zoom offset. Zero restores the normal zoom. */
+    public static void zoomTo(float amount, String easeName) {
+        if (!active || !Float.isFinite(amount)) return;
+        updateEventZoom(System.currentTimeMillis());
+        eventZoomFrom = eventZoom;
+        eventZoomTarget = Math.max(-1f, Math.min(0.9f, amount));
+        eventZoomEase = easeName == null ? "smooth" : easeName.trim().toLowerCase();
+        eventZoomStart = System.currentTimeMillis();
     }
 
     /** Multiplier applied to the FOV while active (smaller fov = zoomed in). */
     public static float fovScale() {
-        return active ? 1f - zoom : 1f;
+        if (!active) return 1f;
+        updateEventZoom(System.currentTimeMillis());
+        return Math.max(0.1f, Math.min(2f, 1f - beatZoom - eventZoom));
     }
 
     private static float easeF(double t) {
+        return easeF(ease, t);
+    }
+
+    private static float easeF(String easeName, double t) {
         t = Math.max(0, Math.min(1, t));
-        return (float) switch (ease) {
+        return (float) switch (easeName) {
             case "linear" -> t;
             case "snap" -> 1.0;
             case "expo" -> t >= 1 ? 1.0 : 1.0 - Math.pow(2, -10 * t);
             default -> t * t * (3 - 2 * t); // smoothstep
         };
+    }
+
+    private static void updateEventZoom(long nowMs) {
+        if (eventZoomStart == 0) return;
+        double t = (nowMs - eventZoomStart) / EVENT_ZOOM_DURATION_MS;
+        if (t >= 1) {
+            eventZoom = eventZoomTarget;
+            eventZoomStart = 0;
+        } else {
+            float f = easeF(eventZoomEase, t);
+            eventZoom = eventZoomFrom + (eventZoomTarget - eventZoomFrom) * f;
+        }
     }
 
     /**
@@ -154,7 +190,7 @@ public final class GameplayCamera {
         pNudgeX *= decay; pNudgeY *= decay;
         oNudgeX *= decay; oNudgeY *= decay;
         // beat zoom eases back out
-        zoom *= (float) Math.exp(-dt * 3.5);
+        beatZoom *= (float) Math.exp(-dt * 3.5);
 
         // screen right = -left
         float rx = -leftVec.x(), ry = -leftVec.y(), rz = -leftVec.z();

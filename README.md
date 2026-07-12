@@ -164,6 +164,8 @@ third-person for the song and restored afterwards.
   copy/paste/clear/swap section. Note types via the Type field.
 - Events can use **Trigger: Timeline** or **Trigger: Before Song**. Before-song events
   run once after gameplay and command targets load, while the countdown is still active.
+- **Camera Zoom** events use Value 1 as a persistent zoom offset (`0` normal,
+  positive in, negative out) and Value 2 as a 500 ms easing preset.
 - Snap: 4th–64th. Save writes `config/fnfmod/songs/<file>/<file>.json` (Psych format).
 
 ## Gameplay options

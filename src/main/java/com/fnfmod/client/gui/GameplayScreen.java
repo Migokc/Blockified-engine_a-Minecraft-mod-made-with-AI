@@ -485,12 +485,20 @@ public class GameplayScreen extends Screen {
             } else {
                 runPlayerCommand(event.value1);
             }
+        } else if (isCameraZoomEvent(event)) {
+            try {
+                GameplayCamera.zoomTo(Float.parseFloat(event.value1.trim()), event.value2);
+            } catch (NumberFormatException ignored) {}
         }
     }
 
     private static boolean isMinecraftCommandEvent(SongChart.Event event) {
         return event != null && (event.name.equalsIgnoreCase("Minecraft Command")
                 || event.name.equalsIgnoreCase("Run Minecraft Command"));
+    }
+
+    private static boolean isCameraZoomEvent(SongChart.Event event) {
+        return event != null && event.name.equalsIgnoreCase("Camera Zoom");
     }
 
     private void runPlayerCommand(String rawCommand) {
