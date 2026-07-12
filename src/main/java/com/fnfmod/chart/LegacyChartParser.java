@@ -235,11 +235,6 @@ public final class LegacyChartParser {
     private static void addEvent(java.util.List<SongChart.Event> out, double time,
                                  String name, String value1, String value2, boolean beforeSong) {
         if (time < 0 || name == null || name.isBlank()) return;
-        for (SongChart.Event existing : out) {
-            if (Math.abs(existing.timeMs - time) < 0.001 && existing.name.equals(name)
-                    && existing.value1.equals(value1) && existing.value2.equals(value2)
-                    && existing.beforeSong == beforeSong) return;
-        }
         out.add(new SongChart.Event(time, name, value1, value2, beforeSong));
     }
 
