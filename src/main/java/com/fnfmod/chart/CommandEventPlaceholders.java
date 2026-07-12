@@ -29,6 +29,30 @@ public final class CommandEventPlaceholders {
         return expand(command, machinePos, Direction.NORTH);
     }
 
+    /**
+     * Replaces FNF syntax with equal-length valid Brigadier syntax. The editor
+     * can therefore use Minecraft's real parser without changing cursor or
+     * suggestion ranges, while still displaying the readable FNF macros.
+     */
+    public static String forAutocomplete(String command) {
+        if (command == null || command.isEmpty()) return command == null ? "" : command;
+        String parsed = command
+                .replace(PLAYER, dummySelector(PLAYER.length()))
+                .replace(OPPONENT, dummySelector(OPPONENT.length()))
+                .replace(SPEAKERS, dummySelector(SPEAKERS.length()))
+                .replace(CAMERA_ROTATION, dummyRotation(CAMERA_ROTATION.length()));
+
+        Matcher matcher = ANGLE_MACRO.matcher(parsed);
+        StringBuffer out = new StringBuffer();
+        while (matcher.find()) {
+            if (matcher.group().length() < 5
+                    || combinedPosition(matcher.group(1), Direction.NORTH) == null) continue;
+            matcher.appendReplacement(out, Matcher.quoteReplacement(dummyPosition(matcher.group().length())));
+        }
+        matcher.appendTail(out);
+        return out.toString();
+    }
+
     /** Expands selectors and camera-relative XYZ/rotation macros. */
     public static String expand(String command, BlockPos machinePos, Direction machineFacing) {
         if (command == null) return "";
@@ -80,6 +104,19 @@ public final class CommandEventPlaceholders {
 
     private static String relative(double value) {
         return Math.abs(value) < 1.0e-9 ? "~" : "~" + trim(value);
+    }
+
+    private static String dummySelector(int length) {
+        return "@e[x=" + "0".repeat(Math.max(1, length - 6)) + "]";
+    }
+
+    private static String dummyPosition(int length) {
+        if (length < 5) return "~ ~ ~";
+        return "~" + "0".repeat(length - 5) + " ~ ~";
+    }
+
+    private static String dummyRotation(int length) {
+        return "0".repeat(Math.max(1, length - 2)) + " 0";
     }
 
     private static String trim(double value) {

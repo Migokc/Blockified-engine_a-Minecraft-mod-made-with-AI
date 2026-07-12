@@ -41,6 +41,7 @@ public final class CommandEventEditorScreen extends Screen {
     private int suggestionX;
     private int suggestionY;
     private int suggestionWidth;
+    private boolean syncingParserText;
 
     public CommandEventEditorScreen(Screen parent, String initialCommand, Consumer<String> onSave) {
         super(Component.literal("Minecraft Command Event"));
@@ -58,7 +59,9 @@ public final class CommandEventEditorScreen extends Screen {
         commandBox.setMaxLength(Integer.MAX_VALUE);
         commandBox.setValue(initialCommand);
         commandBox.setCursorPosition(initialCommand.length());
-        commandBox.setResponder(value -> updateSuggestions());
+        commandBox.setResponder(value -> {
+            if (!syncingParserText) updateSuggestions();
+        });
         setInitialFocus(commandBox);
 
         commandSuggestions = new CommandSuggestions(minecraft, this, commandBox, font,
@@ -112,10 +115,25 @@ public final class CommandEventEditorScreen extends Screen {
         if (placeholderSuggestions.isEmpty()) {
             placeholderStart = -1;
             commandSuggestions.setAllowSuggestions(true);
-            commandSuggestions.updateCommandInfo();
+            updateVanillaSuggestions(value, cursor);
         } else {
             commandSuggestions.hide();
         }
+    }
+
+    private void updateVanillaSuggestions(String visibleCommand, int cursor) {
+        String parserCommand = CommandEventPlaceholders.forAutocomplete(visibleCommand);
+        if (parserCommand.equals(visibleCommand)) {
+            commandSuggestions.updateCommandInfo();
+            return;
+        }
+        syncingParserText = true;
+        commandBox.setValue(parserCommand);
+        commandBox.setCursorPosition(Math.min(cursor, parserCommand.length()));
+        commandSuggestions.updateCommandInfo();
+        commandBox.setValue(visibleCommand);
+        commandBox.setCursorPosition(Math.min(cursor, visibleCommand.length()));
+        syncingParserText = false;
     }
 
     private void applyPlaceholderSuggestion() {
