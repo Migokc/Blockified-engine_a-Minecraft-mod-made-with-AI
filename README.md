@@ -159,6 +159,8 @@ third-person for the song and restored afterwards.
 - `A` / `D` (or arrows / mouse wheel): previous / next section. `Space`: play/pause audio.
 - Per-section: Must Hit, Alt Anim, GF Section, Change BPM (+ value), section beats,
   copy/paste/clear/swap section. Note types via the Type field.
+- Events can use **Trigger: Timeline** or **Trigger: Before Song**. Before-song events
+  run once after gameplay and command targets load, while the countdown is still active.
 - Snap: 4th–64th. Save writes `config/fnfmod/songs/<file>/<file>.json` (Psych format).
 
 ## Gameplay options

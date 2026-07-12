@@ -116,6 +116,7 @@ public final class PsychChartWriter {
             payload.add(event.name);
             payload.add(event.value1);
             payload.add(event.value2);
+            if (event.beforeSong) payload.add("load");
             payloads.add(payload);
             row.add(payloads);
             events.add(row);

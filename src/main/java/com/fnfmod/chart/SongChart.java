@@ -69,16 +69,23 @@ public class SongChart {
         public String name = "";
         public String value1 = "";
         public String value2 = "";
+        /** Runs once while the gameplay screen is loaded, before audio starts. */
+        public boolean beforeSong;
 
         public Event(double timeMs, String name, String value1, String value2) {
+            this(timeMs, name, value1, value2, false);
+        }
+
+        public Event(double timeMs, String name, String value1, String value2, boolean beforeSong) {
             this.timeMs = timeMs;
             this.name = name == null ? "" : name;
             this.value1 = value1 == null ? "" : value1;
             this.value2 = value2 == null ? "" : value2;
+            this.beforeSong = beforeSong;
         }
 
         public Event copy() {
-            return new Event(timeMs, name, value1, value2);
+            return new Event(timeMs, name, value1, value2, beforeSong);
         }
     }
 
@@ -97,7 +104,8 @@ public class SongChart {
     }
 
     public void sortEvents() {
-        events.sort(Comparator.comparingDouble(e -> e.timeMs));
+        events.sort(Comparator.comparing((Event e) -> !e.beforeSong)
+                .thenComparingDouble(e -> e.timeMs));
     }
 
     /** Rebuilds bpmChanges from startBpm + section changeBPM flags. */

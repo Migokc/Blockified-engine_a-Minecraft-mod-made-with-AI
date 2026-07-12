@@ -175,12 +175,13 @@ public final class LegacyChartParser {
                 String name = optString(object, "name", optString(object, "event", optString(object, "type", "")));
                 String value1 = optString(object, "value1", "");
                 String value2 = optString(object, "value2", "");
+                boolean beforeSong = "load".equalsIgnoreCase(optString(object, "trigger", ""));
                 if (object.has("params") && object.get("params").isJsonArray()) {
                     JsonArray params = object.getAsJsonArray("params");
                     if (!params.isEmpty()) value1 = text(params.get(0));
                     if (params.size() > 1) value2 = text(params.get(1));
                 }
-                addEvent(out, time, name, value1, value2);
+                addEvent(out, time, name, value1, value2, beforeSong);
             } else {
                 for (var child : object.entrySet()) parseEventContainer(child.getValue(), out);
             }
@@ -221,17 +222,25 @@ public final class LegacyChartParser {
         String name = row.size() > nameIndex ? text(row.get(nameIndex)) : "";
         String value1 = row.size() > nameIndex + 1 ? text(row.get(nameIndex + 1)) : "";
         String value2 = row.size() > nameIndex + 2 ? text(row.get(nameIndex + 2)) : "";
-        addEvent(out, time, name, value1, value2);
+        boolean beforeSong = row.size() > nameIndex + 3
+                && "load".equalsIgnoreCase(text(row.get(nameIndex + 3)));
+        addEvent(out, time, name, value1, value2, beforeSong);
     }
 
     private static void addEvent(java.util.List<SongChart.Event> out, double time,
                                  String name, String value1, String value2) {
+        addEvent(out, time, name, value1, value2, false);
+    }
+
+    private static void addEvent(java.util.List<SongChart.Event> out, double time,
+                                 String name, String value1, String value2, boolean beforeSong) {
         if (time < 0 || name == null || name.isBlank()) return;
         for (SongChart.Event existing : out) {
             if (Math.abs(existing.timeMs - time) < 0.001 && existing.name.equals(name)
-                    && existing.value1.equals(value1) && existing.value2.equals(value2)) return;
+                    && existing.value1.equals(value1) && existing.value2.equals(value2)
+                    && existing.beforeSong == beforeSong) return;
         }
-        out.add(new SongChart.Event(time, name, value1, value2));
+        out.add(new SongChart.Event(time, name, value1, value2, beforeSong));
     }
 
     private static Double number(JsonElement element) {
