@@ -17,6 +17,8 @@ public class SongEntry {
     public Path metaFile;
     /** Optional separate Psych/Codename event timeline. */
     public Path eventsFile;
+    /** True when eventsFile belongs to the local edited-song override. */
+    public boolean eventsOverride;
     /** Opponent icon name (fallback lookup). */
     public String opponentIcon = "";
     /** Resolved opponent icon png from THIS song's own mod (avoids cross-mod name clashes). */
@@ -27,6 +29,8 @@ public class SongEntry {
 
     /** difficulty -> chart file (legacy/psych) */
     public final Map<String, Path> legacyChartFiles = new LinkedHashMap<>();
+    /** Local Psych charts that replace only their matching original difficulty. */
+    public final Map<String, Path> chartOverrides = new LinkedHashMap<>();
 
     /** One V-Slice variation: its chart+metadata pair and its own audio. */
     public static class VSliceVariation {
@@ -114,10 +118,11 @@ public class SongEntry {
     /** Files a client needs to play one specific difficulty. */
     public List<Path> transferFiles(String difficulty) {
         List<Path> out = new ArrayList<>();
+        Path override = chartOverrides.get(difficulty);
         if (isVslice()) {
             VSliceVariation v = variationFor(difficulty);
             if (v != null) {
-                addIf(out, v.chartFile);
+                addIf(out, override != null ? override : v.chartFile);
                 addIf(out, v.metadataFile);
                 addIf(out, v.instFile);
                 addIf(out, v.voicesFile);
@@ -125,7 +130,7 @@ public class SongEntry {
                 addIf(out, v.voicesOpponentFile);
             }
         } else {
-            Path chart = legacyChartFiles.get(difficulty);
+            Path chart = override != null ? override : legacyChartFiles.get(difficulty);
             if (chart == null && !legacyChartFiles.isEmpty()) chart = legacyChartFiles.values().iterator().next();
             addIf(out, chart);
             addIf(out, metaFile); // Codename: needed to load the chart (null for legacy/Psych)

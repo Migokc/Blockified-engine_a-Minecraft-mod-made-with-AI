@@ -34,9 +34,8 @@ import java.util.Set;
 /**
  * Psych-inspired chart editor for the normalized FNF chart format.
  *
- * The playhead remains fixed while the chart moves beneath it. Events are
- * represented in the interface but intentionally disabled until the mod has
- * an event model and a stable cross-engine event format.
+ * The playhead remains fixed while the chart moves beneath it. The event lane
+ * supports Minecraft command events alongside imported engine events.
  */
 public final class ChartEditorScreen extends Screen {
 
@@ -44,6 +43,7 @@ public final class ChartEditorScreen extends Screen {
     private static final double DEFAULT_PIXELS_PER_BEAT = 64.0;
     private static final int TAB_Y = 24;
     private static final int CONTROL_TOP = 40;
+    private static final String MINECRAFT_COMMAND_EVENT = "Minecraft Command";
 
     private enum EditorTab { CHARTING, DATA, EVENTS, NOTE, SECTION, SONG }
     private enum TopMenu { NONE, FILE, EDIT, VIEW }
@@ -72,6 +72,7 @@ public final class ChartEditorScreen extends Screen {
     private String loadedDifficulty = "normal";
     private String defaultNoteType = "";
     private Path originalDirectory;
+    private String originalChartName;
 
     private double viewPositionMs;
     private int snapIndex = 3;
@@ -79,6 +80,7 @@ public final class ChartEditorScreen extends Screen {
     private int hitsoundIndex;
     private boolean vortex;
     private SongChart.Note selectedNote;
+    private SongChart.Event selectedEvent;
     private double pixelsPerBeat = DEFAULT_PIXELS_PER_BEAT;
     private float playbackRate = 1.0f;
     private boolean helpVisible;
@@ -113,6 +115,8 @@ public final class ChartEditorScreen extends Screen {
     private EditBox sustainField;
     private EditBox noteTypeField;
     private EditBox saveIdField;
+    private EditBox eventTimeField;
+    private EditBox eventCommandField;
 
     public ChartEditorScreen(String songId) {
         this(songId, null, null, null, null, null);
@@ -162,6 +166,7 @@ public final class ChartEditorScreen extends Screen {
         if (originalDirectory == null && entry != null) {
             originalDirectory = entry.modRoot != null ? entry.modRoot : entry.folder;
         }
+        originalChartName = entry != null && entry.id != null ? entry.id : requestedSongId;
         if (suppliedChart != null) {
             chart = suppliedChart;
         }
@@ -226,6 +231,7 @@ public final class ChartEditorScreen extends Screen {
         songNameField = songBpmField = songSpeedField = songOffsetField = null;
         playerField = opponentField = sectionBpmField = sectionBeatsField = null;
         noteTimeField = sustainField = noteTypeField = saveIdField = null;
+        eventTimeField = eventCommandField = null;
     }
 
     private void buildTopBar() {
@@ -327,8 +333,7 @@ public final class ChartEditorScreen extends Screen {
         button(x + half + 4, y, half, "Mirror Notes", b -> mirrorSection(shownSection));
         y += 18;
         button(x, y, half, "Duet Section", b -> duetSection(shownSection));
-        Button events = button(x + half + 4, y, half, "Events: OFF", b -> {});
-        events.active = false;
+        button(x + half + 4, y, half, "Events: " + chart.events.size(), b -> switchTab(EditorTab.EVENTS));
     }
 
     private void buildNoteTab() {
@@ -403,18 +408,24 @@ public final class ChartEditorScreen extends Screen {
         int x = controlX() + 10;
         int w = controlWidth() - 20;
         int y = 52;
-        label("Events", x, 43, 0xFFDDDDDD, false);
-        EditBox eventName = labeledBox("Event", x, y, w - 62, "", "event name");
-        eventName.active = false;
-        Button minus = button(x + w - 56, y + 10, 26, "-", b -> {});
-        Button plus = button(x + w - 26, y + 10, 26, "+", b -> {});
-        minus.active = plus.active = false;
+        label("Minecraft Command Event", x, 43, 0xFFDDDDDD, false);
+        eventTimeField = labeledBox("Time (ms)", x, y, w,
+                trim(selectedEvent == null ? viewPositionMs : selectedEvent.timeMs), "event time");
+        eventCommandField = labeledBox("Command", x, y + 31, w,
+                selectedEvent == null ? "" : selectedEvent.value1, "command without /");
+        eventCommandField.setMaxLength(2048);
         int half = (w - 4) / 2;
-        EditBox value1 = labeledBox("Value 1", x, y + 38, half, "", "value 1");
-        EditBox value2 = labeledBox("Value 2", x + half + 4, y + 38, half, "", "value 2");
-        value1.active = value2.active = false;
-        label("Events are visible by design, but disabled until their format is decided.",
-                x, y + 78, 0xFF999999, false);
+        button(x, y + 62, half, "Add at Time", b -> addCommandEvent());
+        Button apply = button(x + half + 4, y + 62, half, "Apply Selected", b -> {
+            commitVisibleFields();
+            setStatus("Command event updated");
+            rebuildUi();
+        });
+        apply.active = selectedEvent != null;
+        Button remove = button(x, y + 80, w, "Delete Selected Event", b -> deleteSelectedEvent());
+        remove.active = selectedEvent != null;
+        label("The command runs as the player; server permissions still apply.",
+                x, y + 101, 0xFFBBBBBB, false);
     }
 
     private void buildOpenMenu() {
@@ -432,7 +443,7 @@ public final class ChartEditorScreen extends Screen {
             y += 21;
             button(x + 4, y, w - 8, "Save", b -> saveChart()); y += 16;
             Button openEvents = button(x + 4, y, w - 8, "Open Events...", b -> {}); openEvents.active = false; y += 16;
-            Button saveEvents = button(x + 4, y, w - 8, "Save Events...", b -> {}); saveEvents.active = false; y += 16;
+            button(x + 4, y, w - 8, "Save Events...", b -> saveEventsOnly()); y += 16;
             button(x + 4, y, w - 8, "Exit", b -> onClose());
         } else if (openMenu == TopMenu.EDIT) {
             Button undo = button(x + 4, y, w - 8, "Undo", b -> { undoNotes(); rebuildUi(); });
@@ -452,7 +463,13 @@ public final class ChartEditorScreen extends Screen {
             removeAllCustom.active = chart.notes.stream().anyMatch(this::isCustomNote); y += 16;
             Button removeSelectedTypes = button(x + 4, y, w - 8, "Remove Selected Types", b -> removeSelectedCustomNoteTypes());
             removeSelectedTypes.active = selectedNotes.stream().anyMatch(this::isCustomNote); y += 16;
-            Button clearEvents = button(x + 4, y, w - 8, "Clear All Events", b -> {}); clearEvents.active = false;
+            Button clearEvents = button(x + 4, y, w - 8, "Clear All Events", b -> {
+                chart.events.clear();
+                selectedEvent = null;
+                setStatus("Cleared all events");
+                rebuildUi();
+            });
+            clearEvents.active = !chart.events.isEmpty();
         } else {
             button(x + 4, y, w - 8, "Beat Snap: " + snapText(), b -> cycleSnap()); y += 16;
             button(x + 4, y, w - 8, "Vortex Editor: " + onOff(vortex), b -> {
@@ -510,6 +527,14 @@ public final class ChartEditorScreen extends Screen {
                 selectedNote.sustainMs = Math.max(0, parseNumber(sustainField, selectedNote.sustainMs));
                 chart.sortNotes();
             }
+        }
+
+        if (selectedEvent != null && eventTimeField != null && eventCommandField != null) {
+            selectedEvent.timeMs = Math.max(0, parseNumber(eventTimeField, selectedEvent.timeMs));
+            selectedEvent.name = MINECRAFT_COMMAND_EVENT;
+            selectedEvent.value1 = eventCommandField.getValue().trim();
+            selectedEvent.value2 = "";
+            chart.sortEvents();
         }
 
         if (saveIdField != null && !saveIdField.getValue().isBlank()) saveId = sanitizeId(saveIdField.getValue());
@@ -806,6 +831,7 @@ public final class ChartEditorScreen extends Screen {
             setStatus("Select at least one custom note type first");
             return;
         }
+
         List<SongChart.Note> removed = chart.notes.stream()
                 .filter(note -> isCustomNote(note) && selectedTypes.contains(note.noteType.trim()))
                 .toList();
@@ -838,10 +864,8 @@ public final class ChartEditorScreen extends Screen {
                     ? "" : "-" + sanitizeId(loadedDifficulty);
             Path file = directory.resolve(id + difficultySuffix + ".json");
             Files.writeString(file, PsychChartWriter.write(chart));
-            if (originalDirectory != null) {
-                Files.writeString(directory.resolve(SongLibrary.ORIGINAL_DIRECTORY_FILE),
-                        originalDirectory.toAbsolutePath().normalize().toString());
-            }
+            Files.writeString(directory.resolve("events.json"), PsychChartWriter.writeEvents(chart));
+            writeOriginalReference(directory, id);
             songId = saveId = id;
             SongLibrary.rescan();
             setStatus("Saved " + file.getFileName());
@@ -1065,7 +1089,11 @@ public final class ChartEditorScreen extends Screen {
             }
             case GLFW.GLFW_KEY_E -> { adjustSustain(stepMs() * moveMultiplier); yield true; }
             case GLFW.GLFW_KEY_Q -> { adjustSustain(-stepMs() * moveMultiplier); yield true; }
-            case GLFW.GLFW_KEY_DELETE, GLFW.GLFW_KEY_BACKSPACE -> { deleteSelectedNotes(); yield true; }
+            case GLFW.GLFW_KEY_DELETE, GLFW.GLFW_KEY_BACKSPACE -> {
+                if (activeTab == EditorTab.EVENTS && selectedEvent != null) deleteSelectedEvent();
+                else deleteSelectedNotes();
+                yield true;
+            }
             default -> super.keyPressed(keyCode, scanCode, modifiers);
         };
     }
@@ -1089,6 +1117,30 @@ public final class ChartEditorScreen extends Screen {
 
         int gx = gridX();
         int cw = cellWidth();
+        int eventX = gx - cw;
+        if (button == 0 && mouseX >= eventX && mouseX < gx
+                && mouseY >= gridTop() && mouseY < gridBottom()) {
+            double clickedBeat = yToBeat(mouseY - cw / 2.0);
+            SongChart.Event closest = null;
+            double closestPixels = Double.MAX_VALUE;
+            for (SongChart.Event event : chart.events) {
+                double pixels = Math.abs(conductor.beatAt(event.timeMs) - clickedBeat) * pixelsPerBeat;
+                if (pixels < closestPixels) {
+                    closestPixels = pixels;
+                    closest = event;
+                }
+            }
+            if (closest != null && closestPixels <= Math.max(7, cw / 2.0)) {
+                selectedEvent = closest;
+                activeTab = EditorTab.EVENTS;
+                openMenu = TopMenu.NONE;
+                setStatus("Selected event at " + trim(closest.timeMs) + " ms");
+                rebuildUi();
+            } else {
+                setStatus("No event at this position");
+            }
+            return true;
+        }
         if (mouseX >= gx && mouseX < gx + 8 * cw && mouseY >= gridTop() && mouseY < gridBottom()) {
             if (button == 1) {
                 selectingBox = true;
@@ -1262,13 +1314,12 @@ public final class ChartEditorScreen extends Screen {
             if (y >= top - 1 && y <= bottom + 1) gui.fill(eventX, y, gx + gridWidth, y + 1, 0xFF9D3D3D);
         }
 
-        // Events are intentionally display-only. Their dedicated column is not
-        // part of grid hit-testing, so they cannot be edited yet.
         for (SongChart.Event event : chart.events) {
             double beat = conductor.beatAt(event.timeMs);
             if (beat < topBeat - 1 || beat > bottomBeat + 1) continue;
             int eventY = (int) beatToY(beat) + cw / 2;
-            gui.fill(eventX + 3, eventY - 4, gx - 3, eventY + 4, 0xFFFFA000);
+            int color = event == selectedEvent ? 0xFFFFFF44 : 0xFFFFA000;
+            gui.fill(eventX + 3, eventY - 4, gx - 3, eventY + 4, color);
             drawCentered(gui, "E", eventX + cw / 2, eventY - font.lineHeight / 2, 0xFF201000);
         }
 
@@ -1461,6 +1512,53 @@ public final class ChartEditorScreen extends Screen {
     private double yToBeat(double y) {
         double viewBeat = conductor.beatAt(Math.max(0, viewPositionMs));
         return viewBeat + (y - centerY()) / pixelsPerBeat;
+    }
+
+    private void saveEventsOnly() {
+        commitVisibleFields();
+        String id = sanitizeId(saveId == null || saveId.isBlank() ? chart.title : saveId);
+        if (id.isBlank()) id = "unnamed";
+        try {
+            Path directory = SongLibrary.songsDir().resolve(id);
+            Files.createDirectories(directory);
+            Files.writeString(directory.resolve("events.json"), PsychChartWriter.writeEvents(chart));
+            writeOriginalReference(directory, id);
+            setStatus("Saved events.json");
+            SongLibrary.rescan();
+        } catch (Exception e) {
+            setStatus("Event save failed: " + e.getMessage());
+            FnfMod.LOGGER.error("Event save failed", e);
+        }
+    }
+
+    private void writeOriginalReference(Path directory, String fallbackId) throws Exception {
+        if (originalDirectory == null) return;
+        String chartName = originalChartName == null || originalChartName.isBlank()
+                ? (requestedSongId == null ? fallbackId : requestedSongId) : originalChartName;
+        Files.writeString(directory.resolve(SongLibrary.ORIGINAL_DIRECTORY_FILE),
+                originalDirectory.toAbsolutePath().normalize() + System.lineSeparator() + "chart=" + chartName);
+    }
+
+    private void addCommandEvent() {
+        String command = eventCommandField == null ? "" : eventCommandField.getValue().trim();
+        if (command.isEmpty()) {
+            setStatus("Enter a Minecraft command first");
+            return;
+        }
+        double time = Math.max(0, parseNumber(eventTimeField, viewPositionMs));
+        selectedEvent = new SongChart.Event(time, MINECRAFT_COMMAND_EVENT, command, "");
+        chart.events.add(selectedEvent);
+        chart.sortEvents();
+        setStatus("Added command event");
+        rebuildUi();
+    }
+
+    private void deleteSelectedEvent() {
+        if (selectedEvent == null) return;
+        chart.events.remove(selectedEvent);
+        selectedEvent = null;
+        setStatus("Deleted event");
+        rebuildUi();
     }
 
     /** Converts the visual center of a note cell into its stable chart beat. */

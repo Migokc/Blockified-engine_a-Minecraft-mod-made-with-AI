@@ -695,10 +695,9 @@ public class SongLibrary {
             } catch (Exception ignored) {}
         }
         entry.difficulties.addAll(entry.legacyChartFiles.keySet());
-        if (entry.difficulties.isEmpty()) return null;
-
         SongEntry linked = linkChartOverrideToOriginal(dir, entry);
         if (linked != null) return linked;
+        if (entry.difficulties.isEmpty()) return null;
 
         if (entry.instFile == null) {
             if (entry.instFile == null && !entry.difficulties.isEmpty()) {
@@ -714,20 +713,28 @@ public class SongLibrary {
         Path referenceFile = localDir.resolve(ORIGINAL_DIRECTORY_FILE);
         if (!Files.isRegularFile(referenceFile)) return null;
         try {
-            String raw = Files.readString(referenceFile).trim();
-            if (raw.isEmpty()) return null;
-            Path source = Path.of(raw);
+            List<String> reference = Files.readAllLines(referenceFile);
+            if (reference.isEmpty() || reference.get(0).isBlank()) return null;
+            Path source = Path.of(reference.get(0).trim());
+            String originalChartName = override.id;
+            for (int i = 1; i < reference.size(); i++) {
+                String line = reference.get(i).trim();
+                if (line.regionMatches(true, 0, "chart=", 0, 6) && line.length() > 6) {
+                    originalChartName = line.substring(6).trim();
+                }
+            }
             if (!source.isAbsolute()) source = localDir.resolve(source);
             source = source.toAbsolutePath().normalize();
             if (source.equals(localDir.toAbsolutePath().normalize()) || !Files.isDirectory(source)) return null;
 
             Map<String, SongEntry> sourceSongs = new LinkedHashMap<>();
             scanPsychRoot(source, sourceSongs, new LinkedHashMap<>());
-            SongEntry original = sourceSongs.get(override.id);
+            SongEntry original = sourceSongs.get(originalChartName);
             if (original == null) {
+                String targetChartName = originalChartName;
                 original = sourceSongs.entrySet().stream()
-                        .filter(e -> e.getKey().equalsIgnoreCase(override.id)
-                                || normalizedDifficultyKey(e.getKey()).equals(normalizedDifficultyKey(override.id)))
+                        .filter(e -> e.getKey().equalsIgnoreCase(targetChartName)
+                                || normalizedDifficultyKey(e.getKey()).equals(normalizedDifficultyKey(targetChartName)))
                         .map(Map.Entry::getValue).findFirst().orElse(null);
             }
             if (original == null) original = scanSongDir(source);
@@ -736,32 +743,20 @@ public class SongLibrary {
                         override.id, source);
                 return null;
             }
+            if (original.isVslice()) finalizeVSlice(original);
 
-            // V-Slice stores audio per variation, so flatten the matching variation
-            // before the edited Psych chart becomes the authoritative chart source.
-            if (original.isVslice()) {
-                finalizeVSlice(original);
-                String difficulty = override.difficulties.isEmpty() ? "normal" : override.difficulties.get(0);
-                String normalizedDifficulty = normalizedDifficultyKey(difficulty);
-                difficulty = original.difficulties.stream()
-                        .filter(d -> normalizedDifficultyKey(d).equals(normalizedDifficulty))
-                        .findFirst().orElse(difficulty);
-                SongEntry.VSliceVariation variation = original.variationFor(difficulty);
-                if (variation != null) {
-                    original.instFile = variation.instFile;
-                    original.voicesFile = variation.voicesFile;
-                    original.voicesPlayerFile = variation.voicesPlayerFile;
-                    original.voicesOpponentFile = variation.voicesOpponentFile;
-                }
-            }
-
-            original.format = SongEntry.Format.LEGACY;
             original.folder = localDir;
-            original.legacyChartFiles.clear();
-            original.legacyChartFiles.putAll(override.legacyChartFiles);
-            if (override.eventsFile != null) original.eventsFile = override.eventsFile;
-            original.difficulties.clear();
-            original.difficulties.addAll(override.difficulties);
+            for (var local : override.legacyChartFiles.entrySet()) {
+                String difficulty = original.difficulties.stream()
+                        .filter(d -> normalizedDifficultyKey(d).equals(normalizedDifficultyKey(local.getKey())))
+                        .findFirst().orElse(local.getKey());
+                original.chartOverrides.put(difficulty, local.getValue());
+                if (!original.difficulties.contains(difficulty)) original.difficulties.add(difficulty);
+            }
+            if (override.eventsFile != null) {
+                original.eventsFile = override.eventsFile;
+                original.eventsOverride = true;
+            }
             FnfMod.LOGGER.info("Chart override {} inherits assets from {}", override.id, source);
             return original;
         } catch (Exception e) {
@@ -1004,7 +999,10 @@ public class SongLibrary {
     /** Loads and parses a chart for the given difficulty. */
     public static SongChart loadChart(SongEntry entry, String difficulty) throws IOException {
         SongChart chart;
-        if (entry.format == SongEntry.Format.VSLICE) {
+        Path chartOverride = entry.chartOverrides.get(difficulty);
+        if (chartOverride != null && Files.isRegularFile(chartOverride)) {
+            chart = LegacyChartParser.parse(Files.readString(chartOverride));
+        } else if (entry.format == SongEntry.Format.VSLICE) {
             SongEntry.VSliceVariation v = entry.variationFor(difficulty);
             if (v == null) throw new IOException("No variation for difficulty " + difficulty);
             String chartJson = Files.readString(v.chartFile);
@@ -1025,21 +1023,13 @@ public class SongLibrary {
             if (f == null) throw new IOException("No chart for difficulty " + difficulty);
             chart = LegacyChartParser.parse(Files.readString(f));
         }
-        if (entry.eventsFile != null && Files.isRegularFile(entry.eventsFile)) {
-            mergeEvents(chart, LegacyChartParser.parseEvents(Files.readString(entry.eventsFile)));
+        if (entry.eventsFile != null && Files.isRegularFile(entry.eventsFile)
+                && (entry.eventsOverride || chartOverride == null)) {
+            chart.events.clear();
+            chart.events.addAll(LegacyChartParser.parseEvents(Files.readString(entry.eventsFile)));
         }
         chart.sortEvents();
         return chart;
     }
 
-    private static void mergeEvents(SongChart chart, List<SongChart.Event> loaded) {
-        for (SongChart.Event event : loaded) {
-            boolean duplicate = chart.events.stream().anyMatch(existing ->
-                    Math.abs(existing.timeMs - event.timeMs) < 0.001
-                            && existing.name.equals(event.name)
-                            && existing.value1.equals(event.value1)
-                            && existing.value2.equals(event.value2));
-            if (!duplicate) chart.events.add(event);
-        }
-    }
 }
