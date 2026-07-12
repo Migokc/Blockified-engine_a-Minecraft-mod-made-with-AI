@@ -473,7 +473,12 @@ public class GameplayScreen extends Screen {
 
     private void runPlayerCommand(String rawCommand) {
         if (minecraft.player == null || minecraft.player.connection == null || rawCommand == null) return;
-        String command = CommandEventPlaceholders.expand(rawCommand, machinePos).trim();
+        Direction facing = Direction.NORTH;
+        if (minecraft.level != null) {
+            var state = minecraft.level.getBlockState(machinePos);
+            if (state.hasProperty(FunkinMachineBlock.FACING)) facing = state.getValue(FunkinMachineBlock.FACING);
+        }
+        String command = CommandEventPlaceholders.expand(rawCommand, machinePos, facing).trim();
         while (command.startsWith("/")) command = command.substring(1).trim();
         if (command.isEmpty()) return;
         try {

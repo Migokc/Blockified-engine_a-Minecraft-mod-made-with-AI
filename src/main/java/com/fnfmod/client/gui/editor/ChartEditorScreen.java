@@ -61,6 +61,7 @@ public final class ChartEditorScreen extends Screen {
     private final List<SongChart.Note> sectionClipboard = new ArrayList<>();
     private final List<SongChart.Note> noteClipboard = new ArrayList<>();
     private final Set<SongChart.Note> selectedNotes = new LinkedHashSet<>();
+    private final Set<SongChart.Event> selectedEvents = new LinkedHashSet<>();
     private final Deque<List<SongChart.Note>> undoHistory = new ArrayDeque<>();
     private final Deque<List<SongChart.Note>> redoHistory = new ArrayDeque<>();
 
@@ -500,6 +501,7 @@ public final class ChartEditorScreen extends Screen {
             removeSelectedTypes.active = selectedNotes.stream().anyMatch(this::isCustomNote); y += 16;
             Button clearEvents = button(x + 4, y, w - 8, "Clear All Events", b -> {
                 chart.events.clear();
+                selectedEvents.clear();
                 selectedEvent = null;
                 setStatus("Cleared all events");
                 rebuildUi();
@@ -675,6 +677,8 @@ public final class ChartEditorScreen extends Screen {
     private void clearSelection() {
         selectedNotes.clear();
         selectedNote = null;
+        selectedEvents.clear();
+        selectedEvent = null;
     }
 
     private void selectOnly(SongChart.Note note) {
@@ -1158,6 +1162,12 @@ public final class ChartEditorScreen extends Screen {
         int eventX = gx - cw;
         if ((button == 0 || button == 1) && mouseX >= eventX && mouseX < gx
                 && mouseY >= gridTop() && mouseY < gridBottom()) {
+            if (button == 1) {
+                selectingBox = true;
+                selectionStartX = selectionEndX = mouseX;
+                selectionStartBeat = selectionEndBeat = selectionBeatAtScreenY(mouseY);
+                return true;
+            }
             double clickedBeat = yToBeat(mouseY - cw / 2.0);
             SongChart.Event closest = null;
             double closestPixels = Double.MAX_VALUE;
@@ -1169,18 +1179,13 @@ public final class ChartEditorScreen extends Screen {
                 }
             }
             boolean hitEvent = closest != null && closestPixels <= Math.max(7, cw / 2.0);
-            if (button == 1) {
-                if (hitEvent) {
-                    chart.events.remove(closest);
-                    if (selectedEvent == closest) selectedEvent = null;
-                    setStatus("Removed event");
-                    rebuildUi();
-                }
-                return true;
-            }
             if (hitEvent) {
-                selectedEvent = closest;
-                setEventDraft(closest);
+                if (!hasShiftDown() && !hasAltDown()) clearSelection();
+                if (hasAltDown()) selectedEvents.remove(closest);
+                else if (hasShiftDown() && !selectedEvents.add(closest)) selectedEvents.remove(closest);
+                else selectedEvents.add(closest);
+                selectedEvent = selectedEvents.stream().reduce((a, b) -> b).orElse(null);
+                if (selectedEvent != null) setEventDraft(selectedEvent);
                 activeTab = EditorTab.EVENTS;
                 openMenu = TopMenu.NONE;
                 setStatus("Selected event at " + trim(closest.timeMs) + " ms");
@@ -1227,7 +1232,7 @@ public final class ChartEditorScreen extends Screen {
             return true;
         }
         if (selectingBox && button == 1) {
-            selectionEndX = Mth.clamp(mouseX, gridX(), gridX() + 8 * cellWidth());
+            selectionEndX = Mth.clamp(mouseX, gridX() - cellWidth(), gridX() + 8 * cellWidth());
             selectionEndBeat = selectionBeatAtScreenY(Mth.clamp(mouseY, gridTop(), gridBottom()));
             return true;
         }
@@ -1241,7 +1246,7 @@ public final class ChartEditorScreen extends Screen {
             return true;
         }
         if (selectingBox && button == 1) {
-            selectionEndX = Mth.clamp(mouseX, gridX(), gridX() + 8 * cellWidth());
+            selectionEndX = Mth.clamp(mouseX, gridX() - cellWidth(), gridX() + 8 * cellWidth());
             selectionEndBeat = selectionBeatAtScreenY(Mth.clamp(mouseY, gridTop(), gridBottom()));
             finishBoxSelection();
             selectingBox = false;
@@ -1254,14 +1259,14 @@ public final class ChartEditorScreen extends Screen {
     public boolean mouseScrolled(double mouseX, double mouseY, double scrollX, double scrollY) {
         if (helpVisible) return true;
         if (insideInfo(mouseX, mouseY)) return true;
-        if (selectingBox && mouseX >= gridX() && mouseX < gridX() + 8 * cellWidth()) {
+        if (selectingBox && mouseX >= gridX() - cellWidth() && mouseX < gridX() + 8 * cellWidth()) {
             double multiplier = (hasShiftDown() ? 4.0 : 1.0) / (hasAltDown() ? 4.0 : 1.0);
             scrub(scrollY * multiplier);
-            selectionEndX = Mth.clamp(mouseX, gridX(), gridX() + 8 * cellWidth());
+            selectionEndX = Mth.clamp(mouseX, gridX() - cellWidth(), gridX() + 8 * cellWidth());
             selectionEndBeat = selectionBeatAtScreenY(Mth.clamp(mouseY, gridTop(), gridBottom()));
             return true;
         }
-        if (mouseX >= gridX() && mouseX < gridX() + 8 * cellWidth()
+        if (mouseX >= gridX() - cellWidth() && mouseX < gridX() + 8 * cellWidth()
                 && mouseY >= gridTop() && mouseY < gridBottom()) {
             double multiplier = (hasShiftDown() ? 4.0 : 1.0) / (hasAltDown() ? 4.0 : 1.0);
             scrub(scrollY * multiplier);
@@ -1287,9 +1292,21 @@ public final class ChartEditorScreen extends Screen {
                 else selectedNotes.add(note);
             }
         }
+        double eventCenterX = gx - cw / 2.0;
+        if (eventCenterX >= left && eventCenterX <= right) {
+            for (SongChart.Event event : chart.events) {
+                double eventBeat = conductor.beatAt(event.timeMs);
+                if (eventBeat < firstBeat || eventBeat > lastBeat) continue;
+                if (hasAltDown()) selectedEvents.remove(event);
+                else selectedEvents.add(event);
+            }
+        }
         selectedNote = selectedNotes.stream().reduce((a, b) -> b).orElse(null);
-        setStatus("Selected " + selectedNotes.size() + " note(s)");
-        if (activeTab == EditorTab.NOTE) rebuildUi();
+        selectedEvent = selectedEvents.stream().reduce((a, b) -> b).orElse(null);
+        if (selectedEvent != null) setEventDraft(selectedEvent);
+        setStatus("Selected " + selectedNotes.size() + " note(s), "
+                + selectedEvents.size() + " event(s)");
+        if (activeTab == EditorTab.NOTE || activeTab == EditorTab.EVENTS) rebuildUi();
     }
 
     // --------------------------------------------------------------------- Rendering
@@ -1342,7 +1359,7 @@ public final class ChartEditorScreen extends Screen {
         for (long band = firstBand; band * step <= bottomBeat; band++) {
             int y0 = (int) beatToY(band * step);
             int y1 = (int) beatToY((band + 1) * step);
-            int eventColor = (band & 1) == 0 ? 0xFFC4C4C4 : 0xFFDADADA;
+            int eventColor = (band & 1) == 0 ? 0xFFCBCBCB : 0xFFE4E4E4;
             gui.fill(eventX, Math.max(top, y0), gx, Math.min(bottom, y1), eventColor);
             for (int column = 0; column < 8; column++) {
                 int color = ((column + band) & 1) == 0 ? 0xFFCBCBCB : 0xFFE4E4E4;
@@ -1371,7 +1388,7 @@ public final class ChartEditorScreen extends Screen {
             double beat = conductor.beatAt(event.timeMs);
             if (beat < topBeat - 1 || beat > bottomBeat + 1) continue;
             int eventY = (int) beatToY(beat) + cw / 2;
-            int color = event == selectedEvent ? 0xFFFFFF44 : 0xFFFFA000;
+            int color = selectedEvents.contains(event) || event == selectedEvent ? 0xFFFFFF44 : 0xFFFFA000;
             gui.fill(eventX + 3, eventY - 4, gx - 3, eventY + 4, color);
             drawCentered(gui, "E", eventX + cw / 2, eventY - font.lineHeight / 2, 0xFF201000);
         }
@@ -1482,7 +1499,8 @@ public final class ChartEditorScreen extends Screen {
         draw(gui, "Beat: " + (int) Math.floor(beat), infoX + 8, y, 0xFFFFFFFF); y += 11;
         draw(gui, "Step: " + (int) Math.floor(beat * 4), infoX + 8, y, 0xFFFFFFFF); y += 23;
         draw(gui, "Beat Snap: " + snapText(), infoX + 8, y, 0xFFFFFFFF); y += 11;
-        draw(gui, "Selected: " + selectedNotes.size(), infoX + 8, y, 0xFFFFFFFF);
+        draw(gui, "Selected: " + selectedNotes.size() + " N / " + selectedEvents.size() + " E",
+                infoX + 8, y, 0xFFFFFFFF);
     }
 
     private void renderHelpScreen(GuiGraphics gui) {
@@ -1633,10 +1651,13 @@ public final class ChartEditorScreen extends Screen {
     }
 
     private void deleteSelectedEvent() {
-        if (selectedEvent == null) return;
-        chart.events.remove(selectedEvent);
+        if (selectedEvent == null && selectedEvents.isEmpty()) return;
+        int removed = selectedEvents.isEmpty() ? 1 : selectedEvents.size();
+        if (selectedEvents.isEmpty()) chart.events.remove(selectedEvent);
+        else chart.events.removeAll(selectedEvents);
+        selectedEvents.clear();
         selectedEvent = null;
-        setStatus("Deleted event");
+        setStatus("Deleted " + removed + " event(s)");
         rebuildUi();
     }
 
