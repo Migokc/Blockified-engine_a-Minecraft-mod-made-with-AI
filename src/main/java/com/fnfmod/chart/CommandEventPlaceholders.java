@@ -2,6 +2,7 @@ package com.fnfmod.chart;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.world.phys.Vec3;
 
 import java.math.BigDecimal;
 import java.util.Locale;
@@ -75,6 +76,22 @@ public final class CommandEventPlaceholders {
     }
 
     private static String combinedPosition(String body, Direction facing) {
+        Vec3 offset = positionOffset(body, facing);
+        if (offset == null) return null;
+        return relative(offset.x) + " " + relative(offset.y) + " " + relative(offset.z);
+    }
+
+    /**
+     * Parses the same camera-relative position expression used by command
+     * events. Angle brackets are optional for callers reading character.json.
+     */
+    public static Vec3 positionOffset(String expression, Direction machineFacing) {
+        if (expression == null) return null;
+        String body = expression.trim();
+        if (body.startsWith("<") && body.endsWith(">") && body.length() >= 2) {
+            body = body.substring(1, body.length() - 1);
+        }
+        Direction facing = machineFacing == null ? Direction.NORTH : machineFacing;
         double x = 0, y = 0, z = 0;
         String[] parts = body.split(",");
         if (parts.length == 0) return null;
@@ -99,7 +116,7 @@ public final class CommandEventPlaceholders {
                 z += direction.getStepZ() * distance;
             }
         }
-        return relative(x) + " " + relative(y) + " " + relative(z);
+        return new Vec3(x, y, z);
     }
 
     private static String relative(double value) {

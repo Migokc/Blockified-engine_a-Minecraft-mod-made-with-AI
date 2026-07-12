@@ -111,6 +111,8 @@ A set can include a `character.json` that also defines its **camera centers**:
 
 ```json
 {
+  "pos": "<forward:0,left:0,up:0>",
+  "rotation": 0,
   "cameraOffset": [0.0, 0.5],
   "animations": {
     "idle":  "my_idle",
@@ -123,6 +125,11 @@ A set can include a `character.json` that also defines its **camera centers**:
 }
 ```
 
+`pos` offsets the mod's normal stage position using the same camera-relative syntax as
+Minecraft Command events. Directions can be combined, for example
+`"<forward:2,left:0.5,up:1>"`. `rotation` is a degree offset added to the normal
+character rotation, so `0` preserves the default and negative values rotate the other way.
+
 `cameraOffset` values are in blocks: x = screen right, y = screen up. The top-level
 one is the character's camera center; per-animation ones nudge the camera while
 that animation plays (like FNF's sing offsets). Without `character.json`,
@@ -134,9 +141,9 @@ Animations play on the actual player entities during gameplay (both players in V
 
 ## Camera
 
-During a song the camera pans FNF-style — X/Y only, in the screen plane. Nothing
-ever moves or lifts the characters; they stay on the ground and only the camera
-travels. Focus follows the chart: `mustHitSection` = camera on the player side,
+During a song the camera follows the focused character in full 3D while retaining
+FNF-style screen-space animation nudges. Focus follows the chart:
+`mustHitSection` = camera on the player side,
 otherwise the opponent side (in solo the machine block stands in for the opponent).
 Each focus change eases with the curve set per section in the chart editor
 (**Cam Ease**: smooth / expo / linear / snap — stored as `fnfmodCamEase` in the
