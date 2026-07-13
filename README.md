@@ -359,3 +359,26 @@ gradlew build
 ```
 
 Output jar: `build/libs/Blockified-engine-NeoForge-<minecraft-version>-<mod-version>.jar`.
+
+## Source extension points
+
+The source keeps reusable behavior outside GUI screens where possible:
+
+- `chart/ChartEventTypes.java` is the canonical list of engine-owned events and
+  their editor defaults. Add a built-in event there, then implement its playback
+  behavior in `client/gameplay/GameplayEventDispatcher.java`; custom Lua event
+  names remain data-driven.
+- `song/SongImportService.java` owns complete-song importing and can
+  be reused by another screen or command without constructing the chart editor.
+- `song/ExternalDirectoryConfig.java` owns the ordered directory list and its
+  per-directory resource filters.
+- `song/SongCache.java` owns downloaded-song cache size, pruning, touching, and
+  deletion. `SongLibrary` retains compatibility methods that delegate to it.
+- `client/render/NoteSkinConfig.java` is the immutable, validated representation
+  of `skin.json`; `NoteStyle` only consumes the resulting values.
+- `client/render/LuaWorldSpriteRenderer.java` owns Minecraft world rendering for
+  Lua sprites. `PsychLuaRuntime` supplies immutable snapshots rather than exposing
+  live script objects to the renderer.
+
+These classes are intended as stable starting points for contributors. Keep file
+I/O, parsing, and rendering out of screens when adding comparable features.

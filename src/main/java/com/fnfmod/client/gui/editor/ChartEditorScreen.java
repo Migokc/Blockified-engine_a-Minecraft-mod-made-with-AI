@@ -2,6 +2,7 @@ package com.fnfmod.client.gui.editor;
 
 import com.fnfmod.FnfMod;
 import com.fnfmod.chart.Conductor;
+import com.fnfmod.chart.ChartEventTypes;
 import com.fnfmod.chart.PsychChartWriter;
 import com.fnfmod.chart.SongChart;
 import com.fnfmod.client.ClientOptions;
@@ -10,6 +11,7 @@ import com.fnfmod.client.camera.GameplayCamera;
 import com.fnfmod.client.gui.GameplayScreen;
 import com.fnfmod.client.render.NoteStyle;
 import com.fnfmod.song.SongEntry;
+import com.fnfmod.song.SongImportService;
 import com.fnfmod.song.SongLibrary;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;
@@ -22,9 +24,7 @@ import net.minecraft.util.Mth;
 import org.lwjgl.glfw.GLFW;
 
 import java.nio.file.Files;
-import java.nio.file.LinkOption;
 import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.ArrayDeque;
 import java.util.Deque;
@@ -45,11 +45,7 @@ public final class ChartEditorScreen extends Screen {
     private static final double DEFAULT_PIXELS_PER_BEAT = 64.0;
     private static final int TAB_Y = 24;
     private static final int CONTROL_TOP = 40;
-    private static final String MINECRAFT_COMMAND_EVENT = "Minecraft Command";
-    private static final String CAMERA_ZOOM_EVENT = "Camera Zoom";
-    private static final String CAMERA_FOCUS_EVENT = "Camera Focus";
-    private static final List<String> BUILTIN_EVENT_TYPES = List.of(
-            MINECRAFT_COMMAND_EVENT, CAMERA_ZOOM_EVENT, CAMERA_FOCUS_EVENT);
+    private static final List<String> BUILTIN_EVENT_TYPES = ChartEventTypes.builtinNames();
     private static final String[] HELP_LINES = {
             "W/S/Mouse Wheel - Move Conductor's Time",
             "A/D - Change Sections",
@@ -119,7 +115,7 @@ public final class ChartEditorScreen extends Screen {
     private boolean eventDropdownOpen;
     private int eventDropdownScroll;
     private boolean eventDraftInitialized;
-    private String eventTypeDraft = MINECRAFT_COMMAND_EVENT;
+    private String eventTypeDraft = ChartEventTypes.MINECRAFT_COMMAND;
     private String eventValue1Draft = "";
     private String eventValue2Draft = "player";
     private double eventTimeDraft;
@@ -510,9 +506,9 @@ public final class ChartEditorScreen extends Screen {
         eventTimeField = labeledBox("Time (ms)", x, y + 45, w,
                 trim(eventTimeDraft), "event time");
         eventTimeField.active = !eventBeforeSongDraft;
-        boolean cameraZoom = isCameraZoomType(eventTypeDraft);
-        boolean cameraFocus = isCameraFocusType(eventTypeDraft);
-        if (isMinecraftCommandType(eventTypeDraft)) {
+        boolean cameraZoom = ChartEventTypes.isCameraZoom(eventTypeDraft);
+        boolean cameraFocus = ChartEventTypes.isCameraFocus(eventTypeDraft);
+        if (ChartEventTypes.isMinecraftCommand(eventTypeDraft)) {
             label("Value 1", x, y + 72, 0xFFDDDDDD, false);
             String preview = eventValue1Draft.isBlank() ? "Click to edit command..." : eventValue1Draft;
             button(x, y + 82, w, font.plainSubstrByWidth(preview, Math.max(8, w - 12)),
@@ -535,7 +531,7 @@ public final class ChartEditorScreen extends Screen {
             easing.active = !cameraFocus || !eventValue1Draft.isBlank();
         } else {
             eventValue2Field = labeledBox("Value 2", x, y + 99, w,
-                    eventValue2Draft, isMinecraftCommandType(eventTypeDraft) ? "player or server" : "value 2");
+                    eventValue2Draft, ChartEventTypes.isMinecraftCommand(eventTypeDraft) ? "player or server" : "value 2");
             eventValue2Field.setMaxLength(Integer.MAX_VALUE);
         }
         int half = (w - 4) / 2;
@@ -552,7 +548,7 @@ public final class ChartEditorScreen extends Screen {
                         ? "Camera Zoom: Value 1 = amount, Value 2 = easing (500ms)"
                         : cameraFocus
                         ? "Camera Focus: target + easing; empty values restore Must Hit"
-                        : isMinecraftCommandType(eventTypeDraft)
+                        : ChartEventTypes.isMinecraftCommand(eventTypeDraft)
                         ? "Minecraft Command: Value 1 = command, Value 2 = player/server"
                         : "Custom event: Value 1 and Value 2 are passed to its Lua callback",
                 x, y + 165, 0xFFBBBBBB, false);
@@ -1190,124 +1186,25 @@ public final class ChartEditorScreen extends Screen {
         String id = sanitizeId(saveId == null || saveId.isBlank() ? chart.title : saveId);
         if (id.isBlank()) id = "unnamed";
         Path target = SongLibrary.songsDir().resolve(id).toAbsolutePath().normalize();
-        Path source = songImportRoot(target);
-        if (source == null && entry == null) {
+        SongImportService.Request request = new SongImportService.Request(id, loadedDifficulty,
+                chart, entry, originalDirectory, eventDefinitionRoot, target);
+        if (!SongImportService.canImport(request)) {
             setStatus("Could not find the song's source mod");
             return;
         }
-
         // Saving first guarantees that the imported files belong to a playable
         // local override and that its original chart/audio reference is present.
         saveChart();
         try {
-            Files.createDirectories(target);
-            int copied = copySongAudio(target);
-            copied += copyOtherDifficultyCharts(target, id);
-            copied += copySongIcon(source, target);
+            SongImportService.Result result = SongImportService.importCompleteSong(request);
             SongLibrary.rescan();
             entry = SongLibrary.get(id);
-            String sourceName = source == null ? "song source"
-                    : (source.getFileName() == null ? source.toString() : source.getFileName().toString());
-            setStatus("Imported complete song: " + copied + " file(s) from " + sourceName);
+            setStatus("Imported complete song: " + result.copiedFiles()
+                    + " file(s) from " + result.sourceName());
         } catch (Exception error) {
             setStatus("Song import failed: " + error.getMessage());
-            FnfMod.LOGGER.error("Could not import complete song from {}", source, error);
+            FnfMod.LOGGER.error("Could not import complete song {}", id, error);
         }
-    }
-
-    private Path songImportRoot(Path target) {
-        LinkedHashSet<Path> candidates = new LinkedHashSet<>();
-        if (originalDirectory != null) candidates.add(originalDirectory);
-        if (entry != null) {
-            if (entry.chartOriginRoot != null) candidates.add(entry.chartOriginRoot);
-            if (entry.modRoot != null) candidates.add(entry.modRoot);
-            if (entry.folder != null) candidates.add(entry.folder);
-        }
-        if (eventDefinitionRoot != null) candidates.add(eventDefinitionRoot);
-        for (Path candidate : candidates) {
-            Path normalized = candidate.toAbsolutePath().normalize();
-            if (!normalized.equals(target) && Files.isDirectory(normalized)) return normalized;
-        }
-        return null;
-    }
-
-    private int copySongAudio(Path target) throws Exception {
-        if (entry == null) return 0;
-        LinkedHashSet<Path> files = new LinkedHashSet<>();
-        addImportFile(files, entry.instFile);
-        addImportFile(files, entry.voicesFile);
-        addImportFile(files, entry.voicesPlayerFile);
-        addImportFile(files, entry.voicesOpponentFile);
-        for (SongEntry.VSliceVariation variation : entry.vsliceVariations.values()) {
-            addImportFile(files, variation.instFile);
-            addImportFile(files, variation.voicesFile);
-            addImportFile(files, variation.voicesPlayerFile);
-            addImportFile(files, variation.voicesOpponentFile);
-        }
-        int copied = 0;
-        for (Path file : files) copied += copyFile(file, target.resolve(file.getFileName()));
-        return copied;
-    }
-
-    private int copySongIcon(Path sourceRoot, Path target) throws Exception {
-        Path icon = entry == null ? null : entry.opponentIconFile;
-        if (icon == null && sourceRoot != null) {
-            LinkedHashSet<String> names = new LinkedHashSet<>();
-            if (entry != null && entry.opponentIcon != null && !entry.opponentIcon.isBlank()) {
-                names.add(entry.opponentIcon);
-            }
-            if (chart.player2 != null && !chart.player2.isBlank()) names.add(chart.player2);
-            for (String name : names) {
-                for (String folder : List.of("images/icons", "icons", "images/characters", "")) {
-                    Path directory = folder.isEmpty() ? sourceRoot : sourceRoot.resolve(folder);
-                    for (String filename : List.of("icon-" + name + ".png", name + ".png")) {
-                        Path candidate = directory.resolve(filename);
-                        if (Files.isRegularFile(candidate, LinkOption.NOFOLLOW_LINKS)) {
-                            icon = candidate;
-                            break;
-                        }
-                    }
-                    if (icon != null) break;
-                }
-                if (icon != null) break;
-            }
-        }
-        if (icon == null) return 0;
-        return copyFile(icon, target.resolve("images").resolve("icons").resolve(icon.getFileName()));
-    }
-
-    private int copyOtherDifficultyCharts(Path target, String id) throws Exception {
-        if (entry == null || entry.format != SongEntry.Format.LEGACY) return 0;
-        int copied = 0;
-        for (var chartFile : entry.legacyChartFiles.entrySet()) {
-            String difficulty = chartFile.getKey();
-            if (sameDifficulty(difficulty, loadedDifficulty)) continue;
-            Path source = entry.chartOverrides.getOrDefault(difficulty, chartFile.getValue());
-            String suffix = difficulty.equalsIgnoreCase("normal") ? "" : "-" + sanitizeId(difficulty);
-            copied += copyFile(source, target.resolve(id + suffix + ".json"));
-        }
-        return copied;
-    }
-
-    private static boolean sameDifficulty(String first, String second) {
-        if (first == null || second == null) return false;
-        return first.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9_-]", "-")
-                .equals(second.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9_-]", "-"));
-    }
-
-    private static void addImportFile(Set<Path> files, Path file) {
-        if (file != null && Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS)) files.add(file);
-    }
-
-    private static int copyFile(Path source, Path destination) throws Exception {
-        if (source == null || !Files.isRegularFile(source, LinkOption.NOFOLLOW_LINKS)) return 0;
-        Path normalizedSource = source.toAbsolutePath().normalize();
-        Path normalizedDestination = destination.toAbsolutePath().normalize();
-        if (normalizedSource.equals(normalizedDestination)) return 0;
-        Files.createDirectories(normalizedDestination.getParent());
-        Files.copy(normalizedSource, normalizedDestination, StandardCopyOption.REPLACE_EXISTING,
-                StandardCopyOption.COPY_ATTRIBUTES);
-        return 1;
     }
 
     private boolean altDown() {
@@ -1966,7 +1863,7 @@ public final class ChartEditorScreen extends Screen {
     }
 
     private void setEventDraft(SongChart.Event event) {
-        eventTypeDraft = event == null || event.name.isBlank() ? MINECRAFT_COMMAND_EVENT : event.name;
+        eventTypeDraft = event == null || event.name.isBlank() ? ChartEventTypes.MINECRAFT_COMMAND : event.name;
         eventValue1Draft = event == null ? "" : event.value1;
         eventValue2Draft = event == null || event.value2.isBlank()
                 ? defaultEventValue2(eventTypeDraft, eventValue1Draft) : event.value2;
@@ -1976,24 +1873,13 @@ public final class ChartEditorScreen extends Screen {
         eventDropdownOpen = false;
     }
 
-    private static boolean isMinecraftCommandType(String name) {
-        return name != null && (name.equalsIgnoreCase(MINECRAFT_COMMAND_EVENT)
-                || name.equalsIgnoreCase("Run Minecraft Command"));
-    }
-
     private void selectEventType(String type) {
         boolean changed = !type.equals(eventTypeDraft);
         eventTypeDraft = type;
         eventDropdownOpen = false;
-        if (changed && isCameraZoomType(type)) {
-            eventValue1Draft = "0";
-            eventValue2Draft = "smooth";
-        } else if (changed && isCameraFocusType(type)) {
-            eventValue1Draft = "player";
-            eventValue2Draft = "smooth";
-        } else if (changed && isMinecraftCommandType(type)) {
-            eventValue1Draft = "";
-            eventValue2Draft = "player";
+        if (changed && ChartEventTypes.definition(type) != null) {
+            eventValue1Draft = ChartEventTypes.defaultValue1(type);
+            eventValue2Draft = ChartEventTypes.defaultValue2(type, eventValue1Draft);
         }
         if (selectedEvent != null) {
             selectedEvent.name = type;
@@ -2003,18 +1889,8 @@ public final class ChartEditorScreen extends Screen {
         rebuildUi();
     }
 
-    private static boolean isCameraZoomType(String name) {
-        return name != null && name.equalsIgnoreCase(CAMERA_ZOOM_EVENT);
-    }
-
-    private static boolean isCameraFocusType(String name) {
-        return name != null && name.equalsIgnoreCase(CAMERA_FOCUS_EVENT);
-    }
-
     private static String defaultEventValue2(String eventType, String value1) {
-        if (isCameraZoomType(eventType)) return "smooth";
-        if (isCameraFocusType(eventType)) return value1 == null || value1.isBlank() ? "" : "smooth";
-        return "player";
+        return ChartEventTypes.defaultValue2(eventType, value1);
     }
 
     private static String normalizedEase(String value) {

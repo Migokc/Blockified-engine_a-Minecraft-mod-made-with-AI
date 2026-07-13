@@ -5,8 +5,6 @@ import com.fnfmod.chart.CodenameChartParser;
 import com.fnfmod.chart.LegacyChartParser;
 import com.fnfmod.chart.SongChart;
 import com.fnfmod.chart.VSliceChartParser;
-import com.google.gson.GsonBuilder;
-import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
@@ -249,148 +247,41 @@ public class SongLibrary {
     // ------------------------------------------------------------ download cache
 
     public static long cacheSizeBytes() {
-        long[] total = {0};
-        try (Stream<Path> files = Files.walk(cacheDir())) {
-            files.filter(Files::isRegularFile).forEach(f -> {
-                try {
-                    total[0] += Files.size(f);
-                } catch (IOException ignored) {}
-            });
-        } catch (IOException ignored) {}
-        return total[0];
+        return SongCache.sizeBytes(cacheDir());
     }
 
     public static void clearCache() {
-        deleteRecursively(cacheDir());
-        FnfMod.LOGGER.info("Cleared FNF song download cache");
+        SongCache.clear(cacheDir());
     }
 
     /** Deletes cached songs that haven't been used for the given number of days. */
     public static void pruneCache(int days) {
-        long cutoff = System.currentTimeMillis() - days * 24L * 60 * 60 * 1000;
-        try (Stream<Path> dirs = Files.list(cacheDir())) {
-            dirs.filter(Files::isDirectory).forEach(dir -> {
-                try {
-                    if (Files.getLastModifiedTime(dir).toMillis() < cutoff) {
-                        deleteRecursively(dir);
-                        FnfMod.LOGGER.info("Pruned stale cached song {}", dir.getFileName());
-                    }
-                } catch (IOException ignored) {}
-            });
-        } catch (IOException ignored) {}
+        SongCache.prune(cacheDir(), days);
     }
 
     /** Refreshes a cached song's timestamp so pruning knows it's still in use. */
     public static void touchCacheEntry(Path dir) {
-        try {
-            if (Files.isDirectory(dir) && dir.startsWith(cacheDir())) {
-                Files.setLastModifiedTime(dir, java.nio.file.attribute.FileTime.fromMillis(System.currentTimeMillis()));
-            }
-        } catch (IOException ignored) {}
-    }
-
-    private static void deleteRecursively(Path dir) {
-        if (!Files.isDirectory(dir)) return;
-        try (Stream<Path> walk = Files.walk(dir)) {
-            walk.sorted(java.util.Comparator.reverseOrder()).forEach(f -> {
-                if (f.equals(cacheDir())) return;
-                try {
-                    Files.delete(f);
-                } catch (IOException ignored) {}
-            });
-        } catch (IOException ignored) {}
+        SongCache.touch(cacheDir(), dir);
     }
 
     // ------------------------------------------------------------ external Psych folders
 
-    private static Path externalFoldersFile() {
-        return root().resolve("external_folders.txt");
-    }
-
-    private static Path externalFolderFiltersFile() {
-        return root().resolve("external_folder_filters.json");
-    }
-
     /** User-selected folders scanned with the Psych Engine mod layout. */
     public static List<String> getExternalFolders() {
-        List<String> out = new ArrayList<>();
-        try {
-            if (Files.isRegularFile(externalFoldersFile())) {
-                for (String line : Files.readAllLines(externalFoldersFile())) {
-                    String trimmed = line.trim();
-                    if (!trimmed.isEmpty()) out.add(trimmed);
-                }
-            }
-        } catch (IOException e) {
-            FnfMod.LOGGER.warn("Could not read external_folders.txt: {}", e.toString());
-        }
-        return out;
+        return new ExternalDirectoryConfig(root()).folders();
     }
 
     public static void setExternalFolders(List<String> folders) {
-        try {
-            Files.createDirectories(root());
-            Files.write(externalFoldersFile(), folders);
-            Map<String, EnumSet<ExternalContent>> filters = readExternalFolderFilters();
-            if (filters.keySet().retainAll(folders)) writeExternalFolderFilters(filters);
-        } catch (IOException e) {
-            FnfMod.LOGGER.warn("Could not save external_folders.txt: {}", e.toString());
-        }
+        new ExternalDirectoryConfig(root()).setFolders(folders);
     }
 
     /** Missing entries deliberately mean every category, preserving pre-checklist installations. */
     public static EnumSet<ExternalContent> getExternalFolderContent(String folder) {
-        EnumSet<ExternalContent> saved = readExternalFolderFilters().get(folder);
-        return saved == null ? allExternalContent() : EnumSet.copyOf(saved);
+        return new ExternalDirectoryConfig(root()).content(folder);
     }
 
     public static void setExternalFolderContent(String folder, ExternalContent content, boolean enabled) {
-        Map<String, EnumSet<ExternalContent>> filters = readExternalFolderFilters();
-        EnumSet<ExternalContent> selected = filters.containsKey(folder)
-                ? EnumSet.copyOf(filters.get(folder)) : allExternalContent();
-        if (enabled) selected.add(content); else selected.remove(content);
-        filters.put(folder, selected);
-        writeExternalFolderFilters(filters);
-    }
-
-    private static Map<String, EnumSet<ExternalContent>> readExternalFolderFilters() {
-        Map<String, EnumSet<ExternalContent>> out = new LinkedHashMap<>();
-        try {
-            Path file = externalFolderFiltersFile();
-            if (!Files.isRegularFile(file)) return out;
-            JsonObject json = JsonParser.parseString(Files.readString(file)).getAsJsonObject();
-            for (var entry : json.entrySet()) {
-                if (!entry.getValue().isJsonArray()) continue;
-                EnumSet<ExternalContent> selected = EnumSet.noneOf(ExternalContent.class);
-                for (JsonElement value : entry.getValue().getAsJsonArray()) {
-                    try {
-                        selected.add(ExternalContent.valueOf(value.getAsString().toUpperCase(Locale.ROOT)));
-                    } catch (Exception ignored) {}
-                }
-                out.put(entry.getKey(), selected);
-            }
-        } catch (Exception e) {
-            FnfMod.LOGGER.warn("Could not read external_folder_filters.json: {}", e.toString());
-        }
-        return out;
-    }
-
-    private static void writeExternalFolderFilters(Map<String, EnumSet<ExternalContent>> filters) {
-        try {
-            Files.createDirectories(root());
-            JsonObject json = new JsonObject();
-            for (var entry : filters.entrySet()) {
-                JsonArray values = new JsonArray();
-                for (ExternalContent content : ExternalContent.values()) {
-                    if (entry.getValue().contains(content)) values.add(content.name().toLowerCase(Locale.ROOT));
-                }
-                json.add(entry.getKey(), values);
-            }
-            Files.writeString(externalFolderFiltersFile(),
-                    new GsonBuilder().setPrettyPrinting().create().toJson(json));
-        } catch (IOException e) {
-            FnfMod.LOGGER.warn("Could not save external_folder_filters.json: {}", e.toString());
-        }
+        new ExternalDirectoryConfig(root()).setContent(folder, content, enabled);
     }
 
     /**

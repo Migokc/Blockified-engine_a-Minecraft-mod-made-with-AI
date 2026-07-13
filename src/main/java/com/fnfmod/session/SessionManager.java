@@ -4,6 +4,7 @@ import com.fnfmod.FnfMod;
 import com.fnfmod.block.FunkinMachineBlock;
 import com.fnfmod.chart.SongChart;
 import com.fnfmod.chart.CommandEventPlaceholders;
+import com.fnfmod.chart.ChartEventTypes;
 import com.fnfmod.character.CharacterTransform;
 import com.fnfmod.net.FnfPayloads;
 import com.fnfmod.song.SongEntry;
@@ -394,7 +395,8 @@ public final class SessionManager {
             SongChart chart = SongLibrary.loadChart(entry, session.difficulty);
             if (payload.eventIndex() < 0 || payload.eventIndex() >= chart.events.size()) return;
             SongChart.Event event = chart.events.get(payload.eventIndex());
-            if (!isMinecraftCommandEvent(event.name) || !"server".equalsIgnoreCase(event.value2.trim())) {
+            if (!ChartEventTypes.isMinecraftCommand(event.name)
+                    || !"server".equalsIgnoreCase(event.value2.trim())) {
                 FnfMod.LOGGER.warn("Rejected unlisted server command event from {} for song {}",
                         player.getGameProfile().getName(), session.songId);
                 return;
@@ -416,11 +418,6 @@ public final class SessionManager {
             FnfMod.LOGGER.warn("Could not run server command event for {}: {}",
                     session.songId, e.toString());
         }
-    }
-
-    private static boolean isMinecraftCommandEvent(String name) {
-        return name != null && (name.equalsIgnoreCase("Minecraft Command")
-                || name.equalsIgnoreCase("Run Minecraft Command"));
     }
 
     public static void onNoteEvent(ServerPlayer player, FnfPayloads.NoteEventC2S payload) {

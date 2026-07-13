@@ -1,7 +1,6 @@
 package com.fnfmod.client.gui;
 
 import com.fnfmod.chart.Conductor;
-import com.fnfmod.chart.CommandEventPlaceholders;
 import com.fnfmod.chart.SongChart;
 import com.fnfmod.client.ClientOptions;
 import com.fnfmod.client.ClientSession;
@@ -11,6 +10,7 @@ import com.fnfmod.client.audio.SongPlayer;
 import com.fnfmod.block.FunkinMachineBlock;
 import com.fnfmod.client.camera.GameplayCamera;
 import com.fnfmod.client.gui.editor.ChartEditorScreen;
+import com.fnfmod.client.gameplay.GameplayEventDispatcher;
 import com.fnfmod.client.lua.PsychLuaRuntime;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.Camera;
@@ -155,6 +155,7 @@ public class GameplayScreen extends Screen {
     private double editorStartMs;
     private Supplier<Screen> editorReturnFactory;
     private PsychLuaRuntime luaRuntime;
+    private final GameplayEventDispatcher eventDispatcher;
     private PsychNoteTextureCache customNoteTextures;
     private String runtimeSongId;
     private Path runtimeSongFolder;
@@ -173,6 +174,12 @@ public class GameplayScreen extends Screen {
         this.machinePos = machinePos;
         this.chart = chart;
         this.songPlayer = songPlayer;
+        this.eventDispatcher = new GameplayEventDispatcher(machinePos, () -> editorPlaytest,
+                this::applyCameraFocusEvent, event -> {
+                    if (luaRuntime != null) {
+                        luaRuntime.onEvent(event.name, event.value1, event.value2, event.timeMs);
+                    }
+                });
         this.mode = mode;
         this.playBoth = mode == PlayMode.BOTH;
         this.myChartSideIsPlayer = mode != PlayMode.OPPONENT;
@@ -603,37 +610,7 @@ public class GameplayScreen extends Screen {
     }
 
     private void executeEvent(int eventIndex, SongChart.Event event) {
-        if (isMinecraftCommandEvent(event)) {
-            if ("server".equalsIgnoreCase(event.value2.trim())) {
-                // Editor playtests have no authoritative server song session.
-                // Run through the player's normal command connection instead;
-                // multiplayer permissions still apply.
-                if (editorPlaytest) runPlayerCommand(event.value1);
-                else PacketDistributor.sendToServer(new FnfPayloads.CommandEventC2S(machinePos, eventIndex));
-            } else {
-                runPlayerCommand(event.value1);
-            }
-        } else if (isCameraZoomEvent(event)) {
-            try {
-                GameplayCamera.zoomTo(Float.parseFloat(event.value1.trim()), event.value2);
-            } catch (NumberFormatException ignored) {}
-        } else if (isCameraFocusEvent(event)) {
-            applyCameraFocusEvent(event);
-        }
-        if (luaRuntime != null) luaRuntime.onEvent(event.name, event.value1, event.value2, event.timeMs);
-    }
-
-    private static boolean isMinecraftCommandEvent(SongChart.Event event) {
-        return event != null && (event.name.equalsIgnoreCase("Minecraft Command")
-                || event.name.equalsIgnoreCase("Run Minecraft Command"));
-    }
-
-    private static boolean isCameraZoomEvent(SongChart.Event event) {
-        return event != null && event.name.equalsIgnoreCase("Camera Zoom");
-    }
-
-    private static boolean isCameraFocusEvent(SongChart.Event event) {
-        return event != null && event.name.equalsIgnoreCase("Camera Focus");
+        eventDispatcher.execute(eventIndex, event);
     }
 
     private void applyCameraFocusEvent(SongChart.Event event) {
@@ -653,24 +630,6 @@ public class GameplayScreen extends Screen {
         cameraFocusOverride = player;
         String eventEase = event.value2 == null || event.value2.isBlank() ? "smooth" : event.value2;
         GameplayCamera.focus(player, eventEase, 500);
-    }
-
-    private void runPlayerCommand(String rawCommand) {
-        if (minecraft.player == null || minecraft.player.connection == null || rawCommand == null) return;
-        Direction facing = Direction.NORTH;
-        if (minecraft.level != null) {
-            var state = minecraft.level.getBlockState(machinePos);
-            if (state.hasProperty(FunkinMachineBlock.FACING)) facing = state.getValue(FunkinMachineBlock.FACING);
-        }
-        String command = CommandEventPlaceholders.expand(rawCommand, machinePos, facing).trim();
-        while (command.startsWith("/")) command = command.substring(1).trim();
-        if (command.isEmpty()) return;
-        try {
-            minecraft.player.connection.sendCommand(command);
-        } catch (Exception e) {
-            minecraft.player.displayClientMessage(
-                    Component.literal("FNF event command failed: " + e.getMessage()), false);
-        }
     }
 
     private void sweepMisses(List<GameNote>[] lanes, int[] laneIndex) {
