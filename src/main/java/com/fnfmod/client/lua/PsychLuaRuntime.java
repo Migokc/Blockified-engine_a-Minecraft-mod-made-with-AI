@@ -1137,7 +1137,12 @@ public final class PsychLuaRuntime implements AutoCloseable {
             float red = ((o.color >> 16) & 255) / 255f;
             float green = ((o.color >> 8) & 255) / 255f;
             float blue = (o.color & 255) / 255f;
-            RenderSystem.setShaderColor(red, green, blue, alpha / 255f);
+            // GUI fills and other render batches may leave blending disabled.
+            // Lua sprite alpha is continuous (0..1), so explicitly restore the
+            // normal source-alpha blend and use GuiGraphics' texture tint.
+            RenderSystem.enableBlend();
+            RenderSystem.defaultBlendFunc();
+            gui.setColor(red, green, blue, alpha / 255f);
             SparrowAtlas.Frame frame = currentFrame(o);
             if (frame == null) {
                 gui.blit(o.texture, 0, 0, 0, 0, Math.max(1, (int) o.width), Math.max(1, (int) o.height),
@@ -1145,7 +1150,7 @@ public final class PsychLuaRuntime implements AutoCloseable {
             } else {
                 renderAtlasFrame(gui, o, frame);
             }
-            RenderSystem.setShaderColor(1, 1, 1, 1);
+            gui.setColor(1, 1, 1, 1);
         } else {
             gui.fill(0, 0, Math.max(1, (int) o.width), Math.max(1, (int) o.height), color);
         }
