@@ -44,6 +44,9 @@ import java.util.stream.Stream;
 
 /** Sandboxed Psych Engine 1.0.x Lua compatibility runtime for gameplay. */
 public final class PsychLuaRuntime implements AutoCloseable {
+    /** Psych Engine's logical game canvas, independent of Minecraft GUI scale. */
+    public static final int VIRTUAL_WIDTH = 1280;
+    public static final int VIRTUAL_HEIGHT = 720;
     private static final AtomicInteger NEXT_TEXTURE = new AtomicInteger();
     public static final int FUNCTION_CONTINUE = 0;
     public static final int FUNCTION_STOP = 1;
@@ -714,9 +717,18 @@ public final class PsychLuaRuntime implements AutoCloseable {
 
     public void render(GuiGraphics gui, boolean hud) {
         if (closed || objects.isEmpty()) return;
+        float canvasScale = Math.min(gui.guiWidth() / (float) VIRTUAL_WIDTH,
+                gui.guiHeight() / (float) VIRTUAL_HEIGHT);
+        float canvasX = (gui.guiWidth() - VIRTUAL_WIDTH * canvasScale) * 0.5f;
+        float canvasY = (gui.guiHeight() - VIRTUAL_HEIGHT * canvasScale) * 0.5f;
+
+        gui.pose().pushPose();
+        gui.pose().translate(canvasX, canvasY, 0);
+        gui.pose().scale(canvasScale, canvasScale, 1);
         objects.values().stream().filter(o -> o.added && o.visible)
                 .filter(o -> hud == !o.camera.equalsIgnoreCase("game"))
                 .sorted(Comparator.comparingInt(o -> o.order)).forEach(o -> renderObject(gui, o));
+        gui.pose().popPose();
     }
 
     private void renderObject(GuiGraphics gui, LuaObject o) {

@@ -1297,8 +1297,8 @@ public class GameplayScreen extends Screen {
 
     // ------------------------------------------------------------------ Psych Lua bridge
 
-    public int psychLuaScreenWidth() { return width; }
-    public int psychLuaScreenHeight() { return height; }
+    public int psychLuaScreenWidth() { return PsychLuaRuntime.VIRTUAL_WIDTH; }
+    public int psychLuaScreenHeight() { return PsychLuaRuntime.VIRTUAL_HEIGHT; }
     public double psychLuaSongLength() { return songPlayer.durationMs(); }
     public double psychLuaSongPosition() { return songPos; }
     public double psychLuaBeat() { return conductor.beatAt(Math.max(0, songPos)); }
