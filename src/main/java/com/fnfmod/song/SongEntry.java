@@ -27,6 +27,8 @@ public class SongEntry {
     public transient Path modRoot;
     /** Original pack used only for inherited difficulties/audio after an editor save. */
     public transient Path chartOriginRoot;
+    /** Optional origin used only to resolve character definitions and health icons. */
+    public transient Path characterRoot;
     public final List<String> difficulties = new ArrayList<>();
     /** Top-level Lua scripts beside this song's chart; scoped to this song. */
     public final List<Path> luaFiles = new ArrayList<>();
