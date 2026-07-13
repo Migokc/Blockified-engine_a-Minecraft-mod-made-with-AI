@@ -38,6 +38,7 @@ public final class LegacyChartParser {
         chart.needsVoices = optBool(song, "needsVoices", true);
         chart.player1 = optString(song, "player1", "bf");
         chart.player2 = optString(song, "player2", "dad");
+        chart.stage = optString(song, "stage", "stage");
 
         // Psych Engine 1.0+ ("psych_v1", "psych_v1_convert") stores lanes absolutely:
         // 0-3 = player, 4-7 = opponent. Older charts are mustHitSection-relative.

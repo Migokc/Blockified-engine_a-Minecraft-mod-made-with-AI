@@ -11,6 +11,7 @@ import com.fnfmod.client.audio.SongPlayer;
 import com.fnfmod.block.FunkinMachineBlock;
 import com.fnfmod.client.camera.GameplayCamera;
 import com.fnfmod.client.gui.editor.ChartEditorScreen;
+import com.fnfmod.client.lua.PsychLuaRuntime;
 import net.minecraft.client.Minecraft;
 import net.minecraft.core.Direction;
 import net.minecraft.world.phys.Vec3;
@@ -30,6 +31,7 @@ import org.lwjgl.glfw.GLFW;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Arrays;
 import java.util.UUID;
 import java.nio.file.Path;
 
@@ -144,6 +146,11 @@ public class GameplayScreen extends Screen {
     private boolean editorPreview;
     private double editorStartMs;
     private Supplier<Screen> editorReturnFactory;
+    private PsychLuaRuntime luaRuntime;
+    private final double[] luaStrumX = new double[8];
+    private final double[] luaStrumY = new double[8];
+    private final double[] luaStrumAlpha = new double[8];
+    private final double[] luaStrumAngle = new double[8];
 
     public GameplayScreen(BlockPos machinePos, SongChart chart, SongPlayer songPlayer,
                           PlayMode mode, UUID partnerId, String partnerName,
@@ -164,6 +171,9 @@ public class GameplayScreen extends Screen {
         this.duet = partnerId != null;
         this.startAtEpochMs = startAtEpochMs;
         this.conductor = new Conductor(chart);
+        Arrays.fill(luaStrumX, Double.NaN);
+        Arrays.fill(luaStrumY, Double.NaN);
+        Arrays.fill(luaStrumAlpha, 1.0);
 
         for (int i = 0; i < 4; i++) {
             myLanes[i] = new ArrayList<>();
@@ -334,9 +344,16 @@ public class GameplayScreen extends Screen {
         lastFrameNano = now;
         if (dtMs > 100) dtMs = 100;
 
+        if (luaRuntime == null && width > 0 && height > 0) {
+            luaRuntime = PsychLuaRuntime.load(this, chart);
+            rebuildNoteLanesAfterLuaCreate();
+        }
         // Load-triggered events must run before updateSongPos can start audio.
         if (!preSongEventsProcessed && phase == Phase.COUNTDOWN) processPreSongEvents();
         updateSongPos();
+        if (luaRuntime != null && (phase == Phase.PLAYING || phase == Phase.COUNTDOWN)) {
+            luaRuntime.update(dtMs / 1000.0);
+        }
         songPlayer.applyVolumes();
         syncVanillaHealth();
 
@@ -424,6 +441,8 @@ public class GameplayScreen extends Screen {
                     if (songPos >= n.data.timeMs) {
                         n.hit = true;
                         otherStrumFlash[lane] = Math.max(120, n.data.sustainMs);
+                        if (luaRuntime != null) luaRuntime.onOpponentNoteHit(
+                                chart.notes.indexOf(n.data), lane, n.data.noteType, n.data.sustainMs > 30);
                     } else {
                         break;
                     }
@@ -469,6 +488,23 @@ public class GameplayScreen extends Screen {
         }
     }
 
+    /** Psych onCreate may change noteType/mustPress before gameplay begins. */
+    private void rebuildNoteLanesAfterLuaCreate() {
+        for (int lane = 0; lane < 4; lane++) {
+            myLanes[lane].clear();
+            otherLanes[lane].clear();
+            myLaneIndex[lane] = 0;
+            otherLaneIndex[lane] = 0;
+        }
+        totalMyNotes = 0;
+        for (SongChart.Note note : chart.notes) {
+            GameNote gameNote = new GameNote(note);
+            boolean mine = playBoth || note.playerSide == myChartSideIsPlayer;
+            (mine ? myLanes[note.lane] : otherLanes[note.lane]).add(gameNote);
+            if (mine) totalMyNotes++;
+        }
+    }
+
     private void processEvents() {
         while (eventIndex < chart.events.size() && chart.events.get(eventIndex).timeMs <= songPos) {
             int currentEventIndex = eventIndex++;
@@ -502,6 +538,7 @@ public class GameplayScreen extends Screen {
         } else if (isCameraFocusEvent(event)) {
             applyCameraFocusEvent(event);
         }
+        if (luaRuntime != null) luaRuntime.onEvent(event.name, event.value1, event.value2, event.timeMs);
     }
 
     private static boolean isMinecraftCommandEvent(SongChart.Event event) {
@@ -735,6 +772,8 @@ public class GameplayScreen extends Screen {
         health = Math.min(2f, health + 0.023f);
         strumFlashFor(n)[n.data.lane] = 150;
         if (n.data.sustainMs > 30) activeHolds[n.data.lane].add(n);
+        if (luaRuntime != null) luaRuntime.onGoodNoteHit(
+                chart.notes.indexOf(n.data), n.data.lane, n.data.noteType, n.data.sustainMs > 30);
 
         // FNF splashes only fire on sick hits
         if (judgement == 0 && NoteStyle.splashVariants(n.data.lane) > 0) {
@@ -757,6 +796,8 @@ public class GameplayScreen extends Screen {
         addPopup("MISS", 0xFF8877AA);
         sing(lane, true);
         sendNoteEvent(lane, (byte) 4);
+        if (luaRuntime != null) luaRuntime.onNoteMiss(
+                chart.notes.indexOf(n.data), lane, n.data.noteType, n.data.sustainMs > 30);
         checkDeath();
     }
 
@@ -766,6 +807,7 @@ public class GameplayScreen extends Screen {
         health = Math.max(0, health - 0.04f);
         muteVoices(myChartSideIsPlayer);
         sing(lane, true);
+        if (luaRuntime != null) luaRuntime.onNoteMissPress(lane);
         checkDeath();
     }
 
@@ -827,6 +869,7 @@ public class GameplayScreen extends Screen {
     }
 
     private void finishSong(boolean failed) {
+        if (!endSent && luaRuntime != null && !luaRuntime.onEndSong()) return;
         if (editorPlaytest) {
             endSent = true;
             if (!failed) phase = Phase.RESULTS;
@@ -1002,6 +1045,7 @@ public class GameplayScreen extends Screen {
     }
 
     private void pauseSong() {
+        if (luaRuntime != null && !luaRuntime.onPause()) return;
         phase = Phase.PAUSED;
         pausedAtMs = System.currentTimeMillis();
         pauseSelection = 0;
@@ -1017,6 +1061,7 @@ public class GameplayScreen extends Screen {
         }
         phase = songPlayer.isStarted() ? Phase.PLAYING : Phase.COUNTDOWN;
         lastFrameNano = System.nanoTime();
+        if (luaRuntime != null) luaRuntime.onResume();
     }
 
     private void activatePauseOption() {
@@ -1154,6 +1199,13 @@ public class GameplayScreen extends Screen {
     }
 
     private float laneX(boolean mine, int lane) {
+        boolean playerSide = playBoth || mine == myChartSideIsPlayer;
+        double overridden = luaStrumX[(playerSide ? 4 : 0) + lane];
+        if (!Double.isNaN(overridden)) return (float) overridden;
+        return baseLaneX(mine, lane);
+    }
+
+    private float baseLaneX(boolean mine, int lane) {
         float spacing = noteSize() * 1.12f;
         if (playBoth) {
             return width * 0.5f + (lane - 1.5f) * spacing;
@@ -1185,9 +1237,169 @@ public class GameplayScreen extends Screen {
         return ClientOptions.get().downscroll ? height - margin : margin;
     }
 
-    private float noteY(double timeMs) {
+    private float laneY(boolean mine, int lane) {
+        boolean playerSide = playBoth || mine == myChartSideIsPlayer;
+        double overridden = luaStrumY[(playerSide ? 4 : 0) + lane];
+        return Double.isNaN(overridden) ? receptorY() : (float) overridden;
+    }
+
+    // ------------------------------------------------------------------ Psych Lua bridge
+
+    public int psychLuaScreenWidth() { return width; }
+    public int psychLuaScreenHeight() { return height; }
+    public double psychLuaSongLength() { return songPlayer.durationMs(); }
+    public double psychLuaSongPosition() { return songPos; }
+    public double psychLuaBeat() { return conductor.beatAt(Math.max(0, songPos)); }
+    public int psychLuaSection() { return Math.max(0, camSection); }
+    public boolean psychLuaSongStarted() { return songPlayer.isStarted(); }
+    public int psychLuaScore() { return score; }
+    public int psychLuaMisses() { return misses; }
+    public int psychLuaCombo() { return combo; }
+    public double psychLuaHealth() { return health; }
+    public boolean psychLuaMustHit() {
+        int section = Math.max(0, Math.min(psychLuaSection(), secFocusPlayer.length - 1));
+        return secFocusPlayer[section];
+    }
+    public void psychLuaSetHealth(double value) { health = (float) Math.max(0, Math.min(2, value)); }
+    public void psychLuaAddScore(int value) { score += value; }
+    public void psychLuaSetScore(int value) { score = value; }
+    public void psychLuaAddMisses(int value) { misses = Math.max(0, misses + value); }
+    public void psychLuaSetMisses(int value) { misses = Math.max(0, value); }
+
+    public double psychLuaStrumX(boolean playerSide, int lane) {
+        int safeLane = Math.max(0, Math.min(3, lane));
+        int index = (playerSide ? 4 : 0) + safeLane;
+        if (!Double.isNaN(luaStrumX[index])) return luaStrumX[index];
+        boolean mine = playBoth || playerSide == myChartSideIsPlayer;
+        return baseLaneX(mine, safeLane);
+    }
+
+    public double psychLuaStrumY(boolean playerSide, int lane) {
+        int index = (playerSide ? 4 : 0) + Math.max(0, Math.min(3, lane));
+        return Double.isNaN(luaStrumY[index]) ? receptorY() : luaStrumY[index];
+    }
+
+    private int luaGroupIndex(String group, int index) {
+        if (group == null) return -1;
+        return switch (group.toLowerCase(java.util.Locale.ROOT)) {
+            case "strumlinenotes" -> index;
+            case "playerstrums" -> index + 4;
+            case "opponentstrums" -> index;
+            default -> -1;
+        };
+    }
+
+    public Object psychLuaGetGroup(String group, int index, String property) {
+        if (group != null && (group.equalsIgnoreCase("unspawnNotes") || group.equalsIgnoreCase("notes"))) {
+            if (index < 0 || index >= chart.notes.size()) return null;
+            SongChart.Note note = chart.notes.get(index);
+            return switch (property == null ? "" : property) {
+                case "strumTime" -> note.timeMs;
+                case "noteData" -> note.lane + (note.playerSide ? 4 : 0);
+                case "mustPress" -> note.playerSide;
+                case "sustainLength" -> note.sustainMs;
+                case "noteType" -> note.noteType;
+                case "isSustainNote" -> false;
+                case "gfNote" -> false;
+                case "altAnim" -> note.altAnim;
+                case "ignoreNote", "hitCausesMiss", "noAnimation", "blockHit" -> false;
+                case "multAlpha", "multSpeed", "hitHealth", "missHealth" -> 1.0;
+                default -> null;
+            };
+        }
+        int i = luaGroupIndex(group, index);
+        if (i < 0 || i >= 8) return null;
+        boolean playerSide = i >= 4;
+        int lane = i & 3;
+        return switch (property == null ? "" : property) {
+            case "x" -> psychLuaStrumX(playerSide, lane);
+            case "y" -> psychLuaStrumY(playerSide, lane);
+            case "alpha" -> luaStrumAlpha[i];
+            case "angle" -> luaStrumAngle[i];
+            case "direction" -> 90.0;
+            case "visible" -> luaStrumAlpha[i] > 0;
+            default -> null;
+        };
+    }
+
+    public void psychLuaSetGroup(String group, int index, String property, Object value) {
+        if (group != null && (group.equalsIgnoreCase("unspawnNotes") || group.equalsIgnoreCase("notes"))) {
+            if (index < 0 || index >= chart.notes.size()) return;
+            SongChart.Note note = chart.notes.get(index);
+            switch (property == null ? "" : property) {
+                case "strumTime" -> note.timeMs = value instanceof Number n ? n.doubleValue() : note.timeMs;
+                case "mustPress" -> note.playerSide = value instanceof Boolean b ? b : note.playerSide;
+                case "sustainLength" -> note.sustainMs = value instanceof Number n ? Math.max(0, n.doubleValue()) : note.sustainMs;
+                case "noteType" -> note.noteType = value == null ? "" : String.valueOf(value);
+                case "altAnim" -> note.altAnim = value instanceof Boolean b && b;
+                default -> { }
+            }
+            return;
+        }
+        int i = luaGroupIndex(group, index);
+        if (i < 0 || i >= 8 || !(value instanceof Number number)) return;
+        switch (property == null ? "" : property) {
+            case "x" -> luaStrumX[i] = number.doubleValue();
+            case "y" -> luaStrumY[i] = number.doubleValue();
+            case "alpha" -> luaStrumAlpha[i] = Math.max(0, Math.min(1, number.doubleValue()));
+            case "angle" -> luaStrumAngle[i] = number.doubleValue();
+            default -> { }
+        }
+    }
+
+    public Object psychLuaGetProperty(String path) {
+        if (path == null) return null;
+        return switch (path) {
+            case "health" -> (double) health;
+            case "songScore", "score" -> score;
+            case "songMisses", "misses" -> misses;
+            case "combo" -> combo;
+            case "songPosition" -> songPos;
+            case "playbackRate" -> (double) songPlayer.playbackRate();
+            case "songSpeed" -> chart.speed;
+            case "mustHitSection" -> psychLuaMustHit();
+            case "curSection" -> psychLuaSection();
+            case "camGame.zoom", "camHUD.zoom" -> 1.0;
+            case "unspawnNotes.length", "notes.length" -> chart.notes.size();
+            default -> null;
+        };
+    }
+
+    public boolean psychLuaSetProperty(String path, Object value) {
+        if (path == null) return false;
+        double number = value instanceof Number n ? n.doubleValue() : 0;
+        switch (path) {
+            case "health" -> psychLuaSetHealth(number);
+            case "songScore", "score" -> psychLuaSetScore((int) number);
+            case "songMisses", "misses" -> psychLuaSetMisses((int) number);
+            case "combo" -> combo = Math.max(0, (int) number);
+            case "playbackRate" -> songPlayer.setPlaybackRate((float) number);
+            case "camGame.zoom" -> GameplayCamera.zoomTo((float) (number - 1), "snap");
+            default -> { return false; }
+        }
+        return true;
+    }
+
+    public void psychLuaTriggerEvent(String name, String value1, String value2) {
+        executeEvent(-1, new SongChart.Event(songPos, name, value1, value2));
+    }
+
+    public void psychLuaCameraTarget(String target) {
+        if (target == null || target.isBlank()) return;
+        boolean player = target.equalsIgnoreCase("bf") || target.equalsIgnoreCase("boyfriend")
+                || target.equalsIgnoreCase("player");
+        cameraFocusOverride = player;
+        GameplayCamera.focus(player, "smooth", 500);
+    }
+
+    public void psychLuaEndSong() { finishSong(false); }
+    public void psychLuaRestartSong() { restart(); }
+    public void psychLuaExitSong() { exit(); }
+
+    private float noteY(double timeMs, boolean mine, int lane) {
         double dist = (timeMs - songPos) * pxPerMs();
-        return (float) (ClientOptions.get().downscroll ? receptorY() - dist : receptorY() + dist);
+        float receptor = laneY(mine, lane);
+        return (float) (ClientOptions.get().downscroll ? receptor - dist : receptor + dist);
     }
 
     @Override
@@ -1200,16 +1412,22 @@ public class GameplayScreen extends Screen {
 
         boolean fadeOpponent = ClientOptions.get().middlescroll && !playBoth;
 
+        if (luaRuntime != null) luaRuntime.render(gui, false);
+
         // receptors (single centered strumline in BOTH mode)
         for (int lane = 0; lane < 4; lane++) {
             int myState = myStrumFlash[lane] > 0 ? 2 : (laneHeld[lane] ? 1 : 0);
-            NoteStyle.drawReceptor(gui, lane, laneX(true, lane), receptorY(), noteSize, myState);
+            NoteStyle.setDrawAlpha((float) luaStrumAlpha[(myChartSideIsPlayer || playBoth ? 4 : 0) + lane]);
+            NoteStyle.drawReceptor(gui, lane, laneX(true, lane), laneY(true, lane), noteSize, myState);
         }
+        NoteStyle.setDrawAlpha(1f);
         if (!playBoth) {
             if (fadeOpponent) NoteStyle.setDrawAlpha(0.6f);
             for (int lane = 0; lane < 4; lane++) {
                 int otherState = otherStrumFlash[lane] > 0 ? 2 : 0;
-                NoteStyle.drawReceptor(gui, lane, laneX(false, lane), receptorY(), noteSize, otherState);
+                int side = myChartSideIsPlayer ? 0 : 4;
+                NoteStyle.setDrawAlpha((float) (luaStrumAlpha[side + lane] * (fadeOpponent ? 0.6 : 1)));
+                NoteStyle.drawReceptor(gui, lane, laneX(false, lane), laneY(false, lane), noteSize, otherState);
             }
             if (fadeOpponent) NoteStyle.setDrawAlpha(1f);
         }
@@ -1242,7 +1460,7 @@ public class GameplayScreen extends Screen {
                 // Epoch milliseconds at 24 FPS exceeds int range and used to clamp
                 // at Integer.MAX_VALUE, selecting the same atlas frame forever.
                 long frame = (long) (nowMs * SPLASH_FPS / 1000.0);
-                NoteStyle.drawHoldCover(gui, lane, frame, laneX(true, lane), receptorY(), noteSize);
+                NoteStyle.drawHoldCover(gui, lane, frame, laneX(true, lane), laneY(true, lane), noteSize);
             }
         }
         // one-shot burst when a sustain finishes cleanly
@@ -1258,6 +1476,7 @@ public class GameplayScreen extends Screen {
         }
 
         renderHud(gui, noteSize);
+        if (luaRuntime != null) luaRuntime.render(gui, true);
 
         switch (phase) {
             case COUNTDOWN -> renderCountdown(gui);
@@ -1273,6 +1492,9 @@ public class GameplayScreen extends Screen {
         boolean down = ClientOptions.get().downscroll;
         for (int lane = 0; lane < 4; lane++) {
             float x = laneX(mine, lane);
+            boolean playerSide = playBoth || mine == myChartSideIsPlayer;
+            double layoutAlpha = ClientOptions.get().middlescroll && !playBoth && !mine ? 0.6 : 1.0;
+            NoteStyle.setDrawAlpha((float) (luaStrumAlpha[(playerSide ? 4 : 0) + lane] * layoutAlpha));
             List<GameNote> list = lanes[lane];
             // sweepMisses advances laneStart past a note the moment it's missed, so
             // back up over any missed/dropped long notes whose grey trail is still on-screen
@@ -1299,15 +1521,15 @@ public class GameplayScreen extends Screen {
                 // sustain trail (missed long notes still show the remaining gray trail)
                 if (n.data.sustainMs > 30 && (!n.holdDropped || missedLong)) {
                     double from = beingHeld || n.hit ? songPos : n.data.timeMs;
-                    float y1 = noteY(from);
-                    float y2 = noteY(n.endMs());
+                    float y1 = noteY(from, mine, lane);
+                    float y2 = noteY(n.endMs(), mine, lane);
                     NoteStyle.drawHoldPiece(gui, lane, x, Math.min(y1, y2), Math.max(y1, y2), noteSize, down);
                 }
 
                 // A dropped hold already had its head hit; only restore the head when
                 // the entire long note was missed from the start.
                 if (!n.hit && (!n.missed || missedLong)) {
-                    float y = noteY(n.data.timeMs);
+                    float y = noteY(n.data.timeMs, mine, lane);
                     if (y > -noteSize && y < height + noteSize) {
                         NoteStyle.drawNote(gui, lane, x, y, noteSize);
                         if (!missedLong && "Hurt Note".equals(n.data.noteType)) {
@@ -1318,6 +1540,7 @@ public class GameplayScreen extends Screen {
                 if (missedLong) NoteStyle.setMissed(false);
             }
         }
+        NoteStyle.setDrawAlpha(1f);
     }
 
     private static final net.minecraft.resources.ResourceLocation XP_BAR_BACKGROUND =
@@ -1613,6 +1836,7 @@ public class GameplayScreen extends Screen {
 
     @Override
     public void removed() {
+        if (luaRuntime != null) luaRuntime.close();
         GameplayCamera.end();
         songPlayer.dispose();
         super.removed();

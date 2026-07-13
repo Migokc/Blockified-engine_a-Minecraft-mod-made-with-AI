@@ -43,7 +43,32 @@ vocal files containing `player`/`bf` or `opponent`/`dad` in the name are split s
 
 Supported chart features: notes, sustains, BPM changes, `mustHitSection`,
 `altAnim`, `gfSection`, Psych note types (string or numeric — `Hurt Note` damages you),
-scroll speed. Psych **events are ignored** (no Lua).
+scroll speed, embedded events, and separate `events.json` files.
+
+## Psych Engine Lua
+
+Psych Engine 1.0.x Lua scripts are discovered in the common Psych locations:
+
+```
+scripts/*.lua
+stages/<stage>.lua
+custom_notetypes/<note type>.lua
+custom_events/<event>.lua
+data/<song>/*.lua
+<song folder>/*.lua
+```
+
+Gameplay callbacks include create/update, countdown/song start, step/beat/section,
+note hits/misses, events, pause/resume, song end, and destroy. Supported APIs cover
+gameplay properties/groups, score/health, strum transforms, timers, tweens, input,
+variables, random/string/color and controlled file helpers, event/camera calls,
+Lua text, and static PNG sprites from `images/`.
+
+Lua runs client-side in a sandbox. Direct Java access, process execution, and
+unrestricted filesystem access are disabled. Psych features that require its actual
+HaxeFlixel runtime cannot exist unchanged in Minecraft: HScript/Haxe reflection,
+Flixel shaders, video/dialogue, custom substates, Psych sound objects, and full
+Sparrow/FlxAnimate playback currently return safely without crashing.
 
 ## Note skins (Sparrow XML!)
 

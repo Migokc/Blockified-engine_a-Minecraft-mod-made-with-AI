@@ -28,7 +28,7 @@ public final class PsychChartWriter {
         song.addProperty("player1", chart.player1);
         song.addProperty("player2", chart.player2);
         song.addProperty("gfVersion", "gf");
-        song.addProperty("stage", "stage");
+        song.addProperty("stage", chart.stage);
         song.addProperty("validScore", true);
         chart.sortEvents();
         song.add("events", eventArray(chart));
