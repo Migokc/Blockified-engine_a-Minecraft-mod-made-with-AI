@@ -48,6 +48,10 @@ public final class PsychLuaRuntime implements AutoCloseable {
     /** Psych Engine's logical game canvas, independent of Minecraft GUI scale. */
     public static final int VIRTUAL_WIDTH = 1280;
     public static final int VIRTUAL_HEIGHT = 720;
+    /** Keep camera groups separated from native notes/HUD regardless of Psych object order values. */
+    private static final float GAME_OBJECT_Z = -200f;
+    private static final float HUD_OBJECT_Z = 200f;
+    private static final float OBJECT_ORDER_Z_STEP = 0.001f;
     private static final AtomicInteger NEXT_TEXTURE = new AtomicInteger();
     public static final int FUNCTION_CONTINUE = 0;
     public static final int FUNCTION_STOP = 1;
@@ -737,18 +741,24 @@ public final class PsychLuaRuntime implements AutoCloseable {
         gui.pose().pushPose();
         gui.pose().translate(canvasX, canvasY, 0);
         gui.pose().scale(canvasScale, canvasScale, 1);
-        objects.values().stream().filter(o -> o.added && o.visible)
+        List<LuaObject> visible = objects.values().stream().filter(o -> o.added && o.visible)
                 .filter(o -> hud == !o.camera.equalsIgnoreCase("game"))
-                .sorted(Comparator.comparingInt(o -> o.order)).forEach(o -> renderObject(gui, o));
+                .sorted(Comparator.comparingInt(o -> o.order)).toList();
+        float baseZ = hud ? HUD_OBJECT_Z : GAME_OBJECT_Z;
+        for (int i = 0; i < visible.size(); i++) {
+            // Sorting implements setObjectOrder; a tiny local Z step keeps that order
+            // deterministic without allowing large order values to cross native layers.
+            renderObject(gui, visible.get(i), baseZ + i * OBJECT_ORDER_Z_STEP);
+        }
         gui.pose().popPose();
     }
 
-    private void renderObject(GuiGraphics gui, LuaObject o) {
+    private void renderObject(GuiGraphics gui, LuaObject o, float z) {
         int x = (int) Math.round(o.x), y = (int) Math.round(o.y);
         int alpha = Math.max(0, Math.min(255, (int) Math.round(o.alpha * 255)));
         int color = (o.color & 0x00FFFFFF) | alpha << 24;
         gui.pose().pushPose();
-        gui.pose().translate(x, y, 200 + o.order);
+        gui.pose().translate(x, y, z);
         gui.pose().scale((float) o.scaleX, (float) o.scaleY, 1);
         if (o.angle != 0) gui.pose().mulPose(com.mojang.math.Axis.ZP.rotationDegrees((float) o.angle));
         if (o.textObject) {
