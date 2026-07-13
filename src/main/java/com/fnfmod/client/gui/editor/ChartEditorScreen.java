@@ -403,9 +403,6 @@ public final class ChartEditorScreen extends Screen {
             setStatus(selectedNote == null ? "Default note type updated" : "Selected note updated");
             rebuildUi();
         });
-        Button importSong = button(x, y + 111, w, "Import Complete Song", b -> importSongFiles());
-        importSong.setTooltip(Tooltip.create(Component.literal(
-                "Saves locally, then imports audio, other difficulties, and the song icon")));
     }
 
     private void buildChartingTab() {
@@ -611,6 +608,9 @@ public final class ChartEditorScreen extends Screen {
             button(x + 4, y, w - 8, "Save", b -> saveChart()); y += 16;
             Button openEvents = button(x + 4, y, w - 8, "Open Events...", b -> {}); openEvents.active = false; y += 16;
             button(x + 4, y, w - 8, "Save Events...", b -> saveEventsOnly()); y += 16;
+            Button importSong = button(x + 4, y, w - 8, "Import Complete Song", b -> importSongFiles());
+            importSong.setTooltip(Tooltip.create(Component.literal(
+                    "Saves locally, then imports audio, other difficulties, and the song icon"))); y += 16;
             button(x + 4, y, w - 8, "Exit", b -> onClose());
         } else if (openMenu == TopMenu.EDIT) {
             Button undo = button(x + 4, y, w - 8, "Undo", b -> { undoNotes(); rebuildUi(); });

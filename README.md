@@ -143,7 +143,7 @@ end
 trimming, rotated atlas frames, frame rate, looping, reverse playback, and start
 frames are preserved.
 
-In the chart editor's **Note** tab, **Import Complete Song** first saves the current
+In the chart editor's **File** menu, **Import Complete Song** first saves the current
 chart as the active local override. It then copies the song audio, every other
 difficulty chart, and song icon into `config/fnfmod/songs/<song>/`. It does not
 copy custom-note scripts or their related resources. Imported local audio, charts,
