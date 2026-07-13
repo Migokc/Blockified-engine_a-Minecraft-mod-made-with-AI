@@ -24,7 +24,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  * Loads a Friday Night Funkin' style Sparrow atlas: a PNG sprite sheet plus
  * the Adobe Animate XML (&lt;TextureAtlas&gt;&lt;SubTexture .../&gt;) that FNF mods ship.
  */
-public class SparrowAtlas {
+public class SparrowAtlas implements AutoCloseable {
 
     public static class Frame {
         public int x, y, w, h;
@@ -41,9 +41,12 @@ public class SparrowAtlas {
     private final int texHeight;
     /** animation prefix -> ordered frames ("purple0000", "purple0001" -> key "purple") */
     private final Map<String, List<Frame>> animations = new LinkedHashMap<>();
+    /** Every XML frame in source order, used by Psych's prefix/indices APIs. */
+    private final List<Frame> allFrames = new ArrayList<>();
 
     /** kept for CPU recoloring (owned by the DynamicTexture, read-only here) */
     private NativeImage image;
+    private DynamicTexture dynamicTexture;
 
     private SparrowAtlas(ResourceLocation textureId, int w, int h) {
         this.textureId = textureId;
@@ -70,6 +73,7 @@ public class SparrowAtlas {
 
             SparrowAtlas atlas = new SparrowAtlas(id, image.getWidth(), image.getHeight());
             atlas.image = image;
+            atlas.dynamicTexture = tex;
 
             DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
             factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
@@ -92,6 +96,7 @@ public class SparrowAtlas {
                 f.frameW = el.hasAttribute("frameWidth") ? intAttr(el, "frameWidth") : f.w;
                 f.frameH = el.hasAttribute("frameHeight") ? intAttr(el, "frameHeight") : f.h;
                 String prefix = stripFrameNumber(f.name);
+                atlas.allFrames.add(f);
                 atlas.animations.computeIfAbsent(prefix, k -> new ArrayList<>()).add(f);
             }
             return atlas;
@@ -157,10 +162,29 @@ public class SparrowAtlas {
         return animations.getOrDefault(prefix, List.of());
     }
 
+    /** Psych/Flixel addByPrefix matches the complete XML frame name, not only our normalized key. */
+    public List<Frame> framesByPrefix(String prefix) {
+        if (prefix == null) return List.of();
+        return allFrames.stream().filter(frame -> frame.name.startsWith(prefix)).toList();
+    }
+
+    public List<Frame> allFrames() {
+        return List.copyOf(allFrames);
+    }
+
     public Frame frame(String prefix, int index) {
         List<Frame> list = animations.get(prefix);
         if (list == null || list.isEmpty()) return null;
         return list.get(Math.floorMod(index, list.size()));
+    }
+
+    @Override
+    public void close() {
+        if (dynamicTexture != null) {
+            dynamicTexture.close();
+            dynamicTexture = null;
+        }
+        image = null;
     }
 
     /**

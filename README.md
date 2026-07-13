@@ -114,13 +114,33 @@ Gameplay callbacks include create/update, countdown/song start, step/beat/sectio
 note hits/misses, events, pause/resume, song end, and destroy. Supported APIs cover
 gameplay properties/groups, score/health, strum transforms, timers, tweens, input,
 variables, random/string/color and controlled file helpers, event/camera calls,
-Lua text, and static PNG sprites from `images/`.
+Lua text, static PNG sprites, and animated Sparrow PNG/XML sprites from `images/`.
+
+Animated sprites use the same common calls as Psych Engine. Keep the PNG and XML
+beside each other with the same base filename:
+
+```lua
+function onCreate()
+    makeAnimatedLuaSprite('character', 'characters/MyCharacter', 100, 100)
+    addAnimationByPrefix('character', 'idle', 'Idle', 24, true)
+    addAnimationByIndices('character', 'blink', 'Blink', '0,1,2,1,0', 24, false)
+    addOffset('character', 'idle', 4, 8)
+    addLuaSprite('character', false)
+    playAnim('character', 'idle', true)
+end
+```
+
+`addAnimation`, `addAnimationByPrefix`, `addAnimationByIndices`, `playAnim`,
+`addOffset`, and their legacy `luaSprite...` aliases are supported. Sparrow frame
+trimming, rotated atlas frames, frame rate, looping, reverse playback, and start
+frames are preserved.
 
 Lua runs client-side in a sandbox. Direct Java access, process execution, and
 unrestricted filesystem access are disabled. Psych features that require its actual
 HaxeFlixel runtime cannot exist unchanged in Minecraft: HScript/Haxe reflection,
-Flixel shaders, video/dialogue, custom substates, Psych sound objects, and full
-Sparrow/FlxAnimate playback currently return safely without crashing.
+Flixel shaders, video/dialogue, custom substates, Psych sound objects, and
+FlxAnimate texture atlases currently return safely without crashing. Sparrow XML
+animation is supported.
 
 ### Lua custom fonts
 
