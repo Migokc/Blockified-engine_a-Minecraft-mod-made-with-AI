@@ -97,6 +97,20 @@ public final class GameplayCamera {
         return active;
     }
 
+    /** Clears effects that belong to one song run without replacing the camera session. */
+    public static void resetSongState() {
+        if (!active) return;
+        focusPlayer = true;
+        pNudgeX = pNudgeY = oNudgeX = oNudgeY = 0;
+        beatZoom = 0;
+        eventZoom = eventZoomFrom = eventZoomTarget = 0;
+        eventZoomStart = 0;
+        curOffset = fromOffset = Vec3.ZERO;
+        offsetInitialized = false;
+        transStart = 0;
+        lastFrameNano = System.nanoTime();
+    }
+
     /** Fixed entity yaw used to build the detached front camera during songs. */
     public static float stageViewYaw() {
         return stageViewYaw;

@@ -85,9 +85,9 @@ final class LuaFontLoader implements AutoCloseable {
             }
 
             // Minecraft normally rasterizes around 11px. Lua then scales that image
-            // to arbitrary FNF sizes, so use a denser atlas to avoid blocky edges.
+            // to arbitrary FNF sizes, so use an 8x atlas to avoid blocky edges.
             TrueTypeGlyphProvider provider = new TrueTypeGlyphProvider(memory, face,
-                    11f, 4f, 0f, 0f, "");
+                    11f, 8f, 0f, 0f, "");
             memory = null;
             face = null;
             ResourceLocation id = FnfMod.id("lua_font/" + NEXT_ID.incrementAndGet());

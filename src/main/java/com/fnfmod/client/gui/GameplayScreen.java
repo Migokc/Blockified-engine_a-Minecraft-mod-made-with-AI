@@ -63,6 +63,8 @@ public class GameplayScreen extends Screen {
     private long startAtEpochMs;
 
     private final Conductor conductor;
+    /** Pristine notes restored before Lua is recreated on a song restart. */
+    private final List<SongChart.Note> originalLuaNotes;
 
     // camera focus timeline (per chart section)
     private final double[] secStarts;
@@ -171,6 +173,7 @@ public class GameplayScreen extends Screen {
         this.duet = partnerId != null;
         this.startAtEpochMs = startAtEpochMs;
         this.conductor = new Conductor(chart);
+        this.originalLuaNotes = chart.notes.stream().map(SongChart.Note::copy).toList();
         Arrays.fill(luaStrumX, Double.NaN);
         Arrays.fill(luaStrumY, Double.NaN);
         Arrays.fill(luaStrumAlpha, 1.0);
@@ -1110,27 +1113,54 @@ public class GameplayScreen extends Screen {
     }
 
     private void restart() {
+        // A restart is a fresh Psych song run. Destroy the old VM first so its
+        // objects, timers, tweens and globals cannot leak into the next run.
+        PsychLuaRuntime oldLua = luaRuntime;
+        luaRuntime = null;
+        if (oldLua != null) oldLua.close();
+
+        // onCreate may edit unspawnNotes. Restore the parsed chart before the
+        // new VM runs onCreate again on the next logic tick.
+        chart.notes.clear();
+        originalLuaNotes.stream().map(SongChart.Note::copy).forEach(chart.notes::add);
+        chart.sortNotes();
+
         songPlayer.reset();
+        songPlayer.setPlaybackRate(1f);
         songPlayer.setPlayerVoiceVolume(1f);
         for (int i = 0; i < 4; i++) {
-            for (GameNote n : myLanes[i]) { n.hit = false; n.missed = false; n.holdDropped = false; n.holdComplete = false; }
-            for (GameNote n : otherLanes[i]) { n.hit = false; n.missed = false; n.holdDropped = false; n.holdComplete = false; }
+            for (GameNote n : myLanes[i]) { n.hit = false; n.missed = false; n.holdDropped = false; n.holdComplete = false; n.releasedMs = -1; }
+            for (GameNote n : otherLanes[i]) { n.hit = false; n.missed = false; n.holdDropped = false; n.holdComplete = false; n.releasedMs = -1; }
             myLaneIndex[i] = 0;
             otherLaneIndex[i] = 0;
             activeHolds[i].clear();
             myStrumFlash[i] = 0;
             otherStrumFlash[i] = 0;
+            laneHeld[i] = false;
         }
+        Arrays.fill(luaStrumX, Double.NaN);
+        Arrays.fill(luaStrumY, Double.NaN);
+        Arrays.fill(luaStrumAlpha, 1.0);
+        Arrays.fill(luaStrumAngle, 0.0);
         score = 0; combo = 0; misses = 0; maxCombo = 0;
         java.util.Arrays.fill(judgements, 0);
         accuracySum = 0; accuracyCount = 0;
         health = 1f;
         popups.clear();
+        splashes.clear();
+        coverEnds.clear();
         endSent = false;
         voicesMutedUntil = -1;
         songPlayer.setOpponentVoiceVolume(1f);
+        eventIndex = 0;
+        preSongEventsProcessed = false;
+        lastBeat = -1;
+        lastSingMs = 0;
+        partnerLastSingMs = 0;
+        Arrays.fill(lastHoldSingMs, 0);
         camSection = -1; // re-evaluate camera focus from the top of the chart
         cameraFocusOverride = null;
+        GameplayCamera.resetSongState();
         startAtEpochMs = System.currentTimeMillis() + 2000;
         if (editorPlaytest) prepareEditorStart();
         phase = Phase.COUNTDOWN;
