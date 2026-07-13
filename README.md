@@ -143,11 +143,13 @@ end
 trimming, rotated atlas frames, frame rate, looping, reverse playback, and start
 frames are preserved.
 
-In the chart editor's **Note** tab, **Import Custom Note Files** first saves a
-playable local chart override, then copies the matching custom-note definitions and
-the source mod's images, sounds, fonts, helper scripts, and custom-event scripts into
-`config/fnfmod/songs/<song>/`. Imported nested resources keep their paths when a
-server transfers the song to another player.
+In the chart editor's **Note** tab, **Import Complete Song** first saves the current
+chart as the active local override. It then copies the song audio, every other
+difficulty chart, icons, matching custom-note definitions, images, sounds, fonts,
+helper scripts, and custom-event scripts into `config/fnfmod/songs/<song>/`.
+Imported local audio, charts, and icons take priority over the source directory,
+and nested resources keep their paths when a server transfers the song to another
+player.
 
 Lua runs client-side in a sandbox. Direct Java access, process execution, and
 unrestricted filesystem access are disabled. Psych features that require its actual

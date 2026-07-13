@@ -403,10 +403,9 @@ public final class ChartEditorScreen extends Screen {
             setStatus(selectedNote == null ? "Default note type updated" : "Selected note updated");
             rebuildUi();
         });
-        Button importNotes = button(x, y + 111, w, "Import Custom Note Files", b -> importCustomNoteFiles());
-        importNotes.active = chart.notes.stream().anyMatch(this::isCustomNote);
-        importNotes.setTooltip(Tooltip.create(Component.literal(
-                "Saves the chart locally, then imports matching note scripts/configs and their mod resources")));
+        Button importSong = button(x, y + 111, w, "Import Complete Song", b -> importSongFiles());
+        importSong.setTooltip(Tooltip.create(Component.literal(
+                "Saves locally, then imports audio, other difficulties, icons, and custom-note resources")));
     }
 
     private void buildChartingTab() {
@@ -1182,22 +1181,18 @@ public final class ChartEditorScreen extends Screen {
         return hasShiftDown();
     }
 
-    private void importCustomNoteFiles() {
+    private void importSongFiles() {
         commitVisibleFields();
         Set<String> noteTypes = chart.notes.stream().filter(this::isCustomNote)
                 .map(note -> note.noteType.trim()).filter(type -> !type.isBlank())
                 .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
-        if (noteTypes.isEmpty()) {
-            setStatus("This chart has no custom note types");
-            return;
-        }
 
         String id = sanitizeId(saveId == null || saveId.isBlank() ? chart.title : saveId);
         if (id.isBlank()) id = "unnamed";
         Path target = SongLibrary.songsDir().resolve(id).toAbsolutePath().normalize();
-        Path source = customNoteImportRoot(target);
-        if (source == null) {
-            setStatus("Could not find the source mod for custom notes");
+        Path source = songImportRoot(target);
+        if (source == null && entry == null) {
+            setStatus("Could not find the song's source mod");
             return;
         }
 
@@ -1206,19 +1201,27 @@ public final class ChartEditorScreen extends Screen {
         saveChart();
         try {
             Files.createDirectories(target);
-            int copied = copyMatchingCustomNoteDefinitions(source, target, noteTypes);
-            for (String folder : List.of("images", "sounds", "fonts", "scripts", "custom_events")) {
-                copied += copyDirectory(source.resolve(folder), target.resolve(folder));
+            int copied = copySongAudio(target);
+            copied += copyOtherDifficultyCharts(target, id);
+            if (source != null) {
+                copied += copyMatchingCustomNoteDefinitions(source, target, noteTypes);
+                for (String folder : List.of(
+                        "images", "icons", "sounds", "fonts", "scripts", "custom_events")) {
+                    copied += copyDirectory(source.resolve(folder), target.resolve(folder));
+                }
             }
             SongLibrary.rescan();
-            setStatus("Imported " + copied + " custom-note file(s) from " + source.getFileName());
+            entry = SongLibrary.get(id);
+            String sourceName = source == null ? "song source"
+                    : (source.getFileName() == null ? source.toString() : source.getFileName().toString());
+            setStatus("Imported complete song: " + copied + " file(s) from " + sourceName);
         } catch (Exception error) {
-            setStatus("Custom-note import failed: " + error.getMessage());
-            FnfMod.LOGGER.error("Could not import custom note files from {}", source, error);
+            setStatus("Song import failed: " + error.getMessage());
+            FnfMod.LOGGER.error("Could not import complete song from {}", source, error);
         }
     }
 
-    private Path customNoteImportRoot(Path target) {
+    private Path songImportRoot(Path target) {
         LinkedHashSet<Path> candidates = new LinkedHashSet<>();
         if (originalDirectory != null) candidates.add(originalDirectory);
         if (entry != null) {
@@ -1229,11 +1232,61 @@ public final class ChartEditorScreen extends Screen {
         if (eventDefinitionRoot != null) candidates.add(eventDefinitionRoot);
         for (Path candidate : candidates) {
             Path normalized = candidate.toAbsolutePath().normalize();
-            if (!normalized.equals(target) && Files.isDirectory(normalized.resolve("custom_notetypes"))) {
-                return normalized;
-            }
+            if (!normalized.equals(target) && Files.isDirectory(normalized)) return normalized;
         }
         return null;
+    }
+
+    private int copySongAudio(Path target) throws Exception {
+        if (entry == null) return 0;
+        LinkedHashSet<Path> files = new LinkedHashSet<>();
+        addImportFile(files, entry.instFile);
+        addImportFile(files, entry.voicesFile);
+        addImportFile(files, entry.voicesPlayerFile);
+        addImportFile(files, entry.voicesOpponentFile);
+        for (SongEntry.VSliceVariation variation : entry.vsliceVariations.values()) {
+            addImportFile(files, variation.instFile);
+            addImportFile(files, variation.voicesFile);
+            addImportFile(files, variation.voicesPlayerFile);
+            addImportFile(files, variation.voicesOpponentFile);
+        }
+        int copied = 0;
+        for (Path file : files) copied += copyFile(file, target.resolve(file.getFileName()));
+        return copied;
+    }
+
+    private int copyOtherDifficultyCharts(Path target, String id) throws Exception {
+        if (entry == null || entry.format != SongEntry.Format.LEGACY) return 0;
+        int copied = 0;
+        for (var chartFile : entry.legacyChartFiles.entrySet()) {
+            String difficulty = chartFile.getKey();
+            if (sameDifficulty(difficulty, loadedDifficulty)) continue;
+            Path source = entry.chartOverrides.getOrDefault(difficulty, chartFile.getValue());
+            String suffix = difficulty.equalsIgnoreCase("normal") ? "" : "-" + sanitizeId(difficulty);
+            copied += copyFile(source, target.resolve(id + suffix + ".json"));
+        }
+        return copied;
+    }
+
+    private static boolean sameDifficulty(String first, String second) {
+        if (first == null || second == null) return false;
+        return first.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9_-]", "-")
+                .equals(second.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9_-]", "-"));
+    }
+
+    private static void addImportFile(Set<Path> files, Path file) {
+        if (file != null && Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS)) files.add(file);
+    }
+
+    private static int copyFile(Path source, Path destination) throws Exception {
+        if (source == null || !Files.isRegularFile(source, LinkOption.NOFOLLOW_LINKS)) return 0;
+        Path normalizedSource = source.toAbsolutePath().normalize();
+        Path normalizedDestination = destination.toAbsolutePath().normalize();
+        if (normalizedSource.equals(normalizedDestination)) return 0;
+        Files.createDirectories(normalizedDestination.getParent());
+        Files.copy(normalizedSource, normalizedDestination, StandardCopyOption.REPLACE_EXISTING,
+                StandardCopyOption.COPY_ATTRIBUTES);
+        return 1;
     }
 
     private static int copyMatchingCustomNoteDefinitions(Path source, Path target, Set<String> noteTypes)

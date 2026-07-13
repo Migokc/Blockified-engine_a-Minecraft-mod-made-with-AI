@@ -169,14 +169,14 @@ public class SongLibrary {
     private static void resolveOpponentIcon(SongEntry e) {
         if (e.opponentIcon == null || e.opponentIcon.isEmpty()) return;
         String charId = e.opponentIcon;
-        Path root = e.characterRoot != null ? e.characterRoot
+        Path characterRoot = e.characterRoot != null ? e.characterRoot
                 : (e.modRoot != null ? e.modRoot : e.folder);
         String iconName = charId;
-        if (root != null) {
+        if (characterRoot != null) {
             // the character json names the actual health icon (V-Slice healthIcon.id / Psych healthicon)
             if (e.allows(ExternalContent.CHARACTERS)) {
                 for (String sub : new String[]{"data/characters", "characters"}) {
-                    Path cj = root.resolve(sub).resolve(charId + ".json");
+                    Path cj = characterRoot.resolve(sub).resolve(charId + ".json");
                     if (Files.isRegularFile(cj)) {
                         String hi = readHealthIconName(cj);
                         if (hi != null && !hi.isEmpty()) iconName = hi;
@@ -186,14 +186,19 @@ public class SongLibrary {
             }
             // find the icon png inside this mod
             if (e.allows(ExternalContent.ICONS)) {
-                for (String sub : new String[]{"images/icons", "icons", "images/characters", ""}) {
-                    Path dir = sub.isEmpty() ? root : root.resolve(sub);
-                    for (String fn : new String[]{"icon-" + iconName + ".png", iconName + ".png"}) {
-                        Path p = dir.resolve(fn);
-                        if (Files.isRegularFile(p)) {
-                            e.opponentIconFile = p;
-                            e.opponentIcon = iconName;
-                            return;
+                LinkedHashMap<Path, Boolean> roots = new LinkedHashMap<>();
+                if (e.modRoot != null) roots.put(e.modRoot, Boolean.TRUE);
+                roots.put(characterRoot, Boolean.TRUE);
+                for (Path root : roots.keySet()) {
+                    for (String sub : new String[]{"images/icons", "icons", "images/characters", ""}) {
+                        Path dir = sub.isEmpty() ? root : root.resolve(sub);
+                        for (String fn : new String[]{"icon-" + iconName + ".png", iconName + ".png"}) {
+                            Path p = dir.resolve(fn);
+                            if (Files.isRegularFile(p)) {
+                                e.opponentIconFile = p;
+                                e.opponentIcon = iconName;
+                                return;
+                            }
                         }
                     }
                 }
@@ -890,6 +895,12 @@ public class SongLibrary {
             // Scripts beside the locally saved chart belong only to this song.
             original.luaFiles.clear();
             original.luaFiles.addAll(override.luaFiles);
+            // A complete local import must take priority over the referenced
+            // source while keeping the reference as a fallback for missing data.
+            if (override.instFile != null) original.instFile = override.instFile;
+            if (override.voicesFile != null) original.voicesFile = override.voicesFile;
+            if (override.voicesPlayerFile != null) original.voicesPlayerFile = override.voicesPlayerFile;
+            if (override.voicesOpponentFile != null) original.voicesOpponentFile = override.voicesOpponentFile;
             for (var local : override.legacyChartFiles.entrySet()) {
                 String difficulty = original.difficulties.stream()
                         .filter(d -> normalizedDifficultyKey(d).equals(normalizedDifficultyKey(local.getKey())))
