@@ -132,6 +132,9 @@ can select a different font. Missing or invalid files fall back to Minecraft's
 default font and are reported in the log. `setTextWidth` also wraps Lua text at
 the requested width. Custom fonts use 8x glyph oversampling so large FNF text
 has more raster detail while retaining Minecraft's normal texture filtering.
+Lua sprites and text use Psych Engine's fixed 1280x720 canvas. The complete
+canvas scales uniformly and stays centered when the window resolution or
+Minecraft GUI scale changes, so scripted positions remain stable.
 
 ## Note skins (Sparrow XML!)
 
