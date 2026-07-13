@@ -25,6 +25,8 @@ public class SongEntry {
     public Path opponentIconFile;
     /** Folder to resolve this song's icons/characters from (its default variation's mod). */
     public transient Path modRoot;
+    /** Original pack used only for inherited difficulties/audio after an editor save. */
+    public transient Path chartOriginRoot;
     public final List<String> difficulties = new ArrayList<>();
     /** Top-level Lua scripts beside this song's chart; scoped to this song. */
     public final List<Path> luaFiles = new ArrayList<>();
