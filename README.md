@@ -58,6 +58,11 @@ data/<song>/*.lua
 <song folder>/*.lua
 ```
 
+`config/fnfmod/scripts/*.lua` contains global scripts that run for every song.
+Lua files placed directly in `config/fnfmod/songs/<song folder>/` run only for
+that song. Song-local scripts are included when a server transfers the song to
+a client.
+
 Gameplay callbacks include create/update, countdown/song start, step/beat/section,
 note hits/misses, events, pause/resume, song end, and destroy. Supported APIs cover
 gameplay properties/groups, score/health, strum transforms, timers, tweens, input,

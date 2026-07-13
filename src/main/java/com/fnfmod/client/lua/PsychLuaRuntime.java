@@ -119,6 +119,8 @@ public final class PsychLuaRuntime implements AutoCloseable {
 
     private void loadScripts(SongEntry entry) {
         LinkedHashSet<Path> files = new LinkedHashSet<>();
+        // User-global scripts run for every song, independent of source-engine layout.
+        addLuaFiles(SongLibrary.scriptsDir(), files);
         if (modRoot != null) {
             addLuaFiles(modRoot.resolve("scripts"), files);
             addLuaFile(modRoot.resolve("stages").resolve(chart.stage + ".lua"), files);
