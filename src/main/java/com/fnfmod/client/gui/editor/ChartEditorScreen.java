@@ -140,7 +140,7 @@ public final class ChartEditorScreen extends Screen {
         this(songId, difficulty, chart, songFolder, songFolder, null);
     }
 
-    /** Opens gameplay's chart while retaining the original mod root used for inherited assets. */
+    /** Opens gameplay's chart while retaining its chart/audio origin reference. */
     public ChartEditorScreen(String songId, String difficulty, SongChart chart,
                              Path songFolder, Path originalDirectory) {
         this(songId, difficulty, chart, songFolder, originalDirectory, null);
@@ -177,7 +177,8 @@ public final class ChartEditorScreen extends Screen {
         }
         originalDirectory = suppliedOriginalDirectory;
         if (originalDirectory == null && entry != null) {
-            originalDirectory = entry.modRoot != null ? entry.modRoot : entry.folder;
+            originalDirectory = entry.chartOriginRoot != null ? entry.chartOriginRoot
+                    : (entry.modRoot != null ? entry.modRoot : entry.folder);
         }
         originalChartName = entry != null && entry.id != null ? entry.id : requestedSongId;
         if (suppliedChart != null) {

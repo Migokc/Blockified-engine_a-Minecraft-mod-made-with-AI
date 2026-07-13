@@ -761,7 +761,13 @@ public class SongLibrary {
             }
             if (original.isVslice()) finalizeVSlice(original);
 
+            // Keep the source only as a chart/audio library. Runtime resources must
+            // resolve from the local override, never from the origin pack.
+            original.chartOriginRoot = source;
             original.folder = localDir;
+            original.modRoot = localDir;
+            original.opponentIcon = "";
+            original.opponentIconFile = null;
             // Scripts beside the locally saved chart belong only to this song.
             original.luaFiles.clear();
             original.luaFiles.addAll(override.luaFiles);

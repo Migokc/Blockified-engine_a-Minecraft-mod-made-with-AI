@@ -1095,7 +1095,8 @@ public class GameplayScreen extends Screen {
                 ? chart.title : ClientSession.songId;
         SongEntry sourceEntry = SongLibrary.get(currentSongId);
         Path originalDirectory = sourceEntry == null ? ClientSession.resolvedFolder
-                : (sourceEntry.modRoot != null ? sourceEntry.modRoot : sourceEntry.folder);
+                : (sourceEntry.chartOriginRoot != null ? sourceEntry.chartOriginRoot
+                : (sourceEntry.modRoot != null ? sourceEntry.modRoot : sourceEntry.folder));
         ChartEditorScreen editor = new ChartEditorScreen(currentSongId,
                 ClientSession.difficulty, chart, ClientSession.resolvedFolder, originalDirectory, machinePos);
 
