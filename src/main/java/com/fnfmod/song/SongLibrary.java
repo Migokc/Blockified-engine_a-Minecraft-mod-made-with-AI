@@ -38,6 +38,11 @@ public class SongLibrary {
         return root().resolve("songs");
     }
 
+    /** Complete FNF engine-style mod packs, one folder per mod. */
+    public static Path modsDir() {
+        return root().resolve("mods");
+    }
+
     /** Global Psych Lua scripts that run for every song. */
     public static Path scriptsDir() {
         return root().resolve("scripts");
@@ -85,6 +90,7 @@ public class SongLibrary {
     public static void ensureFolders() {
         try {
             Files.createDirectories(songsDir());
+            Files.createDirectories(modsDir());
             Files.createDirectories(scriptsDir());
             Files.createDirectories(skinsDir());
             Files.createDirectories(animationsDir());
@@ -109,6 +115,8 @@ public class SongLibrary {
         } catch (IOException e) {
             FnfMod.LOGGER.error("Failed to scan songs folder", e);
         }
+        // Complete engine-style packs. Direct songs above retain highest priority.
+        scanPsychRoot(modsDir(), found, icons);
         for (String folder : getExternalFolders()) {
             try {
                 scanPsychRoot(Path.of(folder), found, icons);
