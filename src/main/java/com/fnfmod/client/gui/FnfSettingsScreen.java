@@ -560,7 +560,6 @@ public class FnfSettingsScreen extends Screen {
         int sx = sbX(), sy = sbY();
 
         gui.drawString(font, "Hex:", sx - 4, rowY(2) + 6, 0xFFFFFF);
-        gui.fill(sx + 86, rowY(2) + 2, sx + 86 + 16, rowY(2) + 18, 0xFF000000 | selectedColor());
 
         // saturation/brightness square for the current hue
         for (int col = 0; col < 72; col++) {
@@ -581,6 +580,15 @@ public class FnfSettingsScreen extends Screen {
         int hx = sx + (int) (hue * 169);
         gui.fill(hx - 1, hueY() - 1, hx + 2, hueY() + 11, 0xFFFFFFFF);
 
+        // Show a contextual swatch only while a picker is captured. The hue
+        // swatch is the pure hue; the square swatch is the combined H/S/B color.
+        if (colorDragTarget == 1) {
+            drawColorSwatch(gui, cx + 7, cy - 21, selectedColor());
+        } else if (colorDragTarget == 2) {
+            int pureHue = java.awt.Color.HSBtoRGB(hue, 1f, 1f) & 0xFFFFFF;
+            drawColorSwatch(gui, hx + 6, hueY() - 3, pureHue);
+        }
+
         // live note previews (click to select a lane)
         for (int i = 0; i < 4; i++) {
             int px = width / 2 + 8 + (i % 2) * 40;
@@ -595,6 +603,11 @@ public class FnfSettingsScreen extends Screen {
             gui.drawCenteredString(font, "Current skin has no RGB template - colors won't apply to it.",
                     width / 2, hueY() + 16, 0xFFFF8866);
         }
+    }
+
+    private static void drawColorSwatch(GuiGraphics gui, int x, int y, int rgb) {
+        gui.fill(x - 1, y - 1, x + 17, y + 17, 0xFFFFFFFF);
+        gui.fill(x, y, x + 16, y + 16, 0xFF000000 | (rgb & 0xFFFFFF));
     }
 
     /** Shortens a path from the front so its tail (the useful part) stays visible. */
