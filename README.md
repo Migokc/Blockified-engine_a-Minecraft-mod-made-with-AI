@@ -41,6 +41,40 @@ All difficulties inside a V-Slice chart are selectable. Audio must be **OGG** (t
 what FNF mods ship anyway). `inst.ogg` / `voices.ogg` lower-case also works;
 vocal files containing `player`/`bf` or `opponent`/`dad` in the name are split stems.
 
+## Complete engine-style mod packs
+
+Existing standalone song folders remain supported. A complete Psych/V-Slice/Codename
+style mod can also be installed as one folder under:
+
+```
+config/fnfmod/mods/My-Mod/
+```
+
+For a Psych-style pack, keep its original layout unchanged:
+
+```
+My-Mod/
+  pack.json
+  data/<song>/<song>.json
+  songs/<song>/Inst.ogg
+  songs/<song>/Voices.ogg
+  scripts/*.lua
+  stages/
+  custom_events/
+  custom_notetypes/
+  characters/
+  images/
+  sounds/
+  music/
+  fonts/
+  weeks/
+```
+
+The `mods` folder is created automatically. Songs in `config/fnfmod/songs/` have
+priority over installed packs with the same song id; installed packs have priority
+over later paths in the Settings **Directories** list. `/fnf reload songs` rescans
+both standalone songs and complete packs.
+
 Supported chart features: notes, sustains, BPM changes, `mustHitSection`,
 `altAnim`, `gfSection`, Psych note types (string or numeric — `Hurt Note` damages you),
 scroll speed, embedded events, and separate `events.json` files.
