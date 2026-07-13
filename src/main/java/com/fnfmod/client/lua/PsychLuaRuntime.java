@@ -17,7 +17,6 @@ import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.network.chat.Component;
 import net.minecraft.client.renderer.texture.DynamicTexture;
 import net.minecraft.resources.ResourceLocation;
-import net.neoforged.neoforge.client.NeoForgeRenderTypes;
 import org.luaj.vm2.Globals;
 import org.luaj.vm2.LuaError;
 import org.luaj.vm2.LuaTable;
@@ -735,26 +734,13 @@ public final class PsychLuaRuntime implements AutoCloseable {
             Font font = selected == null ? Minecraft.getInstance().font : selected;
             int wrapWidth = o.width <= 0 ? Integer.MAX_VALUE
                     : Math.max(1, (int) Math.floor(o.width / scale));
-            boolean previousLinear = NeoForgeRenderTypes.enableTextTextureLinearFiltering;
-            if (selected != null) {
-                // Keep already-batched vanilla/default text out of this filtered pass.
-                gui.flush();
-                NeoForgeRenderTypes.enableTextTextureLinearFiltering = true;
-            }
-            try {
-                if (wrapWidth == Integer.MAX_VALUE) {
-                    gui.drawString(font, o.text, 0, 0, color, false);
-                } else {
-                    int line = 0;
-                    for (var part : font.split(Component.literal(o.text), wrapWidth)) {
-                        gui.drawString(font, part, 0, line++ * 9, color, false);
-                    }
+            if (wrapWidth == Integer.MAX_VALUE) {
+                gui.drawString(font, o.text, 0, 0, color, false);
+            } else {
+                int line = 0;
+                for (var part : font.split(Component.literal(o.text), wrapWidth)) {
+                    gui.drawString(font, part, 0, line++ * 9, color, false);
                 }
-                // GuiGraphics batches text; flush while linear filtering is enabled
-                // so later vanilla/default-font draws retain their own filtering.
-                if (selected != null) gui.flush();
-            } finally {
-                NeoForgeRenderTypes.enableTextTextureLinearFiltering = previousLinear;
             }
         } else if (o.texture != null) {
             float red = ((o.color >> 16) & 255) / 255f;
