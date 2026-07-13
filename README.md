@@ -179,6 +179,8 @@ has more raster detail while retaining Minecraft's normal texture filtering.
 Lua sprites and text use Psych Engine's fixed 1280x720 canvas. The complete
 canvas scales uniformly and stays centered when the window resolution or
 Minecraft GUI scale changes, so scripted positions remain stable.
+Lua `strumLineNotes`, `playerStrums`, and `opponentStrums` X/Y values use that
+same 1280x720 coordinate space; per-strum `downScroll` is also supported.
 Lua objects on the `game` camera render behind native notes and receptors;
 objects on the `hud` camera render above the built-in HUD. `setObjectOrder`
 changes order only among Lua objects on the same camera.

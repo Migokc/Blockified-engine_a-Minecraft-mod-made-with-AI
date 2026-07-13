@@ -162,6 +162,7 @@ public class GameplayScreen extends Screen {
     private final double[] luaStrumY = new double[8];
     private final double[] luaStrumAlpha = new double[8];
     private final double[] luaStrumAngle = new double[8];
+    private final boolean[] luaStrumDownScroll = new boolean[8];
 
     public GameplayScreen(BlockPos machinePos, SongChart chart, SongPlayer songPlayer,
                           PlayMode mode, UUID partnerId, String partnerName,
@@ -194,6 +195,7 @@ public class GameplayScreen extends Screen {
         Arrays.fill(luaStrumX, Double.NaN);
         Arrays.fill(luaStrumY, Double.NaN);
         Arrays.fill(luaStrumAlpha, 1.0);
+        Arrays.fill(luaStrumDownScroll, ClientOptions.get().downscroll);
 
         for (int i = 0; i < 4; i++) {
             myLanes[i] = new ArrayList<>();
@@ -707,7 +709,7 @@ public class GameplayScreen extends Screen {
 
     private void spawnCoverEnd(int lane) {
         if (NoteStyle.holdCoverEndFrames(lane) > 0) {
-            coverEnds.add(new CoverEnd(lane, laneX(true, lane), receptorY(), System.currentTimeMillis()));
+            coverEnds.add(new CoverEnd(lane, laneX(true, lane), laneY(true, lane), System.currentTimeMillis()));
             if (coverEnds.size() > 8) coverEnds.remove(0);
         }
     }
@@ -894,7 +896,7 @@ public class GameplayScreen extends Screen {
         if (judgement == 0 && !n.data.noteSplashDisabled && splashVariants > 0) {
             int variant = (int) (Math.random() * splashVariants);
             splashes.add(new Splash(n.data.lane, variant,
-                    laneX(true, n.data.lane), receptorY(), System.currentTimeMillis(),
+                    laneX(true, n.data.lane), laneY(true, n.data.lane), System.currentTimeMillis(),
                     customSplashVariants > 0 ? n.data.noteSplashTexture : "",
                     (float) n.data.noteSplashAlpha));
             if (splashes.size() > 16) splashes.remove(0);
@@ -1287,6 +1289,7 @@ public class GameplayScreen extends Screen {
         Arrays.fill(luaStrumY, Double.NaN);
         Arrays.fill(luaStrumAlpha, 1.0);
         Arrays.fill(luaStrumAngle, 0.0);
+        Arrays.fill(luaStrumDownScroll, ClientOptions.get().downscroll);
         score = 0; combo = 0; misses = 0; maxCombo = 0;
         java.util.Arrays.fill(judgements, 0);
         accuracySum = 0; accuracyCount = 0;
@@ -1377,7 +1380,7 @@ public class GameplayScreen extends Screen {
     private float laneX(boolean mine, int lane) {
         boolean playerSide = playBoth || mine == myChartSideIsPlayer;
         double overridden = luaStrumX[(playerSide ? 4 : 0) + lane];
-        if (!Double.isNaN(overridden)) return (float) overridden;
+        if (!Double.isNaN(overridden)) return luaToGuiX(overridden);
         return baseLaneX(mine, lane);
     }
 
@@ -1416,7 +1419,41 @@ public class GameplayScreen extends Screen {
     private float laneY(boolean mine, int lane) {
         boolean playerSide = playBoth || mine == myChartSideIsPlayer;
         double overridden = luaStrumY[(playerSide ? 4 : 0) + lane];
-        return Double.isNaN(overridden) ? receptorY() : (float) overridden;
+        return Double.isNaN(overridden) ? receptorY() : luaToGuiY(overridden);
+    }
+
+    private boolean laneDown(boolean mine, int lane) {
+        boolean playerSide = playBoth || mine == myChartSideIsPlayer;
+        return luaStrumDownScroll[(playerSide ? 4 : 0) + lane];
+    }
+
+    private float luaCanvasScale() {
+        return Math.max(0.0001f, Math.min(width / (float) PsychLuaRuntime.VIRTUAL_WIDTH,
+                height / (float) PsychLuaRuntime.VIRTUAL_HEIGHT));
+    }
+
+    private float luaCanvasX() {
+        return (width - PsychLuaRuntime.VIRTUAL_WIDTH * luaCanvasScale()) * 0.5f;
+    }
+
+    private float luaCanvasY() {
+        return (height - PsychLuaRuntime.VIRTUAL_HEIGHT * luaCanvasScale()) * 0.5f;
+    }
+
+    private float luaToGuiX(double value) {
+        return luaCanvasX() + (float) value * luaCanvasScale();
+    }
+
+    private float luaToGuiY(double value) {
+        return luaCanvasY() + (float) value * luaCanvasScale();
+    }
+
+    private double guiToLuaX(double value) {
+        return (value - luaCanvasX()) / luaCanvasScale();
+    }
+
+    private double guiToLuaY(double value) {
+        return (value - luaCanvasY()) / luaCanvasScale();
     }
 
     // ------------------------------------------------------------------ Psych Lua bridge
@@ -1447,12 +1484,12 @@ public class GameplayScreen extends Screen {
         int index = (playerSide ? 4 : 0) + safeLane;
         if (!Double.isNaN(luaStrumX[index])) return luaStrumX[index];
         boolean mine = playBoth || playerSide == myChartSideIsPlayer;
-        return baseLaneX(mine, safeLane);
+        return guiToLuaX(baseLaneX(mine, safeLane));
     }
 
     public double psychLuaStrumY(boolean playerSide, int lane) {
         int index = (playerSide ? 4 : 0) + Math.max(0, Math.min(3, lane));
-        return Double.isNaN(luaStrumY[index]) ? receptorY() : luaStrumY[index];
+        return Double.isNaN(luaStrumY[index]) ? guiToLuaY(receptorY()) : luaStrumY[index];
     }
 
     private int luaGroupIndex(String group, int index) {
@@ -1524,6 +1561,7 @@ public class GameplayScreen extends Screen {
             case "alpha" -> luaStrumAlpha[i];
             case "angle" -> luaStrumAngle[i];
             case "direction" -> 90.0;
+            case "downScroll" -> luaStrumDownScroll[i];
             case "visible" -> luaStrumAlpha[i] > 0;
             default -> null;
         };
@@ -1575,8 +1613,18 @@ public class GameplayScreen extends Screen {
             return;
         }
         int i = luaGroupIndex(group, index);
-        if (i < 0 || i >= 8 || !(value instanceof Number number)) return;
-        switch (property == null ? "" : property) {
+        if (i < 0 || i >= 8) return;
+        String strumProperty = property == null ? "" : property;
+        if (strumProperty.equals("downScroll")) {
+            luaStrumDownScroll[i] = noteBool(value, luaStrumDownScroll[i]);
+            return;
+        }
+        if (strumProperty.equals("visible")) {
+            luaStrumAlpha[i] = noteBool(value, luaStrumAlpha[i] > 0) ? Math.max(0.0001, luaStrumAlpha[i]) : 0;
+            return;
+        }
+        if (!(value instanceof Number number)) return;
+        switch (strumProperty) {
             case "x" -> luaStrumX[i] = number.doubleValue();
             case "y" -> luaStrumY[i] = number.doubleValue();
             case "alpha" -> luaStrumAlpha[i] = Math.max(0, Math.min(1, number.doubleValue()));
@@ -1658,7 +1706,7 @@ public class GameplayScreen extends Screen {
         double speed = note == null ? 1.0 : Math.max(0.01, note.data.multSpeed);
         double dist = (timeMs - songPos) * pxPerMs() * speed;
         float receptor = laneY(mine, lane);
-        return (float) (ClientOptions.get().downscroll ? receptor - dist : receptor + dist);
+        return (float) (laneDown(mine, lane) ? receptor - dist : receptor + dist);
     }
 
     @Override
@@ -1667,8 +1715,6 @@ public class GameplayScreen extends Screen {
         // no background dimming — the world stays fully visible during a song
 
         float noteSize = noteSize();
-        boolean down = ClientOptions.get().downscroll;
-
         boolean fadeOpponent = ClientOptions.get().middlescroll && !playBoth;
 
         if (luaRuntime != null) luaRuntime.render(gui, false);
@@ -1754,8 +1800,8 @@ public class GameplayScreen extends Screen {
 
     private void renderNotes(GuiGraphics gui, List<GameNote>[] lanes, int[] laneStart,
                              boolean mine, float noteSize, double visibleMs) {
-        boolean down = ClientOptions.get().downscroll;
         for (int lane = 0; lane < 4; lane++) {
+            boolean down = laneDown(mine, lane);
             float x = laneX(mine, lane);
             boolean playerSide = playBoth || mine == myChartSideIsPlayer;
             double layoutAlpha = ClientOptions.get().middlescroll && !playBoth && !mine ? 0.6 : 1.0;
