@@ -98,12 +98,15 @@ public class FnfSettingsScreen extends Screen {
     private EditBox hexBox;
     private boolean updatingHex;
     private boolean colorDirty;
+    /** 0 = none, 1 = saturation/brightness square, 2 = hue bar. */
+    private int colorDragTarget;
 
     private int sbX() { return width / 2 - 85; }
     private int sbY() { return rowY(3); }
     private int hueY() { return sbY() + 78; }
 
     private void initColors() {
+        colorDragTarget = 0;
         int w = 170;
         int x = width / 2 - 85;
 
@@ -192,18 +195,15 @@ public class FnfSettingsScreen extends Screen {
         colorDirty = false;
     }
 
-    private boolean handleColorPick(double mx, double my) {
+    private boolean beginColorPick(double mx, double my) {
         int sx = sbX(), sy = sbY();
         if (mx >= sx && mx < sx + 72 && my >= sy && my < sy + 72) {
-            sat = (float) (mx - sx) / 72f;
-            bri = 1f - (float) (my - sy) / 72f;
-            applyColorPreview();
-            return true;
+            colorDragTarget = 1;
+            return updateColorPick(mx, my);
         }
         if (mx >= sx && mx < sx + 170 && my >= hueY() && my < hueY() + 10) {
-            hue = (float) (mx - sx) / 170f;
-            applyColorPreview();
-            return true;
+            colorDragTarget = 2;
+            return updateColorPick(mx, my);
         }
         // clicking a preview note selects that lane
         for (int i = 0; i < 4; i++) {
@@ -219,11 +219,26 @@ public class FnfSettingsScreen extends Screen {
         return false;
     }
 
+    /** Keeps an active picker drag captured and clamps it to the selected box. */
+    private boolean updateColorPick(double mx, double my) {
+        int sx = sbX(), sy = sbY();
+        if (colorDragTarget == 1) {
+            sat = (float) Mth.clamp((mx - sx) / 71.0, 0.0, 1.0);
+            bri = 1f - (float) Mth.clamp((my - sy) / 71.0, 0.0, 1.0);
+        } else if (colorDragTarget == 2) {
+            hue = (float) Mth.clamp((mx - sx) / 169.0, 0.0, 1.0);
+        } else {
+            return false;
+        }
+        applyColorPreview();
+        return true;
+    }
+
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
         if ("folders".equals(category) && button == 0 && clickFolderScrollbar(mouseX, mouseY)) return true;
         if (super.mouseClicked(mouseX, mouseY, button)) return true;
-        return "colors".equals(category) && button == 0 && handleColorPick(mouseX, mouseY);
+        return "colors".equals(category) && button == 0 && beginColorPick(mouseX, mouseY);
     }
 
     @Override
@@ -232,13 +247,16 @@ public class FnfSettingsScreen extends Screen {
             scrollFoldersTo(mouseY);
             return true;
         }
-        if ("colors".equals(category) && button == 0 && handleColorPick(mouseX, mouseY)) return true;
+        if ("colors".equals(category) && button == 0 && colorDragTarget != 0) {
+            return updateColorPick(mouseX, mouseY);
+        }
         return super.mouseDragged(mouseX, mouseY, button, dragX, dragY);
     }
 
     @Override
     public boolean mouseReleased(double mouseX, double mouseY, int button) {
         draggingFolderThumb = false;
+        if (button == 0) colorDragTarget = 0;
         // rebuilding the recolored sheets is heavy, so do it once the drag ends
         if (colorDirty) applyColorNow();
         return super.mouseReleased(mouseX, mouseY, button);
