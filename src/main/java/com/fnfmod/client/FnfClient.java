@@ -20,6 +20,7 @@ import net.neoforged.fml.event.lifecycle.FMLClientSetupEvent;
 import net.neoforged.neoforge.client.event.RegisterClientCommandsEvent;
 import net.neoforged.neoforge.client.event.RegisterKeyMappingsEvent;
 import net.neoforged.neoforge.client.event.RenderGuiLayerEvent;
+import net.neoforged.neoforge.client.event.RenderLevelStageEvent;
 import net.neoforged.neoforge.client.event.ViewportEvent;
 import net.neoforged.neoforge.client.gui.VanillaGuiLayers;
 import net.neoforged.neoforge.network.PacketDistributor;
@@ -89,6 +90,15 @@ public final class FnfClient {
             if (hotbarTranslated && VanillaGuiLayers.HOTBAR.equals(event.getName())) {
                 event.getGuiGraphics().pose().popPose();
                 hotbarTranslated = false;
+            }
+        }
+
+        /** Draw Lua objects assigned to the world camera into the level itself. */
+        @SubscribeEvent
+        public static void onRenderLevelStage(RenderLevelStageEvent event) {
+            if (event.getStage() != RenderLevelStageEvent.Stage.AFTER_PARTICLES) return;
+            if (Minecraft.getInstance().screen instanceof GameplayScreen gameplay) {
+                gameplay.renderLuaWorld(event.getPoseStack(), event.getCamera());
             }
         }
 

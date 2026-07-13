@@ -13,6 +13,8 @@ import com.fnfmod.client.camera.GameplayCamera;
 import com.fnfmod.client.gui.editor.ChartEditorScreen;
 import com.fnfmod.client.lua.PsychLuaRuntime;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.Camera;
+import com.mojang.blaze3d.vertex.PoseStack;
 import net.minecraft.core.Direction;
 import net.minecraft.world.phys.Vec3;
 
@@ -1700,6 +1702,17 @@ public class GameplayScreen extends Screen {
 
     public void reloadLuaFonts() {
         if (luaRuntime != null) luaRuntime.reloadFonts();
+    }
+
+    /** Called from the level render pass so Lua world sprites have real depth and lighting. */
+    public void renderLuaWorld(PoseStack poseStack, Camera camera) {
+        if (luaRuntime == null || minecraft.level == null) return;
+        Direction facing = Direction.NORTH;
+        var state = minecraft.level.getBlockState(machinePos);
+        if (state.hasProperty(FunkinMachineBlock.FACING)) {
+            facing = state.getValue(FunkinMachineBlock.FACING);
+        }
+        luaRuntime.renderWorld(poseStack, camera, machinePos, facing);
     }
 
     private float noteY(double timeMs, boolean mine, int lane, GameNote note) {

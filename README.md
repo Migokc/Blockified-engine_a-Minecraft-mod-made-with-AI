@@ -186,6 +186,34 @@ Lua objects on the `game` camera render behind native notes and receptors;
 objects on the `hud` camera render above the built-in HUD. `setObjectOrder`
 changes order only among Lua objects on the same camera.
 
+### Lua world camera
+
+Static and animated Lua sprites can be placed in the Minecraft level by assigning
+the new `world` camera. The Funkin' Machine/speakers center is `(0, 0, 0)`;
+64 Lua pixels equal one Minecraft block. `x` points to stage-right, `y` points
+down like normal Psych sprite coordinates, and `z` points toward the stage camera.
+Normal property changes, `doTweenX`, `doTweenY`, `doTweenZ`, scale, angle, alpha,
+color, animation, offsets, and `setObjectOrder` continue to work.
+
+```lua
+function onCreate()
+    makeAnimatedLuaSprite('worldSign', 'signs/animated', 0, -96)
+    addAnimationByPrefix('worldSign', 'idle', 'idle', 24, true)
+    setObjectCamera('worldSign', 'world')
+    setProperty('worldSign.z', 32)
+    setProperty('worldSign.billboard', true)
+    setProperty('worldSign.lighting', false)
+    addLuaSprite('worldSign', false)
+    doTweenZ('bringSignForward', 'worldSign', 64, 1.0, 'quadOut')
+end
+```
+
+World sprites billboard toward the camera by default, like vanilla name tags.
+Use `setWorldSpriteBillboard(tag, false)` or set `tag.billboard` to `false` to
+lock the sprite to the stage direction. They use Minecraft world lighting by
+default; use `setWorldSpriteLighting(tag, false)`, `setWorldSpriteShadows(tag,
+false)`, or set `tag.lighting`/`tag.shadows` to `false` for a full-bright sprite.
+
 ## Note skins (Sparrow XML!)
 
 Drop a Friday Night Funkin' spritesheet straight from any FNF mod into:
