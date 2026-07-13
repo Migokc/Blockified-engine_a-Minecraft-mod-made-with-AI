@@ -3,6 +3,7 @@ package com.fnfmod.song;
 import java.nio.file.Path;
 import java.nio.file.Files;
 import java.util.ArrayList;
+import java.util.EnumSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -30,6 +31,8 @@ public class SongEntry {
     public transient Path chartOriginRoot;
     /** Optional origin used only to resolve character definitions and health icons. */
     public transient Path characterRoot;
+    /** Resource groups enabled for the external directory that supplied this entry. */
+    public transient EnumSet<SongLibrary.ExternalContent> externalContent = SongLibrary.allExternalContent();
     public final List<String> difficulties = new ArrayList<>();
     /** Top-level Lua scripts beside this song's chart; scoped to this song. */
     public final List<Path> luaFiles = new ArrayList<>();
@@ -82,6 +85,10 @@ public class SongEntry {
 
     public boolean isVslice() {
         return format == Format.VSLICE;
+    }
+
+    public boolean allows(SongLibrary.ExternalContent content) {
+        return externalContent == null || externalContent.contains(content);
     }
 
     public VSliceVariation variationFor(String difficulty) {
@@ -146,10 +153,14 @@ public class SongEntry {
             addIf(out, voicesPlayerFile);
             addIf(out, voicesOpponentFile);
         }
-        addIf(out, eventsFile);
-        for (Path lua : luaFiles) addIf(out, lua);
-        addFonts(out, modRoot);
-        if (folder != null && !folder.equals(modRoot)) addFonts(out, folder);
+        if (allows(SongLibrary.ExternalContent.EVENTS)) addIf(out, eventsFile);
+        if (allows(SongLibrary.ExternalContent.LUA)) {
+            for (Path lua : luaFiles) addIf(out, lua);
+        }
+        if (allows(SongLibrary.ExternalContent.FONTS)) {
+            addFonts(out, modRoot);
+            if (folder != null && !folder.equals(modRoot)) addFonts(out, folder);
+        }
         return out;
     }
 

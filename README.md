@@ -75,6 +75,12 @@ priority over installed packs with the same song id; installed packs have priori
 over later paths in the Settings **Directories** list. `/fnf reload songs` rescans
 both standalone songs and complete packs.
 
+Each external path in **Settings > Directories** has its own checklist for Charts,
+Song Audio, Events, Lua, Images, Icons, Characters, and Fonts. Existing paths start
+with every category enabled. The choices are stored in
+`config/fnfmod/external_folder_filters.json`; disabling Charts or Song Audio removes
+that path's songs from the playable library.
+
 Supported chart features: notes, sustains, BPM changes, `mustHitSection`,
 `altAnim`, `gfSection`, Psych note types (string or numeric — `Hurt Note` damages you),
 scroll speed, embedded events, and separate `events.json` files.

@@ -5,6 +5,8 @@ import com.fnfmod.chart.CodenameChartParser;
 import com.fnfmod.chart.LegacyChartParser;
 import com.fnfmod.chart.SongChart;
 import com.fnfmod.chart.VSliceChartParser;
+import com.google.gson.GsonBuilder;
+import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
@@ -14,10 +16,12 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.EnumSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Stream;
 
 /**
@@ -26,6 +30,22 @@ import java.util.stream.Stream;
  * server's library is authoritative and files are streamed to clients.
  */
 public class SongLibrary {
+
+    /** Optional resource groups that can be enabled independently for every external directory. */
+    public enum ExternalContent {
+        CHARTS("Charts"), AUDIO("Song Audio"), EVENTS("Events"), LUA("Lua"),
+        IMAGES("Images"), ICONS("Icons"), CHARACTERS("Characters"), FONTS("Fonts");
+
+        public final String label;
+
+        ExternalContent(String label) {
+            this.label = label;
+        }
+    }
+
+    public static EnumSet<ExternalContent> allExternalContent() {
+        return EnumSet.allOf(ExternalContent.class);
+    }
 
     /** A chart-only local override uses this file to inherit assets from its original mod. */
     public static final String ORIGINAL_DIRECTORY_FILE = "original_directory.txt";
@@ -125,7 +145,8 @@ public class SongLibrary {
         scanPsychRoot(modsDir(), found, icons);
         for (String folder : getExternalFolders()) {
             try {
-                scanPsychRoot(Path.of(folder), found, icons);
+                EnumSet<ExternalContent> content = getExternalFolderContent(folder);
+                scanPsychRoot(Path.of(folder), found, icons, content);
             } catch (Exception e) {
                 FnfMod.LOGGER.warn("Failed to scan external folder {}: {}", folder, e.toString());
             }
@@ -153,23 +174,27 @@ public class SongLibrary {
         String iconName = charId;
         if (root != null) {
             // the character json names the actual health icon (V-Slice healthIcon.id / Psych healthicon)
-            for (String sub : new String[]{"data/characters", "characters"}) {
-                Path cj = root.resolve(sub).resolve(charId + ".json");
-                if (Files.isRegularFile(cj)) {
-                    String hi = readHealthIconName(cj);
-                    if (hi != null && !hi.isEmpty()) iconName = hi;
-                    break;
+            if (e.allows(ExternalContent.CHARACTERS)) {
+                for (String sub : new String[]{"data/characters", "characters"}) {
+                    Path cj = root.resolve(sub).resolve(charId + ".json");
+                    if (Files.isRegularFile(cj)) {
+                        String hi = readHealthIconName(cj);
+                        if (hi != null && !hi.isEmpty()) iconName = hi;
+                        break;
+                    }
                 }
             }
             // find the icon png inside this mod
-            for (String sub : new String[]{"images/icons", "icons", "images/characters", ""}) {
-                Path dir = sub.isEmpty() ? root : root.resolve(sub);
-                for (String fn : new String[]{"icon-" + iconName + ".png", iconName + ".png"}) {
-                    Path p = dir.resolve(fn);
-                    if (Files.isRegularFile(p)) {
-                        e.opponentIconFile = p;
-                        e.opponentIcon = iconName;
-                        return;
+            if (e.allows(ExternalContent.ICONS)) {
+                for (String sub : new String[]{"images/icons", "icons", "images/characters", ""}) {
+                    Path dir = sub.isEmpty() ? root : root.resolve(sub);
+                    for (String fn : new String[]{"icon-" + iconName + ".png", iconName + ".png"}) {
+                        Path p = dir.resolve(fn);
+                        if (Files.isRegularFile(p)) {
+                            e.opponentIconFile = p;
+                            e.opponentIcon = iconName;
+                            return;
+                        }
                     }
                 }
             }
@@ -277,6 +302,10 @@ public class SongLibrary {
         return root().resolve("external_folders.txt");
     }
 
+    private static Path externalFolderFiltersFile() {
+        return root().resolve("external_folder_filters.json");
+    }
+
     /** User-selected folders scanned with the Psych Engine mod layout. */
     public static List<String> getExternalFolders() {
         List<String> out = new ArrayList<>();
@@ -297,8 +326,65 @@ public class SongLibrary {
         try {
             Files.createDirectories(root());
             Files.write(externalFoldersFile(), folders);
+            Map<String, EnumSet<ExternalContent>> filters = readExternalFolderFilters();
+            if (filters.keySet().retainAll(folders)) writeExternalFolderFilters(filters);
         } catch (IOException e) {
             FnfMod.LOGGER.warn("Could not save external_folders.txt: {}", e.toString());
+        }
+    }
+
+    /** Missing entries deliberately mean every category, preserving pre-checklist installations. */
+    public static EnumSet<ExternalContent> getExternalFolderContent(String folder) {
+        EnumSet<ExternalContent> saved = readExternalFolderFilters().get(folder);
+        return saved == null ? allExternalContent() : EnumSet.copyOf(saved);
+    }
+
+    public static void setExternalFolderContent(String folder, ExternalContent content, boolean enabled) {
+        Map<String, EnumSet<ExternalContent>> filters = readExternalFolderFilters();
+        EnumSet<ExternalContent> selected = filters.containsKey(folder)
+                ? EnumSet.copyOf(filters.get(folder)) : allExternalContent();
+        if (enabled) selected.add(content); else selected.remove(content);
+        filters.put(folder, selected);
+        writeExternalFolderFilters(filters);
+    }
+
+    private static Map<String, EnumSet<ExternalContent>> readExternalFolderFilters() {
+        Map<String, EnumSet<ExternalContent>> out = new LinkedHashMap<>();
+        try {
+            Path file = externalFolderFiltersFile();
+            if (!Files.isRegularFile(file)) return out;
+            JsonObject json = JsonParser.parseString(Files.readString(file)).getAsJsonObject();
+            for (var entry : json.entrySet()) {
+                if (!entry.getValue().isJsonArray()) continue;
+                EnumSet<ExternalContent> selected = EnumSet.noneOf(ExternalContent.class);
+                for (JsonElement value : entry.getValue().getAsJsonArray()) {
+                    try {
+                        selected.add(ExternalContent.valueOf(value.getAsString().toUpperCase(Locale.ROOT)));
+                    } catch (Exception ignored) {}
+                }
+                out.put(entry.getKey(), selected);
+            }
+        } catch (Exception e) {
+            FnfMod.LOGGER.warn("Could not read external_folder_filters.json: {}", e.toString());
+        }
+        return out;
+    }
+
+    private static void writeExternalFolderFilters(Map<String, EnumSet<ExternalContent>> filters) {
+        try {
+            Files.createDirectories(root());
+            JsonObject json = new JsonObject();
+            for (var entry : filters.entrySet()) {
+                JsonArray values = new JsonArray();
+                for (ExternalContent content : ExternalContent.values()) {
+                    if (entry.getValue().contains(content)) values.add(content.name().toLowerCase(Locale.ROOT));
+                }
+                json.add(entry.getKey(), values);
+            }
+            Files.writeString(externalFolderFiltersFile(),
+                    new GsonBuilder().setPrettyPrinting().create().toJson(json));
+        } catch (IOException e) {
+            FnfMod.LOGGER.warn("Could not save external_folder_filters.json: {}", e.toString());
         }
     }
 
@@ -309,14 +395,19 @@ public class SongLibrary {
      * (so a whole Psych "mods" directory can be added at once).
      */
     private static void scanPsychRoot(Path root, Map<String, SongEntry> found, Map<String, Path> icons) {
+        scanPsychRoot(root, found, icons, allExternalContent());
+    }
+
+    private static void scanPsychRoot(Path root, Map<String, SongEntry> found, Map<String, Path> icons,
+                                      Set<ExternalContent> content) {
         if (!Files.isDirectory(root)) return;
         if (isModFolder(root)) {
-            scanPsychMod(root, found, icons);
+            scanPsychMod(root, found, icons, content);
             return;
         }
         try (Stream<Path> subs = Files.list(root)) {
             subs.filter(Files::isDirectory).sorted().forEach(sub -> {
-                if (isModFolder(sub)) scanPsychMod(sub, found, icons);
+                if (isModFolder(sub)) scanPsychMod(sub, found, icons, content);
             });
         } catch (IOException ignored) {}
     }
@@ -326,18 +417,21 @@ public class SongLibrary {
                 || Files.isDirectory(p.resolve("images"));
     }
 
-    private static void scanPsychMod(Path mod, Map<String, SongEntry> found, Map<String, Path> icons) {
-        collectIcons(mod, icons);
+    private static void scanPsychMod(Path mod, Map<String, SongEntry> found, Map<String, Path> icons,
+                                     Set<ExternalContent> content) {
+        if (content.contains(ExternalContent.ICONS)) collectIcons(mod, icons);
+        // Optional resources may still be discovered, but a playable song needs both groups.
+        if (!content.contains(ExternalContent.CHARTS) || !content.contains(ExternalContent.AUDIO)) return;
         // Codename Engine: songs/<song>/{charts/,meta.json,song/} — check before Psych/V-Slice
         if (isCodenameMod(mod)) {
-            scanCodenameMod(mod, found, icons);
+            scanCodenameMod(mod, found, icons, content);
             return;
         }
         Path data = mod.resolve("data");
         Path songsDir = mod.resolve("songs");
         // V-Slice keeps charts in data/songs/<song>/ instead of data/<song>/
         if (Files.isDirectory(data.resolve("songs")) || !Files.isDirectory(data)) {
-            scanVSliceMod(mod, found);
+            scanVSliceMod(mod, found, content);
             return;
         }
 
@@ -352,6 +446,7 @@ public class SongLibrary {
                 entry.folder = songDir;
                 entry.format = SongEntry.Format.LEGACY;
                 entry.modRoot = mod;
+                entry.externalContent = EnumSet.copyOf(content);
 
                 try (Stream<Path> files = Files.list(songDir)) {
                     files.filter(f -> f.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".json"))
@@ -360,7 +455,7 @@ public class SongLibrary {
                                 String base = j.getFileName().toString();
                                 base = base.substring(0, base.length() - 5).toLowerCase(Locale.ROOT);
                                 if (base.equals("events")) {
-                                    entry.eventsFile = j;
+                                    if (content.contains(ExternalContent.EVENTS)) entry.eventsFile = j;
                                     return;
                                 }
                                 try {
@@ -384,7 +479,7 @@ public class SongLibrary {
                 entry.difficulties.addAll(entry.legacyChartFiles.keySet());
 
                 Path audioDir = songsDir.resolve(id);
-                if (Files.isDirectory(audioDir)) {
+                if (content.contains(ExternalContent.AUDIO) && Files.isDirectory(audioDir)) {
                     try (Stream<Path> audio = Files.list(audioDir)) {
                         audio.forEach(f -> {
                             String lower = f.getFileName().toString().toLowerCase(Locale.ROOT);
@@ -405,7 +500,8 @@ public class SongLibrary {
      * Scans a V-Slice (FNF 0.3+) mod: charts in data/songs/&lt;song&gt;/&lt;song&gt;-chart.json
      * + -metadata.json, audio in songs/&lt;song&gt;/ or manifest/../songs.
      */
-    private static void scanVSliceMod(Path mod, Map<String, SongEntry> found) {
+    private static void scanVSliceMod(Path mod, Map<String, SongEntry> found,
+                                      Set<ExternalContent> content) {
         Path chartsRoot = mod.resolve("data").resolve("songs");
         if (!Files.isDirectory(chartsRoot)) return;
         Path audioRoot = mod.resolve("songs");
@@ -434,17 +530,20 @@ public class SongLibrary {
                     entry.displayName = id;
                     entry.folder = songDir;
                     entry.format = SongEntry.Format.VSLICE;
+                    entry.externalContent = EnumSet.copyOf(content);
                 } else if (entry.format != SongEntry.Format.VSLICE) {
                     return; // don't mix with a legacy song of the same id
                 }
-                for (Path json : jsons) {
-                    if (json.getFileName().toString().equalsIgnoreCase("events.json")) {
-                        entry.eventsFile = json;
-                        break;
+                if (content.contains(ExternalContent.EVENTS)) {
+                    for (Path json : jsons) {
+                        if (json.getFileName().toString().equalsIgnoreCase("events.json")) {
+                            entry.eventsFile = json;
+                            break;
+                        }
                     }
                 }
                 Path audioDir = Files.isDirectory(audioRoot.resolve(id)) ? audioRoot.resolve(id) : songDir;
-                buildVSliceVariations(entry, jsons, audioDir, mod);
+                buildVSliceVariations(entry, jsons, audioDir, mod, content);
                 if (isNew && !entry.rawVars.isEmpty()) found.put(id, entry);
             });
         } catch (IOException ignored) {}
@@ -464,14 +563,15 @@ public class SongLibrary {
         }
     }
 
-    private static void scanCodenameMod(Path mod, Map<String, SongEntry> found, Map<String, Path> icons) {
+    private static void scanCodenameMod(Path mod, Map<String, SongEntry> found, Map<String, Path> icons,
+                                        Set<ExternalContent> content) {
         Path songsRoot = mod.resolve("songs");
         if (!Files.isDirectory(songsRoot)) return;
         try (Stream<Path> dirs = Files.list(songsRoot)) {
             dirs.filter(Files::isDirectory).sorted().forEach(songDir -> {
                 String id = songDir.getFileName().toString();
                 if (found.containsKey(id)) return; // earlier (local/config) songs win
-                SongEntry entry = scanCodenameSong(songDir, mod);
+                SongEntry entry = scanCodenameSong(songDir, mod, content);
                 if (entry != null) found.put(id, entry);
             });
         } catch (IOException ignored) {}
@@ -483,6 +583,10 @@ public class SongLibrary {
      * itself; bpm/needsVoices/icon come from meta.json.
      */
     private static SongEntry scanCodenameSong(Path dir, Path modRoot) {
+        return scanCodenameSong(dir, modRoot, allExternalContent());
+    }
+
+    private static SongEntry scanCodenameSong(Path dir, Path modRoot, Set<ExternalContent> content) {
         Path chartsDir = dir.resolve("charts");
         Path chartSource = Files.isDirectory(chartsDir) ? chartsDir : dir;
         Path metaFile = dir.resolve("meta.json");
@@ -493,8 +597,11 @@ public class SongLibrary {
         entry.folder = dir;
         entry.format = SongEntry.Format.CODENAME;
         entry.modRoot = modRoot;
+        entry.externalContent = EnumSet.copyOf(content);
         Path eventsFile = chartSource.resolve("events.json");
-        if (Files.isRegularFile(eventsFile)) entry.eventsFile = eventsFile;
+        if (content.contains(ExternalContent.EVENTS) && Files.isRegularFile(eventsFile)) {
+            entry.eventsFile = eventsFile;
+        }
         if (Files.isRegularFile(metaFile)) {
             entry.metaFile = metaFile;
             try {
@@ -540,12 +647,14 @@ public class SongLibrary {
         Path songSub = dir.resolve("song");
         Path audioDir = Files.isDirectory(songSub) ? songSub : dir;
         Map<String, Path> audio = new LinkedHashMap<>();
-        try (Stream<Path> as = Files.list(audioDir)) {
-            as.filter(Files::isRegularFile).forEach(f -> {
-                String lower = f.getFileName().toString().toLowerCase(Locale.ROOT);
-                if (lower.endsWith(".ogg")) audio.put(lower, f);
-            });
-        } catch (IOException ignored) {}
+        if (content.contains(ExternalContent.AUDIO)) {
+            try (Stream<Path> as = Files.list(audioDir)) {
+                as.filter(Files::isRegularFile).forEach(f -> {
+                    String lower = f.getFileName().toString().toLowerCase(Locale.ROOT);
+                    if (lower.endsWith(".ogg")) audio.put(lower, f);
+                });
+            } catch (IOException ignored) {}
+        }
 
         entry.instFile = firstAudio(audio, "inst.ogg");
         if (entry.instFile == null) {
@@ -679,7 +788,7 @@ public class SongLibrary {
         });
         if (hasVslice) {
             entry.format = SongEntry.Format.VSLICE;
-            buildVSliceVariations(entry, jsons, dir, dir); // fills rawVars; finalized after all scanning
+            buildVSliceVariations(entry, jsons, dir, dir, allExternalContent()); // fills rawVars; finalized after all scanning
             if (entry.rawVars.isEmpty()) return null;
             if (entry.rawVars.stream().allMatch(r -> r.files.instFile == null)) {
                 FnfMod.LOGGER.warn("V-Slice song {} has charts but no matching Inst.ogg in the same folder "
@@ -807,15 +916,18 @@ public class SongLibrary {
      * audio (Inst[-variation].ogg, Voices-bf[-variation].ogg, ...) so the base
      * game's erect/nightmare/pico difficulties each get the right song.
      */
-    private static void buildVSliceVariations(SongEntry entry, List<Path> jsons, Path audioDir, Path modRoot) {
+    private static void buildVSliceVariations(SongEntry entry, List<Path> jsons, Path audioDir, Path modRoot,
+                                              Set<ExternalContent> content) {
         // index audio by lowercase name
         Map<String, Path> audio = new LinkedHashMap<>();
-        try (Stream<Path> files = Files.list(audioDir)) {
-            files.filter(Files::isRegularFile).forEach(f -> {
-                String n = f.getFileName().toString().toLowerCase(Locale.ROOT);
-                if (n.endsWith(".ogg")) audio.put(n, f);
-            });
-        } catch (IOException ignored) {}
+        if (content.contains(ExternalContent.AUDIO)) {
+            try (Stream<Path> files = Files.list(audioDir)) {
+                files.filter(Files::isRegularFile).forEach(f -> {
+                    String n = f.getFileName().toString().toLowerCase(Locale.ROOT);
+                    if (n.endsWith(".ogg")) audio.put(n, f);
+                });
+            } catch (IOException ignored) {}
+        }
 
         // collect (chart, variation), default variation first so it owns base difficulties
         record ChartVar(Path chart, String variation) {}

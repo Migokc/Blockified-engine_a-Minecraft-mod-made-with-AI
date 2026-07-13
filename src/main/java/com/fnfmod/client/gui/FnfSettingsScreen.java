@@ -30,6 +30,7 @@ public class FnfSettingsScreen extends Screen {
     private static final int FOLDER_ROW_H = 26;
     private int folderScroll;
     private boolean draggingFolderThumb;
+    private String selectedFolder;
 
     public FnfSettingsScreen(Screen parent) {
         super(Component.literal("Options"));
@@ -287,6 +288,9 @@ public class FnfSettingsScreen extends Screen {
                     switchTo("folders");
                 }).bounds(width / 2 - 85, height - 56, 170, 20).build());
         List<String> folders = SongLibrary.getExternalFolders();
+        if (selectedFolder == null || !folders.contains(selectedFolder)) {
+            selectedFolder = folders.isEmpty() ? null : folders.get(0);
+        }
         folderScroll = Mth.clamp(folderScroll, 0, folderMaxScroll(folders.size()));
         int visible = folderVisibleRows();
         int listX = folderListX();
@@ -295,6 +299,12 @@ public class FnfSettingsScreen extends Screen {
             int folderIndex = folderScroll + row;
             String folder = folders.get(folderIndex);
             final String f = folder;
+            String pathLabel = (folder.equals(selectedFolder) ? "> " : "")
+                    + shortenPath(folder, listW - 76);
+            addRenderableWidget(Button.builder(Component.literal(pathLabel), b -> {
+                selectedFolder = f;
+                switchTo("folders");
+            }).bounds(listX, folderListTop() + row * FOLDER_ROW_H, listW - 68, 20).build());
             Button up = addRenderableWidget(Button.builder(Component.literal("↑"), b -> moveFolder(f, -1))
                     .bounds(listX + listW - 64, folderListTop() + row * FOLDER_ROW_H, 20, 20).build());
             up.active = folderIndex > 0;
@@ -303,11 +313,41 @@ public class FnfSettingsScreen extends Screen {
             down.active = folderIndex < folders.size() - 1;
             addRenderableWidget(Button.builder(Component.literal("X"), b -> {
                 var list = new java.util.ArrayList<>(SongLibrary.getExternalFolders());
+                int removed = list.indexOf(f);
                 list.remove(f);
+                if (f.equals(selectedFolder)) {
+                    selectedFolder = list.isEmpty() ? null
+                            : list.get(Math.min(Math.max(0, removed), list.size() - 1));
+                }
                 SongLibrary.setExternalFolders(list);
                 SongLibrary.rescan();
                 switchTo("folders");
             }).bounds(listX + listW - 22, folderListTop() + row * FOLDER_ROW_H, 20, 20).build());
+        }
+
+        if (selectedFolder != null) {
+            var selected = SongLibrary.getExternalFolderContent(selectedFolder);
+            SongLibrary.ExternalContent[] types = SongLibrary.ExternalContent.values();
+            int columns = folderChecklistColumns();
+            int gap = 3;
+            int buttonW = (listW - gap * (columns - 1)) / columns;
+            int top = folderListBottom() + 15;
+            for (int i = 0; i < types.length; i++) {
+                SongLibrary.ExternalContent type = types[i];
+                int x = listX + (i % columns) * (buttonW + gap);
+                int y = top + (i / columns) * 22;
+                String name = switch (type) {
+                    case AUDIO -> "Audio";
+                    case CHARACTERS -> "Chars";
+                    default -> type.label;
+                };
+                boolean enabled = selected.contains(type);
+                addRenderableWidget(Button.builder(Component.literal((enabled ? "[x] " : "[ ] ") + name), b -> {
+                    SongLibrary.setExternalFolderContent(selectedFolder, type, !enabled);
+                    SongLibrary.rescan();
+                    switchTo("folders");
+                }).bounds(x, y, buttonW, 20).build());
+            }
         }
     }
 
@@ -327,7 +367,15 @@ public class FnfSettingsScreen extends Screen {
     }
 
     private int folderListTop() { return rowY(1); }
-    private int folderListBottom() { return Math.max(folderListTop(), height - 76); }
+    private int folderChecklistColumns() { return folderListWidth() >= 240 ? 4 : 2; }
+    private int folderChecklistRows() {
+        return (SongLibrary.ExternalContent.values().length + folderChecklistColumns() - 1)
+                / folderChecklistColumns();
+    }
+    private int folderChecklistHeight() { return 15 + folderChecklistRows() * 22; }
+    private int folderListBottom() {
+        return Math.max(folderListTop() + FOLDER_ROW_H, height - 76 - folderChecklistHeight());
+    }
     private int folderListWidth() { return Math.min(360, Math.max(170, width - 40)); }
     private int folderListX() { return width / 2 - folderListWidth() / 2; }
     private int folderVisibleRows() {
@@ -376,6 +424,7 @@ public class FnfSettingsScreen extends Screen {
             minecraft.execute(() -> {
                 var list = new java.util.ArrayList<>(SongLibrary.getExternalFolders());
                 if (!list.contains(picked)) list.add(picked);
+                selectedFolder = picked;
                 SongLibrary.setExternalFolders(list);
                 SongLibrary.rescan();
                 folderScroll = folderMaxScroll(list.size());
@@ -670,14 +719,6 @@ public class FnfSettingsScreen extends Screen {
 
         if ("folders".equals(category)) {
             List<String> folders = SongLibrary.getExternalFolders();
-            int visible = folderVisibleRows();
-            int listX = folderListX();
-            int listW = folderListWidth();
-            for (int row = 0; row < visible && folderScroll + row < folders.size(); row++) {
-                String folder = folders.get(folderScroll + row);
-                int y = folderListTop() + row * FOLDER_ROW_H;
-                gui.drawString(font, shortenPath(folder, listW - 72), listX + 4, y + 6, 0xCCCCCC);
-            }
             if (folders.isEmpty()) {
                 gui.drawCenteredString(font, "No folders added.", width / 2, folderListTop() + 6, 0x888888);
             } else if (folderMaxScroll(folders.size()) > 0) {
@@ -690,9 +731,10 @@ public class FnfSettingsScreen extends Screen {
                 gui.fill(trackX, trackTop, trackX + 5, folderListBottom(), 0x55000000);
                 gui.fill(trackX, thumbY, trackX + 5, thumbY + thumbH, 0xFFAAAAAA);
             }
-            // folders has the Clear Cache button at height-56; sit the hint above it
-            gui.drawCenteredString(font, "Top = highest priority. Psych / V-Slice / Codename",
-                    width / 2, height - 68, 0xAAAAAA);
+            String filterHint = selectedFolder == null
+                    ? "Add a directory to choose what it loads"
+                    : "Load from selected directory (top = highest priority)";
+            gui.drawCenteredString(font, filterHint, width / 2, folderListBottom() + 3, 0xAAAAAA);
         }
 
         if ("delay".equals(category)) {

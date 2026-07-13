@@ -567,8 +567,10 @@ public final class ChartEditorScreen extends Screen {
                     .filter(name -> name != null && !name.isBlank())
                     .forEach(discovered::add);
         }
-        addCustomEventFiles(eventDefinitionRoot, discovered);
-        if (entry != null) addCustomEventFiles(entry.folder, discovered);
+        if (entry == null || entry.allows(SongLibrary.ExternalContent.LUA)) {
+            addCustomEventFiles(eventDefinitionRoot, discovered);
+            if (entry != null) addCustomEventFiles(entry.folder, discovered);
+        }
         eventTypes.clear();
         eventTypes.addAll(BUILTIN_EVENT_TYPES);
         discovered.stream().filter(name -> !BUILTIN_EVENT_TYPES.contains(name))

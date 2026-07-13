@@ -37,14 +37,16 @@ final class LuaFontLoader implements AutoCloseable {
     private final Path songFolder;
     private final Path modRoot;
     private final Path globalFonts;
+    private final boolean allowSongFonts;
     private final Map<Path, Loaded> loaded = new LinkedHashMap<>();
     private final Set<Path> failed = new LinkedHashSet<>();
     private final Set<String> missing = new LinkedHashSet<>();
 
-    LuaFontLoader(Path songFolder, Path modRoot, Path globalFonts) {
+    LuaFontLoader(Path songFolder, Path modRoot, Path globalFonts, boolean allowSongFonts) {
         this.songFolder = normalize(songFolder);
         this.modRoot = normalize(modRoot);
         this.globalFonts = normalize(globalFonts);
+        this.allowSongFonts = allowSongFonts;
     }
 
     Font get(String name) {
@@ -113,6 +115,7 @@ final class LuaFontLoader implements AutoCloseable {
         String name = requested.trim().replace('\\', '/');
         for (Path root : new Path[]{songFolder, modRoot, globalFonts}) {
             if (root == null) continue;
+            if (!root.equals(globalFonts) && !allowSongFonts) continue;
             Path[] candidates = root.equals(globalFonts)
                     ? new Path[]{root.resolve(name)}
                     : new Path[]{root.resolve("fonts").resolve(name), root.resolve(name)};

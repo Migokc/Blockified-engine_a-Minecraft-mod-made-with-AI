@@ -30,6 +30,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -85,6 +86,7 @@ public final class PsychLuaRuntime implements AutoCloseable {
     private final String songId;
     private final Path songFolder;
     private final Path modRoot;
+    private final EnumSet<SongLibrary.ExternalContent> externalContent;
     private final List<Script> scripts = new ArrayList<>();
     private final Map<String, LuaObject> objects = new LinkedHashMap<>();
     private final Map<String, LuaValue> sharedVars = new HashMap<>();
@@ -110,25 +112,33 @@ public final class PsychLuaRuntime implements AutoCloseable {
         Path folder = ClientSession.resolvedFolder != null ? ClientSession.resolvedFolder
                 : entry == null ? null : entry.folder;
         Path root = entry == null ? folder : entry.modRoot;
-        PsychLuaRuntime runtime = new PsychLuaRuntime(host, chart, id, folder, root);
+        PsychLuaRuntime runtime = new PsychLuaRuntime(host, chart, id, folder, root, entry);
         runtime.loadScripts(entry);
         return runtime;
     }
 
-    private PsychLuaRuntime(GameplayScreen host, SongChart chart, String songId, Path songFolder, Path modRoot) {
+    private PsychLuaRuntime(GameplayScreen host, SongChart chart, String songId, Path songFolder, Path modRoot,
+                            SongEntry entry) {
         this.host = host;
         this.chart = chart;
         this.songId = songId == null ? "unknown" : songId;
         this.songFolder = normalize(songFolder);
         this.modRoot = normalize(modRoot);
-        this.fontLoader = new LuaFontLoader(this.songFolder, this.modRoot, SongLibrary.fontsDir());
+        this.externalContent = entry == null || entry.externalContent == null
+                ? SongLibrary.allExternalContent() : EnumSet.copyOf(entry.externalContent);
+        this.fontLoader = new LuaFontLoader(this.songFolder, this.modRoot, SongLibrary.fontsDir(),
+                allows(SongLibrary.ExternalContent.FONTS));
+    }
+
+    private boolean allows(SongLibrary.ExternalContent content) {
+        return externalContent.contains(content);
     }
 
     private void loadScripts(SongEntry entry) {
         LinkedHashSet<Path> files = new LinkedHashSet<>();
         // User-global scripts run for every song, independent of source-engine layout.
         addLuaFiles(SongLibrary.scriptsDir(), files);
-        if (modRoot != null) {
+        if (modRoot != null && allows(SongLibrary.ExternalContent.LUA)) {
             addLuaFiles(modRoot.resolve("scripts"), files);
             addLuaFile(modRoot.resolve("stages").resolve(chart.stage + ".lua"), files);
             for (String type : chart.notes.stream().map(n -> n.noteType).filter(s -> s != null && !s.isBlank()).distinct().toList()) {
@@ -139,8 +149,10 @@ public final class PsychLuaRuntime implements AutoCloseable {
             }
             addLuaFiles(modRoot.resolve("data").resolve(songId), files);
         }
-        if (entry != null) addLuaFiles(entry.folder, files);
-        addLuaFiles(songFolder, files);
+        if (allows(SongLibrary.ExternalContent.LUA)) {
+            if (entry != null) addLuaFiles(entry.folder, files);
+            addLuaFiles(songFolder, files);
+        }
 
         for (Path file : files) loadOne(file);
         if (!scripts.isEmpty()) {
@@ -780,6 +792,7 @@ public final class PsychLuaRuntime implements AutoCloseable {
 
     private Path resolveImage(String name) {
         if (name == null || name.isBlank()) return null;
+        if (!allows(SongLibrary.ExternalContent.IMAGES)) return null;
         String file = name.toLowerCase(Locale.ROOT).endsWith(".png") ? name : name + ".png";
         for (Path root : new Path[]{songFolder, modRoot}) {
             if (root == null) continue;
