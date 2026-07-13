@@ -25,6 +25,7 @@ import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
+import net.minecraft.sounds.SoundSource;
 import net.minecraft.world.entity.player.Player;
 import net.neoforged.neoforge.network.PacketDistributor;
 import org.lwjgl.glfw.GLFW;
@@ -149,6 +150,7 @@ public class GameplayScreen extends Screen {
     private double editorStartMs;
     private Supplier<Screen> editorReturnFactory;
     private PsychLuaRuntime luaRuntime;
+    private boolean vanillaMusicMuted;
     private final double[] luaStrumX = new double[8];
     private final double[] luaStrumY = new double[8];
     private final double[] luaStrumAlpha = new double[8];
@@ -340,6 +342,25 @@ public class GameplayScreen extends Screen {
     }
 
     // ------------------------------------------------------------------ tick logic
+
+    @Override
+    protected void init() {
+        super.init();
+        muteVanillaMusic();
+    }
+
+    private void muteVanillaMusic() {
+        if (minecraft == null) return;
+        minecraft.getSoundManager().updateSourceVolume(SoundSource.MUSIC, 0f);
+        vanillaMusicMuted = true;
+    }
+
+    private void restoreVanillaMusic() {
+        if (!vanillaMusicMuted || minecraft == null) return;
+        minecraft.getSoundManager().updateSourceVolume(SoundSource.MUSIC,
+                minecraft.options.getSoundSourceVolume(SoundSource.MUSIC));
+        vanillaMusicMuted = false;
+    }
 
     private void logic() {
         long now = System.nanoTime();
@@ -1874,6 +1895,7 @@ public class GameplayScreen extends Screen {
         if (luaRuntime != null) luaRuntime.close();
         GameplayCamera.end();
         songPlayer.dispose();
+        restoreVanillaMusic();
         super.removed();
     }
 }
