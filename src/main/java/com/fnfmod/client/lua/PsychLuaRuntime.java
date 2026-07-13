@@ -12,6 +12,7 @@ import com.fnfmod.client.gui.GameplayScreen;
 import com.fnfmod.song.SongEntry;
 import com.fnfmod.song.SongLibrary;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.network.chat.Component;
 import net.minecraft.client.renderer.texture.DynamicTexture;
@@ -56,6 +57,7 @@ public final class PsychLuaRuntime implements AutoCloseable {
         String tag;
         String image = "";
         String text = "";
+        String fontName = "";
         String camera = "game";
         double x, y, width = 100, height = 100, scaleX = 1, scaleY = 1;
         double alpha = 1, angle;
@@ -86,6 +88,7 @@ public final class PsychLuaRuntime implements AutoCloseable {
     private final Map<String, Timer> timers = new LinkedHashMap<>();
     private final Map<String, Tween> tweens = new LinkedHashMap<>();
     private final Set<String> warned = new LinkedHashSet<>();
+    private final LuaFontLoader fontLoader;
     private final Random random = new Random();
     private final Map<Integer, Boolean> previousKeys = new HashMap<>();
     private final Set<Integer> queriedKeys = new LinkedHashSet<>();
@@ -115,6 +118,7 @@ public final class PsychLuaRuntime implements AutoCloseable {
         this.songId = songId == null ? "unknown" : songId;
         this.songFolder = normalize(songFolder);
         this.modRoot = normalize(modRoot);
+        this.fontLoader = new LuaFontLoader(this.songFolder, this.modRoot, SongLibrary.fontsDir());
     }
 
     private void loadScripts(SongEntry entry) {
@@ -297,6 +301,10 @@ public final class PsychLuaRuntime implements AutoCloseable {
         fn(g, "getTextString", args -> LuaValue.valueOf(object(args.checkjstring(1)).text));
         fn(g, "setTextSize", args -> { object(args.checkjstring(1)).textSize = args.optint(2, 16); return LuaValue.NIL; });
         fn(g, "getTextSize", args -> LuaValue.valueOf(object(args.checkjstring(1)).textSize));
+        fn(g, "setTextFont", args -> { object(args.checkjstring(1)).fontName = args.optjstring(2, ""); return LuaValue.NIL; });
+        fn(g, "getTextFont", args -> LuaValue.valueOf(object(args.checkjstring(1)).fontName));
+        fn(g, "setTextWidth", args -> { object(args.checkjstring(1)).width = Math.max(0, args.optdouble(2, 0)); return LuaValue.NIL; });
+        fn(g, "getTextWidth", args -> LuaValue.valueOf(object(args.checkjstring(1)).width));
         fn(g, "setTextColor", args -> { object(args.checkjstring(1)).color = color(args.optjstring(2, "FFFFFF")); return LuaValue.NIL; });
         fn(g, "setObjectCamera", args -> { object(args.checkjstring(1)).camera = args.optjstring(2, "game"); return LuaValue.NIL; });
         fn(g, "setObjectOrder", args -> { object(args.checkjstring(1)).order = args.optint(2, 0); return LuaValue.NIL; });
@@ -350,8 +358,8 @@ public final class PsychLuaRuntime implements AutoCloseable {
                 "precacheSound", "precacheMusic", "addCharacterToList", "characterDance", "playSound",
                 "playMusic", "stopSound", "pauseSound", "resumeSound", "soundFadeIn", "soundFadeOut",
                 "soundFadeCancel", "cameraShake", "cameraFlash", "cameraFade", "setHealthBarColors",
-                "setTimeBarColors", "setTextFont", "setTextBorder", "setTextAlignment", "setTextItalic",
-                "setTextWidth", "setTextHeight", "setTextAutoSize", "loadFrames",
+                "setTimeBarColors", "setTextBorder", "setTextAlignment", "setTextItalic",
+                "setTextHeight", "setTextAutoSize", "loadFrames",
                 "loadMultipleFrames", "makeFlxAnimateSprite", "loadAnimateAtlas", "addAnimationBySymbol",
                 "addAnimationBySymbolIndices", "initLuaShader", "setSpriteShader", "removeSpriteShader",
                 "setShaderBool", "setShaderInt", "setShaderFloat", "setShaderBoolArray", "setShaderIntArray",
@@ -368,7 +376,7 @@ public final class PsychLuaRuntime implements AutoCloseable {
                 "getPropertyLuaSprite", "setPropertyLuaSprite", "addHits", "setHits", "setRatingFC",
                 "setRatingName", "setRatingPercent", "loadSong", "musicFadeIn", "musicFadeOut",
                 "getSoundPitch", "getSoundTime", "getSoundVolume", "setSoundPitch", "setSoundTime",
-                "setSoundVolume", "luaSoundExists", "getTextFont", "getTextWidth", "gamepadAnalogX",
+                "setSoundVolume", "luaSoundExists", "gamepadAnalogX",
                 "gamepadAnalogY", "gamepadJustPressed", "gamepadPressed", "gamepadReleased",
                 "addCameraFollowPoint", "setCameraFollowPoint",
                 "getCameraFollowX", "getCameraFollowY", "addCameraScroll", "setCameraScroll",
@@ -674,6 +682,8 @@ public final class PsychLuaRuntime implements AutoCloseable {
     public void onResume() { call("onResume"); }
     public boolean onEndSong() { return !isStop(call("onEndSong")); }
 
+    public void reloadFonts() { fontLoader.close(); }
+
     private static boolean isStop(Object result) {
         if (!(result instanceof Number number)) return false;
         int value = number.intValue();
@@ -720,7 +730,18 @@ public final class PsychLuaRuntime implements AutoCloseable {
         if (o.textObject) {
             float scale = Math.max(0.25f, o.textSize / 9f);
             gui.pose().scale(scale, scale, 1);
-            gui.drawString(Minecraft.getInstance().font, o.text, 0, 0, color, false);
+            Font selected = o.fontName.isBlank() ? null : fontLoader.get(o.fontName);
+            Font font = selected == null ? Minecraft.getInstance().font : selected;
+            int wrapWidth = o.width <= 0 ? Integer.MAX_VALUE
+                    : Math.max(1, (int) Math.floor(o.width / scale));
+            if (wrapWidth == Integer.MAX_VALUE) {
+                gui.drawString(font, o.text, 0, 0, color, false);
+            } else {
+                int line = 0;
+                for (var part : font.split(Component.literal(o.text), wrapWidth)) {
+                    gui.drawString(font, part, 0, line++ * 9, color, false);
+                }
+            }
         } else if (o.texture != null) {
             float red = ((o.color >> 16) & 255) / 255f;
             float green = ((o.color >> 8) & 255) / 255f;
@@ -874,6 +895,7 @@ public final class PsychLuaRuntime implements AutoCloseable {
         call("onDestroy");
         closed = true;
         for (LuaObject object : objects.values()) if (object.dynamicTexture != null) object.dynamicTexture.close();
+        fontLoader.close();
         scripts.clear(); objects.clear(); timers.clear(); tweens.clear(); sharedVars.clear();
     }
 }

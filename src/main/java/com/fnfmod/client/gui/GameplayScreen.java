@@ -1397,6 +1397,10 @@ public class GameplayScreen extends Screen {
     public void psychLuaRestartSong() { restart(); }
     public void psychLuaExitSong() { exit(); }
 
+    public void reloadLuaFonts() {
+        if (luaRuntime != null) luaRuntime.reloadFonts();
+    }
+
     private float noteY(double timeMs, boolean mine, int lane) {
         double dist = (timeMs - songPos) * pxPerMs();
         float receptor = laneY(mine, lane);

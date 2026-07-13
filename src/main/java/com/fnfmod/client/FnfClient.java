@@ -3,6 +3,7 @@ package com.fnfmod.client;
 import com.fnfmod.FnfMod;
 import com.fnfmod.client.anim.CharacterAnimations;
 import com.fnfmod.client.audio.HitsoundPlayer;
+import com.fnfmod.client.gui.GameplayScreen;
 import com.fnfmod.client.gui.editor.ChartEditorScreen;
 import com.fnfmod.client.render.IconLibrary;
 import com.fnfmod.client.render.NoteStyle;
@@ -125,6 +126,13 @@ public final class FnfClient {
                                 feedback(ctx.getSource(), "Reloaded hitsounds.");
                                 return 1;
                             }))
+                            .then(literal("fonts").executes(ctx -> {
+                                if (Minecraft.getInstance().screen instanceof GameplayScreen gameplay) {
+                                    gameplay.reloadLuaFonts();
+                                }
+                                feedback(ctx.getSource(), "Reloaded Lua fonts.");
+                                return 1;
+                            }))
                             .then(literal("options").executes(ctx -> {
                                 ClientOptions.load();
                                 NoteStyle.reload();
@@ -147,6 +155,9 @@ public final class FnfClient {
             NoteStyle.reload();
             HitsoundPlayer.reload();
             ScoreStore.reload();
+            if (Minecraft.getInstance().screen instanceof GameplayScreen gameplay) {
+                gameplay.reloadLuaFonts();
+            }
             feedback(source, "Reloaded all FNF content. "
                     + SongLibrary.getSongs().size() + " song(s) found.");
             requestServerSongReload();

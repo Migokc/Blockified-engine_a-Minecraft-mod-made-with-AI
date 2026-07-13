@@ -48,6 +48,11 @@ public class SongLibrary {
         return root().resolve("scripts");
     }
 
+    /** Loose TTF/OTF files available to every Lua script. */
+    public static Path fontsDir() {
+        return root().resolve("fonts");
+    }
+
     public static Path cacheDir() {
         return root().resolve("cache");
     }
@@ -92,6 +97,7 @@ public class SongLibrary {
             Files.createDirectories(songsDir());
             Files.createDirectories(modsDir());
             Files.createDirectories(scriptsDir());
+            Files.createDirectories(fontsDir());
             Files.createDirectories(skinsDir());
             Files.createDirectories(animationsDir());
             Files.createDirectories(hitsoundsDir());
