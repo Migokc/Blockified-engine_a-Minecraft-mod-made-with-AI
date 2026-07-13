@@ -132,6 +132,7 @@ public final class PsychLuaRuntime implements AutoCloseable {
                 : entry == null ? null : entry.folder;
         Path root = entry == null ? folder : entry.modRoot;
         PsychLuaRuntime runtime = new PsychLuaRuntime(host, chart, id, folder, root, entry);
+        runtime.applyNoteTypeConfigs();
         runtime.loadScripts(entry);
         return runtime;
     }
@@ -151,6 +152,84 @@ public final class PsychLuaRuntime implements AutoCloseable {
 
     private boolean allows(SongLibrary.ExternalContent content) {
         return externalContent.contains(content);
+    }
+
+    /** Psych 1.0 custom_notetypes/*.txt property files are applied before Lua onCreate. */
+    private void applyNoteTypeConfigs() {
+        for (SongChart.Note note : chart.notes) {
+            String type = note.noteType == null ? "" : note.noteType;
+            switch (type) {
+                case "Hurt Note" -> {
+                    note.ignoreNote = note.playerSide;
+                    note.hitCausesMiss = true;
+                    note.missHealth = 0.3;
+                }
+                case "Alt Animation" -> note.animSuffix = "-alt";
+                case "No Animation" -> {
+                    note.noAnimation = true;
+                    note.noMissAnimation = true;
+                }
+                case "GF Sing" -> note.gfNote = true;
+                default -> { }
+            }
+        }
+        if (!allows(SongLibrary.ExternalContent.LUA) || chart.notes.isEmpty()) return;
+        Map<String, List<Integer>> indicesByType = new LinkedHashMap<>();
+        for (int i = 0; i < chart.notes.size(); i++) {
+            String type = chart.notes.get(i).noteType;
+            if (type != null && !type.isBlank()) {
+                indicesByType.computeIfAbsent(type, key -> new ArrayList<>()).add(i);
+            }
+        }
+        for (var entry : indicesByType.entrySet()) {
+            Path config = findCustomNoteFile(entry.getKey(), ".txt");
+            if (config == null) continue;
+            try {
+                for (String rawLine : Files.readAllLines(config)) {
+                    String line = rawLine.trim();
+                    if (line.isBlank() || line.startsWith("#") || line.startsWith("//")) continue;
+                    int colon = line.indexOf(':');
+                    int equals = line.indexOf('=');
+                    int separator = colon < 0 ? equals : equals < 0 ? colon : Math.min(colon, equals);
+                    if (separator <= 0) continue;
+                    String property = line.substring(0, separator).trim();
+                    if (property.equals("noteType") || property.startsWith("extraData")) continue;
+                    Object value = interpretConfigValue(line.substring(separator + 1).trim());
+                    for (int index : entry.getValue()) host.psychLuaSetGroup("unspawnNotes", index, property, value);
+                }
+            } catch (Exception error) {
+                warnOnce("custom note config " + config.getFileName() + ": " + compactError(error));
+            }
+        }
+    }
+
+    private Path findCustomNoteFile(String noteType, String extension) {
+        for (Path root : new Path[]{modRoot, songFolder}) {
+            if (root == null) continue;
+            Path directory = root.resolve("custom_notetypes");
+            if (!Files.isDirectory(directory)) continue;
+            String wanted = noteType + extension;
+            try (Stream<Path> files = Files.list(directory)) {
+                Path match = files.filter(Files::isRegularFile)
+                        .filter(path -> path.getFileName().toString().equalsIgnoreCase(wanted))
+                        .findFirst().orElse(null);
+                if (match != null) return match;
+            } catch (Exception ignored) {}
+        }
+        return null;
+    }
+
+    private static Object interpretConfigValue(String raw) {
+        if (raw == null) return "";
+        String value = raw.trim();
+        if (value.length() >= 2 && ((value.startsWith("\"") && value.endsWith("\""))
+                || (value.startsWith("'") && value.endsWith("'")))) {
+            return value.substring(1, value.length() - 1);
+        }
+        if (value.equalsIgnoreCase("true")) return true;
+        if (value.equalsIgnoreCase("false")) return false;
+        if (value.equalsIgnoreCase("null")) return null;
+        try { return Double.parseDouble(value); } catch (NumberFormatException ignored) { return value; }
     }
 
     private void loadScripts(SongEntry entry) {
@@ -927,13 +1006,19 @@ public final class PsychLuaRuntime implements AutoCloseable {
         setAll("eventName", name); call("onEvent", name, value1, value2, time);
     }
 
+    public boolean onGoodNoteHitPre(int index, int lane, String type, boolean sustain) {
+        return !isStop(call("goodNoteHitPre", index, lane, type, sustain));
+    }
+
     public void onGoodNoteHit(int index, int lane, String type, boolean sustain) {
-        call("goodNoteHitPre", index, lane, type, sustain);
         call("goodNoteHit", index, lane, type, sustain);
     }
 
+    public boolean onOpponentNoteHitPre(int index, int lane, String type, boolean sustain) {
+        return !isStop(call("opponentNoteHitPre", index, lane, type, sustain));
+    }
+
     public void onOpponentNoteHit(int index, int lane, String type, boolean sustain) {
-        call("opponentNoteHitPre", index, lane, type, sustain);
         call("opponentNoteHit", index, lane, type, sustain);
     }
 

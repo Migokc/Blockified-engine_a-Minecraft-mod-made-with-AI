@@ -18,6 +18,7 @@ import net.minecraft.world.phys.Vec3;
 
 import java.util.function.Supplier;
 import com.fnfmod.client.render.NoteStyle;
+import com.fnfmod.client.render.PsychNoteTextureCache;
 import com.fnfmod.net.FnfPayloads;
 import com.fnfmod.song.SongEntry;
 import com.fnfmod.song.SongLibrary;
@@ -26,6 +27,7 @@ import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
 import net.minecraft.sounds.SoundSource;
+import net.minecraft.util.Mth;
 import net.minecraft.world.entity.player.Player;
 import net.neoforged.neoforge.network.PacketDistributor;
 import org.lwjgl.glfw.GLFW;
@@ -127,7 +129,8 @@ public class GameplayScreen extends Screen {
     // fx
     private record Popup(String text, int color, long bornMs) {}
     private final List<Popup> popups = new ArrayList<>();
-    private record Splash(int lane, int variant, float x, float y, long bornMs) {}
+    private record Splash(int lane, int variant, float x, float y, long bornMs,
+                          String texture, float alpha) {}
     private final List<Splash> splashes = new ArrayList<>();
     private record CoverEnd(int lane, float x, float y, long bornMs) {}
     private final List<CoverEnd> coverEnds = new ArrayList<>();
@@ -150,6 +153,7 @@ public class GameplayScreen extends Screen {
     private double editorStartMs;
     private Supplier<Screen> editorReturnFactory;
     private PsychLuaRuntime luaRuntime;
+    private final PsychNoteTextureCache customNoteTextures;
     private boolean vanillaMusicMuted;
     private final double[] luaStrumX = new double[8];
     private final double[] luaStrumY = new double[8];
@@ -176,6 +180,11 @@ public class GameplayScreen extends Screen {
         this.startAtEpochMs = startAtEpochMs;
         this.conductor = new Conductor(chart);
         this.originalLuaNotes = chart.notes.stream().map(SongChart.Note::copy).toList();
+        SongEntry resourceEntry = ClientSession.songId == null ? null : SongLibrary.get(ClientSession.songId);
+        Path resourceRoot = resourceEntry == null ? ClientSession.resolvedFolder
+                : (resourceEntry.modRoot != null ? resourceEntry.modRoot : resourceEntry.folder);
+        this.customNoteTextures = new PsychNoteTextureCache(ClientSession.resolvedFolder, resourceRoot,
+                resourceEntry == null || resourceEntry.allows(SongLibrary.ExternalContent.IMAGES));
         Arrays.fill(luaStrumX, Double.NaN);
         Arrays.fill(luaStrumY, Double.NaN);
         Arrays.fill(luaStrumAlpha, 1.0);
@@ -191,7 +200,7 @@ public class GameplayScreen extends Screen {
             boolean mine = playBoth || n.playerSide == myChartSideIsPlayer;
             if (mine) {
                 myLanes[n.lane].add(gn);
-                totalMyNotes++;
+                if (!n.ratingDisabled) totalMyNotes++;
             } else {
                 otherLanes[n.lane].add(gn);
             }
@@ -427,13 +436,14 @@ public class GameplayScreen extends Screen {
                     }
                 } else if (laneHeld[lane]) {
                     hold.releasedMs = -1; // holding (or resumed within grace)
-                    health = Math.min(2f, health + (float) (0.02 * dtMs / 1000.0));
+                    health = Math.min(2f, health + (float) (hold.data.hitHealth * dtMs / 1000.0));
                     strumFlashFor(hold)[lane] = Math.max(strumFlashFor(hold)[lane], 40);
                     // loop the sing animation while the note is held
                     long nowMs = System.currentTimeMillis();
-                    if (hold.data.playerSide == myChartSideIsPlayer || playBoth) {
+                    if (!hold.data.noAnimation && (hold.data.playerSide == myChartSideIsPlayer || playBoth)) {
                         if (nowMs - lastHoldSingMs[lane] > 180 && minecraft.player != null) {
-                            CharacterAnimations.play(minecraft.player, myAnimSet, myRole(), DIR_NAMES[lane]);
+                            CharacterAnimations.play(minecraft.player, myAnimSet, myRole(),
+                                    DIR_NAMES[lane] + hold.data.animSuffix);
                             lastHoldSingMs[lane] = nowMs;
                             lastSingMs = nowMs; // suppress idle bop during the hold
                         }
@@ -463,10 +473,19 @@ public class GameplayScreen extends Screen {
                         continue;
                     }
                     if (songPos >= n.data.timeMs) {
-                        n.hit = true;
-                        otherStrumFlash[lane] = Math.max(120, n.data.sustainMs);
-                        if (luaRuntime != null) luaRuntime.onOpponentNoteHit(
-                                chart.notes.indexOf(n.data), lane, n.data.noteType, n.data.sustainMs > 30);
+                        if (n.data.blockHit && songPos - n.data.timeMs <= SHIT) break;
+                        if (!n.data.ignoreNote && !n.data.blockHit) {
+                            int noteIndex = chart.notes.indexOf(n.data);
+                            boolean runDefault = luaRuntime == null || luaRuntime.onOpponentNoteHitPre(
+                                    noteIndex, lane, n.data.noteType, n.data.sustainMs > 30);
+                            if (!runDefault) break;
+                            n.hit = true;
+                            otherStrumFlash[lane] = Math.max(120, n.data.sustainMs);
+                            if (luaRuntime != null) luaRuntime.onOpponentNoteHit(
+                                    noteIndex, lane, n.data.noteType, n.data.sustainMs > 30);
+                        } else {
+                            n.hit = true;
+                        }
                     } else {
                         break;
                     }
@@ -514,6 +533,8 @@ public class GameplayScreen extends Screen {
 
     /** Psych onCreate may change noteType/mustPress before gameplay begins. */
     private void rebuildNoteLanesAfterLuaCreate() {
+        for (SongChart.Note note : chart.notes) note.lane = Mth.clamp(note.lane, 0, 3);
+        chart.sortNotes();
         for (int lane = 0; lane < 4; lane++) {
             myLanes[lane].clear();
             otherLanes[lane].clear();
@@ -525,7 +546,7 @@ public class GameplayScreen extends Screen {
             GameNote gameNote = new GameNote(note);
             boolean mine = playBoth || note.playerSide == myChartSideIsPlayer;
             (mine ? myLanes[note.lane] : otherLanes[note.lane]).add(gameNote);
-            if (mine) totalMyNotes++;
+            if (mine && !note.ratingDisabled) totalMyNotes++;
         }
     }
 
@@ -625,8 +646,9 @@ public class GameplayScreen extends Screen {
                     laneIndex[lane]++;
                     continue;
                 }
-                if (songPos - n.data.timeMs > SHIT) {
-                    missNote(lane, n);
+                if (songPos - n.data.timeMs > SHIT * Math.max(0, n.data.lateHitMult)) {
+                    if (n.data.ignoreNote) n.hit = true;
+                    else missNote(lane, n);
                     laneIndex[lane]++;
                 } else {
                     break;
@@ -711,16 +733,31 @@ public class GameplayScreen extends Screen {
         double bestDist = Double.MAX_VALUE;
         for (int i = startIndex; i < list.size(); i++) {
             GameNote n = list.get(i);
-            if (n.hit || n.missed) continue;
+            if (n.hit || n.missed || n.data.blockHit || !canHitAt(n, inputPos)) continue;
             double dist = n.data.timeMs - inputPos;
-            if (dist > SHIT) break;
             double abs = Math.abs(dist);
-            if (abs <= SHIT && abs < bestDist) {
+            boolean priority = best == null || (best.data.lowPriority && !n.data.lowPriority)
+                    || best.data.lowPriority == n.data.lowPriority && abs < bestDist;
+            if (priority) {
                 best = n;
                 bestDist = abs;
             }
         }
         return best;
+    }
+
+    private boolean canHitAt(GameNote note, double positionMs) {
+        double distance = note.data.timeMs - positionMs;
+        return distance >= -SHIT * Math.max(0, note.data.lateHitMult)
+                && distance <= SHIT * Math.max(0, note.data.earlyHitMult);
+    }
+
+    private GameNote findGameNote(SongChart.Note data) {
+        for (int lane = 0; lane < 4; lane++) {
+            for (GameNote note : myLanes[lane]) if (note.data == data) return note;
+            for (GameNote note : otherLanes[lane]) if (note.data == data) return note;
+        }
+        return null;
     }
 
     private void hitAttempt(int lane) {
@@ -737,12 +774,13 @@ public class GameplayScreen extends Screen {
             }
             return;
         }
-        if ("Hurt Note".equals(best.data.noteType)) {
-            best.hit = true;
-            health = Math.max(0, health - 0.3f);
-            comboBreak();
-            addPopup("OUCH", 0xFFFF3333);
-            checkDeath();
+        int bestIndex = chart.notes.indexOf(best.data);
+        if (luaRuntime != null && !luaRuntime.onGoodNoteHitPre(
+                bestIndex, best.data.lane, best.data.noteType, best.data.sustainMs > 30)) {
+            return;
+        }
+        if (best.data.hitCausesMiss || "Hurt Note".equals(best.data.noteType)) {
+            creditHarmfulHit(best);
             return;
         }
 
@@ -753,7 +791,16 @@ public class GameplayScreen extends Screen {
         else if (bestDist <= BAD) judgement = 2;
         else judgement = 3;
 
-        com.fnfmod.client.audio.HitsoundPlayer.play();
+        if (!best.data.hitsoundDisabled && best.data.hitsoundVolume > 0) {
+            Path customSound = customNoteTextures.resolveSound(best.data.hitsound);
+            if (customSound != null) {
+                com.fnfmod.client.audio.HitsoundPlayer.play(customSound,
+                        (float) (ClientOptions.get().hitsoundVolume * best.data.hitsoundVolume));
+            } else if (best.data.hitsound == null || best.data.hitsound.isBlank()
+                    || best.data.hitsound.equalsIgnoreCase("hitsound")) {
+                com.fnfmod.client.audio.HitsoundPlayer.play();
+            }
+        }
 
         creditHit(best, judgement);
         // stacked-note protection: notes in this lane impossibly close to the one
@@ -766,8 +813,12 @@ public class GameplayScreen extends Screen {
             if (n.data.timeMs > best.data.timeMs + stackMs) break;
             if (n == best || n.hit || n.missed) continue;
             if (Math.abs(n.data.timeMs - best.data.timeMs) <= stackMs
-                    && !"Hurt Note".equals(n.data.noteType)) {
-                creditHit(n, judgement);
+                    && !n.data.hitCausesMiss && !"Hurt Note".equals(n.data.noteType)) {
+                int noteIndex = chart.notes.indexOf(n.data);
+                if (luaRuntime == null || luaRuntime.onGoodNoteHitPre(
+                        noteIndex, n.data.lane, n.data.noteType, n.data.sustainMs > 30)) {
+                    creditHit(n, judgement);
+                }
             }
         }
 
@@ -777,9 +828,11 @@ public class GameplayScreen extends Screen {
 
         String[] names = {"SICK!!", "GOOD", "BAD", "SHIT"};
         int[] colors = {0xFF66FFFF, 0xFF66FF66, 0xFFFFAA33, 0xFFFF5555};
-        addPopup(names[judgement] + (combo > 1 ? "  " + combo : ""), colors[judgement]);
+        if (!best.data.ratingDisabled) {
+            addPopup(names[judgement] + (combo > 1 ? "  " + combo : ""), colors[judgement]);
+        }
 
-        sing(lane, false);
+        if (!best.data.noAnimation) sing(lane, false, best.data);
         sendNoteEvent(lane, (byte) judgement);
     }
 
@@ -787,23 +840,30 @@ public class GameplayScreen extends Screen {
         int[] points = {350, 200, 100, 50};
         double[] accWeight = {1.0, 0.67, 0.34, 0.0};
         n.hit = true;
-        judgements[judgement]++;
-        accuracyCount++;
-        accuracySum += accWeight[judgement];
-        score += points[judgement];
-        combo++;
-        maxCombo = Math.max(maxCombo, combo);
-        health = Math.min(2f, health + 0.023f);
+        if (!n.data.ratingDisabled) {
+            judgements[judgement]++;
+            accuracyCount++;
+            accuracySum += accWeight[judgement];
+            score += points[judgement];
+            combo++;
+            maxCombo = Math.max(maxCombo, combo);
+        }
+        health = Math.min(2f, health + (float) n.data.hitHealth);
         strumFlashFor(n)[n.data.lane] = 150;
         if (n.data.sustainMs > 30) activeHolds[n.data.lane].add(n);
         if (luaRuntime != null) luaRuntime.onGoodNoteHit(
                 chart.notes.indexOf(n.data), n.data.lane, n.data.noteType, n.data.sustainMs > 30);
 
         // FNF splashes only fire on sick hits
-        if (judgement == 0 && NoteStyle.splashVariants(n.data.lane) > 0) {
-            int variant = (int) (Math.random() * NoteStyle.splashVariants(n.data.lane));
+        int customSplashVariants = customNoteTextures.splashVariants(n.data.noteSplashTexture, n.data.lane);
+        int splashVariants = customSplashVariants > 0
+                ? customSplashVariants : NoteStyle.splashVariants(n.data.lane);
+        if (judgement == 0 && !n.data.noteSplashDisabled && splashVariants > 0) {
+            int variant = (int) (Math.random() * splashVariants);
             splashes.add(new Splash(n.data.lane, variant,
-                    laneX(true, n.data.lane), receptorY(), System.currentTimeMillis()));
+                    laneX(true, n.data.lane), receptorY(), System.currentTimeMillis(),
+                    customSplashVariants > 0 ? n.data.noteSplashTexture : "",
+                    (float) n.data.noteSplashAlpha));
             if (splashes.size() > 16) splashes.remove(0);
         }
     }
@@ -815,10 +875,10 @@ public class GameplayScreen extends Screen {
         accuracyCount++;
         comboBreak();
         score -= 10;
-        health = Math.max(0, health - 0.0475f);
+        health = Math.max(0, health - (float) n.data.missHealth);
         muteVoices(n.data.playerSide);
         addPopup("MISS", 0xFF8877AA);
-        sing(lane, true);
+        if (!n.data.noMissAnimation) sing(lane, true, n.data);
         sendNoteEvent(lane, (byte) 4);
         if (luaRuntime != null) luaRuntime.onNoteMiss(
                 chart.notes.indexOf(n.data), lane, n.data.noteType, n.data.sustainMs > 30);
@@ -842,10 +902,35 @@ public class GameplayScreen extends Screen {
         accuracyCount++;
         comboBreak();
         score -= 10;
-        health = Math.max(0, health - 0.0475f);
+        health = Math.max(0, health - (float) hold.data.missHealth);
         muteVoices(hold.data.playerSide);
         addPopup("MISS", 0xFF8877AA);
+        if (!hold.data.noMissAnimation) sing(lane, true, hold.data);
         sendNoteEvent(lane, (byte) 4);
+        if (luaRuntime != null) luaRuntime.onNoteMiss(
+                chart.notes.indexOf(hold.data), lane, hold.data.noteType, true);
+        checkDeath();
+    }
+
+    private void creditHarmfulHit(GameNote note) {
+        note.hit = true;
+        misses++;
+        judgements[4]++;
+        accuracyCount++;
+        comboBreak();
+        score -= 10;
+        float damage = (float) ("Hurt Note".equals(note.data.noteType)
+                && Math.abs(note.data.missHealth - 0.0475) < 0.0001 ? 0.3 : note.data.missHealth);
+        health = Math.max(0, health - damage);
+        muteVoices(note.data.playerSide);
+        addPopup("OUCH", 0xFFFF3333);
+        if (!note.data.noMissAnimation) sing(note.data.lane, true, note.data);
+        sendNoteEvent(note.data.lane, (byte) 4);
+        int index = chart.notes.indexOf(note.data);
+        if (luaRuntime != null) {
+            luaRuntime.onNoteMiss(index, note.data.lane, note.data.noteType, note.data.sustainMs > 30);
+            luaRuntime.onGoodNoteHit(index, note.data.lane, note.data.noteType, note.data.sustainMs > 30);
+        }
         checkDeath();
     }
 
@@ -868,10 +953,16 @@ public class GameplayScreen extends Screen {
     }
 
     private void sing(int lane, boolean miss) {
+        sing(lane, miss, null);
+    }
+
+    private void sing(int lane, boolean miss, SongChart.Note note) {
         lastSingMs = System.currentTimeMillis();
         if (minecraft.player != null) {
+            String suffix = note == null || note.animSuffix == null ? "" : note.animSuffix;
+            String action = miss ? "miss" + suffix : DIR_NAMES[lane] + suffix;
             float[] camOff = CharacterAnimations.play(minecraft.player, myAnimSet, myRole(),
-                    miss ? "miss" : DIR_NAMES[lane]);
+                    action);
             if (camOff != null && !miss) {
                 GameplayCamera.sing(myChartSideIsPlayer, camOff[0], camOff[1]);
                 // playing both sides: the camera may be focused on either side, nudge both
@@ -1345,17 +1436,48 @@ public class GameplayScreen extends Screen {
         if (group != null && (group.equalsIgnoreCase("unspawnNotes") || group.equalsIgnoreCase("notes"))) {
             if (index < 0 || index >= chart.notes.size()) return null;
             SongChart.Note note = chart.notes.get(index);
+            GameNote gameNote = findGameNote(note);
             return switch (property == null ? "" : property) {
                 case "strumTime" -> note.timeMs;
-                case "noteData" -> note.lane + (note.playerSide ? 4 : 0);
+                case "noteData" -> note.lane;
                 case "mustPress" -> note.playerSide;
                 case "sustainLength" -> note.sustainMs;
                 case "noteType" -> note.noteType;
-                case "isSustainNote" -> false;
-                case "gfNote" -> false;
+                case "isSustainNote" -> note.sustainMs > 30;
+                case "gfNote" -> note.gfNote;
                 case "altAnim" -> note.altAnim;
-                case "ignoreNote", "hitCausesMiss", "noAnimation", "blockHit" -> false;
-                case "multAlpha", "multSpeed", "hitHealth", "missHealth" -> 1.0;
+                case "texture" -> note.texture;
+                case "animSuffix" -> note.animSuffix;
+                case "hitsound" -> note.hitsound;
+                case "noteSplashData.texture" -> note.noteSplashTexture;
+                case "ignoreNote" -> note.ignoreNote;
+                case "hitCausesMiss" -> note.hitCausesMiss;
+                case "noAnimation" -> note.noAnimation;
+                case "noMissAnimation" -> note.noMissAnimation;
+                case "blockHit" -> note.blockHit;
+                case "lowPriority" -> note.lowPriority;
+                case "visible" -> note.visible;
+                case "ratingDisabled" -> note.ratingDisabled;
+                case "hitsoundDisabled" -> note.hitsoundDisabled;
+                case "noteSplashData.disabled" -> note.noteSplashDisabled;
+                case "multAlpha" -> note.multAlpha;
+                case "multSpeed" -> note.multSpeed;
+                case "hitHealth" -> note.hitHealth;
+                case "missHealth" -> note.missHealth;
+                case "alpha" -> note.alpha;
+                case "angle" -> note.angle;
+                case "offsetX" -> note.offsetX;
+                case "offsetY" -> note.offsetY;
+                case "offsetAngle" -> note.offsetAngle;
+                case "scale.x" -> note.scaleX;
+                case "scale.y" -> note.scaleY;
+                case "earlyHitMult" -> note.earlyHitMult;
+                case "lateHitMult" -> note.lateHitMult;
+                case "hitsoundVolume" -> note.hitsoundVolume;
+                case "noteSplashData.a" -> note.noteSplashAlpha;
+                case "wasGoodHit" -> gameNote != null && gameNote.hit;
+                case "tooLate", "missed" -> gameNote != null && gameNote.missed;
+                case "canBeHit" -> gameNote != null && canHitAt(gameNote, liveSongPos());
                 default -> null;
             };
         }
@@ -1379,11 +1501,42 @@ public class GameplayScreen extends Screen {
             if (index < 0 || index >= chart.notes.size()) return;
             SongChart.Note note = chart.notes.get(index);
             switch (property == null ? "" : property) {
-                case "strumTime" -> note.timeMs = value instanceof Number n ? n.doubleValue() : note.timeMs;
-                case "mustPress" -> note.playerSide = value instanceof Boolean b ? b : note.playerSide;
-                case "sustainLength" -> note.sustainMs = value instanceof Number n ? Math.max(0, n.doubleValue()) : note.sustainMs;
+                case "strumTime" -> note.timeMs = noteNumber(value, note.timeMs);
+                case "noteData" -> note.lane = Mth.clamp((int) noteNumber(value, note.lane), 0, 3);
+                case "mustPress" -> note.playerSide = noteBool(value, note.playerSide);
+                case "sustainLength" -> note.sustainMs = Math.max(0, noteNumber(value, note.sustainMs));
                 case "noteType" -> note.noteType = value == null ? "" : String.valueOf(value);
-                case "altAnim" -> note.altAnim = value instanceof Boolean b && b;
+                case "altAnim" -> note.altAnim = noteBool(value, note.altAnim);
+                case "gfNote" -> note.gfNote = noteBool(value, note.gfNote);
+                case "texture" -> note.texture = value == null ? "" : String.valueOf(value);
+                case "animSuffix" -> note.animSuffix = value == null ? "" : String.valueOf(value);
+                case "hitsound" -> note.hitsound = value == null ? "hitsound" : String.valueOf(value);
+                case "noteSplashData.texture" -> note.noteSplashTexture = value == null ? "" : String.valueOf(value);
+                case "ignoreNote" -> note.ignoreNote = noteBool(value, note.ignoreNote);
+                case "hitCausesMiss" -> note.hitCausesMiss = noteBool(value, note.hitCausesMiss);
+                case "noAnimation" -> note.noAnimation = noteBool(value, note.noAnimation);
+                case "noMissAnimation" -> note.noMissAnimation = noteBool(value, note.noMissAnimation);
+                case "blockHit" -> note.blockHit = noteBool(value, note.blockHit);
+                case "lowPriority" -> note.lowPriority = noteBool(value, note.lowPriority);
+                case "visible" -> note.visible = noteBool(value, note.visible);
+                case "ratingDisabled" -> note.ratingDisabled = noteBool(value, note.ratingDisabled);
+                case "hitsoundDisabled" -> note.hitsoundDisabled = noteBool(value, note.hitsoundDisabled);
+                case "noteSplashData.disabled" -> note.noteSplashDisabled = noteBool(value, note.noteSplashDisabled);
+                case "multAlpha" -> note.multAlpha = Math.max(0, noteNumber(value, note.multAlpha));
+                case "multSpeed" -> note.multSpeed = Math.max(0.01, noteNumber(value, note.multSpeed));
+                case "hitHealth" -> note.hitHealth = Math.max(0, noteNumber(value, note.hitHealth));
+                case "missHealth" -> note.missHealth = Math.max(0, noteNumber(value, note.missHealth));
+                case "alpha" -> note.alpha = Math.max(0, noteNumber(value, note.alpha));
+                case "angle" -> note.angle = noteNumber(value, note.angle);
+                case "offsetX" -> note.offsetX = noteNumber(value, note.offsetX);
+                case "offsetY" -> note.offsetY = noteNumber(value, note.offsetY);
+                case "offsetAngle" -> note.offsetAngle = noteNumber(value, note.offsetAngle);
+                case "scale.x" -> note.scaleX = noteNumber(value, note.scaleX);
+                case "scale.y" -> note.scaleY = noteNumber(value, note.scaleY);
+                case "earlyHitMult" -> note.earlyHitMult = Math.max(0, noteNumber(value, note.earlyHitMult));
+                case "lateHitMult" -> note.lateHitMult = Math.max(0, noteNumber(value, note.lateHitMult));
+                case "hitsoundVolume" -> note.hitsoundVolume = Math.max(0, noteNumber(value, note.hitsoundVolume));
+                case "noteSplashData.a" -> note.noteSplashAlpha = Math.max(0, noteNumber(value, note.noteSplashAlpha));
                 default -> { }
             }
             return;
@@ -1397,6 +1550,22 @@ public class GameplayScreen extends Screen {
             case "angle" -> luaStrumAngle[i] = number.doubleValue();
             default -> { }
         }
+    }
+
+    private static double noteNumber(Object value, double fallback) {
+        if (value instanceof Number number) return number.doubleValue();
+        try { return Double.parseDouble(String.valueOf(value)); }
+        catch (Exception ignored) { return fallback; }
+    }
+
+    private static boolean noteBool(Object value, boolean fallback) {
+        if (value instanceof Boolean bool) return bool;
+        if (value instanceof Number number) return number.doubleValue() != 0;
+        if (value != null) {
+            if (String.valueOf(value).equalsIgnoreCase("true")) return true;
+            if (String.valueOf(value).equalsIgnoreCase("false")) return false;
+        }
+        return fallback;
     }
 
     public Object psychLuaGetProperty(String path) {
@@ -1452,8 +1621,9 @@ public class GameplayScreen extends Screen {
         if (luaRuntime != null) luaRuntime.reloadFonts();
     }
 
-    private float noteY(double timeMs, boolean mine, int lane) {
-        double dist = (timeMs - songPos) * pxPerMs();
+    private float noteY(double timeMs, boolean mine, int lane, GameNote note) {
+        double speed = note == null ? 1.0 : Math.max(0.01, note.data.multSpeed);
+        double dist = (timeMs - songPos) * pxPerMs() * speed;
         float receptor = laneY(mine, lane);
         return (float) (ClientOptions.get().downscroll ? receptor - dist : receptor + dist);
     }
@@ -1502,13 +1672,19 @@ public class GameplayScreen extends Screen {
         for (var it = splashes.iterator(); it.hasNext(); ) {
             Splash s = it.next();
             int frame = (int) ((nowMs - s.bornMs) * SPLASH_FPS / 1000.0);
-            int total = NoteStyle.splashFrameCount(s.lane, s.variant);
+            int customFrames = customNoteTextures.splashFrames(s.texture, s.lane, s.variant);
+            int total = customFrames > 0 ? customFrames : NoteStyle.splashFrameCount(s.lane, s.variant);
             if (total <= 0 || frame >= total) {
                 it.remove();
                 continue;
             }
-            NoteStyle.drawSplash(gui, s.lane, s.variant, frame, s.x, s.y, noteSize * 2.2f);
+            NoteStyle.setDrawAlpha(s.alpha);
+            if (customFrames <= 0 || !customNoteTextures.drawSplash(gui, s.texture, s.lane, s.variant,
+                    frame, s.x, s.y, noteSize * 2.2f)) {
+                NoteStyle.drawSplash(gui, s.lane, s.variant, frame, s.x, s.y, noteSize * 2.2f);
+            }
         }
+        NoteStyle.setDrawAlpha(1f);
 
         // hold covers: looping effect over the receptor while a sustain is held
         for (int lane = 0; lane < 4; lane++) {
@@ -1550,7 +1726,7 @@ public class GameplayScreen extends Screen {
             float x = laneX(mine, lane);
             boolean playerSide = playBoth || mine == myChartSideIsPlayer;
             double layoutAlpha = ClientOptions.get().middlescroll && !playBoth && !mine ? 0.6 : 1.0;
-            NoteStyle.setDrawAlpha((float) (luaStrumAlpha[(playerSide ? 4 : 0) + lane] * layoutAlpha));
+            double laneAlpha = luaStrumAlpha[(playerSide ? 4 : 0) + lane] * layoutAlpha;
             List<GameNote> list = lanes[lane];
             // sweepMisses advances laneStart past a note the moment it's missed, so
             // back up over any missed/dropped long notes whose grey trail is still on-screen
@@ -1564,8 +1740,10 @@ public class GameplayScreen extends Screen {
             }
             for (int i = start; i < list.size(); i++) {
                 GameNote n = list.get(i);
-                if (n.data.timeMs - songPos > visibleMs) break;
+                if (n.data.timeMs - songPos > visibleMs / Math.max(0.01, n.data.multSpeed)) continue;
                 if ((n.missed || n.holdDropped) && songPos - n.endMs() > 200) continue;
+                if (!n.data.visible || n.data.alpha <= 0 || n.data.multAlpha <= 0) continue;
+                NoteStyle.setDrawAlpha((float) (laneAlpha * n.data.alpha * n.data.multAlpha));
 
                 boolean beingHeld = activeHolds[lane].contains(n);
                 if (n.hit && !beingHeld && n.data.sustainMs <= 30) continue;
@@ -1577,19 +1755,38 @@ public class GameplayScreen extends Screen {
                 // sustain trail (missed long notes still show the remaining gray trail)
                 if (n.data.sustainMs > 30 && (!n.holdDropped || missedLong)) {
                     double from = beingHeld || n.hit ? songPos : n.data.timeMs;
-                    float y1 = noteY(from, mine, lane);
-                    float y2 = noteY(n.endMs(), mine, lane);
-                    NoteStyle.drawHoldPiece(gui, lane, x, Math.min(y1, y2), Math.max(y1, y2), noteSize, down);
+                    float y1 = noteY(from, mine, lane, n);
+                    float y2 = noteY(n.endMs(), mine, lane, n);
+                    float top = Math.min(y1, y2), bottom = Math.max(y1, y2);
+                    float center = (top + bottom) * 0.5f;
+                    float half = (bottom - top) * 0.5f * (float) Math.max(0.01, n.data.scaleY);
+                    top = center - half + (float) n.data.offsetY;
+                    bottom = center + half + (float) n.data.offsetY;
+                    float drawX = x + (float) n.data.offsetX;
+                    boolean custom = customNoteTextures.drawHold(gui, n.data.texture, lane, drawX,
+                            top, bottom, noteSize * (float) Math.max(0.01, n.data.scaleX), down);
+                    if (!custom) NoteStyle.drawHoldPiece(gui, lane, drawX, top, bottom,
+                            noteSize * (float) Math.max(0.01, n.data.scaleX), down);
                 }
 
                 // A dropped hold already had its head hit; only restore the head when
                 // the entire long note was missed from the start.
                 if (!n.hit && (!n.missed || missedLong)) {
-                    float y = noteY(n.data.timeMs, mine, lane);
+                    float y = noteY(n.data.timeMs, mine, lane, n);
                     if (y > -noteSize && y < height + noteSize) {
-                        NoteStyle.drawNote(gui, lane, x, y, noteSize);
+                        gui.pose().pushPose();
+                        gui.pose().translate(x + n.data.offsetX, y + n.data.offsetY, 0);
+                        gui.pose().mulPose(com.mojang.math.Axis.ZP.rotationDegrees(
+                                (float) (n.data.angle + n.data.offsetAngle)));
+                        gui.pose().scale((float) Math.max(0.01, n.data.scaleX),
+                                (float) Math.max(0.01, n.data.scaleY), 1);
+                        if (!customNoteTextures.drawNote(gui, n.data.texture, lane, 0, 0, noteSize)) {
+                            NoteStyle.drawNote(gui, lane, 0, 0, noteSize);
+                        }
+                        gui.pose().popPose();
                         if (!missedLong && "Hurt Note".equals(n.data.noteType)) {
-                            gui.drawCenteredString(font, "!", (int) x, (int) y - 4, 0xFFFF0000);
+                            gui.drawCenteredString(font, "!", (int) (x + n.data.offsetX),
+                                    (int) (y + n.data.offsetY) - 4, 0xFFFF0000);
                         }
                     }
                 }
@@ -1893,6 +2090,7 @@ public class GameplayScreen extends Screen {
     @Override
     public void removed() {
         if (luaRuntime != null) luaRuntime.close();
+        customNoteTextures.close();
         GameplayCamera.end();
         songPlayer.dispose();
         restoreVanillaMusic();

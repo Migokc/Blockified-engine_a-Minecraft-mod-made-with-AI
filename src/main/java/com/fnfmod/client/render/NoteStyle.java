@@ -96,6 +96,11 @@ public final class NoteStyle {
         SparrowAtlas.globalAlpha = drawAlpha;
     }
 
+    /** Applies lane/script alpha and missed-note tint before an external Psych note atlas draw. */
+    public static void prepareCustomNoteDraw() {
+        applyAlpha(1f);
+    }
+
     /** Gray + 30% translucent styling for a totally-missed long note. */
     public static void setMissed(boolean m) {
         if (m) {

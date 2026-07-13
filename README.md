@@ -85,6 +85,14 @@ Supported chart features: notes, sustains, BPM changes, `mustHitSection`,
 `altAnim`, `gfSection`, Psych note types (string or numeric — `Hurt Note` damages you),
 scroll speed, embedded events, and separate `events.json` files.
 
+Psych custom note types are loaded from `custom_notetypes/<Note Type>.lua` and
+`custom_notetypes/<Note Type>.txt`. Their runtime settings include custom Sparrow
+textures and splashes, health gain/loss, hit-causes-miss and ignored notes,
+blocked/low-priority notes, note/miss animation flags, rating exclusion, alpha,
+scroll-speed multipliers, transform offsets/rotation/scale, hit windows, and
+note-specific OGG hitsounds. The directory checklist's **Lua** option controls
+custom-note scripts/configs and **Images** controls their visual resources.
+
 ## Psych Engine Lua
 
 Psych Engine 1.0.x Lua scripts are discovered in the common Psych locations:
@@ -134,6 +142,12 @@ end
 `addOffset`, and their legacy `luaSprite...` aliases are supported. Sparrow frame
 trimming, rotated atlas frames, frame rate, looping, reverse playback, and start
 frames are preserved.
+
+In the chart editor's **Note** tab, **Import Custom Note Files** first saves a
+playable local chart override, then copies the matching custom-note definitions and
+the source mod's images, sounds, fonts, helper scripts, and custom-event scripts into
+`config/fnfmod/songs/<song>/`. Imported nested resources keep their paths when a
+server transfers the song to another player.
 
 Lua runs client-side in a sandbox. Direct Java access, process execution, and
 unrestricted filesystem access are disabled. Psych features that require its actual

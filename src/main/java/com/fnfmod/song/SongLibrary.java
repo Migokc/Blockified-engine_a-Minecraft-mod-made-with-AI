@@ -883,6 +883,9 @@ public class SongLibrary {
             original.characterRoot = source;
             original.folder = localDir;
             original.modRoot = localDir;
+            // The override's own imported resources are local config content and
+            // must not inherit a source directory's optional resource filters.
+            original.externalContent = allExternalContent();
             original.opponentIconFile = null;
             // Scripts beside the locally saved chart belong only to this song.
             original.luaFiles.clear();

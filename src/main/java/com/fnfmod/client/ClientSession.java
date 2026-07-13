@@ -118,7 +118,7 @@ public final class ClientSession {
         Path songDir = SongLibrary.songsDir().resolve(songId);
         boolean allLocal = true;
         for (FnfPayloads.FileMeta meta : manifest) {
-            if (!matches(songDir.resolve(meta.name()), meta)) {
+            if (!matches(manifestPath(songDir, meta.name()), meta)) {
                 allLocal = false;
                 break;
             }
@@ -128,7 +128,7 @@ public final class ClientSession {
         Path cacheDir = SongLibrary.cacheDir().resolve(sanitize(songId));
         List<String> missing = new ArrayList<>();
         for (FnfPayloads.FileMeta meta : manifest) {
-            if (!matches(cacheDir.resolve(meta.name()), meta)) {
+            if (!matches(manifestPath(cacheDir, meta.name()), meta)) {
                 missing.add(meta.name());
             }
         }
@@ -137,7 +137,7 @@ public final class ClientSession {
 
     private static boolean matches(Path file, FnfPayloads.FileMeta meta) {
         try {
-            return Files.isRegularFile(file)
+            return file != null && Files.isRegularFile(file)
                     && Files.size(file) == meta.size()
                     && SessionManager.sha1(file).equalsIgnoreCase(meta.sha1());
         } catch (IOException e) {
@@ -147,7 +147,11 @@ public final class ClientSession {
 
     public static void onChunk(FnfPayloads.FileChunkS2C payload) {
         if (!payload.songId().equals(songId)) return;
-        String name = sanitize(payload.fileName());
+        String name = safeRelativeName(payload.fileName());
+        if (name == null) {
+            fail("Server sent an unsafe song resource path");
+            return;
+        }
         byte[][] chunks = receiving.computeIfAbsent(name, k -> new byte[payload.totalChunks()][]);
         if (payload.chunkIndex() < 0 || payload.chunkIndex() >= chunks.length) return;
         chunks[payload.chunkIndex()] = payload.data();
@@ -157,7 +161,9 @@ public final class ClientSession {
         }
         // file complete -> write to cache
         try {
-            Files.createDirectories(resolvedFolder);
+            Path target = manifestPath(resolvedFolder, name);
+            if (target == null) throw new IOException("unsafe resource path");
+            Files.createDirectories(target.getParent());
             int total = 0;
             for (byte[] c : chunks) total += c.length;
             byte[] all = new byte[total];
@@ -166,7 +172,7 @@ public final class ClientSession {
                 System.arraycopy(c, 0, all, off, c.length);
                 off += c.length;
             }
-            Files.write(resolvedFolder.resolve(name), all);
+            Files.write(target, all);
         } catch (IOException e) {
             fail("Could not save downloaded file " + name + ": " + e.getMessage());
             return;
@@ -178,6 +184,25 @@ public final class ClientSession {
 
     private static String sanitize(String name) {
         return name.replaceAll("[^a-zA-Z0-9 ._()\\[\\]-]", "_");
+    }
+
+    private static String safeRelativeName(String raw) {
+        if (raw == null) return null;
+        String value = raw.replace('\\', '/').trim();
+        if (value.isBlank() || value.startsWith("/") || value.contains(":") || value.contains("\u0000")) return null;
+        Path relative;
+        try { relative = Path.of(value).normalize(); }
+        catch (Exception ignored) { return null; }
+        if (relative.isAbsolute() || relative.startsWith("..")) return null;
+        return relative.toString().replace('\\', '/');
+    }
+
+    private static Path manifestPath(Path root, String raw) {
+        String relative = safeRelativeName(raw);
+        if (root == null || relative == null) return null;
+        Path normalizedRoot = root.toAbsolutePath().normalize();
+        Path path = normalizedRoot.resolve(relative).normalize();
+        return path.startsWith(normalizedRoot) ? path : null;
     }
 
     private static void finishLoad() {

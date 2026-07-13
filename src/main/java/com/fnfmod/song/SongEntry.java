@@ -161,7 +161,30 @@ public class SongEntry {
             addFonts(out, modRoot);
             if (folder != null && !folder.equals(modRoot)) addFonts(out, folder);
         }
+        Path runtimeRoot = modRoot != null ? modRoot : folder;
+        if (isLocalSongRoot(runtimeRoot)) {
+            if (allows(SongLibrary.ExternalContent.LUA)) {
+                addTree(out, runtimeRoot.resolve("custom_notetypes"));
+                addTree(out, runtimeRoot.resolve("scripts"));
+                addTree(out, runtimeRoot.resolve("sounds"));
+                addTree(out, runtimeRoot.resolve("custom_events"));
+            }
+            if (allows(SongLibrary.ExternalContent.IMAGES)) addTree(out, runtimeRoot.resolve("images"));
+        }
         return out;
+    }
+
+    /** Stable transfer path: local imported resources keep their folder hierarchy. */
+    public String transferName(Path file) {
+        Path runtimeRoot = modRoot != null ? modRoot : folder;
+        if (runtimeRoot != null && file != null) {
+            Path root = runtimeRoot.toAbsolutePath().normalize();
+            Path normalized = file.toAbsolutePath().normalize();
+            if (isLocalSongRoot(root) && normalized.startsWith(root)) {
+                return root.relativize(normalized).toString().replace('\\', '/');
+            }
+        }
+        return file == null ? "" : file.getFileName().toString();
     }
 
     /** All files across every difficulty (used when a whole song must be transferred). */
@@ -188,6 +211,19 @@ public class SongEntry {
                 String name = path.getFileName().toString().toLowerCase(java.util.Locale.ROOT);
                 return name.endsWith(".ttf") || name.endsWith(".otf");
             }).sorted().forEach(path -> addIf(list, path));
+        } catch (Exception ignored) {}
+    }
+
+    private static boolean isLocalSongRoot(Path root) {
+        if (root == null) return false;
+        Path songs = SongLibrary.songsDir().toAbsolutePath().normalize();
+        return root.toAbsolutePath().normalize().startsWith(songs);
+    }
+
+    private static void addTree(List<Path> list, Path root) {
+        if (!Files.isDirectory(root)) return;
+        try (var files = Files.walk(root)) {
+            files.filter(Files::isRegularFile).sorted().forEach(path -> addIf(list, path));
         } catch (Exception ignored) {}
     }
 }

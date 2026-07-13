@@ -22,7 +22,9 @@ import net.minecraft.util.Mth;
 import org.lwjgl.glfw.GLFW;
 
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.ArrayDeque;
 import java.util.Deque;
@@ -401,6 +403,10 @@ public final class ChartEditorScreen extends Screen {
             setStatus(selectedNote == null ? "Default note type updated" : "Selected note updated");
             rebuildUi();
         });
+        Button importNotes = button(x, y + 111, w, "Import Custom Note Files", b -> importCustomNoteFiles());
+        importNotes.active = chart.notes.stream().anyMatch(this::isCustomNote);
+        importNotes.setTooltip(Tooltip.create(Component.literal(
+                "Saves the chart locally, then imports matching note scripts/configs and their mod resources")));
     }
 
     private void buildChartingTab() {
@@ -1174,6 +1180,103 @@ public final class ChartEditorScreen extends Screen {
 
     private boolean shiftDown() {
         return hasShiftDown();
+    }
+
+    private void importCustomNoteFiles() {
+        commitVisibleFields();
+        Set<String> noteTypes = chart.notes.stream().filter(this::isCustomNote)
+                .map(note -> note.noteType.trim()).filter(type -> !type.isBlank())
+                .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+        if (noteTypes.isEmpty()) {
+            setStatus("This chart has no custom note types");
+            return;
+        }
+
+        String id = sanitizeId(saveId == null || saveId.isBlank() ? chart.title : saveId);
+        if (id.isBlank()) id = "unnamed";
+        Path target = SongLibrary.songsDir().resolve(id).toAbsolutePath().normalize();
+        Path source = customNoteImportRoot(target);
+        if (source == null) {
+            setStatus("Could not find the source mod for custom notes");
+            return;
+        }
+
+        // Saving first guarantees that the imported files belong to a playable
+        // local override and that its original chart/audio reference is present.
+        saveChart();
+        try {
+            Files.createDirectories(target);
+            int copied = copyMatchingCustomNoteDefinitions(source, target, noteTypes);
+            for (String folder : List.of("images", "sounds", "fonts", "scripts", "custom_events")) {
+                copied += copyDirectory(source.resolve(folder), target.resolve(folder));
+            }
+            SongLibrary.rescan();
+            setStatus("Imported " + copied + " custom-note file(s) from " + source.getFileName());
+        } catch (Exception error) {
+            setStatus("Custom-note import failed: " + error.getMessage());
+            FnfMod.LOGGER.error("Could not import custom note files from {}", source, error);
+        }
+    }
+
+    private Path customNoteImportRoot(Path target) {
+        LinkedHashSet<Path> candidates = new LinkedHashSet<>();
+        if (originalDirectory != null) candidates.add(originalDirectory);
+        if (entry != null) {
+            if (entry.chartOriginRoot != null) candidates.add(entry.chartOriginRoot);
+            if (entry.modRoot != null) candidates.add(entry.modRoot);
+            if (entry.folder != null) candidates.add(entry.folder);
+        }
+        if (eventDefinitionRoot != null) candidates.add(eventDefinitionRoot);
+        for (Path candidate : candidates) {
+            Path normalized = candidate.toAbsolutePath().normalize();
+            if (!normalized.equals(target) && Files.isDirectory(normalized.resolve("custom_notetypes"))) {
+                return normalized;
+            }
+        }
+        return null;
+    }
+
+    private static int copyMatchingCustomNoteDefinitions(Path source, Path target, Set<String> noteTypes)
+            throws Exception {
+        Path sourceDir = source.resolve("custom_notetypes");
+        if (!Files.isDirectory(sourceDir)) return 0;
+        Path targetDir = target.resolve("custom_notetypes");
+        Files.createDirectories(targetDir);
+        int copied = 0;
+        try (var files = Files.list(sourceDir)) {
+            for (Path file : files.filter(path -> Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)).toList()) {
+                String filename = file.getFileName().toString();
+                int dot = filename.lastIndexOf('.');
+                String stem = dot < 0 ? filename : filename.substring(0, dot);
+                boolean wanted = noteTypes.stream().anyMatch(type -> type.equalsIgnoreCase(stem));
+                if (!wanted) continue;
+                Files.copy(file, targetDir.resolve(filename), StandardCopyOption.REPLACE_EXISTING,
+                        StandardCopyOption.COPY_ATTRIBUTES);
+                copied++;
+            }
+        }
+        return copied;
+    }
+
+    private static int copyDirectory(Path source, Path target) throws Exception {
+        if (!Files.isDirectory(source, LinkOption.NOFOLLOW_LINKS)) return 0;
+        int copied = 0;
+        try (var paths = Files.walk(source)) {
+            for (Path path : paths.toList()) {
+                Path relative = source.relativize(path);
+                Path destination = target.resolve(relative).normalize();
+                if (!destination.startsWith(target)) continue;
+                if (Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS)) {
+                    Files.createDirectories(destination);
+                } else if (Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) {
+                    Files.createDirectories(destination.getParent());
+                    Files.copy(path, destination, StandardCopyOption.REPLACE_EXISTING,
+                            StandardCopyOption.COPY_ATTRIBUTES);
+                    copied++;
+                }
+            }
+        }
+        return copied;
     }
 
     private boolean altDown() {

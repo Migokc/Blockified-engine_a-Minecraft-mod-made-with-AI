@@ -190,7 +190,7 @@ public final class SessionManager {
         }
 
         for (Path f : candidates) {
-            String name = f.getFileName().toString();
+            String name = entry.transferName(f);
             if (!payload.fileNames().contains(name)) continue;
             try {
                 byte[] bytes = Files.readAllBytes(f);
@@ -554,7 +554,7 @@ public final class SessionManager {
         List<FnfPayloads.FileMeta> out = new ArrayList<>();
         for (Path f : entry.transferFiles(difficulty)) {
             try {
-                out.add(new FnfPayloads.FileMeta(f.getFileName().toString(), Files.size(f), sha1(f)));
+                out.add(new FnfPayloads.FileMeta(entry.transferName(f), Files.size(f), sha1(f)));
             } catch (IOException e) {
                 FnfMod.LOGGER.error("Failed to hash {}", f, e);
             }

@@ -38,6 +38,40 @@ public class SongChart {
         public String noteType = "";
         public boolean altAnim;
 
+        // Psych Engine runtime note properties. These are intentionally not
+        // serialized into the chart; custom_notetypes scripts/configs rebuild
+        // them whenever the song starts.
+        public String texture = "";
+        public String animSuffix = "";
+        public String hitsound = "hitsound";
+        public String noteSplashTexture = "";
+        public boolean ignoreNote;
+        public boolean hitCausesMiss;
+        public boolean noAnimation;
+        public boolean noMissAnimation;
+        public boolean blockHit;
+        public boolean gfNote;
+        public boolean lowPriority;
+        public boolean visible = true;
+        public boolean ratingDisabled;
+        public boolean hitsoundDisabled;
+        public boolean noteSplashDisabled;
+        public double hitHealth = 0.023;
+        public double missHealth = 0.0475;
+        public double multAlpha = 1.0;
+        public double multSpeed = 1.0;
+        public double alpha = 1.0;
+        public double angle;
+        public double offsetX;
+        public double offsetY;
+        public double offsetAngle;
+        public double scaleX = 1.0;
+        public double scaleY = 1.0;
+        public double earlyHitMult = 1.0;
+        public double lateHitMult = 1.0;
+        public double hitsoundVolume = 1.0;
+        public double noteSplashAlpha = 1.0;
+
         public Note() {}
 
         public Note(double timeMs, int lane, boolean playerSide, double sustainMs, String noteType) {
@@ -51,6 +85,36 @@ public class SongChart {
         public Note copy() {
             Note n = new Note(timeMs, lane, playerSide, sustainMs, noteType);
             n.altAnim = altAnim;
+            n.texture = texture;
+            n.animSuffix = animSuffix;
+            n.hitsound = hitsound;
+            n.noteSplashTexture = noteSplashTexture;
+            n.ignoreNote = ignoreNote;
+            n.hitCausesMiss = hitCausesMiss;
+            n.noAnimation = noAnimation;
+            n.noMissAnimation = noMissAnimation;
+            n.blockHit = blockHit;
+            n.gfNote = gfNote;
+            n.lowPriority = lowPriority;
+            n.visible = visible;
+            n.ratingDisabled = ratingDisabled;
+            n.hitsoundDisabled = hitsoundDisabled;
+            n.noteSplashDisabled = noteSplashDisabled;
+            n.hitHealth = hitHealth;
+            n.missHealth = missHealth;
+            n.multAlpha = multAlpha;
+            n.multSpeed = multSpeed;
+            n.alpha = alpha;
+            n.angle = angle;
+            n.offsetX = offsetX;
+            n.offsetY = offsetY;
+            n.offsetAngle = offsetAngle;
+            n.scaleX = scaleX;
+            n.scaleY = scaleY;
+            n.earlyHitMult = earlyHitMult;
+            n.lateHitMult = lateHitMult;
+            n.hitsoundVolume = hitsoundVolume;
+            n.noteSplashAlpha = noteSplashAlpha;
             return n;
         }
     }
