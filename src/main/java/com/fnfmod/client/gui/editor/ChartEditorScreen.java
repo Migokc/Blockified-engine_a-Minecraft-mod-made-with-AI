@@ -21,7 +21,6 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.util.Mth;
 import org.lwjgl.glfw.GLFW;
 
-import java.awt.Rectangle;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -125,9 +124,6 @@ public final class ChartEditorScreen extends Screen {
     private double pixelsPerBeat = DEFAULT_PIXELS_PER_BEAT;
     private float playbackRate = 1.0f;
     private boolean helpVisible;
-    private ChartEditorDesktopWindows desktopWindows;
-    /** -1 uses the main GLFW window; otherwise contains forwarded desktop-window modifiers. */
-    private int desktopInputModifiers = -1;
     private boolean selectingBox;
     private double selectionStartX;
     /** Vertical selection bounds are chart beats so scrolling cannot move the anchor. */
@@ -193,7 +189,6 @@ public final class ChartEditorScreen extends Screen {
     @Override
     protected void init() {
         if (chart == null) loadChart();
-        if (desktopWindows == null) desktopWindows = new ChartEditorDesktopWindows(this);
         clampOrInitializeInfoWindow();
         rebuildUi();
     }
@@ -645,25 +640,8 @@ public final class ChartEditorScreen extends Screen {
                 if (vortex && !isPlaying()) snapPlayheadToGrid();
                 rebuildUi();
             }); y += 16;
-            Button waveform = button(x + 4, y, w - 8, "Waveform...", b -> {}); waveform.active = false; y += 16;
-            button(x + 4, y, w - 8, "Information Window",
-                    b -> openDesktopWindow(ChartEditorDesktopWindows.Panel.INFORMATION)); y += 16;
-            button(x + 4, y, w - 8, "Chart Grid Window",
-                    b -> openDesktopWindow(ChartEditorDesktopWindows.Panel.GRID)); y += 16;
-            button(x + 4, y, w - 8, "Controls Window",
-                    b -> openDesktopWindow(ChartEditorDesktopWindows.Panel.CONTROLS)); y += 16;
-            button(x + 4, y, w - 8, "Open All Windows", b -> {
-                desktopWindows.openAll();
-                openMenu = TopMenu.NONE;
-                rebuildUi();
-            });
+            Button waveform = button(x + 4, y, w - 8, "Waveform...", b -> {}); waveform.active = false;
         }
-    }
-
-    private void openDesktopWindow(ChartEditorDesktopWindows.Panel panel) {
-        desktopWindows.open(panel);
-        openMenu = TopMenu.NONE;
-        rebuildUi();
     }
 
     private EditBox labeledBox(String label, int x, int y, int w, String value, String hint) {
@@ -1115,7 +1093,6 @@ public final class ChartEditorScreen extends Screen {
             double startMs = previewFromCurrentTime ? viewPositionMs : 0;
             BlockPos machine = sourceMachinePos != null ? sourceMachinePos
                     : (minecraft.player == null ? BlockPos.ZERO : minecraft.player.blockPosition());
-            closeDesktopWindows();
             minecraft.setScreen(GameplayScreen.editorPlaytest(machine, chart, playtestAudio, startMs,
                     previewFromCurrentTime,
                     () -> recreateEditor(startMs)));
@@ -1196,60 +1173,21 @@ public final class ChartEditorScreen extends Screen {
     // --------------------------------------------------------------------- Input
 
     private boolean shiftDown() {
-        return desktopInputModifiers >= 0
-                ? (desktopInputModifiers & GLFW.GLFW_MOD_SHIFT) != 0 : hasShiftDown();
+        return hasShiftDown();
     }
 
     private boolean altDown() {
-        return desktopInputModifiers >= 0
-                ? (desktopInputModifiers & GLFW.GLFW_MOD_ALT) != 0 : hasAltDown();
+        return hasAltDown();
     }
 
     private boolean controlDown() {
-        return desktopInputModifiers >= 0
-                ? (desktopInputModifiers & GLFW.GLFW_MOD_CONTROL) != 0 : hasControlDown();
-    }
-
-    private void withDesktopModifiers(int modifiers, Runnable action) {
-        int previous = desktopInputModifiers;
-        desktopInputModifiers = modifiers;
-        try {
-            action.run();
-        } finally {
-            desktopInputModifiers = previous;
-        }
-    }
-
-    void desktopKeyPressed(int keyCode, int modifiers) {
-        withDesktopModifiers(modifiers, () -> keyPressed(keyCode, 0, modifiers));
-    }
-
-    void desktopCharTyped(char value, int modifiers) {
-        withDesktopModifiers(modifiers, () -> charTyped(value, modifiers));
-    }
-
-    void desktopMouseClicked(double x, double y, int button, int modifiers) {
-        withDesktopModifiers(modifiers, () -> mouseClicked(x, y, button));
-    }
-
-    void desktopMouseDragged(double x, double y, int button, int modifiers) {
-        withDesktopModifiers(modifiers, () -> mouseDragged(x, y, button, 0, 0));
-    }
-
-    void desktopMouseReleased(double x, double y, int button, int modifiers) {
-        withDesktopModifiers(modifiers, () -> mouseReleased(x, y, button));
-    }
-
-    void desktopMouseScrolled(double x, double y, double amount, int modifiers) {
-        withDesktopModifiers(modifiers, () -> mouseScrolled(x, y, 0, amount));
+        return hasControlDown();
     }
 
     @Override
     public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
         if (keyCode == GLFW.GLFW_KEY_F1) {
-            // Native help is singleton: F1 creates it once, then only focuses it.
-            // Keep the old overlay as a fallback for environments without AWT.
-            if (!desktopWindows.openHelp()) helpVisible = true;
+            helpVisible = !helpVisible;
             return true;
         }
         if (helpVisible) {
@@ -1555,7 +1493,6 @@ public final class ChartEditorScreen extends Screen {
         for (var renderable : renderables) renderable.render(gui, mouseX, mouseY, partialTick);
         renderInfoWindow(gui);
         if (helpVisible) renderHelpScreen(gui);
-        if (desktopWindows != null) desktopWindows.capture();
     }
 
     private void renderGrid(GuiGraphics gui) {
@@ -1746,10 +1683,6 @@ public final class ChartEditorScreen extends Screen {
                 Math.min(height - 18, textY + 4), 0xFFBBBBBB);
     }
 
-    static String[] helpLines() {
-        return HELP_LINES.clone();
-    }
-
     private void draw(GuiGraphics gui, String text, int x, int y, int color) {
         gui.drawString(font, text, x, y, color, false);
     }
@@ -1759,23 +1692,6 @@ public final class ChartEditorScreen extends Screen {
     }
 
     // --------------------------------------------------------------------- Geometry and helpers
-
-    Rectangle desktopRegion(ChartEditorDesktopWindows.Panel panel) {
-        return switch (panel) {
-            case INFORMATION -> infoWidth() <= 0 ? null
-                    : new Rectangle(infoX, infoY, infoWidth(), infoHeight());
-            case GRID -> {
-                int cw = cellWidth();
-                int x = gridX() - cw;
-                int y = gridTop() - cw;
-                yield new Rectangle(x, y, cw * 9, gridBottom() - y);
-            }
-            case CONTROLS -> {
-                int bottom = Math.min(height - 26, 238);
-                yield new Rectangle(controlX(), TAB_Y, controlWidth(), Math.max(1, bottom - TAB_Y));
-            }
-        };
-    }
 
     private int controlWidth() { return Mth.clamp(width / 3, 220, 320); }
     private int controlX() { return width - controlWidth() - 16; }
@@ -2118,21 +2034,7 @@ public final class ChartEditorScreen extends Screen {
     @Override
     public void onClose() {
         if (audio != null) audio.dispose();
-        closeDesktopWindows();
         super.onClose();
-    }
-
-    private void closeDesktopWindows() {
-        if (desktopWindows != null) {
-            desktopWindows.close();
-            desktopWindows = null;
-        }
-    }
-
-    @Override
-    public void removed() {
-        closeDesktopWindows();
-        super.removed();
     }
 
     @Override

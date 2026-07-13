@@ -142,12 +142,6 @@ Lua sprites and text use Psych Engine's fixed 1280x720 canvas. The complete
 canvas scales uniformly and stays centered when the window resolution or
 Minecraft GUI scale changes, so scripted positions remain stable.
 
-The chart editor can open singleton native companion windows from its `View`
-menu for Information, Chart Grid, and Editor Controls. They mirror the live
-Minecraft-rendered panels (including the active note skin) and forward input
-back to the editor. F1 always opens or focuses one Help window instead of
-creating duplicates. Companion windows close with the chart editor.
-
 ## Note skins (Sparrow XML!)
 
 Drop a Friday Night Funkin' spritesheet straight from any FNF mod into:
