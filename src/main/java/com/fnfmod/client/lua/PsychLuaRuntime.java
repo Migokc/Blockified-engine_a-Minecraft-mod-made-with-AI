@@ -4,14 +4,13 @@ import com.fnfmod.FnfMod;
 import com.mojang.blaze3d.platform.NativeImage;
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vertex.PoseStack;
-import com.mojang.blaze3d.vertex.VertexConsumer;
-import com.mojang.math.Axis;
 import com.fnfmod.chart.SongChart;
 import com.fnfmod.client.ClientOptions;
 import com.fnfmod.client.ClientSession;
 import com.fnfmod.client.FnfKeys;
 import com.fnfmod.client.camera.GameplayCamera;
 import com.fnfmod.client.gui.GameplayScreen;
+import com.fnfmod.client.render.LuaWorldSpriteRenderer;
 import com.fnfmod.client.render.SparrowAtlas;
 import com.fnfmod.song.SongEntry;
 import com.fnfmod.song.SongLibrary;
@@ -19,17 +18,11 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.Camera;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphics;
-import net.minecraft.client.renderer.LevelRenderer;
-import net.minecraft.client.renderer.LightTexture;
-import net.minecraft.client.renderer.MultiBufferSource;
-import net.minecraft.client.renderer.RenderType;
-import net.minecraft.client.renderer.texture.OverlayTexture;
 import net.minecraft.network.chat.Component;
 import net.minecraft.client.renderer.texture.DynamicTexture;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.resources.ResourceLocation;
-import net.minecraft.world.phys.Vec3;
 import org.luaj.vm2.Globals;
 import org.luaj.vm2.LuaError;
 import org.luaj.vm2.LuaTable;
@@ -65,10 +58,6 @@ public final class PsychLuaRuntime implements AutoCloseable {
     private static final float GAME_OBJECT_Z = -200f;
     private static final float HUD_OBJECT_Z = 200f;
     private static final float OBJECT_ORDER_Z_STEP = 0.001f;
-    /** Lua world-camera pixels per Minecraft block (64 px = 1 block). */
-    private static final float WORLD_PIXEL_SCALE = 1f / 64f;
-    private static final ResourceLocation WHITE_TEXTURE =
-            ResourceLocation.withDefaultNamespace("textures/misc/white.png");
     private static final AtomicInteger NEXT_TEXTURE = new AtomicInteger();
     public static final int FUNCTION_CONTINUE = 0;
     public static final int FUNCTION_STOP = 1;
@@ -1139,121 +1128,25 @@ public final class PsychLuaRuntime implements AutoCloseable {
         gui.pose().popPose();
     }
 
-    /**
-     * Renders the third Lua camera in actual level space. Its origin is the
-     * speakers/Funkin' Machine center. X points toward stage-right, Y points
-     * down like Psych's screen coordinates, and Z points toward the stage
-     * camera. All three coordinates use 64 Lua pixels per Minecraft block.
-     */
     public void renderWorld(PoseStack poseStack, Camera camera, BlockPos speakers, Direction facing) {
         if (closed || objects.isEmpty()) return;
-        Minecraft minecraft = Minecraft.getInstance();
-        if (minecraft.level == null) return;
-
-        List<LuaObject> visible = objects.values().stream()
+        List<LuaWorldSpriteRenderer.Sprite> sprites = objects.values().stream()
                 .filter(o -> o.added && o.visible && o.camera.equalsIgnoreCase("world"))
                 .filter(o -> !o.textObject)
-                .sorted(Comparator.comparingInt(o -> o.order)).toList();
-        if (visible.isEmpty()) return;
-
-        Direction stageFacing = facing == null ? Direction.NORTH : facing;
-        Direction stageRight = stageFacing.getCounterClockWise();
-        Vec3 origin = Vec3.atCenterOf(speakers);
-        Vec3 cameraPos = camera.getPosition();
-        MultiBufferSource.BufferSource buffers = minecraft.renderBuffers().bufferSource();
-
-        for (int i = 0; i < visible.size(); i++) {
-            LuaObject object = visible.get(i);
-            if (object.alpha <= 0 || object.width <= 0 || object.height <= 0) continue;
-            // A tiny order offset prevents equal-depth objects from z-fighting
-            // while preserving explicit Z movement and tweening.
-            double depth = object.z * WORLD_PIXEL_SCALE + i * 0.0001;
-            Vec3 position = origin.add(
-                    stageRight.getStepX() * object.x * WORLD_PIXEL_SCALE + stageFacing.getStepX() * depth,
-                    -object.y * WORLD_PIXEL_SCALE,
-                    stageRight.getStepZ() * object.x * WORLD_PIXEL_SCALE + stageFacing.getStepZ() * depth);
-
-            poseStack.pushPose();
-            poseStack.translate(position.x - cameraPos.x, position.y - cameraPos.y, position.z - cameraPos.z);
-            if (object.worldBillboard) {
-                poseStack.mulPose(camera.rotation());
-            } else {
-                // Fixed sprites face the same stage direction as the performers.
-                poseStack.mulPose(Axis.YP.rotationDegrees(-stageFacing.toYRot()));
-            }
-            poseStack.scale((float) object.scaleX * WORLD_PIXEL_SCALE,
-                    (float) -object.scaleY * WORLD_PIXEL_SCALE, WORLD_PIXEL_SCALE);
-            if (object.angle != 0) poseStack.mulPose(Axis.ZP.rotationDegrees((float) object.angle));
-
-            int light = object.worldLighting
-                    ? LevelRenderer.getLightColor(minecraft.level, BlockPos.containing(position))
-                    : LightTexture.FULL_BRIGHT;
-            renderWorldSprite(poseStack, buffers, object, light);
-            poseStack.popPose();
-        }
-    }
-
-    private static void renderWorldSprite(PoseStack poseStack, MultiBufferSource.BufferSource buffers,
-                                          LuaObject object, int light) {
-        ResourceLocation texture = object.texture == null ? WHITE_TEXTURE : object.texture;
-        RenderType renderType = object.worldLighting
-                ? RenderType.entityTranslucent(texture)
-                : RenderType.entityTranslucentEmissive(texture);
-        VertexConsumer vertices = buffers.getBuffer(renderType);
-
-        float left = (float) (-object.width * 0.5);
-        float top = (float) (-object.height * 0.5);
-        float drawWidth = (float) object.width;
-        float drawHeight = (float) object.height;
-        float u0 = 0, v0 = 0, u1 = 1, v1 = 1;
-        boolean rotated = false;
-        SparrowAtlas.Frame frame = object.texture == null ? null : currentFrame(object);
-        if (frame != null) {
-            double[] offset = currentAnimationOffset(object);
-            float frameScaleX = (float) (object.width / Math.max(1, object.graphicWidth));
-            float frameScaleY = (float) (object.height / Math.max(1, object.graphicHeight));
-            left += (float) ((-frame.frameX - offset[0]) * frameScaleX);
-            top += (float) ((-frame.frameY - offset[1]) * frameScaleY);
-            drawWidth = (frame.rotated ? frame.h : frame.w) * frameScaleX;
-            drawHeight = (frame.rotated ? frame.w : frame.h) * frameScaleY;
-            u0 = frame.x / (float) Math.max(1, object.textureWidth);
-            v0 = frame.y / (float) Math.max(1, object.textureHeight);
-            u1 = (frame.x + frame.w) / (float) Math.max(1, object.textureWidth);
-            v1 = (frame.y + frame.h) / (float) Math.max(1, object.textureHeight);
-            rotated = frame.rotated;
-        }
-
-        int red = object.color >> 16 & 255;
-        int green = object.color >> 8 & 255;
-        int blue = object.color & 255;
-        int alpha = Math.max(0, Math.min(255, (int) Math.round(object.alpha * 255)));
-        float right = left + drawWidth;
-        float bottom = top + drawHeight;
-        PoseStack.Pose pose = poseStack.last();
-        if (rotated) {
-            // Packed frame is clockwise; rotate its UVs back without changing
-            // the object's world transform or animation offsets.
-            worldVertex(vertices, pose, left, bottom, u0, v0, red, green, blue, alpha, light);
-            worldVertex(vertices, pose, right, bottom, u0, v1, red, green, blue, alpha, light);
-            worldVertex(vertices, pose, right, top, u1, v1, red, green, blue, alpha, light);
-            worldVertex(vertices, pose, left, top, u1, v0, red, green, blue, alpha, light);
-        } else {
-            worldVertex(vertices, pose, left, bottom, u0, v1, red, green, blue, alpha, light);
-            worldVertex(vertices, pose, right, bottom, u1, v1, red, green, blue, alpha, light);
-            worldVertex(vertices, pose, right, top, u1, v0, red, green, blue, alpha, light);
-            worldVertex(vertices, pose, left, top, u0, v0, red, green, blue, alpha, light);
-        }
-        buffers.endBatch(renderType);
-    }
-
-    private static void worldVertex(VertexConsumer vertices, PoseStack.Pose pose, float x, float y,
-                                    float u, float v, int red, int green, int blue, int alpha, int light) {
-        vertices.addVertex(pose, x, y, 0)
-                .setColor(red, green, blue, alpha)
-                .setUv(u, v)
-                .setOverlay(OverlayTexture.NO_OVERLAY)
-                .setLight(light)
-                .setNormal(pose, 0, 0, 1);
+                .sorted(Comparator.comparingInt(o -> o.order))
+                .map(o -> {
+                    SparrowAtlas.Frame frame = o.texture == null ? null : currentFrame(o);
+                    LuaWorldSpriteRenderer.Frame renderFrame = frame == null ? null
+                            : new LuaWorldSpriteRenderer.Frame(frame.x, frame.y, frame.w, frame.h,
+                            frame.frameX, frame.frameY, frame.rotated);
+                    double[] offset = currentAnimationOffset(o);
+                    return new LuaWorldSpriteRenderer.Sprite(
+                            o.texture, o.textureWidth, o.textureHeight, renderFrame, offset[0], offset[1],
+                            o.x, o.y, o.z, o.width, o.height, o.graphicWidth, o.graphicHeight,
+                            o.scaleX, o.scaleY, o.alpha, o.angle, o.color,
+                            o.worldBillboard, o.worldLighting);
+                }).toList();
+        LuaWorldSpriteRenderer.render(poseStack, camera, speakers, facing, sprites);
     }
 
     private void renderObject(GuiGraphics gui, LuaObject o, float z) {
