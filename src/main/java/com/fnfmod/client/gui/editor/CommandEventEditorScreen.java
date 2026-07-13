@@ -59,7 +59,7 @@ public final class CommandEventEditorScreen extends Screen {
                 Component.literal("Command")));
         commandBox.setMaxLength(Integer.MAX_VALUE);
         commandBox.setValue(initialCommand);
-        commandBox.setCursorPosition(initialCommand.length());
+        setCollapsedCursor(initialCommand.length());
         commandBox.setResponder(value -> {
             if (!syncingParserText) updateSuggestions();
         });
@@ -129,12 +129,27 @@ public final class CommandEventEditorScreen extends Screen {
             return;
         }
         syncingParserText = true;
-        commandBox.setValue(parserCommand);
-        commandBox.setCursorPosition(Math.min(cursor, parserCommand.length()));
-        commandSuggestions.updateCommandInfo();
-        commandBox.setValue(visibleCommand);
-        commandBox.setCursorPosition(Math.min(cursor, visibleCommand.length()));
-        syncingParserText = false;
+        try {
+            commandBox.setValue(parserCommand);
+            setCollapsedCursor(Math.min(cursor, parserCommand.length()));
+            commandSuggestions.updateCommandInfo();
+            commandBox.setValue(visibleCommand);
+            setCollapsedCursor(Math.min(cursor, visibleCommand.length()));
+        } finally {
+            syncingParserText = false;
+        }
+    }
+
+    /** EditBox tracks the caret and selection anchor separately. Keep both together after parser swaps. */
+    private void setCollapsedCursor(int position) {
+        if (commandBox == null) return;
+        int cursor = Math.max(0, Math.min(position, commandBox.getValue().length()));
+        commandBox.setCursorPosition(cursor);
+        commandBox.setHighlightPos(cursor);
+    }
+
+    private void collapseSelection() {
+        if (commandBox != null) commandBox.setHighlightPos(commandBox.getCursorPosition());
     }
 
     private void applyPlaceholderSuggestion() {
@@ -143,7 +158,7 @@ public final class CommandEventEditorScreen extends Screen {
         int cursor = commandBox.getCursorPosition();
         String value = commandBox.getValue();
         commandBox.setValue(value.substring(0, placeholderStart) + placeholder + value.substring(cursor));
-        commandBox.setCursorPosition(placeholderStart + placeholder.length());
+        setCollapsedCursor(placeholderStart + placeholder.length());
         setFocused(commandBox);
         updateSuggestions();
     }
@@ -170,7 +185,10 @@ public final class CommandEventEditorScreen extends Screen {
                 return true;
             }
         }
-        if (commandSuggestions != null && commandSuggestions.keyPressed(keyCode, scanCode, modifiers)) return true;
+        if (commandSuggestions != null && commandSuggestions.keyPressed(keyCode, scanCode, modifiers)) {
+            if (keyCode == GLFW.GLFW_KEY_TAB) collapseSelection();
+            return true;
+        }
         if (keyCode == GLFW.GLFW_KEY_ENTER || keyCode == GLFW.GLFW_KEY_KP_ENTER) {
             saveAndClose();
             return true;
@@ -179,7 +197,13 @@ public final class CommandEventEditorScreen extends Screen {
             minecraft.setScreen(parent);
             return true;
         }
-        return super.keyPressed(keyCode, scanCode, modifiers);
+        boolean handled = super.keyPressed(keyCode, scanCode, modifiers);
+        if ((modifiers & GLFW.GLFW_MOD_SHIFT) == 0 && (keyCode == GLFW.GLFW_KEY_LEFT
+                || keyCode == GLFW.GLFW_KEY_RIGHT || keyCode == GLFW.GLFW_KEY_HOME
+                || keyCode == GLFW.GLFW_KEY_END)) {
+            collapseSelection();
+        }
+        return handled;
     }
 
     @Override
