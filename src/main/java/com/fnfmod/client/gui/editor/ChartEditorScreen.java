@@ -405,7 +405,7 @@ public final class ChartEditorScreen extends Screen {
         });
         Button importSong = button(x, y + 111, w, "Import Complete Song", b -> importSongFiles());
         importSong.setTooltip(Tooltip.create(Component.literal(
-                "Saves locally, then imports audio, other difficulties, icons, and custom-note resources")));
+                "Saves locally, then imports audio, other difficulties, and the song icon")));
     }
 
     private void buildChartingTab() {
@@ -1183,10 +1183,6 @@ public final class ChartEditorScreen extends Screen {
 
     private void importSongFiles() {
         commitVisibleFields();
-        Set<String> noteTypes = chart.notes.stream().filter(this::isCustomNote)
-                .map(note -> note.noteType.trim()).filter(type -> !type.isBlank())
-                .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
-
         String id = sanitizeId(saveId == null || saveId.isBlank() ? chart.title : saveId);
         if (id.isBlank()) id = "unnamed";
         Path target = SongLibrary.songsDir().resolve(id).toAbsolutePath().normalize();
@@ -1203,13 +1199,7 @@ public final class ChartEditorScreen extends Screen {
             Files.createDirectories(target);
             int copied = copySongAudio(target);
             copied += copyOtherDifficultyCharts(target, id);
-            if (source != null) {
-                copied += copyMatchingCustomNoteDefinitions(source, target, noteTypes);
-                for (String folder : List.of(
-                        "images", "icons", "sounds", "fonts", "scripts", "custom_events")) {
-                    copied += copyDirectory(source.resolve(folder), target.resolve(folder));
-                }
-            }
+            copied += copySongIcon(source, target);
             SongLibrary.rescan();
             entry = SongLibrary.get(id);
             String sourceName = source == null ? "song source"
@@ -1255,6 +1245,33 @@ public final class ChartEditorScreen extends Screen {
         return copied;
     }
 
+    private int copySongIcon(Path sourceRoot, Path target) throws Exception {
+        Path icon = entry == null ? null : entry.opponentIconFile;
+        if (icon == null && sourceRoot != null) {
+            LinkedHashSet<String> names = new LinkedHashSet<>();
+            if (entry != null && entry.opponentIcon != null && !entry.opponentIcon.isBlank()) {
+                names.add(entry.opponentIcon);
+            }
+            if (chart.player2 != null && !chart.player2.isBlank()) names.add(chart.player2);
+            for (String name : names) {
+                for (String folder : List.of("images/icons", "icons", "images/characters", "")) {
+                    Path directory = folder.isEmpty() ? sourceRoot : sourceRoot.resolve(folder);
+                    for (String filename : List.of("icon-" + name + ".png", name + ".png")) {
+                        Path candidate = directory.resolve(filename);
+                        if (Files.isRegularFile(candidate, LinkOption.NOFOLLOW_LINKS)) {
+                            icon = candidate;
+                            break;
+                        }
+                    }
+                    if (icon != null) break;
+                }
+                if (icon != null) break;
+            }
+        }
+        if (icon == null) return 0;
+        return copyFile(icon, target.resolve("images").resolve("icons").resolve(icon.getFileName()));
+    }
+
     private int copyOtherDifficultyCharts(Path target, String id) throws Exception {
         if (entry == null || entry.format != SongEntry.Format.LEGACY) return 0;
         int copied = 0;
@@ -1287,49 +1304,6 @@ public final class ChartEditorScreen extends Screen {
         Files.copy(normalizedSource, normalizedDestination, StandardCopyOption.REPLACE_EXISTING,
                 StandardCopyOption.COPY_ATTRIBUTES);
         return 1;
-    }
-
-    private static int copyMatchingCustomNoteDefinitions(Path source, Path target, Set<String> noteTypes)
-            throws Exception {
-        Path sourceDir = source.resolve("custom_notetypes");
-        if (!Files.isDirectory(sourceDir)) return 0;
-        Path targetDir = target.resolve("custom_notetypes");
-        Files.createDirectories(targetDir);
-        int copied = 0;
-        try (var files = Files.list(sourceDir)) {
-            for (Path file : files.filter(path -> Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)).toList()) {
-                String filename = file.getFileName().toString();
-                int dot = filename.lastIndexOf('.');
-                String stem = dot < 0 ? filename : filename.substring(0, dot);
-                boolean wanted = noteTypes.stream().anyMatch(type -> type.equalsIgnoreCase(stem));
-                if (!wanted) continue;
-                Files.copy(file, targetDir.resolve(filename), StandardCopyOption.REPLACE_EXISTING,
-                        StandardCopyOption.COPY_ATTRIBUTES);
-                copied++;
-            }
-        }
-        return copied;
-    }
-
-    private static int copyDirectory(Path source, Path target) throws Exception {
-        if (!Files.isDirectory(source, LinkOption.NOFOLLOW_LINKS)) return 0;
-        int copied = 0;
-        try (var paths = Files.walk(source)) {
-            for (Path path : paths.toList()) {
-                Path relative = source.relativize(path);
-                Path destination = target.resolve(relative).normalize();
-                if (!destination.startsWith(target)) continue;
-                if (Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS)) {
-                    Files.createDirectories(destination);
-                } else if (Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) {
-                    Files.createDirectories(destination.getParent());
-                    Files.copy(path, destination, StandardCopyOption.REPLACE_EXISTING,
-                            StandardCopyOption.COPY_ATTRIBUTES);
-                    copied++;
-                }
-            }
-        }
-        return copied;
     }
 
     private boolean altDown() {
