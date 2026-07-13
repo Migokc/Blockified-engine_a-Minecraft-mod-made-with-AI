@@ -26,6 +26,8 @@ public class SongEntry {
     /** Folder to resolve this song's icons/characters from (its default variation's mod). */
     public transient Path modRoot;
     public final List<String> difficulties = new ArrayList<>();
+    /** Top-level Lua scripts beside this song's chart; scoped to this song. */
+    public final List<Path> luaFiles = new ArrayList<>();
 
     /** difficulty -> chart file (legacy/psych) */
     public final Map<String, Path> legacyChartFiles = new LinkedHashMap<>();
@@ -140,6 +142,7 @@ public class SongEntry {
             addIf(out, voicesOpponentFile);
         }
         addIf(out, eventsFile);
+        for (Path lua : luaFiles) addIf(out, lua);
         return out;
     }
 

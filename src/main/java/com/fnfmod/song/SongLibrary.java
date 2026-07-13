@@ -38,6 +38,11 @@ public class SongLibrary {
         return root().resolve("songs");
     }
 
+    /** Global Psych Lua scripts that run for every song. */
+    public static Path scriptsDir() {
+        return root().resolve("scripts");
+    }
+
     public static Path cacheDir() {
         return root().resolve("cache");
     }
@@ -80,6 +85,7 @@ public class SongLibrary {
     public static void ensureFolders() {
         try {
             Files.createDirectories(songsDir());
+            Files.createDirectories(scriptsDir());
             Files.createDirectories(skinsDir());
             Files.createDirectories(animationsDir());
             Files.createDirectories(hitsoundsDir());
@@ -640,6 +646,8 @@ public class SongLibrary {
                     jsons.add(f);
                 } else if (lower.endsWith(".ogg")) {
                     classifyAudio(entry, f, lower);
+                } else if (lower.endsWith(".lua")) {
+                    entry.luaFiles.add(f);
                 }
             });
         } catch (IOException e) {
@@ -746,6 +754,9 @@ public class SongLibrary {
             if (original.isVslice()) finalizeVSlice(original);
 
             original.folder = localDir;
+            // Scripts beside the locally saved chart belong only to this song.
+            original.luaFiles.clear();
+            original.luaFiles.addAll(override.luaFiles);
             for (var local : override.legacyChartFiles.entrySet()) {
                 String difficulty = original.difficulties.stream()
                         .filter(d -> normalizedDifficultyKey(d).equals(normalizedDifficultyKey(local.getKey())))
