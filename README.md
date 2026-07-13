@@ -130,7 +130,8 @@ config/fnfmod/fonts/                 <- global fonts
 Pack/song fonts are transferred with songs in multiplayer. Each Lua text object
 can select a different font. Missing or invalid files fall back to Minecraft's
 default font and are reported in the log. `setTextWidth` also wraps Lua text at
-the requested width.
+the requested width. Custom fonts use high-resolution glyph oversampling and
+linear filtering so large FNF text remains smooth.
 
 ## Note skins (Sparrow XML!)
 
