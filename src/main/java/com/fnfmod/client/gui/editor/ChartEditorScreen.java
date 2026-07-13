@@ -21,6 +21,7 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.util.Mth;
 import org.lwjgl.glfw.GLFW;
 
+import java.awt.Rectangle;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -48,6 +49,31 @@ public final class ChartEditorScreen extends Screen {
     private static final String CAMERA_FOCUS_EVENT = "Camera Focus";
     private static final List<String> BUILTIN_EVENT_TYPES = List.of(
             MINECRAFT_COMMAND_EVENT, CAMERA_ZOOM_EVENT, CAMERA_FOCUS_EVENT);
+    private static final String[] HELP_LINES = {
+            "W/S/Mouse Wheel - Move Conductor's Time",
+            "A/D - Change Sections",
+            "Q/E - Decrease/Increase Note Sustain Length",
+            "Hold Shift/Alt to Increase/Decrease move by 4x",
+            "F12 - Preview Chart",
+            "Enter - Playtest Chart",
+            "Space - Stop/Resume song",
+            "Alt + Click - Select Note(s)",
+            "Shift + Click - Select/Unselect Note(s)",
+            "Right Click - Selection Box",
+            "R - Reset Section",
+            "Shift + R - Go Back to the Start of the Song",
+            "Z/X - Zoom in/out",
+            "Left/Right - Change Snap",
+            "Left Bracket / Right Bracket - Change Song Playback Rate",
+            "Alt + Left Bracket / Right Bracket - Reset Song Playback Rate",
+            "Ctrl + Z - Undo",
+            "Ctrl + Y - Redo",
+            "Ctrl + X - Cut Selected Notes",
+            "Ctrl + C - Copy Selected Notes",
+            "Ctrl + V - Paste Copied Notes",
+            "Ctrl + A - Select all in current Section",
+            "Ctrl + S - Quicksave"
+    };
 
     private enum EditorTab { CHARTING, DATA, EVENTS, NOTE, SECTION, SONG }
     private enum TopMenu { NONE, FILE, EDIT, VIEW }
@@ -99,6 +125,9 @@ public final class ChartEditorScreen extends Screen {
     private double pixelsPerBeat = DEFAULT_PIXELS_PER_BEAT;
     private float playbackRate = 1.0f;
     private boolean helpVisible;
+    private ChartEditorDesktopWindows desktopWindows;
+    /** -1 uses the main GLFW window; otherwise contains forwarded desktop-window modifiers. */
+    private int desktopInputModifiers = -1;
     private boolean selectingBox;
     private double selectionStartX;
     /** Vertical selection bounds are chart beats so scrolling cannot move the anchor. */
@@ -164,6 +193,7 @@ public final class ChartEditorScreen extends Screen {
     @Override
     protected void init() {
         if (chart == null) loadChart();
+        if (desktopWindows == null) desktopWindows = new ChartEditorDesktopWindows(this);
         clampOrInitializeInfoWindow();
         rebuildUi();
     }
@@ -613,8 +643,25 @@ public final class ChartEditorScreen extends Screen {
                 if (vortex && !isPlaying()) snapPlayheadToGrid();
                 rebuildUi();
             }); y += 16;
-            Button waveform = button(x + 4, y, w - 8, "Waveform...", b -> {}); waveform.active = false;
+            Button waveform = button(x + 4, y, w - 8, "Waveform...", b -> {}); waveform.active = false; y += 16;
+            button(x + 4, y, w - 8, "Information Window",
+                    b -> openDesktopWindow(ChartEditorDesktopWindows.Panel.INFORMATION)); y += 16;
+            button(x + 4, y, w - 8, "Chart Grid Window",
+                    b -> openDesktopWindow(ChartEditorDesktopWindows.Panel.GRID)); y += 16;
+            button(x + 4, y, w - 8, "Controls Window",
+                    b -> openDesktopWindow(ChartEditorDesktopWindows.Panel.CONTROLS)); y += 16;
+            button(x + 4, y, w - 8, "Open All Windows", b -> {
+                desktopWindows.openAll();
+                openMenu = TopMenu.NONE;
+                rebuildUi();
+            });
         }
+    }
+
+    private void openDesktopWindow(ChartEditorDesktopWindows.Panel panel) {
+        desktopWindows.open(panel);
+        openMenu = TopMenu.NONE;
+        rebuildUi();
     }
 
     private EditBox labeledBox(String label, int x, int y, int w, String value, String hint) {
@@ -1066,6 +1113,7 @@ public final class ChartEditorScreen extends Screen {
             double startMs = previewFromCurrentTime ? viewPositionMs : 0;
             BlockPos machine = sourceMachinePos != null ? sourceMachinePos
                     : (minecraft.player == null ? BlockPos.ZERO : minecraft.player.blockPosition());
+            closeDesktopWindows();
             minecraft.setScreen(GameplayScreen.editorPlaytest(machine, chart, playtestAudio, startMs,
                     previewFromCurrentTime,
                     () -> recreateEditor(startMs)));
@@ -1145,10 +1193,61 @@ public final class ChartEditorScreen extends Screen {
 
     // --------------------------------------------------------------------- Input
 
+    private boolean shiftDown() {
+        return desktopInputModifiers >= 0
+                ? (desktopInputModifiers & GLFW.GLFW_MOD_SHIFT) != 0 : hasShiftDown();
+    }
+
+    private boolean altDown() {
+        return desktopInputModifiers >= 0
+                ? (desktopInputModifiers & GLFW.GLFW_MOD_ALT) != 0 : hasAltDown();
+    }
+
+    private boolean controlDown() {
+        return desktopInputModifiers >= 0
+                ? (desktopInputModifiers & GLFW.GLFW_MOD_CONTROL) != 0 : hasControlDown();
+    }
+
+    private void withDesktopModifiers(int modifiers, Runnable action) {
+        int previous = desktopInputModifiers;
+        desktopInputModifiers = modifiers;
+        try {
+            action.run();
+        } finally {
+            desktopInputModifiers = previous;
+        }
+    }
+
+    void desktopKeyPressed(int keyCode, int modifiers) {
+        withDesktopModifiers(modifiers, () -> keyPressed(keyCode, 0, modifiers));
+    }
+
+    void desktopCharTyped(char value, int modifiers) {
+        withDesktopModifiers(modifiers, () -> charTyped(value, modifiers));
+    }
+
+    void desktopMouseClicked(double x, double y, int button, int modifiers) {
+        withDesktopModifiers(modifiers, () -> mouseClicked(x, y, button));
+    }
+
+    void desktopMouseDragged(double x, double y, int button, int modifiers) {
+        withDesktopModifiers(modifiers, () -> mouseDragged(x, y, button, 0, 0));
+    }
+
+    void desktopMouseReleased(double x, double y, int button, int modifiers) {
+        withDesktopModifiers(modifiers, () -> mouseReleased(x, y, button));
+    }
+
+    void desktopMouseScrolled(double x, double y, double amount, int modifiers) {
+        withDesktopModifiers(modifiers, () -> mouseScrolled(x, y, 0, amount));
+    }
+
     @Override
     public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
         if (keyCode == GLFW.GLFW_KEY_F1) {
-            helpVisible = !helpVisible;
+            // Native help is singleton: F1 creates it once, then only focuses it.
+            // Keep the old overlay as a fallback for environments without AWT.
+            if (!desktopWindows.openHelp()) helpVisible = true;
             return true;
         }
         if (helpVisible) {
@@ -1164,7 +1263,7 @@ public final class ChartEditorScreen extends Screen {
             return super.keyPressed(keyCode, scanCode, modifiers);
         }
 
-        if (hasControlDown()) {
+        if (controlDown()) {
             switch (keyCode) {
                 case GLFW.GLFW_KEY_Z -> undoNotes();
                 case GLFW.GLFW_KEY_Y -> redoNotes();
@@ -1183,7 +1282,7 @@ public final class ChartEditorScreen extends Screen {
             return true;
         }
         if (keyCode == GLFW.GLFW_KEY_LEFT_BRACKET || keyCode == GLFW.GLFW_KEY_RIGHT_BRACKET) {
-            if (hasAltDown()) setPlaybackRate(1.0f);
+            if (altDown()) setPlaybackRate(1.0f);
             else setPlaybackRate(playbackRate + (keyCode == GLFW.GLFW_KEY_RIGHT_BRACKET ? 0.1f : -0.1f));
             if (activeTab == EditorTab.CHARTING) rebuildUi();
             return true;
@@ -1196,10 +1295,10 @@ public final class ChartEditorScreen extends Screen {
             return true;
         }
 
-        double moveMultiplier = (hasShiftDown() ? 4.0 : 1.0) / (hasAltDown() ? 4.0 : 1.0);
+        double moveMultiplier = (shiftDown() ? 4.0 : 1.0) / (altDown() ? 4.0 : 1.0);
         return switch (keyCode) {
-            case GLFW.GLFW_KEY_A -> { changeSection(-(hasShiftDown() ? 4 : 1)); yield true; }
-            case GLFW.GLFW_KEY_D -> { changeSection(hasShiftDown() ? 4 : 1); yield true; }
+            case GLFW.GLFW_KEY_A -> { changeSection(-(shiftDown() ? 4 : 1)); yield true; }
+            case GLFW.GLFW_KEY_D -> { changeSection(shiftDown() ? 4 : 1); yield true; }
             case GLFW.GLFW_KEY_W, GLFW.GLFW_KEY_UP -> { scrub(moveMultiplier); yield true; }
             case GLFW.GLFW_KEY_S, GLFW.GLFW_KEY_DOWN -> { scrub(-moveMultiplier); yield true; }
             case GLFW.GLFW_KEY_LEFT -> { changeSnap(-1); yield true; }
@@ -1209,7 +1308,7 @@ public final class ChartEditorScreen extends Screen {
                 if (isPlaying()) audio.pause();
                 selectedNote = null;
                 selectedNotes.clear();
-                seek(hasShiftDown() ? 0 : chart.sectionStartMs(sectionIndexAt(viewPositionMs)));
+                seek(shiftDown() ? 0 : chart.sectionStartMs(sectionIndexAt(viewPositionMs)));
                 rebuildUi();
                 yield true;
             }
@@ -1280,7 +1379,7 @@ public final class ChartEditorScreen extends Screen {
             }
             boolean hitEvent = closest != null && closestPixels <= Math.max(7, cw / 2.0);
             if (hitEvent) {
-                if (!hasShiftDown() && !hasAltDown()) {
+                if (!shiftDown() && !altDown()) {
                     chart.events.remove(closest);
                     selectedEvents.remove(closest);
                     if (selectedEvent == closest) {
@@ -1291,7 +1390,7 @@ public final class ChartEditorScreen extends Screen {
                     rebuildUi();
                     return true;
                 }
-                if (hasShiftDown()) {
+                if (shiftDown()) {
                     if (!selectedEvents.add(closest)) selectedEvents.remove(closest);
                 } else {
                     selectedEvents.add(closest);
@@ -1320,10 +1419,10 @@ public final class ChartEditorScreen extends Screen {
             double beat = yToBeat(mouseY);
             double snapped = Math.max(0, Math.floor(beat / snapStepBeats() + 1.0e-6) * snapStepBeats());
             double time = conductor.timeOfBeat(snapped);
-            if (button == 0 && (hasShiftDown() || hasAltDown())) {
+            if (button == 0 && (shiftDown() || altDown())) {
                 SongChart.Note found = findNote(column, time, stepMs() / 2.0);
                 if (found != null) {
-                    if (hasShiftDown()) toggleSelection(found);
+                    if (shiftDown()) toggleSelection(found);
                     else addSelection(found);
                     setStatus("Selected " + selectedNotes.size() + " note(s)");
                     if (activeTab == EditorTab.NOTE) rebuildUi();
@@ -1381,7 +1480,7 @@ public final class ChartEditorScreen extends Screen {
         }
         if (insideInfo(mouseX, mouseY)) return true;
         if (selectingBox && mouseX >= gridX() - cellWidth() && mouseX < gridX() + 8 * cellWidth()) {
-            double multiplier = (hasShiftDown() ? 4.0 : 1.0) / (hasAltDown() ? 4.0 : 1.0);
+            double multiplier = (shiftDown() ? 4.0 : 1.0) / (altDown() ? 4.0 : 1.0);
             scrub(scrollY * multiplier);
             selectionEndX = Mth.clamp(mouseX, gridX() - cellWidth(), gridX() + 8 * cellWidth());
             selectionEndBeat = selectionBeatAtScreenY(Mth.clamp(mouseY, gridTop(), gridBottom()));
@@ -1389,7 +1488,7 @@ public final class ChartEditorScreen extends Screen {
         }
         if (mouseX >= gridX() - cellWidth() && mouseX < gridX() + 8 * cellWidth()
                 && mouseY >= gridTop() && mouseY < gridBottom()) {
-            double multiplier = (hasShiftDown() ? 4.0 : 1.0) / (hasAltDown() ? 4.0 : 1.0);
+            double multiplier = (shiftDown() ? 4.0 : 1.0) / (altDown() ? 4.0 : 1.0);
             scrub(scrollY * multiplier);
             return true;
         }
@@ -1401,7 +1500,7 @@ public final class ChartEditorScreen extends Screen {
         double right = Math.max(selectionStartX, selectionEndX);
         double firstBeat = Math.min(selectionStartBeat, selectionEndBeat);
         double lastBeat = Math.max(selectionStartBeat, selectionEndBeat);
-        if (!hasShiftDown() && !hasAltDown()) clearSelection();
+        if (!shiftDown() && !altDown()) clearSelection();
         int gx = gridX();
         int cw = cellWidth();
         for (SongChart.Note note : chart.notes) {
@@ -1409,7 +1508,7 @@ public final class ChartEditorScreen extends Screen {
             double x = gx + column * cw + cw / 2.0;
             double noteBeat = conductor.beatAt(note.timeMs);
             if (x >= left && x <= right && noteBeat >= firstBeat && noteBeat <= lastBeat) {
-                if (hasAltDown()) selectedNotes.remove(note);
+                if (altDown()) selectedNotes.remove(note);
                 else selectedNotes.add(note);
             }
         }
@@ -1418,7 +1517,7 @@ public final class ChartEditorScreen extends Screen {
             for (SongChart.Event event : chart.events) {
                 double eventBeat = conductor.beatAt(event.timeMs);
                 if (eventBeat < firstBeat || eventBeat > lastBeat) continue;
-                if (hasAltDown()) selectedEvents.remove(event);
+                if (altDown()) selectedEvents.remove(event);
                 else selectedEvents.add(event);
             }
         }
@@ -1454,6 +1553,7 @@ public final class ChartEditorScreen extends Screen {
         for (var renderable : renderables) renderable.render(gui, mouseX, mouseY, partialTick);
         renderInfoWindow(gui);
         if (helpVisible) renderHelpScreen(gui);
+        if (desktopWindows != null) desktopWindows.capture();
     }
 
     private void renderGrid(GuiGraphics gui) {
@@ -1591,7 +1691,7 @@ public final class ChartEditorScreen extends Screen {
         int height = switch (openMenu) {
             case FILE -> 88;
             case EDIT -> 136;
-            case VIEW -> 56;
+            case VIEW -> 120;
             default -> 0;
         };
         gui.fill(x, 23, x + 144, 23 + height, 0xF00A0A0A);
@@ -1626,47 +1726,26 @@ public final class ChartEditorScreen extends Screen {
     }
 
     private void renderHelpScreen(GuiGraphics gui) {
-        String[] lines = {
-                "W/S/Mouse Wheel - Move Conductor's Time",
-                "A/D - Change Sections",
-                "Q/E - Decrease/Increase Note Sustain Length",
-                "Hold Shift/Alt to Increase/Decrease move by 4x",
-                "F12 - Preview Chart",
-                "Enter - Playtest Chart",
-                "Space - Stop/Resume song",
-                "Alt + Click - Select Note(s)",
-                "Shift + Click - Select/Unselect Note(s)",
-                "Right Click - Selection Box",
-                "R - Reset Section",
-                "Shift + R - Go Back to the Start of the Song",
-                "Z/X - Zoom in/out",
-                "Left/Right - Change Snap",
-                "Left Bracket / Right Bracket - Change Song Playback Rate",
-                "Alt + Left Bracket / Right Bracket - Reset Song Playback Rate",
-                "Ctrl + Z - Undo",
-                "Ctrl + Y - Redo",
-                "Ctrl + X - Cut Selected Notes",
-                "Ctrl + C - Copy Selected Notes",
-                "Ctrl + V - Paste Copied Notes",
-                "Ctrl + A - Select all in current Section",
-                "Ctrl + S - Quicksave"
-        };
         gui.fill(0, 0, width, height, 0xEE08080A);
         int lineHeight = font.lineHeight + 2;
         int panelWidth = Math.min(width - 24, 520);
-        int panelHeight = lines.length * lineHeight + 38;
+        int panelHeight = HELP_LINES.length * lineHeight + 38;
         int x = (width - panelWidth) / 2;
         int y = Math.max(8, (height - panelHeight) / 2);
         gui.fill(x, y, x + panelWidth, Math.min(height - 8, y + panelHeight), 0xF018181C);
         gui.renderOutline(x, y, panelWidth, Math.min(panelHeight, height - y - 8), 0xFFFFFFFF);
         drawCentered(gui, "CHART EDITOR HELP", width / 2, y + 10, 0xFFFFFFFF);
         int textY = y + 28;
-        for (String line : lines) {
+        for (String line : HELP_LINES) {
             draw(gui, line, x + 12, textY, 0xFFFFFFFF);
             textY += lineHeight;
         }
         drawCentered(gui, "F1 or Esc - Close Help", width / 2,
                 Math.min(height - 18, textY + 4), 0xFFBBBBBB);
+    }
+
+    static String[] helpLines() {
+        return HELP_LINES.clone();
     }
 
     private void draw(GuiGraphics gui, String text, int x, int y, int color) {
@@ -1678,6 +1757,23 @@ public final class ChartEditorScreen extends Screen {
     }
 
     // --------------------------------------------------------------------- Geometry and helpers
+
+    Rectangle desktopRegion(ChartEditorDesktopWindows.Panel panel) {
+        return switch (panel) {
+            case INFORMATION -> infoWidth() <= 0 ? null
+                    : new Rectangle(infoX, infoY, infoWidth(), infoHeight());
+            case GRID -> {
+                int cw = cellWidth();
+                int x = gridX() - cw;
+                int y = gridTop() - cw;
+                yield new Rectangle(x, y, cw * 9, gridBottom() - y);
+            }
+            case CONTROLS -> {
+                int bottom = Math.min(height - 26, 238);
+                yield new Rectangle(controlX(), TAB_Y, controlWidth(), Math.max(1, bottom - TAB_Y));
+            }
+        };
+    }
 
     private int controlWidth() { return Mth.clamp(width / 3, 220, 320); }
     private int controlX() { return width - controlWidth() - 16; }
@@ -2020,7 +2116,21 @@ public final class ChartEditorScreen extends Screen {
     @Override
     public void onClose() {
         if (audio != null) audio.dispose();
+        closeDesktopWindows();
         super.onClose();
+    }
+
+    private void closeDesktopWindows() {
+        if (desktopWindows != null) {
+            desktopWindows.close();
+            desktopWindows = null;
+        }
+    }
+
+    @Override
+    public void removed() {
+        closeDesktopWindows();
+        super.removed();
     }
 
     @Override
