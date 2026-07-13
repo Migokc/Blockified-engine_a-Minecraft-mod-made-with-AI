@@ -97,11 +97,12 @@ Lua files placed directly in `config/fnfmod/songs/<song folder>/` run only for
 that song. Song-local scripts are included when a server transfers the song to
 a client.
 
-Charts saved from another directory keep `original_directory.txt` only to find
-the original audio and unsaved difficulty charts. Images, icons, characters,
-stages, scripts, custom events, custom note scripts, and other runtime resources
-are not inherited from that origin. Put any resources wanted by the edited chart
-inside its new `config/fnfmod/songs/<song folder>/` folder instead.
+Charts saved from another directory keep `original_directory.txt` to find the
+original audio, unsaved difficulty charts, character definitions, and health
+icons. Other images, stages, scripts, custom events, custom note scripts, and
+other runtime resources are not inherited from that origin. Put any additional
+resources wanted by the edited chart inside its new
+`config/fnfmod/songs/<song folder>/` folder instead.
 
 Gameplay callbacks include create/update, countdown/song start, step/beat/section,
 note hits/misses, events, pause/resume, song end, and destroy. Supported APIs cover

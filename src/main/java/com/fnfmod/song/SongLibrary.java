@@ -142,7 +142,8 @@ public class SongLibrary {
     private static void resolveOpponentIcon(SongEntry e) {
         if (e.opponentIcon == null || e.opponentIcon.isEmpty()) return;
         String charId = e.opponentIcon;
-        Path root = e.modRoot != null ? e.modRoot : e.folder;
+        Path root = e.characterRoot != null ? e.characterRoot
+                : (e.modRoot != null ? e.modRoot : e.folder);
         String iconName = charId;
         if (root != null) {
             // the character json names the actual health icon (V-Slice healthIcon.id / Psych healthicon)
@@ -764,9 +765,9 @@ public class SongLibrary {
             // Keep the source only as a chart/audio library. Runtime resources must
             // resolve from the local override, never from the origin pack.
             original.chartOriginRoot = source;
+            original.characterRoot = source;
             original.folder = localDir;
             original.modRoot = localDir;
-            original.opponentIcon = "";
             original.opponentIconFile = null;
             // Scripts beside the locally saved chart belong only to this song.
             original.luaFiles.clear();
