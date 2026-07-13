@@ -1,6 +1,6 @@
-# Funkin' Machine (fnfmod)
+# Blockified engine (fnfmod)
 
-A Friday Night Funkin' rhythm game inside Minecraft — **NeoForge 1.21.1**.
+A feature-full Friday Night Funkin' engine inside of Minecraft — **NeoForge 1.21.1**.
 
 Requires: [playerAnimator](https://modrinth.com/mod/playeranimator) (2.0.0+ for 1.21.1) on the client.
 
@@ -286,4 +286,4 @@ notes on both strumlines), Downscroll, Ghost Tapping. More in
 gradlew build
 ```
 
-Output jar: `build/libs/fnfmod-<version>.jar`.
+Output jar: `build/libs/Blockified-engine-NeoForge-<minecraft-version>-<mod-version>.jar`.
