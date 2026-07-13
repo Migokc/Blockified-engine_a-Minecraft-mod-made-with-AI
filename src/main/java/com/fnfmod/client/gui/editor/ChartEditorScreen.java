@@ -46,7 +46,7 @@ public final class ChartEditorScreen extends Screen {
     private static final String MINECRAFT_COMMAND_EVENT = "Minecraft Command";
     private static final String CAMERA_ZOOM_EVENT = "Camera Zoom";
     private static final String CAMERA_FOCUS_EVENT = "Camera Focus";
-    private static final List<String> EVENT_TYPES = List.of(
+    private static final List<String> BUILTIN_EVENT_TYPES = List.of(
             MINECRAFT_COMMAND_EVENT, CAMERA_ZOOM_EVENT, CAMERA_FOCUS_EVENT);
 
     private enum EditorTab { CHARTING, DATA, EVENTS, NOTE, SECTION, SONG }
@@ -78,6 +78,8 @@ public final class ChartEditorScreen extends Screen {
     private String defaultNoteType = "";
     private Path originalDirectory;
     private String originalChartName;
+    private Path eventDefinitionRoot;
+    private final List<String> eventTypes = new ArrayList<>(BUILTIN_EVENT_TYPES);
 
     private double viewPositionMs;
     private int snapIndex = 3;
@@ -87,6 +89,7 @@ public final class ChartEditorScreen extends Screen {
     private SongChart.Note selectedNote;
     private SongChart.Event selectedEvent;
     private boolean eventDropdownOpen;
+    private int eventDropdownScroll;
     private boolean eventDraftInitialized;
     private String eventTypeDraft = MINECRAFT_COMMAND_EVENT;
     private String eventValue1Draft = "";
@@ -169,6 +172,10 @@ public final class ChartEditorScreen extends Screen {
         SongLibrary.rescan();
         String difficulty = requestedDifficulty == null || requestedDifficulty.isBlank()
                 ? "normal" : requestedDifficulty;
+        SongEntry libraryEntry = requestedSongId == null ? null : SongLibrary.get(requestedSongId);
+        if (libraryEntry != null) {
+            eventDefinitionRoot = libraryEntry.modRoot != null ? libraryEntry.modRoot : libraryEntry.folder;
+        }
         if (suppliedSongFolder != null) {
             entry = SongLibrary.scanSongDir(suppliedSongFolder);
         }
@@ -207,6 +214,7 @@ public final class ChartEditorScreen extends Screen {
         conductor = new Conductor(chart);
         saveId = songId == null ? sanitizeId(chart.title) : songId;
         loadedDifficulty = difficulty;
+        discoverEventTypes();
 
         if (entry != null && entry.instFor(difficulty) != null) {
             try {
@@ -434,6 +442,7 @@ public final class ChartEditorScreen extends Screen {
         button(x, y + 10, typeWidth, eventTypeDraft + "  v", b -> {
             commitVisibleFields();
             eventDropdownOpen = !eventDropdownOpen;
+            if (eventDropdownOpen) eventDropdownScroll = 0;
             rebuildUi();
         });
         int actionX = x + typeWidth + gap;
@@ -448,9 +457,19 @@ public final class ChartEditorScreen extends Screen {
         Button nextPointEvent = button(actionX, y + 10, small, ">", b -> cyclePointEvent(1));
         nextPointEvent.active = pointEvents.size() > 1;
         if (eventDropdownOpen) {
-            for (int i = 0; i < EVENT_TYPES.size(); i++) {
-                String type = EVENT_TYPES.get(i);
-                button(x, y + 24 + i * 14, typeWidth, type, b -> selectEventType(type));
+            int visible = Math.max(3, (height - (y + 24) - 8) / 14);
+            visible = Math.min(visible, eventTypes.size());
+            eventDropdownScroll = Mth.clamp(eventDropdownScroll, 0,
+                    Math.max(0, eventTypes.size() - visible));
+            for (int row = 0; row < visible; row++) {
+                int i = eventDropdownScroll + row;
+                String type = eventTypes.get(i);
+                button(x, y + 24 + row * 14, typeWidth, type, b -> selectEventType(type));
+            }
+            if (eventTypes.size() > visible) {
+                label((eventDropdownScroll + 1) + "-" + (eventDropdownScroll + visible)
+                                + " / " + eventTypes.size() + "  (scroll)",
+                        x + typeWidth / 2, y + 27 + visible * 14, 0xFFBBBBBB, true);
             }
             return;
         }
@@ -488,8 +507,8 @@ public final class ChartEditorScreen extends Screen {
             easing.active = !cameraFocus || !eventValue1Draft.isBlank();
         } else {
             eventValue2Field = labeledBox("Value 2", x, y + 99, w,
-                    eventValue2Draft, "player or server");
-            eventValue2Field.setMaxLength(64);
+                    eventValue2Draft, isMinecraftCommandType(eventTypeDraft) ? "player or server" : "value 2");
+            eventValue2Field.setMaxLength(Integer.MAX_VALUE);
         }
         int half = (w - 4) / 2;
         button(x, y + 126, half, "Add Event", b -> addEventAtFieldTime());
@@ -505,8 +524,43 @@ public final class ChartEditorScreen extends Screen {
                         ? "Camera Zoom: Value 1 = amount, Value 2 = easing (500ms)"
                         : cameraFocus
                         ? "Camera Focus: target + easing; empty values restore Must Hit"
-                        : "Minecraft Command: Value 1 = command, Value 2 = player/server",
+                        : isMinecraftCommandType(eventTypeDraft)
+                        ? "Minecraft Command: Value 1 = command, Value 2 = player/server"
+                        : "Custom event: Value 1 and Value 2 are passed to its Lua callback",
                 x, y + 165, 0xFFBBBBBB, false);
+    }
+
+    private void discoverEventTypes() {
+        LinkedHashSet<String> discovered = new LinkedHashSet<>(BUILTIN_EVENT_TYPES);
+        if (chart != null) {
+            chart.events.stream().map(event -> event.name)
+                    .filter(name -> name != null && !name.isBlank())
+                    .forEach(discovered::add);
+        }
+        addCustomEventFiles(eventDefinitionRoot, discovered);
+        if (entry != null) addCustomEventFiles(entry.folder, discovered);
+        eventTypes.clear();
+        eventTypes.addAll(BUILTIN_EVENT_TYPES);
+        discovered.stream().filter(name -> !BUILTIN_EVENT_TYPES.contains(name))
+                .sorted(String.CASE_INSENSITIVE_ORDER).forEach(eventTypes::add);
+    }
+
+    private static void addCustomEventFiles(Path root, Set<String> names) {
+        if (root == null) return;
+        Path directory = root.resolve("custom_events");
+        if (!Files.isDirectory(directory)) return;
+        try (var files = Files.list(directory)) {
+            files.filter(Files::isRegularFile).map(path -> path.getFileName().toString())
+                    .filter(name -> {
+                        String lower = name.toLowerCase(Locale.ROOT);
+                        return lower.endsWith(".lua") || lower.endsWith(".txt");
+                    })
+                    .map(name -> name.substring(0, name.lastIndexOf('.')))
+                    .filter(name -> !name.isBlank() && !name.equalsIgnoreCase("readme"))
+                    .forEach(names::add);
+        } catch (Exception e) {
+            FnfMod.LOGGER.warn("Could not scan custom events in {}: {}", directory, e.toString());
+        }
     }
 
     private void buildOpenMenu() {
@@ -1316,6 +1370,15 @@ public final class ChartEditorScreen extends Screen {
     @Override
     public boolean mouseScrolled(double mouseX, double mouseY, double scrollX, double scrollY) {
         if (helpVisible) return true;
+        if (eventDropdownOpen) {
+            int direction = scrollY > 0 ? -1 : scrollY < 0 ? 1 : 0;
+            if (direction != 0) {
+                eventDropdownScroll = Mth.clamp(eventDropdownScroll + direction,
+                        0, Math.max(0, eventTypes.size() - 1));
+                rebuildUi();
+            }
+            return true;
+        }
         if (insideInfo(mouseX, mouseY)) return true;
         if (selectingBox && mouseX >= gridX() - cellWidth() && mouseX < gridX() + 8 * cellWidth()) {
             double multiplier = (hasShiftDown() ? 4.0 : 1.0) / (hasAltDown() ? 4.0 : 1.0);
