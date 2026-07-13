@@ -57,6 +57,7 @@ public final class ChartEditorScreen extends Screen {
             "Hold Shift/Alt to Increase/Decrease move by 4x",
             "F12 - Preview Chart",
             "Enter - Playtest Chart",
+            "Shift + Enter - Playtest from Conductor's Time",
             "Space - Stop/Resume song",
             "Alt + Click - Select Note(s)",
             "Shift + Click - Select/Unselect Note(s)",
@@ -1082,7 +1083,7 @@ public final class ChartEditorScreen extends Screen {
         }
     }
 
-    private void launchPlaytest(boolean previewFromCurrentTime) {
+    private void launchPlaytest(boolean fromCurrentTime, boolean preview) {
         commitVisibleFields();
         if (entry == null || entry.instFor(loadedDifficulty) == null) {
             setStatus("A valid Inst.ogg is required to playtest");
@@ -1094,12 +1095,15 @@ public final class ChartEditorScreen extends Screen {
                     chart.needsVoices ? entry.voicesFor(loadedDifficulty) : null,
                     chart.needsVoices ? entry.voicesPlayerFor(loadedDifficulty) : null,
                     chart.needsVoices ? entry.voicesOpponentFor(loadedDifficulty) : null);
-            if (previewFromCurrentTime) playtestAudio.setPlaybackRate(playbackRate);
-            double startMs = previewFromCurrentTime ? viewPositionMs : 0;
+            if (fromCurrentTime) playtestAudio.setPlaybackRate(playbackRate);
+            double startMs = fromCurrentTime ? viewPositionMs : 0;
             BlockPos machine = sourceMachinePos != null ? sourceMachinePos
                     : (minecraft.player == null ? BlockPos.ZERO : minecraft.player.blockPosition());
+            String resourceSongId = entry.id == null || entry.id.isBlank()
+                    ? (requestedSongId == null ? chart.title : requestedSongId) : entry.id;
+            Path resourceFolder = entry.folder != null ? entry.folder : suppliedSongFolder;
             minecraft.setScreen(GameplayScreen.editorPlaytest(machine, chart, playtestAudio, startMs,
-                    previewFromCurrentTime,
+                    preview, resourceSongId, resourceFolder, entry,
                     () -> recreateEditor(startMs)));
         } catch (Exception e) {
             setStatus("Playtest failed: " + e.getMessage());
@@ -1346,9 +1350,9 @@ public final class ChartEditorScreen extends Screen {
             }
             return true;
         }
-        if (keyCode == GLFW.GLFW_KEY_F12) { launchPlaytest(true); return true; }
+        if (keyCode == GLFW.GLFW_KEY_F12) { launchPlaytest(true, true); return true; }
         if (keyCode == GLFW.GLFW_KEY_ENTER || keyCode == GLFW.GLFW_KEY_KP_ENTER) {
-            launchPlaytest(false);
+            launchPlaytest(shiftDown(), false);
             return true;
         }
         if (keyCode == GLFW.GLFW_KEY_LEFT_BRACKET || keyCode == GLFW.GLFW_KEY_RIGHT_BRACKET) {

@@ -149,6 +149,10 @@ difficulty chart, and song icon into `config/fnfmod/songs/<song>/`. It does not
 copy custom-note scripts or their related resources. Imported local audio, charts,
 and icons take priority over the source directory.
 
+Press **Enter** to playtest from the beginning, or **Shift+Enter** to playtest from
+the conductor's current time. Mid-song playtests reconstruct the event and camera
+state up to that point; F12 remains the quick preview shortcut.
+
 Lua runs client-side in a sandbox. Direct Java access, process execution, and
 unrestricted filesystem access are disabled. Psych features that require its actual
 HaxeFlixel runtime cannot exist unchanged in Minecraft: HScript/Haxe reflection,

@@ -125,10 +125,17 @@ public final class PsychLuaRuntime implements AutoCloseable {
     private boolean closed;
 
     public static PsychLuaRuntime load(GameplayScreen host, SongChart chart) {
-        String id = ClientSession.songId == null || ClientSession.songId.isBlank()
-                ? chart.title : ClientSession.songId;
-        SongEntry entry = SongLibrary.get(id);
-        Path folder = ClientSession.resolvedFolder != null ? ClientSession.resolvedFolder
+        return load(host, chart, null, null, null);
+    }
+
+    public static PsychLuaRuntime load(GameplayScreen host, SongChart chart, String requestedId,
+                                       Path requestedFolder, SongEntry requestedEntry) {
+        String id = requestedId == null || requestedId.isBlank()
+                ? (ClientSession.songId == null || ClientSession.songId.isBlank()
+                ? chart.title : ClientSession.songId) : requestedId;
+        SongEntry entry = requestedEntry != null ? requestedEntry : SongLibrary.get(id);
+        Path folder = requestedFolder != null ? requestedFolder
+                : ClientSession.resolvedFolder != null ? ClientSession.resolvedFolder
                 : entry == null ? null : entry.folder;
         Path root = entry == null ? folder : entry.modRoot;
         PsychLuaRuntime runtime = new PsychLuaRuntime(host, chart, id, folder, root, entry);

@@ -153,7 +153,10 @@ public class GameplayScreen extends Screen {
     private double editorStartMs;
     private Supplier<Screen> editorReturnFactory;
     private PsychLuaRuntime luaRuntime;
-    private final PsychNoteTextureCache customNoteTextures;
+    private PsychNoteTextureCache customNoteTextures;
+    private String runtimeSongId;
+    private Path runtimeSongFolder;
+    private SongEntry runtimeSongEntry;
     private boolean vanillaMusicMuted;
     private final double[] luaStrumX = new double[8];
     private final double[] luaStrumY = new double[8];
@@ -180,11 +183,14 @@ public class GameplayScreen extends Screen {
         this.startAtEpochMs = startAtEpochMs;
         this.conductor = new Conductor(chart);
         this.originalLuaNotes = chart.notes.stream().map(SongChart.Note::copy).toList();
-        SongEntry resourceEntry = ClientSession.songId == null ? null : SongLibrary.get(ClientSession.songId);
-        Path resourceRoot = resourceEntry == null ? ClientSession.resolvedFolder
-                : (resourceEntry.modRoot != null ? resourceEntry.modRoot : resourceEntry.folder);
-        this.customNoteTextures = new PsychNoteTextureCache(ClientSession.resolvedFolder, resourceRoot,
-                resourceEntry == null || resourceEntry.allows(SongLibrary.ExternalContent.IMAGES));
+        this.runtimeSongId = ClientSession.songId;
+        this.runtimeSongEntry = ClientSession.songId == null ? null : SongLibrary.get(ClientSession.songId);
+        this.runtimeSongFolder = ClientSession.resolvedFolder != null ? ClientSession.resolvedFolder
+                : runtimeSongEntry == null ? null : runtimeSongEntry.folder;
+        Path resourceRoot = runtimeSongEntry == null ? runtimeSongFolder
+                : (runtimeSongEntry.modRoot != null ? runtimeSongEntry.modRoot : runtimeSongEntry.folder);
+        this.customNoteTextures = new PsychNoteTextureCache(runtimeSongFolder, resourceRoot,
+                runtimeSongEntry == null || runtimeSongEntry.allows(SongLibrary.ExternalContent.IMAGES));
         Arrays.fill(luaStrumX, Double.NaN);
         Arrays.fill(luaStrumY, Double.NaN);
         Arrays.fill(luaStrumAlpha, 1.0);
@@ -231,13 +237,26 @@ public class GameplayScreen extends Screen {
 
     /** Standalone chart-editor playtest. It never creates or leaves a server song session. */
     public static GameplayScreen editorPlaytest(BlockPos machinePos, SongChart chart, SongPlayer player,
-                                                double startMs, boolean preview, Supplier<Screen> returnFactory) {
+                                                double startMs, boolean preview, String songId, Path songFolder,
+                                                SongEntry songEntry, Supplier<Screen> returnFactory) {
         GameplayScreen screen = new GameplayScreen(machinePos, chart, player, PlayMode.PLAYER,
                 null, "", CharacterAnimations.DEFAULT_SET, -1, System.currentTimeMillis() + 1000);
         screen.editorPlaytest = true;
         screen.editorPreview = preview;
         screen.editorStartMs = Math.max(0, startMs);
         screen.editorReturnFactory = returnFactory;
+        screen.runtimeSongId = songId;
+        screen.runtimeSongFolder = songFolder;
+        screen.runtimeSongEntry = songEntry;
+        screen.customNoteTextures.close();
+        Path resourceRoot = songEntry == null ? songFolder
+                : (songEntry.modRoot != null ? songEntry.modRoot : songEntry.folder);
+        screen.customNoteTextures = new PsychNoteTextureCache(songFolder, resourceRoot,
+                songEntry == null || songEntry.allows(SongLibrary.ExternalContent.IMAGES));
+        // The normal constructor starts a session camera before it knows this is
+        // an editor playtest. Rebuild it using the editor-safe virtual stage.
+        GameplayCamera.end();
+        screen.beginCamera();
         screen.prepareEditorStart();
         return screen;
     }
@@ -249,13 +268,9 @@ public class GameplayScreen extends Screen {
             myLaneIndex[lane] = skipNotesBefore(myLanes[lane], cutoff);
             otherLaneIndex[lane] = skipNotesBefore(otherLanes[lane], cutoff);
         }
-        while (eventIndex < chart.events.size() && chart.events.get(eventIndex).beforeSong) {
-            eventIndex++;
-        }
-        while (eventIndex < chart.events.size() && !chart.events.get(eventIndex).beforeSong
-                && chart.events.get(eventIndex).timeMs < editorStartMs) {
-            eventIndex++;
-        }
+        // Keep the event cursor at zero. When playback starts, events up to the
+        // requested conductor time run immediately so camera/event state is
+        // reconstructed instead of silently discarded.
     }
 
     private static int skipNotesBefore(List<GameNote> notes, double cutoff) {
@@ -290,6 +305,20 @@ public class GameplayScreen extends Screen {
             return p == null ? null : p.position().add(0, 1.0, 0);
         };
         float[] myBase = CharacterAnimations.baseCameraOffset(myAnimSet);
+
+        if (editorPlaytest) {
+            // The real gameplay session has already restored the player before
+            // opening the editor, so its old stage coordinates no longer match.
+            // Build a virtual opponent relative to the player's current position.
+            Vec3 playerFocus = mc.player.position().add(0, 1.0, 0);
+            Vec3 opponentFocus = playerFocus.add(
+                    -right.getStepX() * 3.0, 0, -right.getStepZ() * 3.0);
+            Supplier<Vec3> virtualOpponent = () -> opponentFocus;
+            float[] opponentBase = CharacterAnimations.baseCameraOffset(CharacterAnimations.DEFAULT_SET);
+            GameplayCamera.begin(playerFocus, facing.toYRot(), mePos, mePos, virtualOpponent,
+                    myBase, opponentBase);
+            return;
+        }
 
         if (playBoth) {
             // one character center stage playing everything: camera just stays on them
@@ -378,7 +407,7 @@ public class GameplayScreen extends Screen {
         if (dtMs > 100) dtMs = 100;
 
         if (luaRuntime == null && width > 0 && height > 0) {
-            luaRuntime = PsychLuaRuntime.load(this, chart);
+            luaRuntime = PsychLuaRuntime.load(this, chart, runtimeSongId, runtimeSongFolder, runtimeSongEntry);
             rebuildNoteLanesAfterLuaCreate();
         }
         // Load-triggered events must run before updateSongPos can start audio.
@@ -572,7 +601,11 @@ public class GameplayScreen extends Screen {
     private void executeEvent(int eventIndex, SongChart.Event event) {
         if (isMinecraftCommandEvent(event)) {
             if ("server".equalsIgnoreCase(event.value2.trim())) {
-                PacketDistributor.sendToServer(new FnfPayloads.CommandEventC2S(machinePos, eventIndex));
+                // Editor playtests have no authoritative server song session.
+                // Run through the player's normal command connection instead;
+                // multiplayer permissions still apply.
+                if (editorPlaytest) runPlayerCommand(event.value1);
+                else PacketDistributor.sendToServer(new FnfPayloads.CommandEventC2S(machinePos, eventIndex));
             } else {
                 runPlayerCommand(event.value1);
             }
