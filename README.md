@@ -237,6 +237,9 @@ third-person for the song and restored afterwards.
   run once after gameplay and command targets load, while the countdown is still active.
 - Event `+`/`-` buttons add or remove events at one timestamp. `<`/`>` select which
   stacked event is being edited. Saves use Psych's grouped event-point format.
+- The event dropdown includes `.lua`/`.txt` definitions from the active pack's
+  `custom_events/` folder and imported event names already present in the chart.
+  Scroll the dropdown when the list is taller than the current GUI resolution.
 - **Camera Zoom** events use Value 1 as a persistent zoom offset (`0` normal,
   positive in, negative out) and Value 2 as a 500 ms easing preset.
 - **Camera Focus** events override Must Hit focus using Value 1 (`player` or
