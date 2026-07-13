@@ -12,7 +12,7 @@ Requires: [playerAnimator](https://modrinth.com/mod/playeranimator) (2.0.0+ for 
 - **Multiplayer**: the first player to click the machine picks the song ("Play VS"), the second player to click joins as the opponent side. On servers, only songs installed **on the server** are playable — the server streams the chart + audio to players who don't have them (cached in `config/fnfmod/cache/`).
 - **Chart editor**: `/fnf editor [song]` or the button in the song menu. Saves Psych Engine format.
 - `/fnf reload` reloads all FNF content without restarting. Targeted forms:
-  `/fnf reload songs|skins|splashes|animations|icons|hitsounds|options|scores`.
+  `/fnf reload songs|skins|splashes|animations|icons|hitsounds|fonts|options|scores`.
 
 ## Song folder format
 
@@ -115,6 +115,22 @@ unrestricted filesystem access are disabled. Psych features that require its act
 HaxeFlixel runtime cannot exist unchanged in Minecraft: HScript/Haxe reflection,
 Flixel shaders, video/dialogue, custom substates, Psych sound objects, and full
 Sparrow/FlxAnimate playback currently return safely without crashing.
+
+### Lua custom fonts
+
+`setTextFont(tag, "FontName.ttf")` supports multiple TTF and OTF files. Fonts are
+searched in this order:
+
+```
+config/fnfmod/songs/<song>/fonts/
+config/fnfmod/mods/<pack>/fonts/
+config/fnfmod/fonts/                 <- global fonts
+```
+
+Pack/song fonts are transferred with songs in multiplayer. Each Lua text object
+can select a different font. Missing or invalid files fall back to Minecraft's
+default font and are reported in the log. `setTextWidth` also wraps Lua text at
+the requested width.
 
 ## Note skins (Sparrow XML!)
 

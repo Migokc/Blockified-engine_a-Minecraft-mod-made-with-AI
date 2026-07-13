@@ -1,6 +1,7 @@
 package com.fnfmod.song;
 
 import java.nio.file.Path;
+import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -147,6 +148,8 @@ public class SongEntry {
         }
         addIf(out, eventsFile);
         for (Path lua : luaFiles) addIf(out, lua);
+        addFonts(out, modRoot);
+        if (folder != null && !folder.equals(modRoot)) addFonts(out, folder);
         return out;
     }
 
@@ -163,5 +166,17 @@ public class SongEntry {
 
     private static void addIf(List<Path> list, Path p) {
         if (p != null && !list.contains(p)) list.add(p);
+    }
+
+    private static void addFonts(List<Path> list, Path root) {
+        if (root == null) return;
+        Path fonts = root.resolve("fonts");
+        if (!Files.isDirectory(fonts)) return;
+        try (var files = Files.list(fonts)) {
+            files.filter(Files::isRegularFile).filter(path -> {
+                String name = path.getFileName().toString().toLowerCase(java.util.Locale.ROOT);
+                return name.endsWith(".ttf") || name.endsWith(".otf");
+            }).sorted().forEach(path -> addIf(list, path));
+        } catch (Exception ignored) {}
     }
 }
