@@ -75,7 +75,8 @@ public final class PsychLuaRuntime implements AutoCloseable {
         String text = "";
         String fontName = "";
         String camera = "game";
-        double x, y, width = 100, height = 100, scaleX = 1, scaleY = 1;
+        double x, y, width = 100, height = 100, graphicWidth = 100, graphicHeight = 100;
+        double scaleX = 1, scaleY = 1;
         double alpha = 1, angle;
         int color = 0xFFFFFFFF;
         int textSize = 16;
@@ -410,7 +411,8 @@ public final class PsychLuaRuntime implements AutoCloseable {
         fn(g, "makeAnimatedLuaSprite", args -> { makeObject(args, false, true); return LuaValue.NIL; });
         fn(g, "makeLuaText", args -> { makeObject(args, true, false); return LuaValue.NIL; });
         fn(g, "makeGraphic", args -> { LuaObject o = object(args.checkjstring(1)); disposeGraphic(o);
-                o.width = args.optint(2, 256); o.height = args.optint(3, 256); o.sizeExplicit = true;
+                o.width = args.optint(2, 256); o.height = args.optint(3, 256);
+                o.graphicWidth = o.width; o.graphicHeight = o.height; o.sizeExplicit = true;
                 o.color = color(args.optjstring(4, "FFFFFF")); return LuaValue.NIL; });
         fn(g, "addLuaSprite", args -> { object(args.checkjstring(1)).added = true; return LuaValue.NIL; });
         fn(g, "addLuaText", args -> { object(args.checkjstring(1)).added = true; return LuaValue.NIL; });
@@ -430,9 +432,8 @@ public final class PsychLuaRuntime implements AutoCloseable {
         fn(g, "setObjectCamera", args -> { object(args.checkjstring(1)).camera = args.optjstring(2, "game"); return LuaValue.NIL; });
         fn(g, "setObjectOrder", args -> { object(args.checkjstring(1)).order = args.optint(2, 0); return LuaValue.NIL; });
         fn(g, "getObjectOrder", args -> LuaValue.valueOf(object(args.checkjstring(1)).order));
-        fn(g, "setGraphicSize", args -> { LuaObject o = object(args.checkjstring(1)); o.width = args.optdouble(2, o.width);
-                if (!args.arg(3).isnil() && args.optdouble(3, 0) != 0) o.height = args.optdouble(3, o.height);
-                o.sizeExplicit = true; return LuaValue.NIL; });
+        fn(g, "setGraphicSize", args -> { setGraphicSize(object(args.checkjstring(1)),
+                args.optdouble(2, 0), args.arg(3).isnil() ? 0 : args.optdouble(3, 0)); return LuaValue.NIL; });
         fn(g, "scaleObject", args -> { LuaObject o = object(args.checkjstring(1)); o.scaleX = args.optdouble(2, 1);
                 o.scaleY = args.optdouble(3, 1); return LuaValue.NIL; });
         fn(g, "loadGraphic", args -> { LuaObject o = object(args.checkjstring(1));
@@ -561,6 +562,8 @@ public final class PsychLuaRuntime implements AutoCloseable {
             object.texture = id;
             object.textureWidth = image.getWidth();
             object.textureHeight = image.getHeight();
+            object.graphicWidth = image.getWidth();
+            object.graphicHeight = image.getHeight();
             if (!object.sizeExplicit) {
                 object.width = image.getWidth();
                 object.height = image.getHeight();
@@ -600,11 +603,29 @@ public final class PsychLuaRuntime implements AutoCloseable {
         object.textureWidth = atlas.width();
         object.textureHeight = atlas.height();
         SparrowAtlas.Frame first = atlas.allFrames().get(0);
+        object.graphicWidth = Math.max(1, first.frameW);
+        object.graphicHeight = Math.max(1, first.frameH);
         if (!object.sizeExplicit) {
-            object.width = Math.max(1, first.frameW);
-            object.height = Math.max(1, first.frameH);
+            object.width = object.graphicWidth;
+            object.height = object.graphicHeight;
         }
         return true;
+    }
+
+    private static void setGraphicSize(LuaObject object, double requestedWidth, double requestedHeight) {
+        double sourceWidth = Math.max(1, object.graphicWidth);
+        double sourceHeight = Math.max(1, object.graphicHeight);
+        if (requestedWidth > 0 && requestedHeight > 0) {
+            object.width = requestedWidth;
+            object.height = requestedHeight;
+        } else if (requestedWidth > 0) {
+            object.width = requestedWidth;
+            object.height = requestedWidth * sourceHeight / sourceWidth;
+        } else if (requestedHeight > 0) {
+            object.height = requestedHeight;
+            object.width = requestedHeight * sourceWidth / sourceHeight;
+        }
+        object.sizeExplicit = true;
     }
 
     private boolean addAnimationByPrefix(Varargs args) {
@@ -1091,11 +1112,10 @@ public final class PsychLuaRuntime implements AutoCloseable {
     }
 
     private void renderObject(GuiGraphics gui, LuaObject o, float z) {
-        int x = (int) Math.round(o.x), y = (int) Math.round(o.y);
         int alpha = Math.max(0, Math.min(255, (int) Math.round(o.alpha * 255)));
         int color = (o.color & 0x00FFFFFF) | alpha << 24;
         gui.pose().pushPose();
-        gui.pose().translate(x, y, z);
+        gui.pose().translate(o.x, o.y, z);
         gui.pose().scale((float) o.scaleX, (float) o.scaleY, 1);
         if (o.angle != 0) gui.pose().mulPose(com.mojang.math.Axis.ZP.rotationDegrees((float) o.angle));
         if (o.textObject) {
@@ -1144,8 +1164,10 @@ public final class PsychLuaRuntime implements AutoCloseable {
 
     private static void renderAtlasFrame(GuiGraphics gui, LuaObject object, SparrowAtlas.Frame frame) {
         double[] offset = currentAnimationOffset(object);
-        float scaleX = (float) (object.width / Math.max(1, frame.frameW));
-        float scaleY = (float) (object.height / Math.max(1, frame.frameH));
+        // Keep one scale for the whole atlas. Scaling every frame against its
+        // own frameWidth/frameHeight makes trimmed animations wobble and warp.
+        float scaleX = (float) (object.width / Math.max(1, object.graphicWidth));
+        float scaleY = (float) (object.height / Math.max(1, object.graphicHeight));
         gui.pose().pushPose();
         gui.pose().translate((-frame.frameX - offset[0]) * scaleX,
                 (-frame.frameY - offset[1]) * scaleY, 0);

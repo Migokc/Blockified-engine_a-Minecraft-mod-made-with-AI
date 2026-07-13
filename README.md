@@ -141,7 +141,8 @@ end
 `addAnimation`, `addAnimationByPrefix`, `addAnimationByIndices`, `playAnim`,
 `addOffset`, and their legacy `luaSprite...` aliases are supported. Sparrow frame
 trimming, rotated atlas frames, frame rate, looping, reverse playback, and start
-frames are preserved.
+frames are preserved. Animated frames keep one atlas-wide scale, so differing
+Sparrow trim boxes do not make sprites wobble or resize between frames.
 
 In the chart editor's **File** menu, **Import Complete Song** first saves the current
 chart as the active local override. It then copies the song audio, every other
