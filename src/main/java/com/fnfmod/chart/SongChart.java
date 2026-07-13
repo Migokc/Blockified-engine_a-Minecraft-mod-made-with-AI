@@ -17,6 +17,8 @@ public class SongChart {
     public boolean needsVoices = true;
     public String player1 = "bf";
     public String player2 = "dad";
+    /** Psych stage id used to discover stages/<stage>.lua. */
+    public String stage = "stage";
 
     public final List<BpmChange> bpmChanges = new ArrayList<>();
     /** All notes, sorted by time. */
