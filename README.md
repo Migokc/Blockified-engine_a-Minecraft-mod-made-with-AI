@@ -223,6 +223,25 @@ the text; use `0` for no width limit. `setTextFont`, `setTextString`, text color
 alpha, angle, scale, `setObjectOrder`, `doTweenX/Y/Z`, billboard mode, and world
 lighting work the same way as they do for world sprites.
 
+World objects also support local three-axis rotation. X is pitch, Y is yaw, and
+Z is roll. Psych's existing `angle` and `doTweenAngle` remain aliases for Z:
+
+```lua
+setObjectRotation('worldSign', 25, 45, 0)
+setProperty('worldSign.rotation.x', 25)
+setProperty('worldSign.rotation.y', 45)
+setProperty('worldSign.rotation.z', 0)
+
+doTweenAngleX('pitchSign', 'worldSign', 360, 2, 'sineInOut')
+doTweenAngleY('yawSign', 'worldSign', 360, 2, 'linear')
+doTweenAngleZ('rollSign', 'worldSign', 360, 2, 'linear')
+```
+
+`rotationX`/`angleX`, `rotationY`/`angleY`, and `rotationZ`/`angleZ` are property
+aliases. `doTweenRotationX/Y/Z` are aliases for the three new tween functions.
+Rotation is applied after billboard or fixed-stage orientation, so these values
+act as local offsets instead of replacing the object's camera-facing behavior.
+
 World objects billboard toward the camera by default, like vanilla name tags.
 Use `setWorldSpriteBillboard(tag, false)` or set `tag.billboard` to `false` to
 lock the sprite to the stage direction. They use Minecraft world lighting by

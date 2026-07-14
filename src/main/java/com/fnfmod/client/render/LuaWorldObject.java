@@ -12,6 +12,8 @@ public sealed interface LuaWorldObject permits LuaWorldObject.Sprite, LuaWorldOb
     double scaleY();
     double alpha();
     double angle();
+    double rotationX();
+    double rotationY();
     int color();
     boolean billboard();
     boolean lighting();
@@ -38,6 +40,8 @@ public sealed interface LuaWorldObject permits LuaWorldObject.Sprite, LuaWorldOb
             double scaleY,
             double alpha,
             double angle,
+            double rotationX,
+            double rotationY,
             int color,
             boolean billboard,
             boolean lighting
@@ -55,6 +59,8 @@ public sealed interface LuaWorldObject permits LuaWorldObject.Sprite, LuaWorldOb
             double scaleY,
             double alpha,
             double angle,
+            double rotationX,
+            double rotationY,
             int color,
             boolean billboard,
             boolean lighting

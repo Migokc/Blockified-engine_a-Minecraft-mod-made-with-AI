@@ -83,7 +83,7 @@ public final class PsychLuaRuntime implements AutoCloseable {
         String camera = "game";
         double x, y, z, width = 100, height = 100, graphicWidth = 100, graphicHeight = 100;
         double scaleX = 1, scaleY = 1;
-        double alpha = 1, angle;
+        double alpha = 1, angle, rotationX, rotationY;
         int color = 0xFFFFFFFF;
         int textSize = 16;
         boolean visible = true, added, textObject, sizeExplicit;
@@ -441,6 +441,9 @@ public final class PsychLuaRuntime implements AutoCloseable {
         fn(g, "setWorldSpriteBillboard", args -> { object(args.checkjstring(1)).worldBillboard = args.optboolean(2, true); return LuaValue.NIL; });
         fn(g, "setWorldSpriteLighting", args -> { object(args.checkjstring(1)).worldLighting = args.optboolean(2, true); return LuaValue.NIL; });
         fn(g, "setWorldSpriteShadows", args -> { object(args.checkjstring(1)).worldLighting = args.optboolean(2, true); return LuaValue.NIL; });
+        fn(g, "setObjectRotation", args -> { LuaObject o = object(args.checkjstring(1));
+                o.rotationX = args.optdouble(2, o.rotationX); o.rotationY = args.optdouble(3, o.rotationY);
+                o.angle = args.optdouble(4, o.angle); return LuaValue.NIL; });
         fn(g, "setObjectOrder", args -> { object(args.checkjstring(1)).order = args.optint(2, 0); return LuaValue.NIL; });
         fn(g, "getObjectOrder", args -> LuaValue.valueOf(object(args.checkjstring(1)).order));
         fn(g, "setGraphicSize", args -> { setGraphicSize(object(args.checkjstring(1)),
@@ -476,6 +479,10 @@ public final class PsychLuaRuntime implements AutoCloseable {
         fn(g, "cancelTween", args -> { tweens.remove(args.optjstring(1, "")); return LuaValue.NIL; });
         tweenFn(g, "doTweenX", "x"); tweenFn(g, "doTweenY", "y"); tweenFn(g, "doTweenZ", "z");
         tweenFn(g, "doTweenAngle", "angle"); tweenFn(g, "doTweenAlpha", "alpha");
+        tweenFn(g, "doTweenAngleX", "rotation.x"); tweenFn(g, "doTweenAngleY", "rotation.y");
+        tweenFn(g, "doTweenAngleZ", "angle");
+        tweenFn(g, "doTweenRotationX", "rotation.x"); tweenFn(g, "doTweenRotationY", "rotation.y");
+        tweenFn(g, "doTweenRotationZ", "angle");
         fn(g, "doTweenZoom", args -> { String tag = args.checkjstring(1); double value = args.optdouble(3, 1);
                 double duration = args.optdouble(4, 1); String ease = args.optjstring(5, "linear");
                 startTween(tag, "camGame.zoom", number(getProperty("camGame.zoom"), 1), value, duration, ease); return LuaValue.NIL; });
@@ -893,6 +900,9 @@ public final class PsychLuaRuntime implements AutoCloseable {
             case "x" -> o.x; case "y" -> o.y; case "z" -> o.z;
             case "width" -> o.width; case "height" -> o.height;
             case "alpha" -> o.alpha; case "angle" -> o.angle; case "visible" -> o.visible;
+            case "rotation.x", "rotationX", "angleX" -> o.rotationX;
+            case "rotation.y", "rotationY", "angleY" -> o.rotationY;
+            case "rotation.z", "rotationZ", "angleZ" -> o.angle;
             case "color" -> o.color; case "text" -> o.text; case "scale.x" -> o.scaleX;
             case "scale.y" -> o.scaleY; case "offset.x" -> offset[0]; case "offset.y" -> offset[1];
             case "billboard", "worldBillboard", "alwaysFaceCamera" -> o.worldBillboard;
@@ -914,6 +924,9 @@ public final class PsychLuaRuntime implements AutoCloseable {
             case "width" -> { o.width = number(value, o.width); o.sizeExplicit = true; }
             case "height" -> { o.height = number(value, o.height); o.sizeExplicit = true; }
             case "alpha" -> o.alpha = number(value, o.alpha); case "angle" -> o.angle = number(value, o.angle);
+            case "rotation.x", "rotationX", "angleX" -> o.rotationX = number(value, o.rotationX);
+            case "rotation.y", "rotationY", "angleY" -> o.rotationY = number(value, o.rotationY);
+            case "rotation.z", "rotationZ", "angleZ" -> o.angle = number(value, o.angle);
             case "visible" -> o.visible = bool(value); case "color" -> o.color = value instanceof Number n ? n.intValue() : color(String.valueOf(value));
             case "text" -> o.text = String.valueOf(value); case "scale.x" -> o.scaleX = number(value, o.scaleX);
             case "scale.y" -> o.scaleY = number(value, o.scaleY);
@@ -1145,7 +1158,7 @@ public final class PsychLuaRuntime implements AutoCloseable {
                 Font font = selected == null ? Minecraft.getInstance().font : selected;
                 worldObjects.add(new LuaWorldObject.Text(
                         font, o.text, o.x, o.y, o.z, o.width, o.textSize,
-                        o.scaleX, o.scaleY, o.alpha, o.angle, o.color,
+                        o.scaleX, o.scaleY, o.alpha, o.angle, o.rotationX, o.rotationY, o.color,
                         o.worldBillboard, o.worldLighting));
             } else {
                     SparrowAtlas.Frame frame = o.texture == null ? null : currentFrame(o);
@@ -1156,7 +1169,7 @@ public final class PsychLuaRuntime implements AutoCloseable {
                     worldObjects.add(new LuaWorldObject.Sprite(
                             o.texture, o.textureWidth, o.textureHeight, renderFrame, offset[0], offset[1],
                             o.x, o.y, o.z, o.width, o.height, o.graphicWidth, o.graphicHeight,
-                            o.scaleX, o.scaleY, o.alpha, o.angle, o.color,
+                            o.scaleX, o.scaleY, o.alpha, o.angle, o.rotationX, o.rotationY, o.color,
                             o.worldBillboard, o.worldLighting));
             }
         }

@@ -56,20 +56,16 @@ public final class LuaWorldObjectRenderer {
 
             if (object instanceof LuaWorldObject.Sprite sprite) {
                 orientSprite(poseStack, camera, stageFacing, sprite.billboard());
+                applyLocalRotation(poseStack, sprite);
                 poseStack.scale((float) sprite.scaleX() * PIXEL_SCALE,
                         (float) -sprite.scaleY() * PIXEL_SCALE, PIXEL_SCALE);
-                if (sprite.angle() != 0) {
-                    poseStack.mulPose(Axis.ZP.rotationDegrees((float) sprite.angle()));
-                }
                 LuaWorldSpriteRenderer.render(poseStack, buffers, sprite, light);
             } else if (object instanceof LuaWorldObject.Text text) {
                 orientText(poseStack, camera, stageFacing, text.billboard());
+                applyLocalRotation(poseStack, text);
                 float textScale = Math.max(0.25f, text.textSize() / 9f);
                 poseStack.scale((float) -text.scaleX() * PIXEL_SCALE * textScale,
                         (float) -text.scaleY() * PIXEL_SCALE * textScale, PIXEL_SCALE);
-                if (text.angle() != 0) {
-                    poseStack.mulPose(Axis.ZP.rotationDegrees((float) text.angle()));
-                }
                 LuaWorldTextRenderer.render(poseStack, buffers, text, textScale, light);
             }
             poseStack.popPose();
@@ -96,6 +92,19 @@ public final class LuaWorldObjectRenderer {
             // The extra half-turn compensates for the mirrored text plane and
             // makes fixed text face the same stage direction as fixed sprites.
             poseStack.mulPose(Axis.YP.rotationDegrees(180f - stageFacing.toYRot()));
+        }
+    }
+
+    /** Applies local pitch, yaw, then roll after billboard/stage orientation. */
+    private static void applyLocalRotation(PoseStack poseStack, LuaWorldObject object) {
+        if (object.rotationX() != 0) {
+            poseStack.mulPose(Axis.XP.rotationDegrees((float) object.rotationX()));
+        }
+        if (object.rotationY() != 0) {
+            poseStack.mulPose(Axis.YP.rotationDegrees((float) object.rotationY()));
+        }
+        if (object.angle() != 0) {
+            poseStack.mulPose(Axis.ZP.rotationDegrees((float) object.angle()));
         }
     }
 }
