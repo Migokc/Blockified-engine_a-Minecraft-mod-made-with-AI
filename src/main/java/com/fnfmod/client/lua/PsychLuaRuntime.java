@@ -10,7 +10,8 @@ import com.fnfmod.client.ClientSession;
 import com.fnfmod.client.FnfKeys;
 import com.fnfmod.client.camera.GameplayCamera;
 import com.fnfmod.client.gui.GameplayScreen;
-import com.fnfmod.client.render.LuaWorldSpriteRenderer;
+import com.fnfmod.client.render.LuaWorldObject;
+import com.fnfmod.client.render.LuaWorldObjectRenderer;
 import com.fnfmod.client.render.SparrowAtlas;
 import com.fnfmod.song.SongEntry;
 import com.fnfmod.song.SongLibrary;
@@ -550,6 +551,9 @@ public final class PsychLuaRuntime implements AutoCloseable {
             object.sizeExplicit = object.width > 0;
             object.x = args.optdouble(4, 0);
             object.y = args.optdouble(5, 0);
+            // Psych uses five arguments. Blockified Engine accepts an optional
+            // sixth Z coordinate for text assigned to the world camera.
+            object.z = args.optdouble(6, 0);
         } else {
             object.image = args.optjstring(2, "");
             object.x = args.optdouble(3, 0);
@@ -1130,23 +1134,33 @@ public final class PsychLuaRuntime implements AutoCloseable {
 
     public void renderWorld(PoseStack poseStack, Camera camera, BlockPos speakers, Direction facing) {
         if (closed || objects.isEmpty()) return;
-        List<LuaWorldSpriteRenderer.Sprite> sprites = objects.values().stream()
+        List<LuaObject> visible = objects.values().stream()
                 .filter(o -> o.added && o.visible && o.camera.equalsIgnoreCase("world"))
-                .filter(o -> !o.textObject)
                 .sorted(Comparator.comparingInt(o -> o.order))
-                .map(o -> {
+                .toList();
+        List<LuaWorldObject> worldObjects = new ArrayList<>(visible.size());
+        for (LuaObject o : visible) {
+            if (o.textObject) {
+                Font selected = o.fontName.isBlank() ? null : fontLoader.get(o.fontName);
+                Font font = selected == null ? Minecraft.getInstance().font : selected;
+                worldObjects.add(new LuaWorldObject.Text(
+                        font, o.text, o.x, o.y, o.z, o.width, o.textSize,
+                        o.scaleX, o.scaleY, o.alpha, o.angle, o.color,
+                        o.worldBillboard, o.worldLighting));
+            } else {
                     SparrowAtlas.Frame frame = o.texture == null ? null : currentFrame(o);
-                    LuaWorldSpriteRenderer.Frame renderFrame = frame == null ? null
-                            : new LuaWorldSpriteRenderer.Frame(frame.x, frame.y, frame.w, frame.h,
+                    LuaWorldObject.Frame renderFrame = frame == null ? null
+                            : new LuaWorldObject.Frame(frame.x, frame.y, frame.w, frame.h,
                             frame.frameX, frame.frameY, frame.rotated);
                     double[] offset = currentAnimationOffset(o);
-                    return new LuaWorldSpriteRenderer.Sprite(
+                    worldObjects.add(new LuaWorldObject.Sprite(
                             o.texture, o.textureWidth, o.textureHeight, renderFrame, offset[0], offset[1],
                             o.x, o.y, o.z, o.width, o.height, o.graphicWidth, o.graphicHeight,
                             o.scaleX, o.scaleY, o.alpha, o.angle, o.color,
-                            o.worldBillboard, o.worldLighting);
-                }).toList();
-        LuaWorldSpriteRenderer.render(poseStack, camera, speakers, facing, sprites);
+                            o.worldBillboard, o.worldLighting));
+            }
+        }
+        LuaWorldObjectRenderer.render(poseStack, camera, speakers, facing, worldObjects);
     }
 
     private void renderObject(GuiGraphics gui, LuaObject o, float z) {

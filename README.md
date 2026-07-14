@@ -188,8 +188,8 @@ changes order only among Lua objects on the same camera.
 
 ### Lua world camera
 
-Static and animated Lua sprites can be placed in the Minecraft level by assigning
-the new `world` camera. The Funkin' Machine/speakers center is `(0, 0, 0)`;
+Static and animated Lua sprites, graphics, and text can be placed in the Minecraft
+level by assigning the `world` camera. The Funkin' Machine/speakers center is `(0, 0, 0)`;
 64 Lua pixels equal one Minecraft block. `x` points to stage-right, `y` points
 down like normal Psych sprite coordinates, and `z` points toward the stage camera.
 Normal property changes, `doTweenX`, `doTweenY`, `doTweenZ`, scale, angle, alpha,
@@ -208,7 +208,22 @@ function onCreate()
 end
 ```
 
-World sprites billboard toward the camera by default, like vanilla name tags.
+World text uses Psych Engine's normal `makeLuaText(tag, text, width, x, y)`
+signature and also accepts an optional sixth `z` coordinate:
+
+```lua
+makeLuaText('worldLabel', 'Hello!', 240, 0, -96, 32)
+setObjectCamera('worldLabel', 'world')
+setTextSize('worldLabel', 24)
+addLuaText('worldLabel')
+```
+
+The position is the text block's center in world-camera pixels. `width` wraps
+the text; use `0` for no width limit. `setTextFont`, `setTextString`, text color,
+alpha, angle, scale, `setObjectOrder`, `doTweenX/Y/Z`, billboard mode, and world
+lighting work the same way as they do for world sprites.
+
+World objects billboard toward the camera by default, like vanilla name tags.
 Use `setWorldSpriteBillboard(tag, false)` or set `tag.billboard` to `false` to
 lock the sprite to the stage direction. They use Minecraft world lighting by
 default; use `setWorldSpriteLighting(tag, false)`, `setWorldSpriteShadows(tag,
@@ -376,9 +391,10 @@ The source keeps reusable behavior outside GUI screens where possible:
   deletion. `SongLibrary` retains compatibility methods that delegate to it.
 - `client/render/NoteSkinConfig.java` is the immutable, validated representation
   of `skin.json`; `NoteStyle` only consumes the resulting values.
-- `client/render/LuaWorldSpriteRenderer.java` owns Minecraft world rendering for
-  Lua sprites. `PsychLuaRuntime` supplies immutable snapshots rather than exposing
-  live script objects to the renderer.
+- `client/render/LuaWorldObjectRenderer.java` owns common world positioning and
+  ordering. Immutable records in `LuaWorldObject.java` are delegated to the
+  separate sprite and text renderers, so another world-object type can be added
+  without exposing live script objects or growing `PsychLuaRuntime`.
 
 These classes are intended as stable starting points for contributors. Keep file
 I/O, parsing, and rendering out of screens when adding comparable features.
