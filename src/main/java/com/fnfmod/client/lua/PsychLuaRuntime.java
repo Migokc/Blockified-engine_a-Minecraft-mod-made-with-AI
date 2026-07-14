@@ -573,11 +573,16 @@ public final class PsychLuaRuntime implements AutoCloseable {
     private void loadObjectImage(LuaObject object, String imageName) {
         Path png = resolveImage(imageName);
         if (png == null) return;
+        NativeImage image = null;
+        DynamicTexture texture = null;
+        ResourceLocation id = null;
+        boolean registered = false;
         try (var input = Files.newInputStream(png)) {
-            NativeImage image = NativeImage.read(input);
-            DynamicTexture texture = new DynamicTexture(image);
-            ResourceLocation id = FnfMod.id("psych_lua/" + NEXT_TEXTURE.incrementAndGet());
+            image = NativeImage.read(input);
+            texture = new DynamicTexture(image);
+            id = FnfMod.id("psych_lua/" + NEXT_TEXTURE.incrementAndGet());
             Minecraft.getInstance().getTextureManager().register(id, texture);
+            registered = true;
             disposeGraphic(object);
             object.dynamicTexture = texture;
             object.texture = id;
@@ -589,7 +594,17 @@ public final class PsychLuaRuntime implements AutoCloseable {
                 object.width = image.getWidth();
                 object.height = image.getHeight();
             }
+            registered = false;
+            texture = null;
+            image = null;
         } catch (Exception error) {
+            if (registered && id != null) {
+                Minecraft.getInstance().getTextureManager().release(id);
+            } else if (texture != null) {
+                texture.close();
+            } else if (image != null) {
+                image.close();
+            }
             warnOnce("image " + imageName + ": " + compactError(error));
         }
     }
@@ -753,7 +768,11 @@ public final class PsychLuaRuntime implements AutoCloseable {
 
     private void disposeGraphic(LuaObject object) {
         if (object.dynamicTexture != null) {
-            object.dynamicTexture.close();
+            if (object.texture != null) {
+                Minecraft.getInstance().getTextureManager().release(object.texture);
+            } else {
+                object.dynamicTexture.close();
+            }
             object.dynamicTexture = null;
         }
         if (object.atlas != null) {

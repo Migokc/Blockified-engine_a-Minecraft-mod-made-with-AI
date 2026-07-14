@@ -48,10 +48,13 @@ public final class ClientSession {
     private static List<FnfPayloads.FileMeta> manifest = List.of();
     private static final Map<String, byte[][]> receiving = new HashMap<>();
     private static List<String> missingFiles = new ArrayList<>();
+    /** Invalidates asynchronous hash checks when a session changes or the client disconnects. */
+    private static long generation;
 
     private ClientSession() {}
 
     public static void reset() {
+        generation++;
         activePos = null;
         songId = "";
         difficulty = "";
@@ -83,12 +86,16 @@ public final class ClientSession {
         duet = payload.duet();
         manifest = payload.files();
         receiving.clear();
+        long requestGeneration = ++generation;
+        String requestedSongId = songId;
+        List<FnfPayloads.FileMeta> requestedManifest = List.copyOf(manifest);
 
         Minecraft.getInstance().setScreen(new WaitingScreen(Component.literal("Loading song...")));
 
         // hash checking can be slow for big oggs -> background thread
-        CompletableFuture.supplyAsync(ClientSession::checkLocalFiles).whenComplete((result, err) -> {
+        CompletableFuture.supplyAsync(() -> checkLocalFiles(requestedSongId, requestedManifest)).whenComplete((result, err) -> {
             Minecraft.getInstance().execute(() -> {
+                if (requestGeneration != generation) return;
                 if (err != null) {
                     fail("Error checking song files: " + err.getMessage());
                     return;
@@ -114,10 +121,10 @@ public final class ClientSession {
 
     private record LocalCheck(boolean allLocal, List<String> missingInCache) {}
 
-    private static LocalCheck checkLocalFiles() {
-        Path songDir = SongLibrary.songsDir().resolve(songId);
+    private static LocalCheck checkLocalFiles(String requestedSongId, List<FnfPayloads.FileMeta> requestedManifest) {
+        Path songDir = SongLibrary.songsDir().resolve(requestedSongId);
         boolean allLocal = true;
-        for (FnfPayloads.FileMeta meta : manifest) {
+        for (FnfPayloads.FileMeta meta : requestedManifest) {
             if (!matches(manifestPath(songDir, meta.name()), meta)) {
                 allLocal = false;
                 break;
@@ -125,9 +132,9 @@ public final class ClientSession {
         }
         if (allLocal) return new LocalCheck(true, List.of());
 
-        Path cacheDir = SongLibrary.cacheDir().resolve(sanitize(songId));
+        Path cacheDir = SongLibrary.cacheDir().resolve(sanitize(requestedSongId));
         List<String> missing = new ArrayList<>();
-        for (FnfPayloads.FileMeta meta : manifest) {
+        for (FnfPayloads.FileMeta meta : requestedManifest) {
             if (!matches(manifestPath(cacheDir, meta.name()), meta)) {
                 missing.add(meta.name());
             }

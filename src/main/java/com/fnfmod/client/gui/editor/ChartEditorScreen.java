@@ -188,6 +188,7 @@ public final class ChartEditorScreen extends Screen {
     @Override
     protected void init() {
         if (chart == null) loadChart();
+        ensureAudioLoaded();
         clampOrInitializeInfoWindow();
         rebuildUi();
     }
@@ -240,16 +241,26 @@ public final class ChartEditorScreen extends Screen {
         loadedDifficulty = difficulty;
         discoverEventTypes();
 
-        if (entry != null && entry.instFor(difficulty) != null) {
-            try {
-                audio = new SongPlayer();
-                audio.load(entry.instFor(difficulty), entry.voicesFor(difficulty),
-                        entry.voicesPlayerFor(difficulty), entry.voicesOpponentFor(difficulty));
-            } catch (Exception e) {
-                audio = null;
-                FnfMod.LOGGER.warn("Editor: audio unavailable: {}", e.toString());
-            }
+        ensureAudioLoaded();
+    }
+
+    private void ensureAudioLoaded() {
+        if (audio != null || entry == null || entry.instFor(loadedDifficulty) == null) return;
+        SongPlayer candidate = new SongPlayer();
+        try {
+            candidate.load(entry.instFor(loadedDifficulty), entry.voicesFor(loadedDifficulty),
+                    entry.voicesPlayerFor(loadedDifficulty), entry.voicesOpponentFor(loadedDifficulty));
+            audio = candidate;
+        } catch (Exception e) {
+            candidate.dispose();
+            FnfMod.LOGGER.warn("Editor: audio unavailable: {}", e.toString());
         }
+    }
+
+    private void disposeAudio() {
+        if (audio == null) return;
+        audio.dispose();
+        audio = null;
     }
 
     // --------------------------------------------------------------------- UI construction
@@ -1085,8 +1096,8 @@ public final class ChartEditorScreen extends Screen {
             setStatus("A valid Inst.ogg is required to playtest");
             return;
         }
+        SongPlayer playtestAudio = new SongPlayer();
         try {
-            SongPlayer playtestAudio = new SongPlayer();
             playtestAudio.load(entry.instFor(loadedDifficulty),
                     chart.needsVoices ? entry.voicesFor(loadedDifficulty) : null,
                     chart.needsVoices ? entry.voicesPlayerFor(loadedDifficulty) : null,
@@ -1101,7 +1112,9 @@ public final class ChartEditorScreen extends Screen {
             minecraft.setScreen(GameplayScreen.editorPlaytest(machine, chart, playtestAudio, startMs,
                     preview, resourceSongId, resourceFolder, entry,
                     () -> recreateEditor(startMs)));
+            playtestAudio = null; // GameplayScreen owns it now.
         } catch (Exception e) {
+            if (playtestAudio != null) playtestAudio.dispose();
             setStatus("Playtest failed: " + e.getMessage());
             FnfMod.LOGGER.warn("Editor playtest failed: {}", e.toString());
         }
@@ -2043,8 +2056,14 @@ public final class ChartEditorScreen extends Screen {
 
     @Override
     public void onClose() {
-        if (audio != null) audio.dispose();
+        disposeAudio();
         super.onClose();
+    }
+
+    @Override
+    public void removed() {
+        disposeAudio();
+        super.removed();
     }
 
     @Override

@@ -60,20 +60,24 @@ public class SparrowAtlas implements AutoCloseable {
 
     /** Returns null on any failure (missing files, bad xml). */
     public static SparrowAtlas load(Path png, Path xml) {
+        NativeImage image = null;
+        DynamicTexture texture = null;
+        ResourceLocation id = null;
+        boolean registered = false;
         try {
             if (!Files.isRegularFile(png) || !Files.isRegularFile(xml)) return null;
-            NativeImage image;
             try (InputStream in = Files.newInputStream(png)) {
                 image = NativeImage.read(in);
             }
-            ResourceLocation id = FnfMod.id("atlas/" + NEXT_ID.incrementAndGet());
-            DynamicTexture tex = new DynamicTexture(image);
-            Minecraft.getInstance().getTextureManager().register(id, tex);
-            Textures.smooth(tex); // antialias custom skin art (default skin = procedural arrows, untouched)
+            id = FnfMod.id("atlas/" + NEXT_ID.incrementAndGet());
+            texture = new DynamicTexture(image);
+            Minecraft.getInstance().getTextureManager().register(id, texture);
+            registered = true;
+            Textures.smooth(texture); // antialias custom skin art (default skin = procedural arrows, untouched)
 
             SparrowAtlas atlas = new SparrowAtlas(id, image.getWidth(), image.getHeight());
             atlas.image = image;
-            atlas.dynamicTexture = tex;
+            atlas.dynamicTexture = texture;
 
             DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
             factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
@@ -101,6 +105,13 @@ public class SparrowAtlas implements AutoCloseable {
             }
             return atlas;
         } catch (Exception e) {
+            if (registered && id != null) {
+                Minecraft.getInstance().getTextureManager().release(id);
+            } else if (texture != null) {
+                texture.close();
+            } else if (image != null) {
+                image.close();
+            }
             FnfMod.LOGGER.warn("Failed to load sparrow atlas {} / {}: {}", png, xml, e.toString());
             return null;
         }
@@ -181,7 +192,7 @@ public class SparrowAtlas implements AutoCloseable {
     @Override
     public void close() {
         if (dynamicTexture != null) {
-            dynamicTexture.close();
+            Minecraft.getInstance().getTextureManager().release(textureId);
             dynamicTexture = null;
         }
         image = null;

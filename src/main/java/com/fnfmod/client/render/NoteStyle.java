@@ -11,6 +11,9 @@ import net.minecraft.client.renderer.texture.DynamicTexture;
 import net.minecraft.resources.ResourceLocation;
 
 import java.nio.file.Path;
+import java.util.Collections;
+import java.util.IdentityHashMap;
+import java.util.Set;
 
 /**
  * Renders notes/receptors/holds. If config/fnfmod/skins/default/NOTE_assets.png
@@ -114,15 +117,38 @@ public final class NoteStyle {
     private NoteStyle() {}
 
     public static void reload() {
+        closeLoadedResources();
         loaded = false;
-        noteAtlas = null;
-        strumAtlas = null;
-        splashAtlas = null;
-        noteRGB = null;
-        strumRGB = null;
-        splashRGB = null;
-        holdRGB = null;
+        load();
+    }
+
+    private static void closeLoadedResources() {
+        Set<RGBSet> rgbSets = Collections.newSetFromMap(new IdentityHashMap<>());
+        Collections.addAll(rgbSets, noteRGB, strumRGB, splashRGB, holdRGB);
+        rgbSets.remove(null);
+        var textureManager = Minecraft.getInstance().getTextureManager();
+        for (RGBSet set : rgbSets) {
+            for (int lane = 0; lane < 4; lane++) {
+                if (set.id[lane] != null) textureManager.release(set.id[lane]);
+                else if (set.dyn[lane] != null) set.dyn[lane].close();
+                set.id[lane] = null;
+                set.dyn[lane] = null;
+                set.pixels[lane] = null;
+            }
+        }
+        noteRGB = strumRGB = splashRGB = holdRGB = null;
+
+        if (holdSheetTextureId != null) textureManager.release(holdSheetTextureId);
+        holdSheetTextureId = null;
         holdSheetImage = null;
+
+        Set<SparrowAtlas> atlases = Collections.newSetFromMap(new IdentityHashMap<>());
+        Collections.addAll(atlases, noteAtlas, strumAtlas, splashAtlas);
+        Collections.addAll(atlases, coverAtlases);
+        atlases.remove(null);
+        for (SparrowAtlas atlas : atlases) atlas.close();
+        noteAtlas = strumAtlas = splashAtlas = null;
+
         for (int i = 0; i < 4; i++) {
             holdPieces[i] = null;
             holdEnds[i] = null;
@@ -130,7 +156,6 @@ public final class NoteStyle {
             coverAnims[i] = null;
             coverEndAnims[i] = null;
         }
-        load();
     }
 
     /** Selectable skin folders (subfolders of config/fnfmod/skins containing NOTE_assets.png). */
@@ -165,8 +190,10 @@ public final class NoteStyle {
         // classic single atlas (base game / Psych)
         SparrowAtlas classic = SparrowAtlas.load(skinDir.resolve("NOTE_assets.png"), skinDir.resolve("NOTE_assets.xml"));
         // V-Slice split atlases
-        SparrowAtlas vsNotes = SparrowAtlas.load(skinDir.resolve("notes.png"), skinDir.resolve("notes.xml"));
-        SparrowAtlas vsStrums = SparrowAtlas.load(skinDir.resolve("noteStrumline.png"), skinDir.resolve("noteStrumline.xml"));
+        SparrowAtlas vsNotes = classic == null
+                ? SparrowAtlas.load(skinDir.resolve("notes.png"), skinDir.resolve("notes.xml")) : null;
+        SparrowAtlas vsStrums = classic == null
+                ? SparrowAtlas.load(skinDir.resolve("noteStrumline.png"), skinDir.resolve("noteStrumline.xml")) : null;
         noteAtlas = classic != null ? classic : vsNotes;
         strumAtlas = classic != null ? classic : vsStrums;
         if (noteAtlas == null && strumAtlas == null) return;
@@ -351,7 +378,6 @@ public final class NoteStyle {
         if (dst == null || dst.getWidth() != set.src.getWidth() || dst.getHeight() != set.src.getHeight()) {
             dst = new NativeImage(set.src.getWidth(), set.src.getHeight(), true);
             set.pixels[lane] = dst;
-            if (set.dyn[lane] != null) set.dyn[lane].close();
             set.dyn[lane] = new net.minecraft.client.renderer.texture.DynamicTexture(dst);
             Minecraft.getInstance().getTextureManager().register(set.id[lane], set.dyn[lane]);
             Textures.smooth(set.dyn[lane]); // antialias recolored (RGB template) skin notes
@@ -433,13 +459,15 @@ public final class NoteStyle {
 
     /** source pixels of the V-Slice hold sheet, kept for RGB recoloring */
     private static NativeImage holdSheetImage;
+    private static ResourceLocation holdSheetTextureId;
 
     private static void loadVSliceHoldAssets(Path png) {
         holdSheetImage = null;
         try (java.io.InputStream in = java.nio.file.Files.newInputStream(png)) {
             NativeImage img = NativeImage.read(in);
-            holdSheetImage = img;
             ResourceLocation id = registerGenerated("gen/hold/" + System.nanoTime(), img, true);
+            holdSheetImage = img;
+            holdSheetTextureId = id;
             int colW = img.getWidth() / 8;
             if (colW <= 0) return;
             // layout is interleaved per color: [piece, end, piece, end, ...]
@@ -551,10 +579,20 @@ public final class NoteStyle {
 
     private static ResourceLocation registerGenerated(String path, NativeImage image, boolean smooth) {
         ResourceLocation id = FnfMod.id(path);
-        DynamicTexture tex = new DynamicTexture(image);
-        Minecraft.getInstance().getTextureManager().register(id, tex);
-        if (smooth) Textures.smooth(tex); // custom skin art (hold sheet) — arrows stay crisp
-        return id;
+        DynamicTexture tex = null;
+        boolean registered = false;
+        try {
+            tex = new DynamicTexture(image);
+            Minecraft.getInstance().getTextureManager().register(id, tex);
+            registered = true;
+            if (smooth) Textures.smooth(tex); // custom skin art (hold sheet) — arrows stay crisp
+            return id;
+        } catch (RuntimeException error) {
+            if (registered) Minecraft.getInstance().getTextureManager().release(id);
+            else if (tex != null) tex.close();
+            else image.close();
+            throw error;
+        }
     }
 
     /** 32x32 white arrow pointing up. outline=true draws only the border (receptor look). */

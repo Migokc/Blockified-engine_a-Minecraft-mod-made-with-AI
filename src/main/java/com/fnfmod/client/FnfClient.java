@@ -21,6 +21,7 @@ import net.neoforged.neoforge.client.event.RegisterClientCommandsEvent;
 import net.neoforged.neoforge.client.event.RegisterKeyMappingsEvent;
 import net.neoforged.neoforge.client.event.RenderGuiLayerEvent;
 import net.neoforged.neoforge.client.event.RenderLevelStageEvent;
+import net.neoforged.neoforge.client.event.ClientPlayerNetworkEvent;
 import net.neoforged.neoforge.client.event.ViewportEvent;
 import net.neoforged.neoforge.client.gui.VanillaGuiLayers;
 import net.neoforged.neoforge.network.PacketDistributor;
@@ -54,6 +55,11 @@ public final class FnfClient {
 
     @EventBusSubscriber(modid = FnfMod.MODID, value = Dist.CLIENT)
     public static final class GameBus {
+        @SubscribeEvent
+        public static void onClientLogout(ClientPlayerNetworkEvent.LoggingOut event) {
+            ClientSession.reset();
+        }
+
         /** FNF-style beat zoom: pinch the FOV while the gameplay camera is active. */
         @SubscribeEvent
         public static void onComputeFov(ViewportEvent.ComputeFov event) {
