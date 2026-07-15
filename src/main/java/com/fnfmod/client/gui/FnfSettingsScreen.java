@@ -500,7 +500,8 @@ public class FnfSettingsScreen extends Screen {
 
     private Component iconLabel(boolean player) {
         String cur = player ? ClientOptions.get().playerIcon : ClientOptions.get().botIcon;
-        String shown = cur == null || cur.isEmpty() ? "none" : cur;
+        String shown = ClientOptions.SONG_ICON.equals(cur) ? "Default (song)"
+                : cur == null || cur.isEmpty() ? "None" : cur;
         return Component.literal((player ? "Player Icon: " : "Bot Icon: ") + shown);
     }
 
@@ -687,11 +688,17 @@ public class FnfSettingsScreen extends Screen {
     }
 
     private Component noteSkinLabel() {
-        return Component.literal("Note Skin: " + ClientOptions.get().noteSkin);
+        String skin = ClientOptions.get().noteSkin;
+        String shown = ClientOptions.NOTE_SKIN_DEFAULT.equalsIgnoreCase(skin) ? "Default (chart)"
+                : ClientOptions.NOTE_SKIN_NONE.equalsIgnoreCase(skin) ? "None (procedural)" : skin;
+        return Component.literal("Note Skin: " + shown);
     }
 
     private Component animsLabel() {
-        return Component.literal("Animations: " + ClientOptions.get().animationSet);
+        String selected = ClientOptions.get().animationSet;
+        String shown = CharacterAnimations.NONE_SET.equalsIgnoreCase(selected) ? "None"
+                : CharacterAnimations.DEFAULT_SET.equalsIgnoreCase(selected) ? "Default (song)" : selected;
+        return Component.literal("Animations: " + shown);
     }
 
     private Component scrollSpeedLabel() {

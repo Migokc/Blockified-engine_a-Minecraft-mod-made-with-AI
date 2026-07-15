@@ -157,6 +157,16 @@ public class SparrowAtlas implements AutoCloseable {
         return texHeight;
     }
 
+    /** Applies Psych's per-sprite antialiasing flag to this atlas. */
+    public void setAntialiasing(boolean enabled) {
+        if (dynamicTexture == null) return;
+        try {
+            dynamicTexture.setFilter(enabled, false);
+        } catch (Throwable ignored) {
+            // Filtering must never make a character fail to load.
+        }
+    }
+
     public boolean hasAnimation(String prefix) {
         return animations.containsKey(prefix);
     }

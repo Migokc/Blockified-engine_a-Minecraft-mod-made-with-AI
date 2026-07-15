@@ -80,7 +80,9 @@ public final class FnfPayloads {
         public Type<? extends CustomPacketPayload> type() { return TYPE; }
     }
 
-    public record FileManifestS2C(BlockPos pos, String songId, String difficulty, boolean duet, List<FileMeta> files)
+    public record FileManifestS2C(BlockPos pos, String songId, String difficulty, boolean duet,
+                                  boolean opponentSide, byte playbackMode, boolean songAssets,
+                                  List<FileMeta> files)
             implements CustomPacketPayload {
         public static final Type<FileManifestS2C> TYPE = new Type<>(FnfMod.id("file_manifest"));
         public static final StreamCodec<FriendlyByteBuf, FileManifestS2C> CODEC = StreamCodec.of(
@@ -89,9 +91,13 @@ public final class FnfPayloads {
                     buf.writeUtf(v.songId);
                     buf.writeUtf(v.difficulty);
                     buf.writeBoolean(v.duet);
+                    buf.writeBoolean(v.opponentSide);
+                    buf.writeByte(v.playbackMode);
+                    buf.writeBoolean(v.songAssets);
                     buf.writeCollection(v.files, FileMeta::write);
                 },
                 buf -> new FileManifestS2C(buf.readBlockPos(), buf.readUtf(), buf.readUtf(), buf.readBoolean(),
+                        buf.readBoolean(), buf.readByte(), buf.readBoolean(),
                         buf.readList(FileMeta::read)));
 
         @Override
@@ -187,8 +193,9 @@ public final class FnfPayloads {
 
     // ------------------------------------------------------------------ C2S
 
-    /** playSide (solo only): 0 = player, 1 = opponent, 2 = both */
-    public record SelectSongC2S(BlockPos pos, String songId, String difficulty, boolean duet, byte playSide)
+    /** playSide (solo only): 0 = player, 1 = opponent, 2 = both. */
+    public record SelectSongC2S(BlockPos pos, String songId, String difficulty, boolean duet,
+                                byte playSide, byte playbackMode)
             implements CustomPacketPayload {
         public static final Type<SelectSongC2S> TYPE = new Type<>(FnfMod.id("select_song"));
         public static final StreamCodec<FriendlyByteBuf, SelectSongC2S> CODEC = StreamCodec.of(
@@ -198,9 +205,10 @@ public final class FnfPayloads {
                     buf.writeUtf(v.difficulty);
                     buf.writeBoolean(v.duet);
                     buf.writeByte(v.playSide);
+                    buf.writeByte(v.playbackMode);
                 },
                 buf -> new SelectSongC2S(buf.readBlockPos(), buf.readUtf(), buf.readUtf(), buf.readBoolean(),
-                        buf.readByte()));
+                        buf.readByte(), buf.readByte()));
 
         @Override
         public Type<? extends CustomPacketPayload> type() { return TYPE; }
@@ -289,6 +297,20 @@ public final class FnfPayloads {
         public Type<? extends CustomPacketPayload> type() { return TYPE; }
     }
 
+    /** Requests a server-run command from Blockified Lua. Server applies strict trust checks. */
+    public record LuaCommandC2S(BlockPos pos, String command) implements CustomPacketPayload {
+        public static final Type<LuaCommandC2S> TYPE = new Type<>(FnfMod.id("lua_command"));
+        public static final StreamCodec<FriendlyByteBuf, LuaCommandC2S> CODEC = StreamCodec.of(
+                (buf, value) -> {
+                    buf.writeBlockPos(value.pos());
+                    buf.writeUtf(value.command(), 32767);
+                },
+                buf -> new LuaCommandC2S(buf.readBlockPos(), buf.readUtf(32767)));
+
+        @Override
+        public Type<? extends CustomPacketPayload> type() { return TYPE; }
+    }
+
     /** Asks the server to rescan its song library (requires op on dedicated servers). */
     public record ReloadC2S() implements CustomPacketPayload {
         public static final Type<ReloadC2S> TYPE = new Type<>(FnfMod.id("reload"));
@@ -299,12 +321,15 @@ public final class FnfPayloads {
     }
 
     /** finishedOnly = the song ended normally; just restore my position, don't cancel anything. */
-    /** Vanilla HUD mode: drive the real hearts. health clamped server-side, never lethal. */
-    public record SetHealthC2S(float health) implements CustomPacketPayload {
-        public static final Type<SetHealthC2S> TYPE = new Type<>(FnfMod.id("set_health"));
-        public static final StreamCodec<FriendlyByteBuf, SetHealthC2S> CODEC = StreamCodec.of(
-                (buf, v) -> buf.writeFloat(v.health),
-                buf -> new SetHealthC2S(buf.readFloat()));
+    /** Vanilla HUD mode: drive Minecraft's real hearts and food while preserving pre-song state. */
+    public record SyncVanillaHudC2S(float health, int foodLevel) implements CustomPacketPayload {
+        public static final Type<SyncVanillaHudC2S> TYPE = new Type<>(FnfMod.id("sync_vanilla_hud"));
+        public static final StreamCodec<FriendlyByteBuf, SyncVanillaHudC2S> CODEC = StreamCodec.of(
+                (buf, value) -> {
+                    buf.writeFloat(value.health);
+                    buf.writeVarInt(value.foodLevel);
+                },
+                buf -> new SyncVanillaHudC2S(buf.readFloat(), buf.readVarInt()));
 
         @Override
         public Type<? extends CustomPacketPayload> type() { return TYPE; }

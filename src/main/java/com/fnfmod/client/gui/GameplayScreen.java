@@ -7,10 +7,16 @@ import com.fnfmod.client.ClientSession;
 import com.fnfmod.client.FnfKeys;
 import com.fnfmod.client.anim.CharacterAnimations;
 import com.fnfmod.client.audio.SongPlayer;
+import com.fnfmod.client.audio.HitsoundPlayer;
 import com.fnfmod.block.FunkinMachineBlock;
 import com.fnfmod.client.camera.GameplayCamera;
 import com.fnfmod.client.gui.editor.ChartEditorScreen;
 import com.fnfmod.client.gameplay.GameplayEventDispatcher;
+import com.fnfmod.client.gameplay.PsychGameplayScene;
+import com.fnfmod.client.gameplay.PsychBuiltinEventHandler;
+import com.fnfmod.client.gameplay.PsychAssetResolver;
+import com.fnfmod.gameplay.PlaybackMode;
+import com.fnfmod.gameplay.PlaybackPolicy;
 import com.fnfmod.client.lua.PsychLuaRuntime;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.Camera;
@@ -20,6 +26,9 @@ import net.minecraft.world.phys.Vec3;
 
 import java.util.function.Supplier;
 import com.fnfmod.client.render.NoteStyle;
+import com.fnfmod.client.render.HudLayerOrder;
+import com.fnfmod.client.render.PsychCanvas;
+import com.fnfmod.client.render.PsychHudState;
 import com.fnfmod.client.render.PsychNoteTextureCache;
 import com.fnfmod.net.FnfPayloads;
 import com.fnfmod.song.SongEntry;
@@ -41,7 +50,7 @@ import java.util.UUID;
 import java.nio.file.Path;
 
 /** The rhythm gameplay screen. */
-public class GameplayScreen extends Screen {
+public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.Host {
 
     private enum Phase { COUNTDOWN, PLAYING, PAUSED, GAMEOVER, RESULTS }
 
@@ -52,6 +61,12 @@ public class GameplayScreen extends Screen {
     private static final double SICK = 45, GOOD = 90, BAD = 135, SHIT = 166;
     private static final double HOLD_RELEASE_GRACE_MS = 300;
     private static final String[] DIR_NAMES = {"left", "down", "up", "right"};
+    private static final int HUD_WIDTH = PsychCanvas.WIDTH;
+    private static final int HUD_HEIGHT = PsychCanvas.HEIGHT;
+    /** Psych Engine's 160px note graphic rendered at default 0.7 scale. */
+    private static final float PSYCH_NOTE_WIDTH = 112f;
+    /** Blockified default presentation is 90% of Psych's native note size. */
+    private static final float DEFAULT_NOTE_SIZE = PSYCH_NOTE_WIDTH * 0.9f;
 
     private final BlockPos machinePos;
     private final SongChart chart;
@@ -62,8 +77,14 @@ public class GameplayScreen extends Screen {
     private final UUID partnerId;
     private final int botEntityId;
     private final String partnerName;
-    private final String partnerAnimSet;
-    private final String myAnimSet;
+    private String partnerAnimSet;
+    private String myAnimSet;
+    private final String initialPartnerAnimSet;
+    private final String initialMyAnimSet;
+    private String playerIdleSuffix = "";
+    private String opponentIdleSuffix = "";
+    private String eventPlayerIcon;
+    private String eventOpponentIcon;
     private final boolean duet;
     private long startAtEpochMs;
 
@@ -74,11 +95,11 @@ public class GameplayScreen extends Screen {
     // camera focus timeline (per chart section)
     private final double[] secStarts;
     private final boolean[] secFocusPlayer;
-    private final String[] secEase;
+    private final boolean[] secFocusGirlfriend;
     private final double[] secBeatMs;
     private int camSection = -1;
     /** Null follows Must Hit sections; otherwise an event owns camera focus. */
-    private Boolean cameraFocusOverride;
+    private String cameraFocusOverride;
 
     private static class GameNote {
         final SongChart.Note data;
@@ -113,6 +134,7 @@ public class GameplayScreen extends Screen {
     private double accuracySum;
     private int accuracyCount;
     private float health = 1.0f;
+    private final PsychHudState fnfHud;
 
     // input / strums
     private final boolean[] laneHeld = new boolean[4];
@@ -143,11 +165,15 @@ public class GameplayScreen extends Screen {
     private long lastSingMs;
     private long partnerLastSingMs;
     private int lastSentHealthHalf = Integer.MIN_VALUE;
+    private int lastSentFoodLevel = Integer.MIN_VALUE;
+    private long lastVanillaHudSyncMs;
     private final long[] lastHoldSingMs = new long[4];
     private long lastFrameNano;
     private boolean endSent;
     private int pauseSelection;
     private long pausedAtMs;
+    private boolean openingMinecraftPause;
+    private boolean resourcesDisposed;
     /** Prevents one held Enter press from pausing and then confirming Resume via key repeat. */
     private boolean enterReady = true;
     private boolean editorPlaytest;
@@ -156,16 +182,25 @@ public class GameplayScreen extends Screen {
     private Supplier<Screen> editorReturnFactory;
     private PsychLuaRuntime luaRuntime;
     private final GameplayEventDispatcher eventDispatcher;
+    private final PsychBuiltinEventHandler psychBuiltinEvents = new PsychBuiltinEventHandler();
     private PsychNoteTextureCache customNoteTextures;
     private String runtimeSongId;
     private Path runtimeSongFolder;
     private SongEntry runtimeSongEntry;
+    private PlaybackPolicy playbackPolicy;
+    private PsychGameplayScene psychScene;
+    private PsychAssetResolver assetResolver;
     private boolean vanillaMusicMuted;
     private final double[] luaStrumX = new double[8];
     private final double[] luaStrumY = new double[8];
     private final double[] luaStrumAlpha = new double[8];
     private final double[] luaStrumAngle = new double[8];
     private final boolean[] luaStrumDownScroll = new boolean[8];
+    private double eventScrollMultiplier = 1;
+    private double eventScrollFrom = 1;
+    private double eventScrollTarget = 1;
+    private double eventScrollStartMs;
+    private double eventScrollDurationMs;
 
     public GameplayScreen(BlockPos machinePos, SongChart chart, SongPlayer songPlayer,
                           PlayMode mode, UUID partnerId, String partnerName,
@@ -180,6 +215,7 @@ public class GameplayScreen extends Screen {
                         luaRuntime.onEvent(event.name, event.value1, event.value2, event.timeMs);
                     }
                 });
+        this.fnfHud = new PsychHudState(HUD_WIDTH, HUD_HEIGHT, ClientOptions.get().downscroll);
         this.mode = mode;
         this.playBoth = mode == PlayMode.BOTH;
         this.myChartSideIsPlayer = mode != PlayMode.OPPONENT;
@@ -189,18 +225,26 @@ public class GameplayScreen extends Screen {
         this.partnerAnimSet = partnerAnimSet == null || partnerAnimSet.isEmpty()
                 ? CharacterAnimations.DEFAULT_SET : partnerAnimSet;
         this.myAnimSet = ClientOptions.get().animationSet;
+        this.initialPartnerAnimSet = this.partnerAnimSet;
+        this.initialMyAnimSet = this.myAnimSet;
         this.duet = partnerId != null;
         this.startAtEpochMs = startAtEpochMs;
         this.conductor = new Conductor(chart);
+        applySongNoteTextures(chart);
         this.originalLuaNotes = chart.notes.stream().map(SongChart.Note::copy).toList();
         this.runtimeSongId = ClientSession.songId;
         this.runtimeSongEntry = ClientSession.songId == null ? null : SongLibrary.get(ClientSession.songId);
         this.runtimeSongFolder = ClientSession.resolvedFolder != null ? ClientSession.resolvedFolder
                 : runtimeSongEntry == null ? null : runtimeSongEntry.folder;
-        Path resourceRoot = runtimeSongEntry == null ? runtimeSongFolder
+        CharacterAnimations.useSongFolder(runtimeSongEntry == null ? null : runtimeSongEntry.runtimeRoot());
+        this.playbackPolicy = new PlaybackPolicy(ClientSession.playbackMode, ClientSession.songAssets);
+        this.assetResolver = new PsychAssetResolver(runtimeSongFolder, runtimeSongEntry, playbackPolicy, chart.stage);
+        Path resourceRoot = !playbackPolicy.songAssets() ? runtimeSongFolder
+                : runtimeSongEntry == null ? runtimeSongFolder
                 : (runtimeSongEntry.modRoot != null ? runtimeSongEntry.modRoot : runtimeSongEntry.folder);
         this.customNoteTextures = new PsychNoteTextureCache(runtimeSongFolder, resourceRoot,
-                runtimeSongEntry == null || runtimeSongEntry.allows(SongLibrary.ExternalContent.IMAGES));
+                playbackPolicy.allows(runtimeSongEntry, SongLibrary.ExternalContent.IMAGES));
+        this.psychScene = PsychGameplayScene.load(chart, runtimeSongFolder, runtimeSongEntry, playbackPolicy);
         Arrays.fill(luaStrumX, Double.NaN);
         Arrays.fill(luaStrumY, Double.NaN);
         Arrays.fill(luaStrumAlpha, 1.0);
@@ -228,7 +272,7 @@ public class GameplayScreen extends Screen {
         int n = Math.max(1, chart.sections.size());
         secStarts = new double[n];
         secFocusPlayer = new boolean[n];
-        secEase = new String[n];
+        secFocusGirlfriend = new boolean[n];
         secBeatMs = new double[n];
         double time = 0;
         double bpm = chart.startBpm;
@@ -237,12 +281,13 @@ public class GameplayScreen extends Screen {
             if (s != null && s.changeBPM && s.bpm > 0) bpm = s.bpm;
             secStarts[i] = time;
             secFocusPlayer[i] = s == null || s.mustHit;
-            secEase[i] = s == null || s.camEase == null ? "smooth" : s.camEase;
+            secFocusGirlfriend[i] = s != null && s.gfSection;
             secBeatMs[i] = 60000.0 / bpm;
             time += (s == null ? 4 : s.sectionBeats) * (60000.0 / bpm);
         }
 
         beginCamera();
+        applyPsychCameraDefaults();
         lastFrameNano = System.nanoTime();
     }
 
@@ -259,15 +304,26 @@ public class GameplayScreen extends Screen {
         screen.runtimeSongId = songId;
         screen.runtimeSongFolder = songFolder;
         screen.runtimeSongEntry = songEntry;
+        CharacterAnimations.useSongFolder(songEntry == null ? null : songEntry.runtimeRoot());
+        boolean currentSessionSong = ClientSession.activePos != null && songId != null
+                && songId.equals(ClientSession.songId);
+        screen.playbackPolicy = currentSessionSong
+                ? new PlaybackPolicy(ClientSession.playbackMode, ClientSession.songAssets)
+                : PlaybackPolicy.resolve(PlaybackMode.LEGACY, songEntry);
+        screen.assetResolver = new PsychAssetResolver(songFolder, songEntry, screen.playbackPolicy, chart.stage);
         screen.customNoteTextures.close();
-        Path resourceRoot = songEntry == null ? songFolder
+        screen.psychScene.close();
+        Path resourceRoot = !screen.playbackPolicy.songAssets() ? songFolder
+                : songEntry == null ? songFolder
                 : (songEntry.modRoot != null ? songEntry.modRoot : songEntry.folder);
         screen.customNoteTextures = new PsychNoteTextureCache(songFolder, resourceRoot,
-                songEntry == null || songEntry.allows(SongLibrary.ExternalContent.IMAGES));
+                screen.playbackPolicy.allows(songEntry, SongLibrary.ExternalContent.IMAGES));
+        screen.psychScene = PsychGameplayScene.load(chart, songFolder, songEntry, screen.playbackPolicy);
         // The normal constructor starts a session camera before it knows this is
         // an editor playtest. Rebuild it using the editor-safe virtual stage.
         GameplayCamera.end();
         screen.beginCamera();
+        screen.applyPsychCameraDefaults();
         screen.prepareEditorStart();
         return screen;
     }
@@ -315,7 +371,7 @@ public class GameplayScreen extends Screen {
             var p = Minecraft.getInstance().player;
             return p == null ? null : p.position().add(0, 1.0, 0);
         };
-        float[] myBase = CharacterAnimations.baseCameraOffset(myAnimSet);
+        float[] myBase = CharacterAnimations.baseCameraOffset(myAnimSet, myRole());
 
         if (editorPlaytest) {
             // The real gameplay session has already restored the player before
@@ -325,16 +381,18 @@ public class GameplayScreen extends Screen {
             Vec3 opponentFocus = playerFocus.add(
                     -right.getStepX() * 3.0, 0, -right.getStepZ() * 3.0);
             Supplier<Vec3> virtualOpponent = () -> opponentFocus;
-            float[] opponentBase = CharacterAnimations.baseCameraOffset(CharacterAnimations.DEFAULT_SET);
+            float[] opponentBase = CharacterAnimations.baseCameraOffset(
+                    CharacterAnimations.DEFAULT_SET, "opponent");
             GameplayCamera.begin(playerFocus, facing.toYRot(), mePos, mePos, virtualOpponent,
-                    myBase, opponentBase);
+                    myBase, opponentBase, playbackPolicy.mode());
             return;
         }
 
         if (playBoth) {
             // one character center stage playing everything: camera just stays on them
             Vec3 anchor = new Vec3(cx, cy, cz);
-            GameplayCamera.begin(anchor, facing.toYRot(), mePos, mePos, mePos, myBase, myBase);
+            GameplayCamera.begin(anchor, facing.toYRot(), mePos, mePos, mePos, myBase, myBase,
+                    playbackPolicy.mode());
             return;
         }
 
@@ -356,12 +414,12 @@ public class GameplayScreen extends Screen {
                 return bot == null || bot.isRemoved() ? botSpot : bot.position().add(0, 1.0, 0);
             };
         }
-        float[] partnerBase = CharacterAnimations.baseCameraOffset(partnerAnimSet);
+        float[] partnerBase = CharacterAnimations.baseCameraOffset(partnerAnimSet, partnerRole());
         GameplayCamera.begin(anchor, facing.toYRot(), mePos,
                 myChartSideIsPlayer ? mePos : otherPos,
                 myChartSideIsPlayer ? otherPos : mePos,
                 myChartSideIsPlayer ? myBase : partnerBase,
-                myChartSideIsPlayer ? partnerBase : myBase);
+                myChartSideIsPlayer ? partnerBase : myBase, playbackPolicy.mode());
     }
 
     // ------------------------------------------------------------------ timing
@@ -386,8 +444,22 @@ public class GameplayScreen extends Screen {
 
     private double pxPerMs() {
         var o = ClientOptions.get();
-        double speed = o.constantScrollSpeed ? o.scrollSpeedMult : chart.speed * o.scrollSpeedMult;
-        return 0.45 * speed * (height / 720.0);
+        double speed = o.constantScrollSpeed ? o.scrollSpeedMult
+                : chart.speed * o.scrollSpeedMult * currentEventScrollMultiplier();
+        return 0.45 * speed;
+    }
+
+    private double currentEventScrollMultiplier() {
+        if (eventScrollDurationMs <= 0) return eventScrollMultiplier;
+        double t = (songPos - eventScrollStartMs) / eventScrollDurationMs;
+        if (t >= 1) {
+            eventScrollMultiplier = eventScrollTarget;
+            eventScrollDurationMs = 0;
+        } else if (t > 0) {
+            eventScrollMultiplier = eventScrollFrom
+                    + (eventScrollTarget - eventScrollFrom) * t;
+        }
+        return eventScrollMultiplier;
     }
 
     // ------------------------------------------------------------------ tick logic
@@ -396,6 +468,12 @@ public class GameplayScreen extends Screen {
     protected void init() {
         super.init();
         muteVanillaMusic();
+    }
+
+    private void applyPsychCameraDefaults() {
+        if (psychScene != null && playbackPolicy.usesPsychCamera()) {
+            GameplayCamera.setBaseGameZoom(psychScene.defaultZoom());
+        }
     }
 
     private void muteVanillaMusic() {
@@ -418,17 +496,24 @@ public class GameplayScreen extends Screen {
         if (dtMs > 100) dtMs = 100;
 
         if (luaRuntime == null && width > 0 && height > 0) {
-            luaRuntime = PsychLuaRuntime.load(this, chart, runtimeSongId, runtimeSongFolder, runtimeSongEntry);
+            luaRuntime = PsychLuaRuntime.load(this, chart, runtimeSongId, runtimeSongFolder,
+                    runtimeSongEntry, playbackPolicy);
             rebuildNoteLanesAfterLuaCreate();
         }
         // Load-triggered events must run before updateSongPos can start audio.
         if (!preSongEventsProcessed && phase == Phase.COUNTDOWN) processPreSongEvents();
         updateSongPos();
+        if (psychScene != null && (phase == Phase.PLAYING || phase == Phase.COUNTDOWN)) {
+            double stepMs = 15000.0 / Math.max(1, conductor.bpmAt(Math.max(0, songPos)));
+            psychScene.update(dtMs / 1000.0, stepMs, songPlayer.playbackRate());
+        }
+        // Psych scripts run after camera follow calculation. Their camFollow /
+        // camFollowPos writes therefore win for this frame, matching Psych.
         if (luaRuntime != null && (phase == Phase.PLAYING || phase == Phase.COUNTDOWN)) {
             luaRuntime.update(dtMs / 1000.0);
         }
         songPlayer.applyVolumes();
-        syncVanillaHealth();
+        syncVanillaHud();
 
         // keep bodies square with the look direction so animations stay oriented
         alignBody(minecraft.player);
@@ -465,6 +550,7 @@ public class GameplayScreen extends Screen {
                 double end = hold.endMs();
                 if (songPos >= end) {
                     it.remove();
+                    endPsychHold(hold.data);
                     boolean graceExpiredBeforeEnd = hold.releasedMs >= 0
                             && end - hold.releasedMs > HOLD_RELEASE_GRACE_MS;
                     if (graceExpiredBeforeEnd) {
@@ -481,6 +567,10 @@ public class GameplayScreen extends Screen {
                     // loop the sing animation while the note is held
                     long nowMs = System.currentTimeMillis();
                     if (!hold.data.noAnimation && (hold.data.playerSide == myChartSideIsPlayer || playBoth)) {
+                        // Psych sprite sustain timing uses character JSON FPS. Minecraft's
+                        // body animation still has its own coarser replay timer.
+                        animatePsychHold(hold.data, lane,
+                                hold.data.playerSide ? "boyfriend" : "dad");
                         if (nowMs - lastHoldSingMs[lane] > 180 && minecraft.player != null) {
                             CharacterAnimations.play(minecraft.player, myAnimSet, myRole(),
                                     DIR_NAMES[lane] + hold.data.animSuffix);
@@ -495,6 +585,7 @@ public class GameplayScreen extends Screen {
                         // grace expired: the remaining trail disappears, counts as a miss
                         hold.holdDropped = true;
                         it.remove();
+                        endPsychHold(hold.data);
                         missHold(lane, hold);
                     }
                 }
@@ -508,7 +599,14 @@ public class GameplayScreen extends Screen {
                 while (otherLaneIndex[lane] < list.size()) {
                     GameNote n = list.get(otherLaneIndex[lane]);
                     if (n.hit) {
-                        if (songPos < n.endMs()) break;
+                        if (songPos < n.endMs()) {
+                            if (!n.data.noAnimation && n.data.sustainMs > 30) {
+                                animatePsychHold(n.data, lane,
+                                        n.data.playerSide ? "boyfriend" : "dad");
+                            }
+                            break;
+                        }
+                        endPsychHold(n.data);
                         otherLaneIndex[lane]++;
                         continue;
                     }
@@ -521,6 +619,8 @@ public class GameplayScreen extends Screen {
                             if (!runDefault) break;
                             n.hit = true;
                             otherStrumFlash[lane] = Math.max(120, n.data.sustainMs);
+                            if (!n.data.noAnimation) animatePsychNote(n.data, lane, false,
+                                    n.data.playerSide ? "boyfriend" : "dad");
                             if (luaRuntime != null) luaRuntime.onOpponentNoteHit(
                                     noteIndex, lane, n.data.noteType, n.data.sustainMs > 30);
                         } else {
@@ -541,7 +641,13 @@ public class GameplayScreen extends Screen {
         if (idx != camSection) {
             camSection = idx;
             if (cameraFocusOverride == null) {
-                GameplayCamera.focus(secFocusPlayer[idx], secEase[idx], Math.min(700, secBeatMs[idx] * 2));
+                GameplayCamera.focusSection(secFocusPlayer[idx], Math.min(700, secBeatMs[idx] * 2));
+                String cameraTarget = secFocusGirlfriend[idx] ? "gf"
+                        : secFocusPlayer[idx] ? "boyfriend" : "dad";
+                if (psychScene != null) {
+                    psychScene.focus(cameraTarget);
+                }
+                if (luaRuntime != null) luaRuntime.call("onMoveCamera", cameraTarget);
             }
         }
 
@@ -552,8 +658,9 @@ public class GameplayScreen extends Screen {
             long nowMs = System.currentTimeMillis();
             // FNF beat zoom: bump every measure (4 beats)
             if (phase == Phase.PLAYING && beat >= 0 && beat % 4 == 0) {
-                GameplayCamera.bumpZoom(0.03f);
+                GameplayCamera.bumpZoom(playbackPolicy.usesPsychCamera() ? 0.015f : 0.03f);
             }
+            if (phase == Phase.PLAYING && psychScene != null) psychScene.beat(beat);
             if (phase == Phase.PLAYING) {
                 if (nowMs - lastSingMs > 600 && minecraft.player != null) {
                     playIdle(minecraft.player, myAnimSet, myRole(), beat);
@@ -610,6 +717,7 @@ public class GameplayScreen extends Screen {
     }
 
     private void executeEvent(int eventIndex, SongChart.Event event) {
+        psychBuiltinEvents.execute(event, this);
         eventDispatcher.execute(eventIndex, event);
     }
 
@@ -618,18 +726,156 @@ public class GameplayScreen extends Screen {
         if (target.isEmpty()) {
             cameraFocusOverride = null;
             int section = camSection < 0 ? 0 : Math.min(camSection, secFocusPlayer.length - 1);
-            GameplayCamera.focus(secFocusPlayer[section], secEase[section],
+            GameplayCamera.focusSection(secFocusPlayer[section],
                     Math.min(700, secBeatMs[section] * 2));
+            if (psychScene != null) {
+                psychScene.focus(secFocusGirlfriend[section] ? "gf"
+                        : secFocusPlayer[section] ? "boyfriend" : "dad");
+            }
             return;
         }
 
-        boolean player;
-        if (target.equalsIgnoreCase("player")) player = true;
-        else if (target.equalsIgnoreCase("opponent")) player = false;
+        String role;
+        if (target.equalsIgnoreCase("player") || target.equalsIgnoreCase("boyfriend")
+                || target.equalsIgnoreCase("bf")) role = "boyfriend";
+        else if (target.equalsIgnoreCase("opponent") || target.equalsIgnoreCase("dad")) role = "dad";
+        else if (target.equalsIgnoreCase("gf") || target.equalsIgnoreCase("girlfriend")
+                || target.equalsIgnoreCase("speakers")) role = "gf";
         else return;
-        cameraFocusOverride = player;
+        cameraFocusOverride = role;
         String eventEase = event.value2 == null || event.value2.isBlank() ? "smooth" : event.value2;
-        GameplayCamera.focus(player, eventEase, 500);
+        GameplayCamera.focus(!role.equals("dad"), eventEase, 500);
+        if (psychScene != null) psychScene.focus(role);
+    }
+
+    @Override
+    public PlaybackMode playbackMode() {
+        return playbackPolicy == null ? PlaybackMode.LEGACY : playbackPolicy.mode();
+    }
+
+    @Override
+    public void eventHey(String target, double durationSeconds) {
+        if (psychScene != null) psychScene.hey(target, durationSeconds);
+    }
+
+    @Override
+    public void eventSetGirlfriendSpeed(int speed) {
+        if (psychScene != null) psychScene.setGirlfriendDanceSpeed(speed);
+    }
+
+    @Override
+    public void eventAddCameraZoom(float gameAmount, float hudAmount) {
+        if (GameplayCamera.gameZoom() < 1.35f) {
+            GameplayCamera.addZoomImpulse(gameAmount, hudAmount);
+        }
+    }
+
+    @Override
+    public void eventPlayAnimation(String target, String animation) {
+        if (animation == null || animation.isBlank()) return;
+        if (psychScene != null) psychScene.playSpecialAnimation(target, animation);
+        playMinecraftCharacterAnimation(target, animation);
+    }
+
+    @Override
+    public void eventCameraFollow(Double x, Double y) {
+        if (psychScene != null) psychScene.forceCamera(x, y);
+        GameplayCamera.forceFramePosition(x, y);
+    }
+
+    @Override
+    public void eventAltIdle(String target, String suffix) {
+        if (psychScene != null) psychScene.setIdleSuffix(target, suffix);
+        if (target.equals("boyfriend")) playerIdleSuffix = suffix == null ? "" : suffix;
+        else if (target.equals("dad")) opponentIdleSuffix = suffix == null ? "" : suffix;
+    }
+
+    @Override
+    public void eventScreenShake(double gameDuration, double gameIntensity,
+                                 double hudDuration, double hudIntensity) {
+        GameplayCamera.shake(gameDuration, gameIntensity, hudDuration, hudIntensity);
+    }
+
+    @Override
+    public void eventChangeCharacter(String target, String characterId) {
+        if (characterId == null || characterId.isBlank()) return;
+        String selected = characterId.trim();
+        if (psychScene != null) psychScene.changeCharacter(target, selected);
+        if (target.equals("boyfriend")) eventPlayerIcon = selected;
+        else if (target.equals("dad")) eventOpponentIcon = selected;
+        if (playBoth || localControlsRole(target)) {
+            if (!CharacterAnimations.isDisabled(myAnimSet)) myAnimSet = selected;
+        } else if (partnerControlsRole(target)) {
+            if (!CharacterAnimations.isDisabled(partnerAnimSet)) partnerAnimSet = selected;
+        }
+        String activeSet = playBoth || localControlsRole(target) ? myAnimSet
+                : partnerControlsRole(target) ? partnerAnimSet : selected;
+        GameplayCamera.setBaseOffset(target.equals("boyfriend"),
+                CharacterAnimations.baseCameraOffset(activeSet,
+                        target.equals("dad") ? "opponent" : "player"));
+    }
+
+    @Override
+    public void eventChangeScrollSpeed(double multiplier, double durationSeconds) {
+        if (ClientOptions.get().constantScrollSpeed || !Double.isFinite(multiplier)) return;
+        eventScrollFrom = currentEventScrollMultiplier();
+        eventScrollTarget = Math.max(0.01, multiplier);
+        eventScrollStartMs = songPos;
+        eventScrollDurationMs = Math.max(0, durationSeconds) * 1000.0
+                / Math.max(0.01, songPlayer.playbackRate());
+        if (eventScrollDurationMs <= 0) eventScrollMultiplier = eventScrollTarget;
+    }
+
+    @Override
+    public void eventSetProperty(String property, Object value) {
+        if (property == null || property.isBlank()) return;
+        if (luaRuntime != null) luaRuntime.setPropertyFromEvent(property, value);
+        else psychLuaSetProperty(property, value);
+    }
+
+    @Override
+    public void eventPlaySound(String sound, float volume) {
+        if (sound == null || sound.isBlank()) return;
+        float gain = Math.max(0, volume);
+        if (luaRuntime != null) luaRuntime.playSoundEvent(sound, gain);
+        else HitsoundPlayer.play(assetResolver.sound(sound), gain);
+    }
+
+    private boolean localControlsRole(String role) {
+        return (myChartSideIsPlayer && role.equals("boyfriend"))
+                || (!myChartSideIsPlayer && role.equals("dad"));
+    }
+
+    private boolean partnerControlsRole(String role) {
+        return partnerId != null && ((myChartSideIsPlayer && role.equals("dad"))
+                || (!myChartSideIsPlayer && role.equals("boyfriend")));
+    }
+
+    private void playMinecraftCharacterAnimation(String role, String animation) {
+        if (role.equals("gf")) return;
+        String action = minecraftAnimationName(animation);
+        if ((playBoth || localControlsRole(role)) && minecraft.player != null) {
+            CharacterAnimations.play(minecraft.player, myAnimSet, myRole(), action);
+            lastSingMs = System.currentTimeMillis();
+        }
+        if (partnerControlsRole(role) && minecraft.level != null) {
+            Player partner = minecraft.level.getPlayerByUUID(partnerId);
+            if (partner != null) {
+                CharacterAnimations.play(partner, partnerAnimSet, partnerRole(), action);
+                partnerLastSingMs = System.currentTimeMillis();
+            }
+        }
+    }
+
+    private static String minecraftAnimationName(String animation) {
+        String lower = animation.trim().toLowerCase(java.util.Locale.ROOT);
+        if (lower.startsWith("singleft")) return "left";
+        if (lower.startsWith("singdown")) return "down";
+        if (lower.startsWith("singup")) return "up";
+        if (lower.startsWith("singright")) return "right";
+        if (lower.contains("miss")) return "miss";
+        if (lower.contains("idle") || lower.startsWith("dance")) return "idle";
+        return lower;
     }
 
     private void sweepMisses(List<GameNote>[] lanes, int[] laneIndex) {
@@ -676,22 +922,35 @@ public class GameplayScreen extends Screen {
     }
 
     private void playIdle(Player p, String set, String role, int beat) {
-        String action = (beat & 1) == 1 ? "idle2" : "idle";
+        String suffix = "player".equals(role) ? playerIdleSuffix : opponentIdleSuffix;
+        boolean hasSecondIdle = CharacterAnimations.hasAction(set, "idle2");
+        // Minecraft animation sets have two canonical idle slots. Non-empty
+        // Psych alt-idle suffix selects slot 2 as their Legacy/Minecraft variant.
+        if (!hasSecondIdle && (beat & 1) == 1) return;
+        String action = !suffix.isBlank() && hasSecondIdle ? "idle2"
+                : (beat & 1) == 1 ? "idle2" : "idle";
         if (CharacterAnimations.play(p, set, role, action) == null && !"idle".equals(action)) {
             CharacterAnimations.play(p, set, role, "idle");
         }
     }
 
-    /** Vanilla HUD mode: push FNF health onto the real hearts (never lethal, restored after). */
-    private void syncVanillaHealth() {
-        if (!"vanilla".equals(ClientOptions.effectiveHudStyle()) || minecraft.player == null) return;
+    /** Keep Minecraft's real heart/food state locked to Blockified while vanilla HUD is active. */
+    private void syncVanillaHud() {
+        if (editorPlaytest || !"vanilla".equals(effectiveHudStyle()) || minecraft.player == null) return;
         float maxHp = minecraft.player.getMaxHealth();
         float target = Math.max(1f, Math.min(maxHp, maxHp * (health / 2f)));
         int half = Math.round(target * 2f);
-        if (half != lastSentHealthHalf) {
+        int food = Math.max(0, Math.min(20, Math.round(accuracy() * 20f)));
+        long now = System.currentTimeMillis();
+        boolean localDrift = Math.round(minecraft.player.getHealth() * 2f) != half
+                || minecraft.player.getFoodData().getFoodLevel() != food;
+        if (half != lastSentHealthHalf || food != lastSentFoodLevel || localDrift
+                || now - lastVanillaHudSyncMs >= 1000) {
             lastSentHealthHalf = half;
+            lastSentFoodLevel = food;
+            lastVanillaHudSyncMs = now;
             net.neoforged.neoforge.network.PacketDistributor.sendToServer(
-                    new FnfPayloads.SetHealthC2S(half / 2f));
+                    new FnfPayloads.SyncVanillaHudC2S(half / 2f, food));
         }
     }
 
@@ -954,6 +1213,7 @@ public class GameplayScreen extends Screen {
 
     private void sing(int lane, boolean miss, SongChart.Note note) {
         lastSingMs = System.currentTimeMillis();
+        animatePsychNote(note, lane, miss, myChartSideIsPlayer ? "boyfriend" : "dad");
         if (minecraft.player != null) {
             String suffix = note == null || note.animSuffix == null ? "" : note.animSuffix;
             String action = miss ? "miss" + suffix : DIR_NAMES[lane] + suffix;
@@ -1022,6 +1282,7 @@ public class GameplayScreen extends Screen {
         partnerScore = pScore;
         partnerCombo = pCombo;
         if (lane < 0 || lane > 3) return;
+        SongChart.Note matchedNote = null;
         if (judgement < 4) {
             otherStrumFlash[lane] = 150;
             // consume the closest unhit note on their side so it disappears
@@ -1029,11 +1290,16 @@ public class GameplayScreen extends Screen {
             for (int i = otherLaneIndex[lane]; i < list.size(); i++) {
                 GameNote n = list.get(i);
                 if (n.hit || n.missed) continue;
-                if (Math.abs(n.data.timeMs - songPos) < 250) n.hit = true;
+                if (Math.abs(n.data.timeMs - songPos) < 250) {
+                    n.hit = true;
+                    matchedNote = n.data;
+                }
                 break;
             }
         }
         partnerLastSingMs = System.currentTimeMillis();
+        animatePsychNote(matchedNote, lane, judgement == 4,
+                !myChartSideIsPlayer ? "boyfriend" : "dad");
         // animate the partner's body with their chosen animation set
         if (partnerId != null && minecraft.level != null) {
             Player partner = minecraft.level.getPlayerByUUID(partnerId);
@@ -1180,12 +1446,14 @@ public class GameplayScreen extends Screen {
             switch (pauseSelection) {
                 case 0 -> resumeFromPause();
                 case 1 -> restart();
-                case 2 -> exit();
+                case 2 -> openMinecraftPauseMenu();
+                case 3 -> exit();
             }
             return;
         }
         if (duet) {
             if (pauseSelection == 0) resumeFromPause();
+            else if (pauseSelection == 1) openMinecraftPauseMenu();
             else exit();
             return;
         }
@@ -1193,12 +1461,27 @@ public class GameplayScreen extends Screen {
             case 0 -> resumeFromPause();
             case 1 -> restart();
             case 2 -> openCurrentChartInEditor();
-            case 3 -> exit();
+            case 3 -> openMinecraftPauseMenu();
+            case 4 -> exit();
         }
     }
 
     private int pauseOptionCount() {
-        return editorPlaytest ? 3 : (duet ? 2 : 4);
+        return pauseOptions().length;
+    }
+
+    private String[] pauseOptions() {
+        return editorPlaytest
+                ? new String[]{"Resume", "Restart", "Minecraft Pause Menu", "Return to Editor"}
+                : duet
+                ? new String[]{"Resume", "Minecraft Pause Menu", "Quit"}
+                : new String[]{"Resume", "Restart", "Edit Chart", "Minecraft Pause Menu", "Quit"};
+    }
+
+    private void openMinecraftPauseMenu() {
+        if (minecraft == null || minecraft.screen instanceof MinecraftPauseOverlayScreen) return;
+        openingMinecraftPause = true;
+        minecraft.setScreen(new MinecraftPauseOverlayScreen(this));
     }
 
     private void openCurrentChartInEditor() {
@@ -1269,7 +1552,16 @@ public class GameplayScreen extends Screen {
         Arrays.fill(lastHoldSingMs, 0);
         camSection = -1; // re-evaluate camera focus from the top of the chart
         cameraFocusOverride = null;
+        playerIdleSuffix = opponentIdleSuffix = "";
+        eventPlayerIcon = eventOpponentIcon = null;
+        myAnimSet = initialMyAnimSet;
+        partnerAnimSet = initialPartnerAnimSet;
+        eventScrollMultiplier = eventScrollFrom = eventScrollTarget = 1;
+        eventScrollStartMs = eventScrollDurationMs = 0;
         GameplayCamera.resetSongState();
+        if (psychScene != null) psychScene.close();
+        psychScene = PsychGameplayScene.load(chart, runtimeSongFolder, runtimeSongEntry, playbackPolicy);
+        applyPsychCameraDefaults();
         startAtEpochMs = System.currentTimeMillis() + 2000;
         if (editorPlaytest) prepareEditorStart();
         phase = Phase.COUNTDOWN;
@@ -1332,89 +1624,78 @@ public class GameplayScreen extends Screen {
         if (popups.size() > 8) popups.remove(0);
     }
 
-    /** FNF-like proportions: notes are ~13% of screen height. */
+    /** Psych logical size; PsychCanvas handles resolution and GUI-scale changes. */
     private float noteSize() {
-        float byHeight = Math.max(24f, Math.min(64f, height * 0.13f));
-        return Math.min(byHeight, width / 13f);
+        return DEFAULT_NOTE_SIZE;
+    }
+
+    private static void applySongNoteTextures(SongChart chart) {
+        if (!ClientOptions.NOTE_SKIN_DEFAULT.equalsIgnoreCase(ClientOptions.get().noteSkin)) return;
+        String noteTexture = chart.noteTexture == null ? "" : chart.noteTexture.trim();
+        String splashTexture = chart.noteSplashTexture == null ? "" : chart.noteSplashTexture.trim();
+        for (SongChart.Note note : chart.notes) {
+            if ((note.texture == null || note.texture.isBlank()) && !noteTexture.isBlank()) {
+                note.texture = noteTexture;
+            }
+            if ((note.noteSplashTexture == null || note.noteSplashTexture.isBlank())
+                    && !splashTexture.isBlank()) {
+                note.noteSplashTexture = splashTexture;
+            }
+        }
+    }
+
+    private String chartDefaultNoteTexture() {
+        return ClientOptions.NOTE_SKIN_DEFAULT.equalsIgnoreCase(ClientOptions.get().noteSkin)
+                ? chart.noteTexture : "";
     }
 
     private float laneX(boolean mine, int lane) {
         boolean playerSide = playBoth || mine == myChartSideIsPlayer;
         double overridden = luaStrumX[(playerSide ? 4 : 0) + lane];
-        if (!Double.isNaN(overridden)) return luaToGuiX(overridden);
+        // Psych exposes StrumNote.x as top-left; renderer draws notes by center.
+        if (!Double.isNaN(overridden)) return (float) overridden + noteSize() * 0.5f;
         return baseLaneX(mine, lane);
     }
 
     private float baseLaneX(boolean mine, int lane) {
-        float spacing = noteSize() * 1.12f;
+        float spacing = PSYCH_NOTE_WIDTH;
         if (playBoth) {
-            return width * 0.5f + (lane - 1.5f) * spacing;
+            return HUD_WIDTH * 0.5f + (lane - 1.5f) * spacing;
         }
+        boolean playerSide = mine == myChartSideIsPlayer;
         if (ClientOptions.get().middlescroll) {
-            if (mine) {
-                return width * 0.5f + (lane - 1.5f) * spacing;
+            if (playerSide) {
+                return 468f + lane * spacing;
             }
-            // opponent notes split to the screen edges (Psych middlescroll style)
-            float edgeSpacing = spacing * 1.05f;
             return lane < 2
-                    ? width * 0.07f + lane * edgeSpacing
-                    : width * 0.93f - (3 - lane) * edgeSpacing;
+                    ? 138f + lane * spacing
+                    : 1027f + (lane - 2) * spacing;
         }
         // FNF layout is fixed: player-side notes right, opponent-side left —
         // playing as the opponent doesn't swap the strumlines
-        boolean rightSide = mine == myChartSideIsPlayer;
-        float center = rightSide ? width * 0.73f : width * 0.27f;
-        return center + (lane - 1.5f) * spacing;
+        return (playerSide ? 788f : 148f) + lane * spacing;
     }
 
     /** Center x of the strumline the local player actually plays on. */
     private float myStrumsCenterX() {
-        return playBoth ? width * 0.5f : (myChartSideIsPlayer ? width * 0.73f : width * 0.27f);
+        return playBoth ? HUD_WIDTH * 0.5f
+                : (myChartSideIsPlayer ? 956f : 316f);
     }
 
     private float receptorY() {
-        float margin = noteSize() * 0.65f + 14;
-        return ClientOptions.get().downscroll ? height - margin : margin;
+        float top = ClientOptions.get().downscroll ? HUD_HEIGHT - 150f : 50f;
+        return top + noteSize() * 0.5f;
     }
 
     private float laneY(boolean mine, int lane) {
         boolean playerSide = playBoth || mine == myChartSideIsPlayer;
         double overridden = luaStrumY[(playerSide ? 4 : 0) + lane];
-        return Double.isNaN(overridden) ? receptorY() : luaToGuiY(overridden);
+        return Double.isNaN(overridden) ? receptorY() : (float) overridden + noteSize() * 0.5f;
     }
 
     private boolean laneDown(boolean mine, int lane) {
         boolean playerSide = playBoth || mine == myChartSideIsPlayer;
         return luaStrumDownScroll[(playerSide ? 4 : 0) + lane];
-    }
-
-    private float luaCanvasScale() {
-        return Math.max(0.0001f, Math.min(width / (float) PsychLuaRuntime.VIRTUAL_WIDTH,
-                height / (float) PsychLuaRuntime.VIRTUAL_HEIGHT));
-    }
-
-    private float luaCanvasX() {
-        return (width - PsychLuaRuntime.VIRTUAL_WIDTH * luaCanvasScale()) * 0.5f;
-    }
-
-    private float luaCanvasY() {
-        return (height - PsychLuaRuntime.VIRTUAL_HEIGHT * luaCanvasScale()) * 0.5f;
-    }
-
-    private float luaToGuiX(double value) {
-        return luaCanvasX() + (float) value * luaCanvasScale();
-    }
-
-    private float luaToGuiY(double value) {
-        return luaCanvasY() + (float) value * luaCanvasScale();
-    }
-
-    private double guiToLuaX(double value) {
-        return (value - luaCanvasX()) / luaCanvasScale();
-    }
-
-    private double guiToLuaY(double value) {
-        return (value - luaCanvasY()) / luaCanvasScale();
     }
 
     // ------------------------------------------------------------------ Psych Lua bridge
@@ -1434,9 +1715,23 @@ public class GameplayScreen extends Screen {
         int section = Math.max(0, Math.min(psychLuaSection(), secFocusPlayer.length - 1));
         return secFocusPlayer[section];
     }
+    public boolean psychLuaGfSection() {
+        int section = Math.max(0, Math.min(psychLuaSection(), secFocusGirlfriend.length - 1));
+        return secFocusGirlfriend[section];
+    }
+    public double psychLuaGameCameraX() {
+        return psychScene == null ? PsychLuaRuntime.VIRTUAL_WIDTH * 0.5 : psychScene.cameraX();
+    }
+    public double psychLuaGameCameraY() {
+        return psychScene == null ? PsychLuaRuntime.VIRTUAL_HEIGHT * 0.5 : psychScene.cameraY();
+    }
+    public double psychLuaCharacterMidpointX(String role) {
+        return psychScene == null ? 0 : psychScene.midpointX(role);
+    }
+    public double psychLuaCharacterMidpointY(String role) {
+        return psychScene == null ? 0 : psychScene.midpointY(role);
+    }
     public void psychLuaSetHealth(double value) { health = (float) Math.max(0, Math.min(2, value)); }
-    public void psychLuaAddScore(int value) { score += value; }
-    public void psychLuaSetScore(int value) { score = value; }
     public void psychLuaAddMisses(int value) { misses = Math.max(0, misses + value); }
     public void psychLuaSetMisses(int value) { misses = Math.max(0, value); }
 
@@ -1445,12 +1740,12 @@ public class GameplayScreen extends Screen {
         int index = (playerSide ? 4 : 0) + safeLane;
         if (!Double.isNaN(luaStrumX[index])) return luaStrumX[index];
         boolean mine = playBoth || playerSide == myChartSideIsPlayer;
-        return guiToLuaX(baseLaneX(mine, safeLane));
+        return baseLaneX(mine, safeLane) - noteSize() * 0.5f;
     }
 
     public double psychLuaStrumY(boolean playerSide, int lane) {
         int index = (playerSide ? 4 : 0) + Math.max(0, Math.min(3, lane));
-        return Double.isNaN(luaStrumY[index]) ? guiToLuaY(receptorY()) : luaStrumY[index];
+        return Double.isNaN(luaStrumY[index]) ? receptorY() - noteSize() * 0.5f : luaStrumY[index];
     }
 
     private int luaGroupIndex(String group, int index) {
@@ -1594,6 +1889,31 @@ public class GameplayScreen extends Screen {
         }
     }
 
+    private void animatePsychNote(SongChart.Note note, int lane, boolean miss, String fallbackRole) {
+        if (psychScene == null) return;
+        String role = note != null && note.gfNote ? "gf"
+                : note == null ? fallbackRole
+                : note.playerSide ? "boyfriend" : "dad";
+        if (!miss && note != null && "Hey!".equalsIgnoreCase(note.noteType)) {
+            psychScene.hey(role, 0.6);
+        } else {
+            psychScene.sing(role, lane, miss, note == null ? "" : note.animSuffix);
+        }
+    }
+
+    private void animatePsychHold(SongChart.Note note, int lane, String fallbackRole) {
+        if (psychScene == null) return;
+        String role = note != null && note.gfNote ? "gf"
+                : note == null ? fallbackRole
+                : note.playerSide ? "boyfriend" : "dad";
+        psychScene.hold(role, lane, note == null ? "" : note.animSuffix);
+    }
+
+    private void endPsychHold(SongChart.Note note) {
+        if (psychScene == null || note == null) return;
+        psychScene.endHold(note.gfNote ? "gf" : note.playerSide ? "boyfriend" : "dad");
+    }
+
     private static double noteNumber(Object value, double fallback) {
         if (value instanceof Number number) return number.doubleValue();
         try { return Double.parseDouble(String.valueOf(value)); }
@@ -1612,6 +1932,13 @@ public class GameplayScreen extends Screen {
 
     public Object psychLuaGetProperty(String path) {
         if (path == null) return null;
+        if ("fnf".equals(effectiveHudStyle())) {
+            if (path.equals("healthBar.leftBar.color")) return fnfOpponentBarColor();
+            if (path.equals("healthBar.rightBar.color")) return fnfPlayerBarColor();
+            Object hudValue = fnfHud.property(path,
+                    Math.max(0, Math.min(100, health * 50.0)), fnfScoreText());
+            if (hudValue != null) return hudValue;
+        }
         return switch (path) {
             case "health" -> (double) health;
             case "songScore", "score" -> score;
@@ -1621,24 +1948,66 @@ public class GameplayScreen extends Screen {
             case "playbackRate" -> (double) songPlayer.playbackRate();
             case "songSpeed" -> chart.speed;
             case "mustHitSection" -> psychLuaMustHit();
+            case "gfSection" -> psychLuaGfSection();
             case "curSection" -> psychLuaSection();
-            case "camGame.zoom", "camHUD.zoom" -> 1.0;
+            case "defaultCamZoom" -> psychScene == null ? 1.0 : (double) psychScene.defaultZoom();
+            case "camFollow.x" -> psychScene == null ? psychLuaGameCameraX() : psychScene.targetCameraX();
+            case "camFollow.y" -> psychScene == null ? psychLuaGameCameraY() : psychScene.targetCameraY();
+            case "camFollowPos.x" -> psychLuaGameCameraX();
+            case "camFollowPos.y" -> psychLuaGameCameraY();
+            case "camGame.scroll.x" -> psychLuaGameCameraX() - PsychLuaRuntime.VIRTUAL_WIDTH * 0.5;
+            case "camGame.scroll.y" -> psychLuaGameCameraY() - PsychLuaRuntime.VIRTUAL_HEIGHT * 0.5;
+            case "boyfriendCameraOffset[0]" -> psychScene == null ? 0.0 : psychScene.stageCameraOffset("boyfriend", 0);
+            case "boyfriendCameraOffset[1]" -> psychScene == null ? 0.0 : psychScene.stageCameraOffset("boyfriend", 1);
+            case "opponentCameraOffset[0]" -> psychScene == null ? 0.0 : psychScene.stageCameraOffset("dad", 0);
+            case "opponentCameraOffset[1]" -> psychScene == null ? 0.0 : psychScene.stageCameraOffset("dad", 1);
+            case "girlfriendCameraOffset[0]" -> psychScene == null ? 0.0 : psychScene.stageCameraOffset("gf", 0);
+            case "girlfriendCameraOffset[1]" -> psychScene == null ? 0.0 : psychScene.stageCameraOffset("gf", 1);
+            case "camGame.zoom" -> (double) GameplayCamera.gameZoom();
+            case "camHUD.zoom" -> (double) appliedHudZoom();
+            case "camGame.bopEnabled", "gameCameraBopEnabled" -> GameplayCamera.bopEnabled("game");
+            case "camHUD.bopEnabled", "hudCameraBopEnabled" -> GameplayCamera.bopEnabled("hud");
             case "unspawnNotes.length", "notes.length" -> chart.notes.size();
-            default -> null;
+            default -> psychScene == null ? null : psychScene.property(path);
         };
     }
 
     public boolean psychLuaSetProperty(String path, Object value) {
         if (path == null) return false;
+        // Lua may inspect the gameplay score and customize scoreTxt, but the
+        // actual scored value is owned by note judgements.
+        if (path.equals("songScore") || path.equals("score")) return true;
         double number = value instanceof Number n ? n.doubleValue() : 0;
+        if ("fnf".equals(effectiveHudStyle())) {
+            if (path.equals("healthBar.percent")) {
+                psychLuaSetHealth(Math.max(0, Math.min(100, number)) / 50.0);
+                return true;
+            }
+            if (fnfHud.setProperty(path, value)) return true;
+        }
         switch (path) {
             case "health" -> psychLuaSetHealth(number);
-            case "songScore", "score" -> psychLuaSetScore((int) number);
             case "songMisses", "misses" -> psychLuaSetMisses((int) number);
             case "combo" -> combo = Math.max(0, (int) number);
             case "playbackRate" -> songPlayer.setPlaybackRate((float) number);
-            case "camGame.zoom" -> GameplayCamera.zoomTo((float) (number - 1), "snap");
-            default -> { return false; }
+            case "camGame.zoom" -> GameplayCamera.setGameZoom((float) number);
+            case "camHUD.zoom" -> GameplayCamera.setHudZoom((float) number,
+                    "fnf".equals(effectiveHudStyle()));
+            case "camGame.bopEnabled", "gameCameraBopEnabled" ->
+                    GameplayCamera.setBopEnabled("game", noteBool(value, true));
+            case "camHUD.bopEnabled", "hudCameraBopEnabled" ->
+                    GameplayCamera.setBopEnabled("hud", noteBool(value, true));
+            case "camFollow.x" -> { if (psychScene != null) psychScene.setTargetCameraX(number); }
+            case "camFollow.y" -> { if (psychScene != null) psychScene.setTargetCameraY(number); }
+            case "camFollowPos.x" -> { if (psychScene != null) psychScene.setCameraX(number); }
+            case "camFollowPos.y" -> { if (psychScene != null) psychScene.setCameraY(number); }
+            case "camGame.scroll.x" -> { if (psychScene != null) psychScene.setCameraX(
+                    number + PsychLuaRuntime.VIRTUAL_WIDTH * 0.5); }
+            case "camGame.scroll.y" -> { if (psychScene != null) psychScene.setCameraY(
+                    number + PsychLuaRuntime.VIRTUAL_HEIGHT * 0.5); }
+            default -> {
+                if (psychScene == null || !psychScene.setProperty(path, value)) return false;
+            }
         }
         return true;
     }
@@ -1647,12 +2016,44 @@ public class GameplayScreen extends Screen {
         executeEvent(-1, new SongChart.Event(songPos, name, value1, value2));
     }
 
+    public boolean psychLuaRunMinecraftCommand(String command, String runner) {
+        return eventDispatcher.runLuaCommand(command, runner);
+    }
+
     public void psychLuaCameraTarget(String target) {
         if (target == null || target.isBlank()) return;
-        boolean player = target.equalsIgnoreCase("bf") || target.equalsIgnoreCase("boyfriend")
-                || target.equalsIgnoreCase("player");
-        cameraFocusOverride = player;
-        GameplayCamera.focus(player, "smooth", 500);
+        String role = target.equalsIgnoreCase("gf") || target.equalsIgnoreCase("girlfriend")
+                || target.equalsIgnoreCase("speakers") ? "gf"
+                : target.equalsIgnoreCase("dad") || target.equalsIgnoreCase("opponent")
+                ? "dad" : "boyfriend";
+        cameraFocusOverride = role;
+        GameplayCamera.focus(!role.equals("dad"), "smooth", 500);
+        if (psychScene != null) psychScene.focus(role);
+        if (luaRuntime != null) luaRuntime.call("onMoveCamera", role);
+    }
+
+    public boolean psychLuaPlayCharacterAnimation(String role, String animation, boolean force) {
+        return psychScene != null && psychScene.playAnimation(role, animation, force);
+    }
+
+    public boolean psychLuaCharacterDance(String role) {
+        return psychScene != null && psychScene.dance(role);
+    }
+
+    public double psychLuaCharacterX(String role) {
+        return psychScene == null ? 0 : psychScene.characterX(role);
+    }
+
+    public double psychLuaCharacterY(String role) {
+        return psychScene == null ? 0 : psychScene.characterY(role);
+    }
+
+    public boolean psychLuaSetCharacterX(String role, double value) {
+        return psychScene != null && psychScene.setCharacterX(role, value);
+    }
+
+    public boolean psychLuaSetCharacterY(String role, double value) {
+        return psychScene != null && psychScene.setCharacterY(role, value);
     }
 
     public void psychLuaEndSong() { finishSong(false); }
@@ -1688,14 +2089,41 @@ public class GameplayScreen extends Screen {
 
         float noteSize = noteSize();
         boolean fadeOpponent = ClientOptions.get().middlescroll && !playBoth;
+        boolean fnfHud = "fnf".equals(effectiveHudStyle());
 
-        if (luaRuntime != null) luaRuntime.render(gui, false);
+        if (playbackPolicy.usesPsychCamera()) {
+            // FNF profile owns the game camera instead of exposing the Minecraft world.
+            gui.fill(0, 0, width, height, 0xFF0B0B12);
+            // Psych inserts addLuaSprite(tag, false) after stage backgrounds but before characters.
+            if (psychScene != null) psychScene.renderBackground(gui);
+            if (luaRuntime != null) {
+                luaRuntime.renderGame(gui, Integer.MIN_VALUE, PsychGameplayScene.CHARACTER_ORDER);
+            }
+            if (psychScene != null) psychScene.renderCharactersAndForeground(gui);
+            if (luaRuntime != null) {
+                luaRuntime.renderGame(gui, PsychGameplayScene.CHARACTER_ORDER, Integer.MAX_VALUE);
+            }
+        } else if (luaRuntime != null) {
+            luaRuntime.renderGame(gui);
+        }
+
+        // Every non-world gameplay element shares Psych's 1280x720 space.
+        // Physical size therefore follows resolution, never Minecraft GUI scale.
+        PsychCanvas.push(gui, 1f);
+        float hudZoom = appliedHudZoom();
+        pushHudCamera(gui, hudZoom);
+        if (luaRuntime != null) {
+            luaRuntime.renderHudInCanvas(gui, Integer.MIN_VALUE, HudLayerOrder.RECEPTORS);
+        }
 
         // receptors (single centered strumline in BOTH mode)
         for (int lane = 0; lane < 4; lane++) {
             int myState = myStrumFlash[lane] > 0 ? 2 : (laneHeld[lane] ? 1 : 0);
             NoteStyle.setDrawAlpha((float) luaStrumAlpha[(myChartSideIsPlayer || playBoth ? 4 : 0) + lane]);
-            NoteStyle.drawReceptor(gui, lane, laneX(true, lane), laneY(true, lane), noteSize, myState);
+            if (!customNoteTextures.drawReceptor(gui, chartDefaultNoteTexture(), lane, myState,
+                    laneX(true, lane), laneY(true, lane), noteSize)) {
+                NoteStyle.drawReceptor(gui, lane, laneX(true, lane), laneY(true, lane), noteSize, myState);
+            }
         }
         NoteStyle.setDrawAlpha(1f);
         if (!playBoth) {
@@ -1704,18 +2132,27 @@ public class GameplayScreen extends Screen {
                 int otherState = otherStrumFlash[lane] > 0 ? 2 : 0;
                 int side = myChartSideIsPlayer ? 0 : 4;
                 NoteStyle.setDrawAlpha((float) (luaStrumAlpha[side + lane] * (fadeOpponent ? 0.6 : 1)));
-                NoteStyle.drawReceptor(gui, lane, laneX(false, lane), laneY(false, lane), noteSize, otherState);
+                if (!customNoteTextures.drawReceptor(gui, chartDefaultNoteTexture(), lane, otherState,
+                        laneX(false, lane), laneY(false, lane), noteSize)) {
+                    NoteStyle.drawReceptor(gui, lane, laneX(false, lane), laneY(false, lane), noteSize, otherState);
+                }
             }
             if (fadeOpponent) NoteStyle.setDrawAlpha(1f);
         }
+        if (luaRuntime != null) {
+            luaRuntime.renderHudInCanvas(gui, HudLayerOrder.RECEPTORS, HudLayerOrder.NOTES);
+        }
 
         // notes
-        double visibleMs = (height + 100) / pxPerMs();
+        double visibleMs = (HUD_HEIGHT + 100) / pxPerMs();
         renderNotes(gui, myLanes, myLaneIndex, true, noteSize, visibleMs);
         if (!playBoth) {
             if (fadeOpponent) NoteStyle.setDrawAlpha(0.6f);
             renderNotes(gui, otherLanes, otherLaneIndex, false, noteSize, visibleMs);
             if (fadeOpponent) NoteStyle.setDrawAlpha(1f);
+        }
+        if (luaRuntime != null) {
+            luaRuntime.renderHudInCanvas(gui, HudLayerOrder.NOTES, HudLayerOrder.HIT_EFFECTS);
         }
 
         // hit splashes over the receptors
@@ -1758,8 +2195,42 @@ public class GameplayScreen extends Screen {
             NoteStyle.drawHoldCoverEnd(gui, c.lane, frame, c.x, c.y, noteSize);
         }
 
-        renderHud(gui, noteSize);
-        if (luaRuntime != null) luaRuntime.render(gui, true);
+        if (luaRuntime != null) {
+            luaRuntime.renderHudInCanvas(gui, HudLayerOrder.HIT_EFFECTS, HudLayerOrder.HUD);
+        }
+        if (fnfHud) renderHud(gui, noteSize);
+        gui.pose().popPose();
+
+        // Time bar/title use screen space, not camHUD. Psych camera bops must
+        // never resize or displace song progress.
+        if (fnfHud) renderSongProgress(gui);
+        if (fnfHud && luaRuntime != null) {
+            // Objects ordered above native HUD remain above fixed time bar too,
+            // while still receiving camHUD zoom themselves.
+            pushHudCamera(gui, hudZoom);
+            luaRuntime.renderHudInCanvas(gui, HudLayerOrder.HUD, Integer.MAX_VALUE);
+            gui.pose().popPose();
+        }
+        PsychCanvas.pop(gui);
+
+        if (!fnfHud) {
+            // Native styles use Minecraft GUI coordinates. Their physical size
+            // now follows both window resolution and the vanilla GUI-scale option.
+            pushHudCamera(gui, hudZoom, width, height);
+            renderHud(gui, noteSize);
+            gui.pose().popPose();
+            renderSongProgress(gui);
+
+            // Keep setObjectOrder semantics: Lua objects above the HUD anchor
+            // still draw above native HUD styles, but retain Psych coordinates.
+            if (luaRuntime != null) {
+                PsychCanvas.push(gui, 1f);
+                pushHudCamera(gui, hudZoom);
+                luaRuntime.renderHudInCanvas(gui, HudLayerOrder.HUD, Integer.MAX_VALUE);
+                gui.pose().popPose();
+                PsychCanvas.pop(gui);
+            }
+        }
 
         switch (phase) {
             case COUNTDOWN -> renderCountdown(gui);
@@ -1768,6 +2239,25 @@ public class GameplayScreen extends Screen {
             case RESULTS -> renderResults(gui);
             default -> {}
         }
+        if (luaRuntime != null) luaRuntime.renderOther(gui);
+    }
+
+    private void pushHudCamera(GuiGraphics gui, float zoom) {
+        pushHudCamera(gui, zoom, HUD_WIDTH, HUD_HEIGHT);
+    }
+
+    private void pushHudCamera(GuiGraphics gui, float zoom, int canvasWidth, int canvasHeight) {
+        gui.pose().pushPose();
+        gui.pose().translate(GameplayCamera.hudShakeX(canvasWidth),
+                GameplayCamera.hudShakeY(canvasHeight), 0);
+        if (Math.abs(zoom - 1f) <= 0.0001f) return;
+        gui.pose().translate(canvasWidth * 0.5f, canvasHeight * 0.5f, 0);
+        gui.pose().scale(zoom, zoom, 1);
+        gui.pose().translate(-canvasWidth * 0.5f, -canvasHeight * 0.5f, 0);
+    }
+
+    private float appliedHudZoom() {
+        return GameplayCamera.hudZoom("fnf".equals(effectiveHudStyle()));
     }
 
     private void renderNotes(GuiGraphics gui, List<GameNote>[] lanes, int[] laneStart,
@@ -1824,7 +2314,7 @@ public class GameplayScreen extends Screen {
                 // the entire long note was missed from the start.
                 if (!n.hit && (!n.missed || missedLong)) {
                     float y = noteY(n.data.timeMs, mine, lane, n);
-                    if (y > -noteSize && y < height + noteSize) {
+                    if (y > -noteSize && y < HUD_HEIGHT + noteSize) {
                         gui.pose().pushPose();
                         gui.pose().translate(x + n.data.offsetX, y + n.data.offsetY, 0);
                         gui.pose().mulPose(com.mojang.math.Axis.ZP.rotationDegrees(
@@ -1852,29 +2342,26 @@ public class GameplayScreen extends Screen {
     private static final net.minecraft.resources.ResourceLocation XP_BAR_PROGRESS =
             net.minecraft.resources.ResourceLocation.withDefaultNamespace("hud/experience_bar_progress");
 
-    private static net.minecraft.resources.ResourceLocation vanilla(String p) {
-        return net.minecraft.resources.ResourceLocation.withDefaultNamespace(p);
-    }
-    private static final net.minecraft.resources.ResourceLocation FOOD_EMPTY = vanilla("hud/food_empty");
-    private static final net.minecraft.resources.ResourceLocation FOOD_HALF = vanilla("hud/food_half");
-    private static final net.minecraft.resources.ResourceLocation FOOD_FULL = vanilla("hud/food_full");
-    private static final net.minecraft.resources.ResourceLocation HEART_CONTAINER = vanilla("hud/heart/container");
-    private static final net.minecraft.resources.ResourceLocation HEART_FULL = vanilla("hud/heart/full");
-    private static final net.minecraft.resources.ResourceLocation HEART_HALF = vanilla("hud/heart/half");
-
     private boolean down() { return ClientOptions.get().downscroll; }
+
+    /** FNF stays 1280x720; other styles use Minecraft's GUI-scaled viewport. */
+    private int hudLayoutWidth() {
+        return "fnf".equals(effectiveHudStyle()) ? HUD_WIDTH : width;
+    }
+
+    private int hudLayoutHeight() {
+        return "fnf".equals(effectiveHudStyle()) ? HUD_HEIGHT : height;
+    }
 
     // HUD cluster positions. Upscroll = above the bottom hotbar (unchanged).
     // Downscroll = below a hotbar flush at the top of the screen (mirror order).
-    /** Hearts/hunger row. */
-    private int iconRowY() { return down() ? 24 : height - 39; }
     /** XP-style bar row. */
-    private int xpBarY() { return down() ? 34 : height - 29; }
+    private int xpBarY() { return down() ? 34 : hudLayoutHeight() - 29; }
     /** The XP level number / score text always sits just above the bar (both scroll directions). */
     private int numberY(int barY) { return barY - 9; }
 
     private void renderHud(GuiGraphics gui, float noteSize) {
-        String style = ClientOptions.effectiveHudStyle();
+        String style = effectiveHudStyle();
         switch (style) {
             case "fnf" -> renderFnfHud(gui);
             case "vanilla" -> renderVanillaHud(gui);
@@ -1904,96 +2391,120 @@ public class GameplayScreen extends Screen {
     /** default / abbreviated / numbers: XP-style bar + centered green outlined text. */
     private void renderTextHud(GuiGraphics gui, String style) {
         com.mojang.blaze3d.systems.RenderSystem.enableBlend();
-        int barX = width / 2 - 91;
+        int layoutWidth = hudLayoutWidth();
+        int barX = layoutWidth / 2 - 91;
         int barY = xpBarY();
         gui.blitSprite(XP_BAR_BACKGROUND, barX, barY, 182, 5);
         int fill = (int) (Math.min(1f, health / 2f) * 183.0f);
         if (fill > 0) gui.blitSprite(XP_BAR_PROGRESS, 182, 5, 0, 0, barX, barY, fill, 5);
-        outlinedCentered(gui, scoreLine(style), width / 2, numberY(barY), 0x80FF20);
+        outlinedCentered(gui, scoreLine(style), layoutWidth / 2, numberY(barY), 0x80FF20);
     }
 
-    /** vanilla: real hearts (health), replica XP bar (misses), replica hunger (accuracy). */
+    /** Vanilla: Minecraft renders its real hearts/food layers; Blockified supplies the miss XP bar. */
     private void renderVanillaHud(GuiGraphics gui) {
         com.mojang.blaze3d.systems.RenderSystem.enableBlend();
-        // hearts driven by the player's real (server-synced) health
-        float hp = minecraft.player != null ? minecraft.player.getHealth() : 20f;
-        int halfHearts = Math.round(hp);
-        int hy = iconRowY();
-        int hleft = width / 2 - 91;
-        for (int i = 0; i < 10; i++) {
-            int x = hleft + i * 8;
-            gui.blitSprite(HEART_CONTAINER, x, hy, 9, 9);
-            int rel = halfHearts - i * 2;
-            if (rel >= 2) gui.blitSprite(HEART_FULL, x, hy, 9, 9);
-            else if (rel == 1) gui.blitSprite(HEART_HALF, x, hy, 9, 9);
-        }
-
-        // hunger (accuracy) on the right
-        int foodUnits = Math.round(accuracy() * 20f);
-        int right = width / 2 + 91;
-        for (int i = 0; i < 10; i++) {
-            int x = right - i * 8 - 9;
-            gui.blitSprite(FOOD_EMPTY, x, hy, 9, 9);
-            int rel = foodUnits - i * 2;
-            if (rel >= 2) gui.blitSprite(FOOD_FULL, x, hy, 9, 9);
-            else if (rel == 1) gui.blitSprite(FOOD_HALF, x, hy, 9, 9);
-        }
-
+        int layoutWidth = hudLayoutWidth();
         // XP bar (misses) with the miss count as the level number
-        int barX = width / 2 - 91;
+        int barX = layoutWidth / 2 - 91;
         int barY = xpBarY();
         gui.blitSprite(XP_BAR_BACKGROUND, barX, barY, 182, 5);
         int fill = (int) ((misses % 10) / 10.0f * 183.0f);
         if (fill > 0) gui.blitSprite(XP_BAR_PROGRESS, 182, 5, 0, 0, barX, barY, fill, 5);
-        outlinedCentered(gui, String.valueOf(misses), width / 2, numberY(barY), 0x80FF20);
+        outlinedCentered(gui, String.valueOf(misses), layoutWidth / 2, numberY(barY), 0x80FF20);
     }
 
     /** fnf: Psych-style health bar with icons + score text (all vanilla GUI hidden). */
     private void renderFnfHud(GuiGraphics gui) {
         com.mojang.blaze3d.systems.RenderSystem.enableBlend();
-        int barW = Math.min(320, width / 2);
-        int barX = width / 2 - barW / 2;
-        // downscroll: midway up — high enough to feel top-anchored, low enough that icons don't clip
-        int barY = down() ? 28 : height - 40;
-        int barH = 8;
+        com.mojang.blaze3d.systems.RenderSystem.defaultBlendFunc();
+        int barW = Math.max(1, (int) Math.round(fnfHud.barWidth));
+        int barX = (int) Math.round(fnfHud.barX);
+        int barY = (int) Math.round(fnfHud.barY);
+        int barH = Math.max(1, (int) Math.round(fnfHud.barHeight));
 
-        // green = player health (right), red = opponent (left); split at health/2
         float frac = Math.min(1f, Math.max(0f, health / 2f));
         int split = barX + (int) (barW * (1 - frac));
 
-        String playerIcon = ClientOptions.get().playerIcon;
-        String botIcon = ClientOptions.get().botIcon;
-        // bar side colors come from each character.json when available
-        int oppColor = colorOr(com.fnfmod.client.render.IconLibrary.barColor(botIcon), 0xCC2233);
-        int plColor = colorOr(com.fnfmod.client.render.IconLibrary.barColor(playerIcon), 0x33CC33);
-        gui.fill(barX - 2, barY - 2, barX + barW + 2, barY + barH + 2, 0xFF000000);
-        gui.fill(barX, barY, split, barY + barH, 0xFF000000 | oppColor);
-        gui.fill(split, barY, barX + barW, barY + barH, 0xFF000000 | plColor);
+        String animationPlayerIcon = blockifiedAnimationIcon("boyfriend");
+        String animationOpponentIcon = blockifiedAnimationIcon("dad");
+        String currentPlayerIcon = eventPlayerIcon != null
+                ? changedCharacterIcon(eventPlayerIcon, "player") : !animationPlayerIcon.isBlank()
+                ? animationPlayerIcon : assetResolver.characterIcon(chart.player1);
+        String currentOpponentIcon = eventOpponentIcon != null
+                ? changedCharacterIcon(eventOpponentIcon, "opponent")
+                : !animationOpponentIcon.isBlank() ? animationOpponentIcon
+                : runtimeSongEntry != null && runtimeSongEntry.opponentIcon != null
+                && !runtimeSongEntry.opponentIcon.isBlank()
+                ? runtimeSongEntry.opponentIcon : assetResolver.characterIcon(chart.player2);
+        String playerIcon = selectedIcon(ClientOptions.get().playerIcon, currentPlayerIcon);
+        String botIcon = selectedIcon(ClientOptions.get().botIcon, currentOpponentIcon);
+        int oppColor = fnfHud.opponentColor >= 0 ? fnfHud.opponentColor
+                : colorOr(com.fnfmod.client.render.IconLibrary.barColor(botIcon), 0xCC2233);
+        int plColor = fnfHud.playerColor >= 0 ? fnfHud.playerColor
+                : colorOr(com.fnfmod.client.render.IconLibrary.barColor(playerIcon), 0x33CC33);
 
-        // per-beat bop with an OutCirc ease; bigger icons sitting close together
+        if (fnfHud.backgroundVisible && fnfHud.backgroundAlpha > 0) {
+            int bx = (int) Math.round(fnfHud.backgroundX);
+            int by = (int) Math.round(fnfHud.backgroundY);
+            gui.fill(bx, by, bx + Math.max(1, (int) Math.round(fnfHud.backgroundWidth)),
+                    by + Math.max(1, (int) Math.round(fnfHud.backgroundHeight)),
+                    argb(0x000000, fnfHud.backgroundAlpha));
+        }
+        if (fnfHud.barVisible && fnfHud.barAlpha > 0) {
+            gui.fill(barX, barY, split, barY + barH, argb(oppColor, fnfHud.barAlpha));
+            gui.fill(split, barY, barX + barW, barY + barH, argb(plColor, fnfHud.barAlpha));
+        }
+
         float beatFrac = (float) (conductor.beatAt(Math.max(0, songPos)) % 1.0);
         if (beatFrac < 0) beatFrac += 1;
-        float t = Math.min(1f, beatFrac * 2f);          // 0..1 over the first half-beat
+        float t = Math.min(1f, beatFrac * 2f);
         float outCirc = (float) Math.sqrt(1f - (t - 1f) * (t - 1f));
-        float bop = (1f - outCirc) * 0.30f;             // snappy pop, eases out
+        float bop = (1f - outCirc) * 0.30f;
         float iconSize = 64f * (1f + bop);
         int iconY = barY + barH / 2;
-        float gap = iconSize * 0.34f;                    // icons close to the split
-        if (botIcon != null && !botIcon.isEmpty()) {
+        float gap = iconSize * 0.34f;
+        gui.setColor(1, 1, 1, (float) fnfHud.barAlpha);
+        if (fnfHud.barVisible && botIcon != null && !botIcon.isEmpty()) {
             int frame = frac > 0.8f ? 1 : 0;
             com.fnfmod.client.render.IconLibrary.draw(gui, botIcon, frame,
                     split - gap, iconY, iconSize, false);
         }
-        if (playerIcon != null && !playerIcon.isEmpty()) {
+        if (fnfHud.barVisible && playerIcon != null && !playerIcon.isEmpty()) {
             int frame = frac < 0.2f ? 1 : 0;
             com.fnfmod.client.render.IconLibrary.draw(gui, playerIcon, frame,
                     split + gap, iconY, iconSize, true);
         }
+        gui.setColor(1, 1, 1, 1);
 
-        String line = "Score: " + score + "   Misses: " + misses
+        if (fnfHud.scoreVisible && fnfHud.scoreAlpha > 0) {
+            String line = fnfHud.scoreTextOverride == null ? fnfScoreText() : fnfHud.scoreTextOverride;
+            gui.pose().pushPose();
+            gui.pose().translate(fnfHud.scoreX + fnfHud.scoreWidth * 0.5, fnfHud.scoreY, 0);
+            gui.pose().scale((float) fnfHud.scoreScaleX, (float) fnfHud.scoreScaleY, 1);
+            if (fnfHud.scoreAngle != 0) {
+                gui.pose().mulPose(com.mojang.math.Axis.ZP.rotationDegrees((float) fnfHud.scoreAngle));
+            }
+            gui.drawCenteredString(font, line, 0, 0, argb(fnfHud.scoreColor, fnfHud.scoreAlpha));
+            gui.pose().popPose();
+        }
+    }
+
+    private String fnfScoreText() {
+        return "Score: " + score + "   Misses: " + misses
                 + "   Accuracy: " + String.format("%.2f", accuracy() * 100) + "%";
-        int ty = down() ? barY + barH + 22 : barY + barH + 22;
-        gui.drawCenteredString(font, line, width / 2, ty, 0xFFFFFFFF);
+    }
+
+    private int fnfOpponentBarColor() {
+        return fnfHud.opponentColor >= 0 ? fnfHud.opponentColor : 0xFFCC2233;
+    }
+
+    private int fnfPlayerBarColor() {
+        return fnfHud.playerColor >= 0 ? fnfHud.playerColor : 0xFF33CC33;
+    }
+
+    private static int argb(int color, double alpha) {
+        int a = Math.max(0, Math.min(255, (int) Math.round(alpha * 255)));
+        return color & 0x00FFFFFF | a << 24;
     }
 
     private static int colorOr(int rgb, int fallback) {
@@ -2001,17 +2512,9 @@ public class GameplayScreen extends Screen {
     }
 
     private void renderCommonHud(GuiGraphics gui) {
-        // song progress bar + title: top on upscroll, bottom on downscroll
-        boolean down = down();
-        int progY = down ? height - 2 : 0;
-        int titleY = down ? height - 12 : 6;
-        if (songPlayer.isStarted() && songPlayer.durationMs() > 0) {
-            float frac = (float) Math.min(1, Math.max(0, songPos / songPlayer.durationMs()));
-            gui.fill(0, progY, (int) (width * frac), progY + 2, 0xFFDD44AA);
-        }
-        gui.drawCenteredString(font, chart.title, width / 2, titleY, 0x99FFFFFF);
-
-        // partner info
+        int layoutWidth = hudLayoutWidth();
+        int layoutHeight = hudLayoutHeight();
+        // partner info and judgements belong to camHUD.
         if (duet) {
             gui.drawString(font, partnerName, 8, 16, 0xFFFFAAEE);
             gui.drawString(font, "Score: " + partnerScore + "  Combo: " + partnerCombo, 8, 27, 0xFFCCCCCC);
@@ -2019,9 +2522,11 @@ public class GameplayScreen extends Screen {
 
         // rating popups (position from the user's Rating Position setting, or default)
         var opts = ClientOptions.get();
-        float baseX = opts.ratingX >= 0 ? (float) (opts.ratingX * width)
-                : (playBoth || opts.middlescroll ? width * 0.75f : myStrumsCenterX());
-        float baseY = opts.ratingY >= 0 ? (float) (opts.ratingY * height) : height * 0.4f;
+        float baseX = opts.ratingX >= 0 ? (float) (opts.ratingX * layoutWidth)
+                : (playBoth || opts.middlescroll ? layoutWidth * 0.75f
+                : myStrumsCenterX() * layoutWidth / HUD_WIDTH);
+        float baseY = opts.ratingY >= 0 ? (float) (opts.ratingY * layoutHeight)
+                : layoutHeight * 0.4f;
         long now = System.currentTimeMillis();
         popups.removeIf(p -> now - p.bornMs > 700);
         for (Popup p : popups) {
@@ -2032,6 +2537,40 @@ public class GameplayScreen extends Screen {
             int y = (int) (baseY - age * 18);
             gui.drawCenteredString(font, p.text, (int) baseX, y, color);
         }
+    }
+
+    private String blockifiedAnimationIcon(String role) {
+        if (playbackPolicy != null && playbackPolicy.usesPsychCamera()) return "";
+        String set = playBoth || localControlsRole(role) ? myAnimSet
+                : partnerControlsRole(role) ? partnerAnimSet : "";
+        return set.isBlank() ? "" : CharacterAnimations.icon(set,
+                role.equals("dad") ? "opponent" : "player");
+    }
+
+    private String changedCharacterIcon(String characterId, String role) {
+        if (playbackPolicy == null || !playbackPolicy.usesPsychCamera()) {
+            String icon = CharacterAnimations.icon(characterId, role);
+            if (!icon.isBlank()) return icon;
+        }
+        return assetResolver.characterIcon(characterId);
+    }
+
+    private static String selectedIcon(String setting, String songIcon) {
+        return ClientOptions.SONG_ICON.equals(setting) || setting == null ? songIcon : setting;
+    }
+
+    private void renderSongProgress(GuiGraphics gui) {
+        // Top on upscroll, bottom on downscroll. Deliberately outside camHUD.
+        boolean down = down();
+        int layoutWidth = hudLayoutWidth();
+        int layoutHeight = hudLayoutHeight();
+        int progY = down ? layoutHeight - 2 : 0;
+        int titleY = down ? layoutHeight - 12 : 6;
+        if (songPlayer.isStarted() && songPlayer.durationMs() > 0) {
+            float frac = (float) Math.min(1, Math.max(0, songPos / songPlayer.durationMs()));
+            gui.fill(0, progY, (int) (layoutWidth * frac), progY + 2, 0xFFDD44AA);
+        }
+        gui.drawCenteredString(font, chart.title, layoutWidth / 2, titleY, 0x99FFFFFF);
     }
 
     private void renderCountdown(GuiGraphics gui) {
@@ -2053,10 +2592,7 @@ public class GameplayScreen extends Screen {
         gui.drawCenteredString(font, "PAUSED", 0, 0, 0xFFFFFF);
         gui.pose().popPose();
 
-        String[] options = editorPlaytest
-                ? new String[]{"Resume", "Restart", "Return to Editor"}
-                : (duet ? new String[]{"Resume", "Quit"}
-                : new String[]{"Resume", "Restart", "Edit Chart", "Quit"});
+        String[] options = pauseOptions();
         int startY = height / 2 - 10;
         for (int i = 0; i < options.length; i++) {
             int color = i == pauseSelection ? 0xFFFFFF66 : 0xFFAAAAAA;
@@ -2140,11 +2676,33 @@ public class GameplayScreen extends Screen {
 
     @Override
     public void removed() {
+        if (openingMinecraftPause) {
+            openingMinecraftPause = false;
+            super.removed();
+            return;
+        }
+        disposeResources();
+        super.removed();
+    }
+
+    void disposeAfterMinecraftPauseDisconnect() {
+        disposeResources();
+    }
+
+    private void disposeResources() {
+        if (resourcesDisposed) return;
+        resourcesDisposed = true;
         if (luaRuntime != null) luaRuntime.close();
         customNoteTextures.close();
+        if (psychScene != null) psychScene.close();
         GameplayCamera.end();
         songPlayer.dispose();
         restoreVanillaMusic();
-        super.removed();
+    }
+
+    /** Active presentation mode may override the user's normal HUD preference. */
+    public String effectiveHudStyle() {
+        return playbackPolicy != null && playbackPolicy.forcesFnfHud()
+                ? "fnf" : ClientOptions.effectiveHudStyle();
     }
 }

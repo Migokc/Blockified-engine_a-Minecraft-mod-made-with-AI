@@ -1,6 +1,7 @@
 package com.fnfmod.song;
 
 import com.fnfmod.chart.SongChart;
+import com.fnfmod.chart.PsychChartWriter;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -8,11 +9,10 @@ import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.LinkedHashSet;
-import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 
-/** Copies the portable parts of an externally sourced song into a local song override. */
+/** Imports only charts/events/metadata/audio into a new complete mod template. */
 public final class SongImportService {
     public record Request(
             String songId,
@@ -21,32 +21,41 @@ public final class SongImportService {
             SongEntry entry,
             Path originalDirectory,
             Path eventDefinitionRoot,
-            Path targetDirectory
+            Path targetModDirectory
     ) {}
 
-    public record Result(int copiedFiles, String sourceName) {}
+    public record Result(int copiedFiles, String sourceName, Path targetModDirectory) {}
 
     private SongImportService() {}
 
     public static boolean canImport(Request request) {
-        Path target = request.targetDirectory.toAbsolutePath().normalize();
+        Path target = request.targetModDirectory.toAbsolutePath().normalize();
         return request.entry != null || findSourceRoot(request, target) != null;
     }
 
     public static Result importCompleteSong(Request request) throws IOException {
-        Path target = request.targetDirectory.toAbsolutePath().normalize();
+        Path target = request.targetModDirectory.toAbsolutePath().normalize();
+        Path modsRoot = SongLibrary.modsDir().toAbsolutePath().normalize();
+        if (!target.startsWith(modsRoot) || target.equals(modsRoot)) {
+            throw new IOException("Import target must be a folder inside config/fnfmod/mods");
+        }
         Path source = findSourceRoot(request, target);
         if (source == null && request.entry == null) {
             throw new IOException("Could not find the song's source mod");
         }
 
-        Files.createDirectories(target);
-        int copied = copySongAudio(request.entry, target);
-        copied += copyOtherDifficultyCharts(request.entry, request.loadedDifficulty, request.songId, target);
-        copied += copySongIcon(request.entry, request.chart, source, target);
+        ModTemplateService.create(target, request.songId);
+        Path chartTarget = target.resolve("data").resolve(request.songId);
+        Path audioTarget = target.resolve("songs").resolve(request.songId);
+        int copied = copyChartsAndMetadata(request.entry, chartTarget);
+        copied += copySongAudio(request.entry, request.loadedDifficulty, audioTarget);
+        copied += writePlayableCharts(request, chartTarget);
+        Files.writeString(chartTarget.resolve("events.json"), PsychChartWriter.writeEvents(request.chart));
+        copied++;
+
         String sourceName = source == null ? "song source"
                 : (source.getFileName() == null ? source.toString() : source.getFileName().toString());
-        return new Result(copied, sourceName);
+        return new Result(copied, sourceName, target);
     }
 
     private static Path findSourceRoot(Request request, Path target) {
@@ -65,7 +74,7 @@ public final class SongImportService {
         return null;
     }
 
-    private static int copySongAudio(SongEntry entry, Path target) throws IOException {
+    private static int copySongAudio(SongEntry entry, String difficulty, Path target) throws IOException {
         if (entry == null) return 0;
         LinkedHashSet<Path> files = new LinkedHashSet<>();
         addFile(files, entry.instFile);
@@ -80,47 +89,52 @@ public final class SongImportService {
         }
         int copied = 0;
         for (Path file : files) copied += copy(file, target.resolve(file.getFileName()));
+        copied += copy(entry.instFor(difficulty), target.resolve("Inst.ogg"));
+        copied += copy(entry.voicesFor(difficulty), target.resolve("Voices.ogg"));
+        copied += copy(entry.voicesPlayerFor(difficulty), target.resolve("Voices-Player.ogg"));
+        copied += copy(entry.voicesOpponentFor(difficulty), target.resolve("Voices-Opponent.ogg"));
         return copied;
     }
 
-    private static int copySongIcon(SongEntry entry, SongChart chart, Path sourceRoot, Path target)
-            throws IOException {
-        Path icon = entry == null ? null : entry.opponentIconFile;
-        if (icon == null && sourceRoot != null) {
-            LinkedHashSet<String> names = new LinkedHashSet<>();
-            if (entry != null && entry.opponentIcon != null && !entry.opponentIcon.isBlank()) {
-                names.add(entry.opponentIcon);
-            }
-            if (chart.player2 != null && !chart.player2.isBlank()) names.add(chart.player2);
-            search:
-            for (String name : names) {
-                for (String folder : List.of("images/icons", "icons", "images/characters", "")) {
-                    Path directory = folder.isEmpty() ? sourceRoot : sourceRoot.resolve(folder);
-                    for (String filename : List.of("icon-" + name + ".png", name + ".png")) {
-                        Path candidate = directory.resolve(filename);
-                        if (Files.isRegularFile(candidate, LinkOption.NOFOLLOW_LINKS)) {
-                            icon = candidate;
-                            break search;
-                        }
-                    }
+    private static int copyChartsAndMetadata(SongEntry entry, Path target) throws IOException {
+        if (entry == null) return 0;
+        LinkedHashSet<Path> files = new LinkedHashSet<>();
+        addFile(files, entry.metaFile);
+        addFile(files, entry.eventsFile);
+        entry.legacyChartFiles.values().forEach(path -> addFile(files, path));
+        entry.chartOverrides.values().forEach(path -> addFile(files, path));
+        for (SongEntry.VSliceVariation variation : entry.vsliceVariations.values()) {
+            addFile(files, variation.chartFile);
+            addFile(files, variation.metadataFile);
+        }
+        int copied = 0;
+        for (Path file : files) copied += copy(file, target.resolve(file.getFileName()));
+        return copied;
+    }
+
+    /** Converts every known format/difficulty to Psych JSON so the imported pack stays playable. */
+    private static int writePlayableCharts(Request request, Path target) throws IOException {
+        LinkedHashSet<String> difficulties = new LinkedHashSet<>();
+        if (request.entry != null) difficulties.addAll(request.entry.difficulties);
+        difficulties.add(request.loadedDifficulty == null || request.loadedDifficulty.isBlank()
+                ? "normal" : request.loadedDifficulty);
+        int written = 0;
+        for (String difficulty : difficulties) {
+            SongChart value;
+            if (sameDifficulty(difficulty, request.loadedDifficulty) || request.entry == null) {
+                value = request.chart;
+            } else {
+                try {
+                    value = SongLibrary.loadChart(request.entry, difficulty);
+                } catch (Exception ignored) {
+                    continue;
                 }
             }
+            String suffix = sameDifficulty(difficulty, "normal") ? "" : "-" + sanitize(difficulty);
+            Files.writeString(target.resolve(request.songId + suffix + ".json"), PsychChartWriter.write(value));
+            written++;
         }
-        return icon == null ? 0 : copy(icon, target.resolve("images/icons").resolve(icon.getFileName()));
-    }
-
-    private static int copyOtherDifficultyCharts(SongEntry entry, String loadedDifficulty,
-                                                  String songId, Path target) throws IOException {
-        if (entry == null || entry.format != SongEntry.Format.LEGACY) return 0;
-        int copied = 0;
-        for (var chartFile : entry.legacyChartFiles.entrySet()) {
-            String difficulty = chartFile.getKey();
-            if (sameDifficulty(difficulty, loadedDifficulty)) continue;
-            Path source = entry.chartOverrides.getOrDefault(difficulty, chartFile.getValue());
-            String suffix = difficulty.equalsIgnoreCase("normal") ? "" : "-" + sanitize(difficulty);
-            copied += copy(source, target.resolve(songId + suffix + ".json"));
-        }
-        return copied;
+        return written;
     }
 
     private static boolean sameDifficulty(String first, String second) {

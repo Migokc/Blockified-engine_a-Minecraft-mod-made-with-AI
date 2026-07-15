@@ -23,7 +23,7 @@ import java.util.Set;
 import java.util.stream.Stream;
 
 /**
- * Scans config/fnfmod/songs/&lt;song&gt;/ for charts + audio.
+ * Scans lightweight config/fnfmod/songs entries and complete config/fnfmod/mods packs.
  * Each side (server, client) scans its own folder; in multiplayer the
  * server's library is authoritative and files are streamed to clients.
  */
@@ -43,6 +43,11 @@ public class SongLibrary {
 
     public static EnumSet<ExternalContent> allExternalContent() {
         return EnumSet.allOf(ExternalContent.class);
+    }
+
+    /** Lightweight config/fnfmod/songs entries intentionally have no runtime asset surface. */
+    public static EnumSet<ExternalContent> basicSongContent() {
+        return EnumSet.of(ExternalContent.CHARTS, ExternalContent.AUDIO, ExternalContent.EVENTS);
     }
 
     /** A chart-only local override uses this file to inherit assets from its original mod. */
@@ -134,7 +139,6 @@ public class SongLibrary {
             dirs.filter(Files::isDirectory).sorted().forEach(dir -> {
                 SongEntry entry = scanSong(dir);
                 if (entry != null) found.put(entry.id, entry);
-                collectIcons(dir, icons);
             });
         } catch (IOException e) {
             FnfMod.LOGGER.error("Failed to scan songs folder", e);
@@ -285,6 +289,24 @@ public class SongLibrary {
     }
 
     /**
+     * Shared Psych assets come only from the first configured directory. This
+     * keeps directory order meaningful without leaking same-named assets from
+     * unrelated packs lower in the song-search list.
+     */
+    public static Path primaryExternalAssetRoot(ExternalContent content) {
+        List<String> folders = getExternalFolders();
+        if (folders.isEmpty()) return null;
+        String first = folders.get(0);
+        if (!getExternalFolderContent(first).contains(content)) return null;
+        try {
+            Path root = Path.of(first).toAbsolutePath().normalize();
+            return Files.isDirectory(root) ? root : null;
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    /**
      * Scans a folder with the Psych Engine mod structure:
      * data/&lt;song&gt;/*.json charts + songs/&lt;song&gt;/*.ogg audio.
      * If the folder itself isn't a mod, its direct subfolders are checked
@@ -342,6 +364,7 @@ public class SongLibrary {
                 entry.folder = songDir;
                 entry.format = SongEntry.Format.LEGACY;
                 entry.modRoot = mod;
+                entry.fullModLayout = true;
                 entry.externalContent = EnumSet.copyOf(content);
 
                 try (Stream<Path> files = Files.list(songDir)) {
@@ -426,9 +449,13 @@ public class SongLibrary {
                     entry.displayName = id;
                     entry.folder = songDir;
                     entry.format = SongEntry.Format.VSLICE;
+                    entry.modRoot = mod;
+                    entry.fullModLayout = true;
                     entry.externalContent = EnumSet.copyOf(content);
                 } else if (entry.format != SongEntry.Format.VSLICE) {
                     return; // don't mix with a legacy song of the same id
+                } else if (!entry.fullModLayout) {
+                    return; // lightweight songs/ entries keep priority over complete packs
                 }
                 if (content.contains(ExternalContent.EVENTS)) {
                     for (Path json : jsons) {
@@ -493,6 +520,7 @@ public class SongLibrary {
         entry.folder = dir;
         entry.format = SongEntry.Format.CODENAME;
         entry.modRoot = modRoot;
+        entry.fullModLayout = modRoot != null && !inside(modRoot, songsDir());
         entry.externalContent = EnumSet.copyOf(content);
         Path eventsFile = chartSource.resolve("events.json");
         if (content.contains(ExternalContent.EVENTS) && Files.isRegularFile(eventsFile)) {
@@ -646,9 +674,11 @@ public class SongLibrary {
     }
 
     private static SongEntry scanSong(Path dir) {
+        boolean basicLocal = inside(dir, songsDir());
         // Codename Engine song folder: meta.json (+ charts/ or a flattened download cache)
         if (Files.isRegularFile(dir.resolve("meta.json")) || Files.isDirectory(dir.resolve("charts"))) {
-            SongEntry cn = scanCodenameSong(dir, dir);
+            SongEntry cn = scanCodenameSong(dir, basicLocal ? null : dir,
+                    basicLocal ? basicSongContent() : allExternalContent());
             if (cn != null) return cn;
         }
 
@@ -656,6 +686,9 @@ public class SongLibrary {
         entry.id = dir.getFileName().toString();
         entry.displayName = entry.id;
         entry.folder = dir;
+        entry.fullModLayout = !basicLocal && looksLikeTransferredMod(dir);
+        entry.modRoot = entry.fullModLayout ? dir : null;
+        entry.externalContent = basicLocal ? basicSongContent() : allExternalContent();
 
         List<Path> jsons = new ArrayList<>();
         try (Stream<Path> files = Files.list(dir)) {
@@ -666,8 +699,6 @@ public class SongLibrary {
                     jsons.add(f);
                 } else if (lower.endsWith(".ogg")) {
                     classifyAudio(entry, f, lower);
-                } else if (lower.endsWith(".lua")) {
-                    entry.luaFiles.add(f);
                 }
             });
         } catch (IOException e) {
@@ -684,7 +715,7 @@ public class SongLibrary {
         });
         if (hasVslice) {
             entry.format = SongEntry.Format.VSLICE;
-            buildVSliceVariations(entry, jsons, dir, dir, allExternalContent()); // fills rawVars; finalized after all scanning
+            buildVSliceVariations(entry, jsons, dir, entry.modRoot, entry.externalContent); // fills rawVars; finalized after all scanning
             if (entry.rawVars.isEmpty()) return null;
             if (entry.rawVars.stream().allMatch(r -> r.files.instFile == null)) {
                 FnfMod.LOGGER.warn("V-Slice song {} has charts but no matching Inst.ogg in the same folder "
@@ -718,7 +749,6 @@ public class SongLibrary {
                 }
                 if (entry.opponentIcon.isEmpty()) {
                     entry.opponentIcon = LegacyChartParser.optString(songObj, "player2", "dad");
-                    entry.modRoot = dir;
                 }
             } catch (Exception ignored) {}
         }
@@ -776,16 +806,17 @@ public class SongLibrary {
             // Keep the source only as a chart/audio library. Runtime resources must
             // resolve from the local override, never from the origin pack.
             original.chartOriginRoot = source;
-            original.characterRoot = source;
+            original.characterRoot = null;
             original.folder = localDir;
-            original.modRoot = localDir;
-            // The override's own imported resources are local config content and
-            // must not inherit a source directory's optional resource filters.
-            original.externalContent = allExternalContent();
+            original.modRoot = null;
+            original.fullModLayout = false;
+            original.externalContent = basicSongContent();
             original.opponentIconFile = null;
-            // Scripts beside the locally saved chart belong only to this song.
             original.luaFiles.clear();
-            original.luaFiles.addAll(override.luaFiles);
+            // The origin reference supplies only charts and song audio. Events
+            // must exist in the lightweight local folder to be used.
+            original.eventsFile = override.eventsFile;
+            original.eventsOverride = override.eventsFile != null;
             // A complete local import must take priority over the referenced
             // source while keeping the reference as a fallback for missing data.
             if (override.instFile != null) original.instFile = override.instFile;
@@ -799,10 +830,6 @@ public class SongLibrary {
                 original.chartOverrides.put(difficulty, local.getValue());
                 if (!original.difficulties.contains(difficulty)) original.difficulties.add(difficulty);
             }
-            if (override.eventsFile != null) {
-                original.eventsFile = override.eventsFile;
-                original.eventsOverride = true;
-            }
             FnfMod.LOGGER.info("Chart override {} inherits assets from {}", override.id, source);
             return original;
         } catch (Exception e) {
@@ -813,6 +840,20 @@ public class SongLibrary {
 
     private static String normalizedDifficultyKey(String value) {
         return value.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9_-]", "-");
+    }
+
+    private static boolean inside(Path path, Path root) {
+        if (path == null || root == null) return false;
+        return path.toAbsolutePath().normalize().startsWith(root.toAbsolutePath().normalize());
+    }
+
+    /** Download caches preserve these directories when a complete mod is transferred. */
+    private static boolean looksLikeTransferredMod(Path root) {
+        for (String folder : new String[]{"scripts", "custom_events", "custom_notetypes", "images",
+                "characters", "stages", "sounds", "fonts", "animations", "data", "songs"}) {
+            if (Files.isDirectory(root.resolve(folder))) return true;
+        }
+        return false;
     }
 
     /**
@@ -1048,7 +1089,7 @@ public class SongLibrary {
     /** Loads and parses a chart for the given difficulty. */
     public static SongChart loadChart(SongEntry entry, String difficulty) throws IOException {
         SongChart chart;
-        Path chartOverride = entry.chartOverrides.get(difficulty);
+        Path chartOverride = entry.chartOverrideFor(difficulty);
         if (chartOverride != null && Files.isRegularFile(chartOverride)) {
             chart = LegacyChartParser.parse(Files.readString(chartOverride));
         } else if (entry.format == SongEntry.Format.VSLICE) {
@@ -1058,17 +1099,13 @@ public class SongLibrary {
             String metaJson = Files.readString(v.metadataFile);
             chart = VSliceChartParser.parse(chartJson, metaJson, entry.realDifficulty(difficulty));
         } else if (entry.format == SongEntry.Format.CODENAME) {
-            Path f = entry.legacyChartFiles.get(difficulty);
-            if (f == null && !entry.legacyChartFiles.isEmpty()) f = entry.legacyChartFiles.values().iterator().next();
+            Path f = entry.legacyChartFor(difficulty);
             if (f == null) throw new IOException("No chart for difficulty " + difficulty);
             String metaJson = entry.metaFile != null && Files.isRegularFile(entry.metaFile)
                     ? Files.readString(entry.metaFile) : null;
             chart = CodenameChartParser.parse(Files.readString(f), metaJson, difficulty);
         } else {
-            Path f = entry.legacyChartFiles.get(difficulty);
-            if (f == null && !entry.legacyChartFiles.isEmpty()) {
-                f = entry.legacyChartFiles.values().iterator().next();
-            }
+            Path f = entry.legacyChartFor(difficulty);
             if (f == null) throw new IOException("No chart for difficulty " + difficulty);
             chart = LegacyChartParser.parse(Files.readString(f));
         }

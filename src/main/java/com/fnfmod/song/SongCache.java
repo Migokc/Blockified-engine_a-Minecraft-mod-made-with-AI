@@ -52,7 +52,15 @@ public final class SongCache {
         Path entry = entryDirectory.toAbsolutePath().normalize();
         try {
             if (Files.isDirectory(entry) && entry.startsWith(root)) {
-                Files.setLastModifiedTime(entry, FileTime.fromMillis(System.currentTimeMillis()));
+                FileTime now = FileTime.fromMillis(System.currentTimeMillis());
+                Files.setLastModifiedTime(entry, now);
+                // Mode/difficulty cache variants are nested below the song id;
+                // pruning is based on that top-level song directory's timestamp.
+                Path relative = root.relativize(entry);
+                if (relative.getNameCount() > 0) {
+                    Path songDirectory = root.resolve(relative.getName(0));
+                    if (Files.isDirectory(songDirectory)) Files.setLastModifiedTime(songDirectory, now);
+                }
             }
         } catch (IOException ignored) {}
     }

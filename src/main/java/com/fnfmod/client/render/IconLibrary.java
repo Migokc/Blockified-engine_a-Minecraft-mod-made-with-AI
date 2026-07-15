@@ -93,7 +93,7 @@ public final class IconLibrary {
                 Source s = new Source();
                 s.png = png;
                 s.barColor = color;
-                String entry = stem(json.getFileName().toString());
+                String entry = stem(json.getFileName().toString()).toLowerCase(Locale.ROOT);
                 sources.put(entry, s);
                 if (color >= 0) pngColor.put(png, color);
             } catch (Exception ignored) {}
@@ -189,10 +189,11 @@ public final class IconLibrary {
     private static synchronized Icon get(String name) {
         if (name == null || name.isEmpty()) return null;
         syncIfStale();
-        if (loaded.containsKey(name)) return loaded.get(name);
-        Source src = sources.get(name);
+        String key = name.toLowerCase(Locale.ROOT);
+        if (loaded.containsKey(key)) return loaded.get(key);
+        Source src = sources.get(key);
         if (src == null) {
-            loaded.put(name, null);
+            loaded.put(key, null);
             return null;
         }
         NativeImage img = null;
@@ -201,7 +202,7 @@ public final class IconLibrary {
         boolean registered = false;
         try (InputStream in = Files.newInputStream(src.png)) {
             img = NativeImage.read(in);
-            id = FnfMod.id("icon/" + name.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9_]", "_"));
+            id = FnfMod.id("icon/" + key.replaceAll("[^a-z0-9_]", "_"));
             texture = new DynamicTexture(img);
             Minecraft.getInstance().getTextureManager().register(id, texture);
             registered = true;
@@ -212,14 +213,14 @@ public final class IconLibrary {
             icon.frameSize = img.getHeight();
             icon.frames = Math.max(1, Math.round((float) img.getWidth() / img.getHeight()));
             icon.barColor = src.barColor;
-            loaded.put(name, icon);
+            loaded.put(key, icon);
             return icon;
         } catch (Exception e) {
             if (registered && id != null) Minecraft.getInstance().getTextureManager().release(id);
             else if (texture != null) texture.close();
             else if (img != null) img.close();
             FnfMod.LOGGER.warn("Failed to load icon {}: {}", name, e.toString());
-            loaded.put(name, null);
+            loaded.put(key, null);
             return null;
         }
     }

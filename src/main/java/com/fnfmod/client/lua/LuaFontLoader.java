@@ -34,17 +34,16 @@ final class LuaFontLoader implements AutoCloseable {
 
     private record Loaded(Font font, FontSet set, TrueTypeGlyphProvider provider, ResourceLocation textureBase) {}
 
-    private final Path songFolder;
-    private final Path modRoot;
+    private final List<Path> assetRoots;
     private final Path globalFonts;
     private final boolean allowSongFonts;
     private final Map<Path, Loaded> loaded = new LinkedHashMap<>();
     private final Set<Path> failed = new LinkedHashSet<>();
     private final Set<String> missing = new LinkedHashSet<>();
 
-    LuaFontLoader(Path songFolder, Path modRoot, Path globalFonts, boolean allowSongFonts) {
-        this.songFolder = normalize(songFolder);
-        this.modRoot = normalize(modRoot);
+    LuaFontLoader(List<Path> assetRoots, Path globalFonts, boolean allowSongFonts) {
+        this.assetRoots = assetRoots == null ? List.of() : assetRoots.stream()
+                .map(LuaFontLoader::normalize).filter(java.util.Objects::nonNull).distinct().toList();
         this.globalFonts = normalize(globalFonts);
         this.allowSongFonts = allowSongFonts;
     }
@@ -130,7 +129,9 @@ final class LuaFontLoader implements AutoCloseable {
     private Path resolve(String requested) {
         if (requested == null || requested.isBlank()) return null;
         String name = requested.trim().replace('\\', '/');
-        for (Path root : new Path[]{songFolder, modRoot, globalFonts}) {
+        List<Path> roots = new java.util.ArrayList<>(assetRoots);
+        if (globalFonts != null) roots.add(globalFonts);
+        for (Path root : roots) {
             if (root == null) continue;
             if (!root.equals(globalFonts) && !allowSongFonts) continue;
             Path[] candidates = root.equals(globalFonts)

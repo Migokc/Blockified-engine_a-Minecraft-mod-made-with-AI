@@ -161,7 +161,8 @@ public final class NoteStyle {
     /** Selectable skin folders (subfolders of config/fnfmod/skins containing NOTE_assets.png). */
     public static java.util.List<String> listSkins() {
         java.util.List<String> out = new java.util.ArrayList<>();
-        out.add("default");
+        out.add(com.fnfmod.client.ClientOptions.NOTE_SKIN_DEFAULT);
+        out.add(com.fnfmod.client.ClientOptions.NOTE_SKIN_NONE);
         try (var dirs = java.nio.file.Files.list(SongLibrary.skinsDir())) {
             dirs.filter(java.nio.file.Files::isDirectory)
                     .filter(d -> java.nio.file.Files.isRegularFile(d.resolve("NOTE_assets.png"))
@@ -170,7 +171,9 @@ public final class NoteStyle {
                     .map(d -> d.getFileName().toString())
                     .sorted()
                     .forEach(name -> {
-                        if (!out.contains(name)) out.add(name);
+                        if (!name.equalsIgnoreCase(com.fnfmod.client.ClientOptions.NOTE_SKIN_DEFAULT)
+                                && !name.equalsIgnoreCase(com.fnfmod.client.ClientOptions.NOTE_SKIN_NONE)
+                                && !out.contains(name)) out.add(name);
                     });
         } catch (Exception ignored) {}
         return out;
@@ -183,7 +186,16 @@ public final class NoteStyle {
             arrowTexture = registerGenerated("gen/arrow", makeArrow(false));
             arrowOutlineTexture = registerGenerated("gen/arrow_outline", makeArrow(true));
         }
-        Path skinDir = SongLibrary.skinsDir().resolve(com.fnfmod.client.ClientOptions.get().noteSkin);
+        String selected = com.fnfmod.client.ClientOptions.get().noteSkin;
+        if (selected == null || selected.isBlank()) {
+            selected = com.fnfmod.client.ClientOptions.NOTE_SKIN_DEFAULT;
+        }
+        if (selected.equalsIgnoreCase(com.fnfmod.client.ClientOptions.NOTE_SKIN_DEFAULT)
+                || selected.equalsIgnoreCase(com.fnfmod.client.ClientOptions.NOTE_SKIN_NONE)) {
+            loadProceduralSplashFallback();
+            return; // chart assets are handled per song; note art is intentionally procedural
+        }
+        Path skinDir = SongLibrary.skinsDir().resolve(selected);
 
         skinConfig = NoteSkinConfig.load(skinDir);
 
@@ -301,6 +313,34 @@ public final class NoteStyle {
                 classic != null ? "classic NOTE_assets" : "V-Slice notes/noteStrumline",
                 splashAtlas != null ? ", with splashes" : "",
                 noteRGB != null && noteRGB.template ? ", RGB colorable" : "");
+    }
+
+    /** Procedural note modes may still use the separately selected global splash atlas. */
+    @SuppressWarnings("unchecked")
+    private static void loadProceduralSplashFallback() {
+        String selected = com.fnfmod.client.ClientOptions.get().splashSkin;
+        if (selected == null || selected.isBlank()) return;
+        Path directory = SongLibrary.splashesDir();
+        splashAtlas = SparrowAtlas.load(directory.resolve(selected + ".png"),
+                directory.resolve(selected + ".xml"));
+        if (splashAtlas == null) return;
+        skinOwnSplash = false;
+        splashAnims = new java.util.List[4];
+        String[] colors = {"purple", "blue", "green", "red"};
+        String[] directions = {"left", "down", "up", "right"};
+        for (int lane = 0; lane < 4; lane++) {
+            java.util.List<String> variants = new java.util.ArrayList<>();
+            for (String animation : splashAtlas.animationNames()) {
+                String lower = animation.toLowerCase(java.util.Locale.ROOT);
+                if ((lower.contains("impact") || lower.contains("splash"))
+                        && (lower.contains(colors[lane]) || lower.contains(directions[lane]))) {
+                    variants.add(animation);
+                }
+            }
+            java.util.Collections.sort(variants);
+            splashAnims[lane] = variants;
+        }
+        splashRGB = makeRGBSet("splash", splashAtlas.image(), detectSplashTemplate(splashAtlas.image()));
     }
 
     // ------------------------------------------------------------------ RGB note colors
@@ -717,7 +757,7 @@ public final class NoteStyle {
         ResourceLocation rgbTex = laneTex(holdRGB, lane);
 
         RenderSystem.enableBlend();
-        gui.enableScissor((int) x - 1, (int) yTop, (int) (x + w) + 1, (int) yBottom + 1);
+        PoseScissor.enable(gui, x - 1, yTop, x + w + 1, yBottom + 1);
         float bodyTop = tailAtTop ? yTop + endH : yTop;
         float bodyBottom = tailAtTop ? yBottom : yBottom - endH;
         // anchor the tile pattern to the tail end so the texture scrolls with the

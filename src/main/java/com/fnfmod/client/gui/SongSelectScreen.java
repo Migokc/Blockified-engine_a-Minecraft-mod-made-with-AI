@@ -142,7 +142,7 @@ public class SongSelectScreen extends Screen {
                 gui.drawCenteredString(font, "No songs match \"" + query + "\"", x + w / 2, y + 30, 0xFFFF6666);
             } else {
                 gui.drawCenteredString(font, "No songs found!", x + w / 2, y + 30, 0xFFFF6666);
-                gui.drawCenteredString(font, "Put FNF songs into config/fnfmod/songs/<name>/", x + w / 2, y + 46, 0xFFAAAAAA);
+                gui.drawCenteredString(font, "Use config/fnfmod/songs/<name> or mods/<pack>", x + w / 2, y + 46, 0xFFAAAAAA);
                 gui.drawCenteredString(font, "or add a mod folder in Settings > Directories", x + w / 2, y + 60, 0xFFAAAAAA);
             }
             return;

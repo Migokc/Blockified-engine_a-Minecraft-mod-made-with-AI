@@ -69,33 +69,38 @@ public final class FnfClient {
             }
         }
 
-        private static boolean hotbarTranslated = false;
+        private static net.minecraft.resources.ResourceLocation translatedLayer;
 
-        /** Hide vanilla HUD during gameplay; only the hotbar stays (except FNF). */
+        /** Hide unrelated vanilla HUD layers; vanilla style keeps Minecraft's real hearts and food. */
         @SubscribeEvent
         public static void onRenderGuiLayer(RenderGuiLayerEvent.Pre event) {
-            if (!(Minecraft.getInstance().screen instanceof com.fnfmod.client.gui.GameplayScreen)) return;
+            if (!(Minecraft.getInstance().screen instanceof GameplayScreen gameplay)) return;
             var name = event.getName();
-            String style = ClientOptions.effectiveHudStyle();
+            String style = gameplay.effectiveHudStyle();
             boolean keepHotbar = !"fnf".equals(style) && VanillaGuiLayers.HOTBAR.equals(name);
-            if (!keepHotbar) {
+            boolean keepVanillaStatus = "vanilla".equals(style)
+                    && (VanillaGuiLayers.PLAYER_HEALTH.equals(name)
+                    || VanillaGuiLayers.FOOD_LEVEL.equals(name));
+            if (!keepHotbar && !keepVanillaStatus) {
                 event.setCanceled(true);
                 return;
             }
-            // downscroll: move the hotbar flush against the top of the screen
+            // Downscroll mirrors the native cluster to the top while retaining
+            // Minecraft's own rendering and GUI-scale behavior.
             if (ClientOptions.get().downscroll) {
                 var gui = event.getGuiGraphics();
                 gui.pose().pushPose();
-                gui.pose().translate(0, -(gui.guiHeight() - 22), 0);
-                hotbarTranslated = true;
+                double offset = keepHotbar ? -(gui.guiHeight() - 22) : 63 - gui.guiHeight();
+                gui.pose().translate(0, offset, 0);
+                translatedLayer = name;
             }
         }
 
         @SubscribeEvent
         public static void onRenderGuiLayerPost(RenderGuiLayerEvent.Post event) {
-            if (hotbarTranslated && VanillaGuiLayers.HOTBAR.equals(event.getName())) {
+            if (translatedLayer != null && translatedLayer.equals(event.getName())) {
                 event.getGuiGraphics().pose().popPose();
-                hotbarTranslated = false;
+                translatedLayer = null;
             }
         }
 

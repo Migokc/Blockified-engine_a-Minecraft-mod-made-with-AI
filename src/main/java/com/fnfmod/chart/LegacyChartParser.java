@@ -38,7 +38,11 @@ public final class LegacyChartParser {
         chart.needsVoices = optBool(song, "needsVoices", true);
         chart.player1 = optString(song, "player1", "bf");
         chart.player2 = optString(song, "player2", "dad");
+        chart.player3 = optString(song, "gfVersion", optString(song, "player3", "gf"));
         chart.stage = optString(song, "stage", "stage");
+        chart.noteTexture = optString(song, "arrowSkin", optString(song, "noteTexture", ""));
+        chart.noteSplashTexture = optString(song, "splashSkin",
+                optString(song, "noteSplashTexture", ""));
 
         // Psych Engine 1.0+ ("psych_v1", "psych_v1_convert") stores lanes absolutely:
         // 0-3 = player, 4-7 = opponent. Older charts are mustHitSection-relative.
@@ -66,7 +70,6 @@ public final class LegacyChartParser {
                 section.sectionBeats = optDouble(sec, "lengthInSteps", 16) / 4.0;
             }
             if (section.sectionBeats <= 0) section.sectionBeats = 4;
-            section.camEase = optString(sec, "fnfmodCamEase", "smooth");
             chart.sections.add(section);
 
             if (section.changeBPM && section.bpm > 0) {
@@ -109,7 +112,11 @@ public final class LegacyChartParser {
                     int lane = data % 4;
                     boolean playerSide = absoluteLanes ? data < 4 : (data < 4) == section.mustHit;
                     SongChart.Note note = new SongChart.Note(time, lane, playerSide, sustain, type);
-                    note.altAnim = section.altAnim || "Alt Animation".equals(type);
+                    // Psych section alt animations affect opponent-side notes only.
+                    note.altAnim = (section.altAnim && !playerSide) || "Alt Animation".equals(type);
+                    note.animSuffix = note.altAnim ? "-alt" : "";
+                    // gfSection redirects notes belonging to the section's focused side.
+                    note.gfNote = section.gfSection && playerSide == section.mustHit;
                     chart.notes.add(note);
                 }
             }

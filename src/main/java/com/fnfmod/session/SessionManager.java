@@ -6,6 +6,8 @@ import com.fnfmod.chart.SongChart;
 import com.fnfmod.chart.CommandEventPlaceholders;
 import com.fnfmod.chart.ChartEventTypes;
 import com.fnfmod.character.CharacterTransform;
+import com.fnfmod.gameplay.PlaybackMode;
+import com.fnfmod.gameplay.PlaybackPolicy;
 import com.fnfmod.net.FnfPayloads;
 import com.fnfmod.song.SongEntry;
 import com.fnfmod.song.SongLibrary;
@@ -23,6 +25,7 @@ import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.neoforge.event.entity.player.PlayerEvent;
 import net.neoforged.neoforge.event.server.ServerStartingEvent;
+import net.neoforged.neoforge.event.tick.ServerTickEvent;
 import net.neoforged.neoforge.network.PacketDistributor;
 
 import java.io.IOException;
@@ -43,7 +46,8 @@ import java.util.UUID;
 public final class SessionManager {
 
     private static final int CHUNK_SIZE = 400 * 1024;
-    private static final long MAX_SONG_BYTES = 256L * 1024 * 1024;
+    /** Requested missing files only; large FNF packs commonly exceed 256 MiB. */
+    private static final long MAX_TRANSFER_REQUEST_BYTES = 1024L * 1024 * 1024;
 
     private record Key(ResourceKey<Level> dim, BlockPos pos) {}
 
@@ -65,12 +69,15 @@ public final class SessionManager {
         CharacterTransform guestTransform = CharacterTransform.DEFAULT;
         /** solo only: 0 = player, 1 = opponent, 2 = both */
         byte playSide = 0;
+        PlaybackPolicy playbackPolicy = PlaybackPolicy.resolve(PlaybackMode.LEGACY, null);
         /** decorative bot armor stand in solo play */
         ArmorStand botStand;
         /** invisible command target at the Funkin' Machine/speakers. */
         ArmorStand speakersMarker;
         /** Prevents duet clients or duplicate packets from running a server event twice. */
         final Set<Integer> executedServerEvents = new HashSet<>();
+        long luaCommandWindowNanos;
+        int luaCommandsInWindow;
     }
 
     private static final Map<Key, Session> SESSIONS = new HashMap<>();
@@ -81,6 +88,12 @@ public final class SessionManager {
     private static final Map<UUID, ReturnPoint> RETURN_POINTS = new HashMap<>();
     /** Real health captured before a vanilla-HUD song, restored afterwards. */
     private static final Map<UUID, Float> HEALTH_BEFORE = new HashMap<>();
+    private record FoodBefore(int level, float saturation, float exhaustion) {}
+    private record VanillaHudTarget(float health, int foodLevel) {}
+    /** Food state captured before a vanilla-HUD song, restored afterwards. */
+    private static final Map<UUID, FoodBefore> FOOD_BEFORE = new HashMap<>();
+    /** Authoritative values pinned after each server tick while the song is active. */
+    private static final Map<UUID, VanillaHudTarget> VANILLA_HUD_TARGETS = new HashMap<>();
     /** Invulnerability state before the song, restored afterwards. */
     private static final Map<UUID, Boolean> INVULN_BEFORE = new HashMap<>();
 
@@ -89,6 +102,20 @@ public final class SessionManager {
     @SubscribeEvent
     public static void onServerStarting(ServerStartingEvent event) {
         SongLibrary.rescan();
+    }
+
+    @SubscribeEvent
+    public static void onServerTick(ServerTickEvent.Post event) {
+        var iterator = VANILLA_HUD_TARGETS.entrySet().iterator();
+        while (iterator.hasNext()) {
+            var entry = iterator.next();
+            ServerPlayer player = event.getServer().getPlayerList().getPlayer(entry.getKey());
+            if (player == null || !RETURN_POINTS.containsKey(entry.getKey())) {
+                iterator.remove();
+                continue;
+            }
+            applyVanillaHudTarget(player, entry.getValue());
+        }
     }
 
     @SubscribeEvent
@@ -133,7 +160,9 @@ public final class SessionManager {
             SongEntry entry = SongLibrary.get(session.songId);
             if (entry != null) {
                 PacketDistributor.sendToPlayer(player, new FnfPayloads.FileManifestS2C(
-                        pos, session.songId, session.difficulty, true, manifest(entry, session.difficulty)));
+                        pos, session.songId, session.difficulty, true, true,
+                        session.playbackPolicy.mode().networkId(), session.playbackPolicy.songAssets(),
+                        manifest(entry, session.difficulty, session.playbackPolicy)));
             }
             return;
         }
@@ -153,10 +182,16 @@ public final class SessionManager {
             player.sendSystemMessage(Component.literal("Song not found on server: " + payload.songId()));
             return;
         }
+        if (!entry.difficulties.contains(payload.difficulty())) {
+            player.sendSystemMessage(Component.literal("Difficulty not found for song: " + payload.difficulty()));
+            return;
+        }
         session.songId = payload.songId();
         session.difficulty = payload.difficulty();
         session.duet = payload.duet();
         session.playSide = payload.duet() ? 0 : (byte) Math.max(0, Math.min(2, payload.playSide()));
+        session.playbackPolicy = PlaybackPolicy.resolve(
+                PlaybackMode.fromNetworkId(payload.playbackMode()), entry);
         session.hostReady = false;
         session.guestReady = false;
         session.executedServerEvents.clear();
@@ -169,7 +204,10 @@ public final class SessionManager {
             session.state = State.PREPARING;
         }
         PacketDistributor.sendToPlayer(player, new FnfPayloads.FileManifestS2C(
-                payload.pos(), session.songId, session.difficulty, payload.duet(), manifest(entry, session.difficulty)));
+                payload.pos(), session.songId, session.difficulty, payload.duet(),
+                !payload.duet() && session.playSide == 1,
+                session.playbackPolicy.mode().networkId(), session.playbackPolicy.songAssets(),
+                manifest(entry, session.difficulty, session.playbackPolicy)));
     }
 
     public static void onRequestFiles(ServerPlayer player, FnfPayloads.RequestFilesC2S payload) {
@@ -178,21 +216,22 @@ public final class SessionManager {
         SongEntry entry = SongLibrary.get(payload.songId());
         if (entry == null) return;
 
-        List<Path> candidates = entry.allTransferFiles();
+        java.util.Set<String> requested = new java.util.HashSet<>(payload.fileNames());
+        List<Path> candidates = entry.transferFiles(session.difficulty, session.playbackPolicy).stream()
+                .filter(file -> requested.contains(entry.transferName(file))).toList();
         long total = 0;
         for (Path f : candidates) {
             try {
                 total += Files.size(f);
             } catch (IOException ignored) {}
         }
-        if (total > MAX_SONG_BYTES) {
-            player.sendSystemMessage(Component.literal("Song is too large to transfer."));
+        if (total > MAX_TRANSFER_REQUEST_BYTES) {
+            player.sendSystemMessage(Component.literal("Requested song files exceed the 1 GiB transfer limit."));
             return;
         }
 
         for (Path f : candidates) {
             String name = entry.transferName(f);
-            if (!payload.fileNames().contains(name)) continue;
             try {
                 byte[] bytes = Files.readAllBytes(f);
                 int chunks = Math.max(1, (bytes.length + CHUNK_SIZE - 1) / CHUNK_SIZE);
@@ -420,6 +459,44 @@ public final class SessionManager {
         }
     }
 
+    public static void onLuaCommand(ServerPlayer player, FnfPayloads.LuaCommandC2S payload) {
+        Session session = SESSIONS.get(keyOf(player, payload.pos()));
+        // Host-only prevents duet clients from executing same script command twice.
+        if (session == null || session.state != State.PLAYING || session.host != player) return;
+        var server = player.getServer();
+        if (server == null) return;
+        // Lua is client-provided. Never grant arbitrary server-source commands to
+        // untrusted dedicated-server players. Integrated-world owner remains trusted.
+        if (!player.hasPermissions(2) && !server.isSingleplayerOwner(player.getGameProfile())) {
+            player.sendSystemMessage(Component.literal(
+                    "Blockified Lua: server commands require operator permission"));
+            return;
+        }
+        long now = System.nanoTime();
+        if (now - session.luaCommandWindowNanos >= 1_000_000_000L) {
+            session.luaCommandWindowNanos = now;
+            session.luaCommandsInWindow = 0;
+        }
+        if (++session.luaCommandsInWindow > 100) return;
+
+        try {
+            BlockState machineState = player.serverLevel().getBlockState(payload.pos());
+            Direction machineFacing = machineState.hasProperty(FunkinMachineBlock.FACING)
+                    ? machineState.getValue(FunkinMachineBlock.FACING) : Direction.NORTH;
+            String command = CommandEventPlaceholders.expand(
+                    payload.command(), payload.pos(), machineFacing).trim();
+            while (command.startsWith("/")) command = command.substring(1).trim();
+            if (command.isEmpty()) return;
+            server.getCommands().performPrefixedCommand(
+                    server.createCommandSourceStack()
+                            .withLevel(player.serverLevel())
+                            .withPosition(Vec3.atCenterOf(payload.pos())), command);
+        } catch (Exception error) {
+            FnfMod.LOGGER.warn("Could not run Lua server command for {}: {}",
+                    session.songId, error.toString());
+        }
+    }
+
     public static void onNoteEvent(ServerPlayer player, FnfPayloads.NoteEventC2S payload) {
         Session session = SESSIONS.get(keyOf(player, payload.pos()));
         if (session == null || session.state != State.PLAYING) return;
@@ -506,6 +583,15 @@ public final class SessionManager {
                 player.setHealth(Math.max(1f, Math.min(player.getMaxHealth(), hp)));
             } catch (Exception ignored) {}
         }
+        VANILLA_HUD_TARGETS.remove(player.getUUID());
+        FoodBefore food = FOOD_BEFORE.remove(player.getUUID());
+        if (food != null) {
+            try {
+                player.getFoodData().setFoodLevel(food.level());
+                player.getFoodData().setSaturation(food.saturation());
+                player.getFoodData().setExhaustion(food.exhaustion());
+            } catch (Exception ignored) {}
+        }
         ReturnPoint rp = RETURN_POINTS.remove(player.getUUID());
         if (rp == null) return;
         try {
@@ -516,13 +602,27 @@ public final class SessionManager {
         }
     }
 
-    /** Vanilla HUD: set the player's real health without ever killing them. */
-    public static void onSetHealth(ServerPlayer player, float health) {
+    /** Vanilla HUD: lock real health and food to Blockified without ever killing the player. */
+    public static void onSyncVanillaHud(ServerPlayer player, float health, int foodLevel) {
         // only within an active session (return point recorded at song start)
         if (!RETURN_POINTS.containsKey(player.getUUID())) return;
         HEALTH_BEFORE.putIfAbsent(player.getUUID(), player.getHealth());
-        float clamped = Math.max(1f, Math.min(player.getMaxHealth(), health));
-        player.setHealth(clamped);
+        FOOD_BEFORE.putIfAbsent(player.getUUID(), new FoodBefore(
+                player.getFoodData().getFoodLevel(), player.getFoodData().getSaturationLevel(),
+                player.getFoodData().getExhaustionLevel()));
+        VanillaHudTarget target = new VanillaHudTarget(
+                Math.max(1f, Math.min(player.getMaxHealth(), health)),
+                Math.max(0, Math.min(20, foodLevel)));
+        VANILLA_HUD_TARGETS.put(player.getUUID(), target);
+        applyVanillaHudTarget(player, target);
+    }
+
+    private static void applyVanillaHudTarget(ServerPlayer player, VanillaHudTarget target) {
+        player.setHealth(Math.max(1f, Math.min(player.getMaxHealth(), target.health())));
+        player.getFoodData().setFoodLevel(target.foodLevel());
+        // Keep vanilla exhaustion/regeneration from changing Blockified's display.
+        player.getFoodData().setSaturation(0);
+        player.getFoodData().setExhaustion(0);
     }
 
     private static void cancel(Session session, ServerPlayer leaver, String reason) {
@@ -547,9 +647,10 @@ public final class SessionManager {
         return out;
     }
 
-    private static List<FnfPayloads.FileMeta> manifest(SongEntry entry, String difficulty) {
+    private static List<FnfPayloads.FileMeta> manifest(SongEntry entry, String difficulty,
+                                                       PlaybackPolicy policy) {
         List<FnfPayloads.FileMeta> out = new ArrayList<>();
-        for (Path f : entry.transferFiles(difficulty)) {
+        for (Path f : entry.transferFiles(difficulty, policy)) {
             try {
                 out.add(new FnfPayloads.FileMeta(entry.transferName(f), Files.size(f), sha1(f)));
             } catch (IOException e) {

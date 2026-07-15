@@ -40,6 +40,8 @@ public final class GameplayEventDispatcher {
             } catch (NumberFormatException ignored) {}
         } else if (ChartEventTypes.isCameraFocus(event.name)) {
             cameraFocusHandler.accept(event);
+        } else if (ChartEventTypes.isCameraBehavior(event.name)) {
+            GameplayCamera.setCameraBehavior(event.value1, event.value2);
         }
         luaHandler.accept(event);
     }
@@ -52,9 +54,21 @@ public final class GameplayEventDispatcher {
         runPlayerCommand(event.value1);
     }
 
-    private void runPlayerCommand(String rawCommand) {
+    /** Lua-facing command entry point. Uses same placeholders as chart events. */
+    public boolean runLuaCommand(String rawCommand, String runner) {
+        if (rawCommand == null || rawCommand.isBlank()) return false;
+        if ("server".equalsIgnoreCase(runner == null ? "" : runner.trim())
+                && !editorPlaytest.getAsBoolean()) {
+            // Server validates active-session host and permission before execution.
+            PacketDistributor.sendToServer(new FnfPayloads.LuaCommandC2S(machinePosition, rawCommand));
+            return true;
+        }
+        return runPlayerCommand(rawCommand);
+    }
+
+    private boolean runPlayerCommand(String rawCommand) {
         Minecraft minecraft = Minecraft.getInstance();
-        if (minecraft.player == null || minecraft.player.connection == null || rawCommand == null) return;
+        if (minecraft.player == null || minecraft.player.connection == null || rawCommand == null) return false;
         Direction facing = Direction.NORTH;
         if (minecraft.level != null) {
             var state = minecraft.level.getBlockState(machinePosition);
@@ -62,12 +76,14 @@ public final class GameplayEventDispatcher {
         }
         String command = CommandEventPlaceholders.expand(rawCommand, machinePosition, facing).trim();
         while (command.startsWith("/")) command = command.substring(1).trim();
-        if (command.isEmpty()) return;
+        if (command.isEmpty()) return false;
         try {
             minecraft.player.connection.sendCommand(command);
+            return true;
         } catch (Exception error) {
             minecraft.player.displayClientMessage(
                     Component.literal("FNF event command failed: " + error.getMessage()), false);
+            return false;
         }
     }
 }

@@ -23,6 +23,7 @@ public final class PsychNoteTextureCache implements AutoCloseable {
     private static final class Style {
         final SparrowAtlas atlas;
         final String[] heads = new String[4];
+        final String[][] receptors = new String[4][3];
         final String[] pieces = new String[4];
         final String[] ends = new String[4];
         @SuppressWarnings("unchecked")
@@ -35,6 +36,13 @@ public final class PsychNoteTextureCache implements AutoCloseable {
                 heads[lane] = atlas.findAnimation(COLORS[lane], "note" + CAPS[lane],
                         COLORS[lane] + " alone", DIRECTIONS[lane] + " note",
                         "note" + DIRECTIONS[lane].toUpperCase(Locale.ROOT));
+                receptors[lane][0] = atlas.findAnimation(
+                        "arrow" + DIRECTIONS[lane].toUpperCase(Locale.ROOT),
+                        DIRECTIONS[lane] + " static", DIRECTIONS[lane] + " receptor");
+                receptors[lane][1] = atlas.findAnimation(
+                        DIRECTIONS[lane] + " press", DIRECTIONS[lane] + " pressed");
+                receptors[lane][2] = atlas.findAnimation(
+                        DIRECTIONS[lane] + " confirm", DIRECTIONS[lane] + " confirmed");
                 pieces[lane] = atlas.findAnimation(COLORS[lane] + " hold piece",
                         COLORS[lane] + " hold", DIRECTIONS[lane] + " hold piece");
                 ends[lane] = atlas.findAnimation(COLORS[lane] + " hold end",
@@ -83,6 +91,21 @@ public final class PsychNoteTextureCache implements AutoCloseable {
         return true;
     }
 
+    public boolean drawReceptor(GuiGraphics gui, String texture, int lane, int state,
+                                float centerX, float centerY, float size) {
+        Style style = style(texture);
+        if (style == null) return false;
+        int safeLane = Math.floorMod(lane, 4);
+        String animation = style.receptors[safeLane][Math.max(0, Math.min(2, state))];
+        if (animation == null && state != 0) animation = style.receptors[safeLane][0];
+        SparrowAtlas.Frame frame = style.frame(animation);
+        if (frame == null) return false;
+        NoteStyle.prepareCustomNoteDraw();
+        style.atlas.drawScaled(gui, frame, centerX, centerY,
+                size / Math.max(1, Math.max(frame.frameW, frame.frameH)));
+        return true;
+    }
+
     public boolean drawHold(GuiGraphics gui, String texture, int lane, float centerX,
                             float yTop, float yBottom, float size, boolean downscroll) {
         Style style = style(texture);
@@ -97,8 +120,7 @@ public final class PsychNoteTextureCache implements AutoCloseable {
         float tileHeight = piece == null ? 0 : Math.max(1, piece.frameH * scale);
         float endHeight = end == null ? 0 : Math.max(1, end.frameH * scale);
 
-        gui.enableScissor((int) (centerX - size), (int) yTop,
-                (int) (centerX + size), (int) Math.ceil(yBottom));
+        PoseScissor.enable(gui, centerX - size, yTop, centerX + size, yBottom);
         gui.pose().pushPose();
         if (downscroll) {
             gui.pose().translate(0, yTop + yBottom, 0);
@@ -120,6 +142,7 @@ public final class PsychNoteTextureCache implements AutoCloseable {
 
     /** Resolves Psych's sounds/name path for a note-specific hitsound. */
     public Path resolveSound(String rawSound) {
+        if (!enabled) return null;
         if (rawSound == null || rawSound.isBlank() || rawSound.equalsIgnoreCase("hitsound")) return null;
         String sound = stripExtension(rawSound.trim().replace('\\', '/')) + ".ogg";
         for (Path root : new Path[]{songFolder, modRoot}) {

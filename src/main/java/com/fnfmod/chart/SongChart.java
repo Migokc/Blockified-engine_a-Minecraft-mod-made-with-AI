@@ -17,8 +17,14 @@ public class SongChart {
     public boolean needsVoices = true;
     public String player1 = "bf";
     public String player2 = "dad";
+    /** Psych girlfriend/speakers character id (gfVersion). */
+    public String player3 = "gf";
     /** Psych stage id used to discover stages/<stage>.lua. */
     public String stage = "stage";
+    /** Psych arrowSkin: Sparrow atlas used by receptors, notes, and sustains. */
+    public String noteTexture = "";
+    /** Psych splashSkin: Sparrow atlas used by note splashes. */
+    public String noteSplashTexture = "";
 
     public final List<BpmChange> bpmChanges = new ArrayList<>();
     /** All notes, sorted by time. */
@@ -126,8 +132,6 @@ public class SongChart {
         public double sectionBeats = 4.0;
         public boolean changeBPM = false;
         public double bpm = 0.0;
-        /** Camera easing used when focus changes into this section: smooth/expo/linear/snap. */
-        public String camEase = "smooth";
     }
 
     public static class Event {
