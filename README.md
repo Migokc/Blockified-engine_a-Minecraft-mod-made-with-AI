@@ -20,7 +20,7 @@ Current release: **2.0.0bbs**.
   world changes. Delayed mutations such as later TNT or creeper explosions are
   not currently part of this command transaction.
 
-Optional BBS character-animation stack for Minecraft 1.21.1:
+Required BBS character-animation stack for Minecraft 1.21.1:
 
 - [BBS FS mod](https://modrinth.com/mod/bbs-mod/) 2.3.1+
 - [Sinytra Connector](https://github.com/Sinytra/Connector) 2.0.0-beta.15+
