@@ -23,7 +23,7 @@ public final class PsychHudState {
     public double scoreX;
     public double scoreY;
     public double scoreWidth;
-    public double scoreHeight = 20;
+    public double scoreHeight = 40;
     public double scoreAlpha = 1;
     public double scoreAngle;
     public double scoreScaleX = 1;
@@ -34,7 +34,9 @@ public final class PsychHudState {
 
     public PsychHudState(int canvasWidth, int canvasHeight, boolean downscroll) {
         barX = canvasWidth * 0.5 - barWidth * 0.5;
-        barY = downscroll ? 28 : canvasHeight - 40;
+        // Leave room for Blockified's 2x native icons and score text inside
+        // Psych's fixed canvas instead of clipping them at the screen edge.
+        barY = downscroll ? 92 : canvasHeight - 96;
         backgroundX = barX - 2;
         backgroundY = barY - 2;
         scoreX = 0;

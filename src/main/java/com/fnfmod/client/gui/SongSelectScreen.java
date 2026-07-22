@@ -76,8 +76,11 @@ public class SongSelectScreen extends Screen {
             minecraft.setScreen(new ChartEditorScreen(null));
         }).bounds(right, 40, 100, 20).build());
 
+        addRenderableWidget(Button.builder(Component.literal("Character Editor"), b ->
+                minecraft.setScreen(new CharacterEditorScreen(this))).bounds(right, 62, 100, 20).build());
+
         addRenderableWidget(Button.builder(Component.literal("Settings"), b ->
-                minecraft.setScreen(new FnfSettingsScreen(this))).bounds(right, 62, 100, 20).build());
+                minecraft.setScreen(new FnfSettingsScreen(this))).bounds(right, 84, 100, 20).build());
 
         addRenderableWidget(Button.builder(Component.literal("Reload Songs"), b -> {
             SongLibrary.rescan();
@@ -85,7 +88,7 @@ public class SongSelectScreen extends Screen {
             CharacterAnimations.reload();
             NoteStyle.reload();
             PacketDistributor.sendToServer(new FnfPayloads.ReloadC2S());
-        }).bounds(right, 84, 100, 20).build());
+        }).bounds(right, 106, 100, 20).build());
 
         addRenderableWidget(Button.builder(Component.literal("Close"), b -> {
             ClientSession.leave();

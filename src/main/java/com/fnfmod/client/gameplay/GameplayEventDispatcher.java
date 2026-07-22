@@ -47,7 +47,9 @@ public final class GameplayEventDispatcher {
     }
 
     private void executeCommand(int eventIndex, SongChart.Event event) {
-        if ("server".equalsIgnoreCase(event.value2.trim()) && !editorPlaytest.getAsBoolean()) {
+        if (!editorPlaytest.getAsBoolean()) {
+            // Route both player- and server-run commands through SessionManager so
+            // their world writes occur inside the per-song rollback transaction.
             PacketDistributor.sendToServer(new FnfPayloads.CommandEventC2S(machinePosition, eventIndex));
             return;
         }
@@ -57,10 +59,10 @@ public final class GameplayEventDispatcher {
     /** Lua-facing command entry point. Uses same placeholders as chart events. */
     public boolean runLuaCommand(String rawCommand, String runner) {
         if (rawCommand == null || rawCommand.isBlank()) return false;
-        if ("server".equalsIgnoreCase(runner == null ? "" : runner.trim())
-                && !editorPlaytest.getAsBoolean()) {
-            // Server validates active-session host and permission before execution.
-            PacketDistributor.sendToServer(new FnfPayloads.LuaCommandC2S(machinePosition, rawCommand));
+        if (!editorPlaytest.getAsBoolean()) {
+            // Server preserves runner permissions and journals mutations.
+            PacketDistributor.sendToServer(new FnfPayloads.LuaCommandC2S(
+                    machinePosition, rawCommand, runner == null ? "player" : runner));
             return true;
         }
         return runPlayerCommand(rawCommand);

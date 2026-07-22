@@ -24,7 +24,7 @@ public class SongDetailScreen extends Screen {
     private int difficultyIndex;
     private Button difficultyButton;
     private boolean showDiffList = false;
-    private PlaybackMode playbackMode = PlaybackMode.LEGACY;
+    private PlaybackMode playbackMode = PlaybackMode.MINECRAFT;
     private Button playbackModeButton;
 
     private static final int LAYER = 0x88000000;

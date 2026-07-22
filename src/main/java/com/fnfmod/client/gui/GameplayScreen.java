@@ -6,10 +6,12 @@ import com.fnfmod.client.ClientOptions;
 import com.fnfmod.client.ClientSession;
 import com.fnfmod.client.FnfKeys;
 import com.fnfmod.client.anim.CharacterAnimations;
+import com.fnfmod.client.anim.ExtraCharacterRoster;
 import com.fnfmod.client.audio.SongPlayer;
 import com.fnfmod.client.audio.HitsoundPlayer;
 import com.fnfmod.block.FunkinMachineBlock;
 import com.fnfmod.client.camera.GameplayCamera;
+import com.fnfmod.client.math.Easing;
 import com.fnfmod.client.gui.editor.ChartEditorScreen;
 import com.fnfmod.client.gameplay.GameplayEventDispatcher;
 import com.fnfmod.client.gameplay.PsychGameplayScene;
@@ -39,6 +41,7 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
 import net.minecraft.sounds.SoundSource;
 import net.minecraft.util.Mth;
+import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.player.Player;
 import net.neoforged.neoforge.network.PacketDistributor;
 import org.lwjgl.glfw.GLFW;
@@ -63,6 +66,8 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     private static final String[] DIR_NAMES = {"left", "down", "up", "right"};
     private static final int HUD_WIDTH = PsychCanvas.WIDTH;
     private static final int HUD_HEIGHT = PsychCanvas.HEIGHT;
+    /** Native Minecraft font/icons need this compensation inside Psych's 1280x720 canvas. */
+    private static final float FNF_NATIVE_UI_SCALE = 2f;
     /** Psych Engine's 160px note graphic rendered at default 0.7 scale. */
     private static final float PSYCH_NOTE_WIDTH = 112f;
     /** Blockified default presentation is 90% of Psych's native note size. */
@@ -162,8 +167,18 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     private int lastBeat = -1;
     private int eventIndex;
     private boolean preSongEventsProcessed;
+    /**
+     * Sustain notes replay the sing animation so it keeps moving through the hold.
+     * BBS advances an animation state one frame per game tick, so two frames is
+     * 100 ms — short enough to loop cleanly instead of visibly restarting.
+     */
+    private static final long BBS_HOLD_LOOP_MS = 100;
     private long lastSingMs;
     private long partnerLastSingMs;
+    // For loop-idle characters: the sing timestamp the idle was last (re)started
+    // for, so the idle fires once per return-to-idle instead of every beat.
+    private long myIdleAnchor = Long.MIN_VALUE;
+    private long partnerIdleAnchor = Long.MIN_VALUE;
     private int lastSentHealthHalf = Integer.MIN_VALUE;
     private int lastSentFoodLevel = Integer.MIN_VALUE;
     private long lastVanillaHudSyncMs;
@@ -173,6 +188,8 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     private int pauseSelection;
     private long pausedAtMs;
     private boolean openingMinecraftPause;
+    /** Prevents the hard-coded emergency-exit chord from running twice. */
+    private boolean forceExitStarted;
     private boolean resourcesDisposed;
     /** Prevents one held Enter press from pausing and then confirming Resume via key repeat. */
     private boolean enterReady = true;
@@ -182,6 +199,10 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     private Supplier<Screen> editorReturnFactory;
     private PsychLuaRuntime luaRuntime;
     private final GameplayEventDispatcher eventDispatcher;
+    private final ExtraCharacterRoster extraCharacters;
+    // Stage offsets for the main performers, tweenable in Legacy/Minecraft modes.
+    private final PerformerTween playerPerformerTween = new PerformerTween();
+    private final PerformerTween opponentPerformerTween = new PerformerTween();
     private final PsychBuiltinEventHandler psychBuiltinEvents = new PsychBuiltinEventHandler();
     private PsychNoteTextureCache customNoteTextures;
     private String runtimeSongId;
@@ -209,6 +230,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         this.machinePos = machinePos;
         this.chart = chart;
         this.songPlayer = songPlayer;
+        this.extraCharacters = new ExtraCharacterRoster(machinePos);
         this.eventDispatcher = new GameplayEventDispatcher(machinePos, () -> editorPlaytest,
                 this::applyCameraFocusEvent, event -> {
                     if (luaRuntime != null) {
@@ -236,13 +258,12 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         this.runtimeSongEntry = ClientSession.songId == null ? null : SongLibrary.get(ClientSession.songId);
         this.runtimeSongFolder = ClientSession.resolvedFolder != null ? ClientSession.resolvedFolder
                 : runtimeSongEntry == null ? null : runtimeSongEntry.folder;
-        CharacterAnimations.useSongFolder(runtimeSongEntry == null ? null : runtimeSongEntry.runtimeRoot());
         this.playbackPolicy = new PlaybackPolicy(ClientSession.playbackMode, ClientSession.songAssets);
+        CharacterAnimations.useSongFolder(playbackPolicy.songAssets() && runtimeSongEntry != null
+                ? runtimeSongEntry.animationRoot() : null, chart.player1, chart.player2);
         this.assetResolver = new PsychAssetResolver(runtimeSongFolder, runtimeSongEntry, playbackPolicy, chart.stage);
-        Path resourceRoot = !playbackPolicy.songAssets() ? runtimeSongFolder
-                : runtimeSongEntry == null ? runtimeSongFolder
-                : (runtimeSongEntry.modRoot != null ? runtimeSongEntry.modRoot : runtimeSongEntry.folder);
-        this.customNoteTextures = new PsychNoteTextureCache(runtimeSongFolder, resourceRoot,
+        this.customNoteTextures = new PsychNoteTextureCache(
+                assetResolver.customNoteRoots(),
                 playbackPolicy.allows(runtimeSongEntry, SongLibrary.ExternalContent.IMAGES));
         this.psychScene = PsychGameplayScene.load(chart, runtimeSongFolder, runtimeSongEntry, playbackPolicy);
         Arrays.fill(luaStrumX, Double.NaN);
@@ -304,19 +325,18 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         screen.runtimeSongId = songId;
         screen.runtimeSongFolder = songFolder;
         screen.runtimeSongEntry = songEntry;
-        CharacterAnimations.useSongFolder(songEntry == null ? null : songEntry.runtimeRoot());
         boolean currentSessionSong = ClientSession.activePos != null && songId != null
                 && songId.equals(ClientSession.songId);
         screen.playbackPolicy = currentSessionSong
                 ? new PlaybackPolicy(ClientSession.playbackMode, ClientSession.songAssets)
                 : PlaybackPolicy.resolve(PlaybackMode.LEGACY, songEntry);
+        CharacterAnimations.useSongFolder(screen.playbackPolicy.songAssets() && songEntry != null
+                ? songEntry.animationRoot() : null, chart.player1, chart.player2);
         screen.assetResolver = new PsychAssetResolver(songFolder, songEntry, screen.playbackPolicy, chart.stage);
         screen.customNoteTextures.close();
         screen.psychScene.close();
-        Path resourceRoot = !screen.playbackPolicy.songAssets() ? songFolder
-                : songEntry == null ? songFolder
-                : (songEntry.modRoot != null ? songEntry.modRoot : songEntry.folder);
-        screen.customNoteTextures = new PsychNoteTextureCache(songFolder, resourceRoot,
+        screen.customNoteTextures = new PsychNoteTextureCache(
+                screen.assetResolver.customNoteRoots(),
                 screen.playbackPolicy.allows(songEntry, SongLibrary.ExternalContent.IMAGES));
         screen.psychScene = PsychGameplayScene.load(chart, songFolder, songEntry, screen.playbackPolicy);
         // The normal constructor starts a session camera before it knows this is
@@ -388,14 +408,6 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             return;
         }
 
-        if (playBoth) {
-            // one character center stage playing everything: camera just stays on them
-            Vec3 anchor = new Vec3(cx, cy, cz);
-            GameplayCamera.begin(anchor, facing.toYRot(), mePos, mePos, mePos, myBase, myBase,
-                    playbackPolicy.mode());
-            return;
-        }
-
         Vec3 anchor = myChartSideIsPlayer ? playerSpot : opponentSpot;
         Supplier<Vec3> otherPos;
         if (partnerId != null) {
@@ -426,19 +438,26 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
 
     private void updateSongPos() {
         if (phase == Phase.PAUSED || phase == Phase.GAMEOVER) return;
+        double base = editorPlaytest ? editorStartMs : 0;
+        double audioOffset = chart.offsetMs;
         if (!songPlayer.isStarted()) {
             double countdownTime = System.currentTimeMillis() - startAtEpochMs;
-            songPos = countdownTime + (editorPlaytest ? editorStartMs : 0);
-            if (countdownTime >= 0 && phase == Phase.COUNTDOWN) {
-                songPlayer.start();
-                if (editorPlaytest && editorStartMs > 0) {
-                    songPlayer.seekMs(editorStartMs + chart.offsetMs - ClientOptions.get().offsetMs);
-                }
+            songPos = countdownTime + base;
+            if (phase == Phase.COUNTDOWN && countdownTime >= 0) {
                 phase = Phase.PLAYING;
+            }
+            // The chart offset shifts the song audio, not the notes. Start (and
+            // seek) the song at the note-clock moment its playback position would
+            // reach zero: a positive offset delays the song so its lead-in stays
+            // silent, while a negative offset seeks past the intro so nothing is
+            // heard before the chart begins.
+            if (phase == Phase.PLAYING && songPos >= Math.max(base, audioOffset)) {
+                songPlayer.start();
+                songPlayer.seekMs(songPos - audioOffset);
             }
         }
         if (songPlayer.isStarted()) {
-            songPos = songPlayer.positionMs() - chart.offsetMs + ClientOptions.get().offsetMs;
+            songPos = songPlayer.positionMs() + audioOffset + ClientOptions.get().offsetMs;
         }
     }
 
@@ -500,6 +519,10 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                     runtimeSongEntry, playbackPolicy);
             rebuildNoteLanesAfterLuaCreate();
         }
+        // Morph the performers during the count-in. applyForm is a no-op once the
+        // form is already on, so retrying each frame just covers a partner or bot
+        // whose entity has not streamed in yet.
+        if (phase == Phase.COUNTDOWN) prepareCharacterForms();
         // Load-triggered events must run before updateSongPos can start audio.
         if (!preSongEventsProcessed && phase == Phase.COUNTDOWN) processPreSongEvents();
         updateSongPos();
@@ -512,6 +535,10 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         if (luaRuntime != null && (phase == Phase.PLAYING || phase == Phase.COUNTDOWN)) {
             luaRuntime.update(dtMs / 1000.0);
         }
+        // Extra-character tweens run independently of Lua so Legacy and Minecraft
+        // charts can animate performers through the Tween Character event alone.
+        extraCharacters.update();
+        applyPerformerTweens();
         songPlayer.applyVolumes();
         syncVanillaHud();
 
@@ -566,12 +593,13 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                     strumFlashFor(hold)[lane] = Math.max(strumFlashFor(hold)[lane], 40);
                     // loop the sing animation while the note is held
                     long nowMs = System.currentTimeMillis();
-                    if (!hold.data.noAnimation && (hold.data.playerSide == myChartSideIsPlayer || playBoth)) {
+                    if (!hold.data.noAnimation) {
                         // Psych sprite sustain timing uses character JSON FPS. Minecraft's
                         // body animation still has its own coarser replay timer.
                         animatePsychHold(hold.data, lane,
                                 hold.data.playerSide ? "boyfriend" : "dad");
-                        if (nowMs - lastHoldSingMs[lane] > 180 && minecraft.player != null) {
+                        if (hold.data.playerSide == myChartSideIsPlayer
+                                && nowMs - lastHoldSingMs[lane] > BBS_HOLD_LOOP_MS && minecraft.player != null) {
                             CharacterAnimations.play(minecraft.player, myAnimSet, myRole(),
                                     DIR_NAMES[lane] + hold.data.animSuffix);
                             lastHoldSingMs[lane] = nowMs;
@@ -662,12 +690,20 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             }
             if (phase == Phase.PLAYING && psychScene != null) psychScene.beat(beat);
             if (phase == Phase.PLAYING) {
-                if (nowMs - lastSingMs > 600 && minecraft.player != null) {
+                double singHold = singHoldMs();
+                if (nowMs - lastSingMs > singHold && minecraft.player != null
+                        && !(CharacterAnimations.loopIdle(myAnimSet, myRole()) && myIdleAnchor == lastSingMs)) {
                     playIdle(minecraft.player, myAnimSet, myRole(), beat);
+                    myIdleAnchor = lastSingMs;
                 }
-                if (partnerId != null && minecraft.level != null && nowMs - partnerLastSingMs > 600) {
+                if (partnerId != null && minecraft.level != null && nowMs - partnerLastSingMs > singHold
+                        && !(CharacterAnimations.loopIdle(partnerAnimSet, partnerRole())
+                        && partnerIdleAnchor == partnerLastSingMs)) {
                     Player partner = minecraft.level.getPlayerByUUID(partnerId);
-                    if (partner != null) playIdle(partner, partnerAnimSet, partnerRole(), beat);
+                    if (partner != null) {
+                        playIdle(partner, partnerAnimSet, partnerRole(), beat);
+                        partnerIdleAnchor = partnerLastSingMs;
+                    }
                 }
             }
         }
@@ -750,12 +786,13 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
 
     @Override
     public PlaybackMode playbackMode() {
-        return playbackPolicy == null ? PlaybackMode.LEGACY : playbackPolicy.mode();
+        return playbackPolicy == null ? PlaybackMode.MINECRAFT : playbackPolicy.mode();
     }
 
     @Override
     public void eventHey(String target, double durationSeconds) {
         if (psychScene != null) psychScene.hey(target, durationSeconds);
+        playMinecraftHey(target, durationSeconds);
     }
 
     @Override
@@ -765,7 +802,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
 
     @Override
     public void eventAddCameraZoom(float gameAmount, float hudAmount) {
-        if (GameplayCamera.gameZoom() < 1.35f) {
+        if (GameplayCamera.canBumpZoom()) {
             GameplayCamera.addZoomImpulse(gameAmount, hudAmount);
         }
     }
@@ -773,14 +810,27 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     @Override
     public void eventPlayAnimation(String target, String animation) {
         if (animation == null || animation.isBlank()) return;
+        if (extraCharacters.exists(target)) {
+            extraCharacters.play(target, animation);
+            return;
+        }
         if (psychScene != null) psychScene.playSpecialAnimation(target, animation);
         playMinecraftCharacterAnimation(target, animation);
     }
 
     @Override
-    public void eventCameraFollow(Double x, Double y) {
-        if (psychScene != null) psychScene.forceCamera(x, y);
-        GameplayCamera.forceFramePosition(x, y);
+    public void eventCameraFollow(Double x, Double y, Double z, String easing,
+                                  boolean overrideMovement, boolean cameraRelative, boolean extended) {
+        if (psychScene != null) {
+            if (!extended || x == null && y == null && z == null) psychScene.forceCamera(x, y);
+            else psychScene.forceCameraExtended(x, y, overrideMovement, easing);
+        }
+        GameplayCamera.forceFramePosition(x, y, z, easing, overrideMovement, cameraRelative, extended);
+    }
+
+    @Override
+    public void eventCameraRotation(Double pitch, Double yaw, Double roll, String easing) {
+        GameplayCamera.rotateTo(pitch, yaw, roll, easing);
     }
 
     @Override
@@ -800,16 +850,19 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     public void eventChangeCharacter(String target, String characterId) {
         if (characterId == null || characterId.isBlank()) return;
         String selected = characterId.trim();
+        if (extraCharacters.changeDefinition(target, selected, null)) return;
+        String animationDefinition = CharacterAnimations.modSet(selected);
         if (psychScene != null) psychScene.changeCharacter(target, selected);
+        if (restrictsMinecraftSongAssets()) return;
         if (target.equals("boyfriend")) eventPlayerIcon = selected;
         else if (target.equals("dad")) eventOpponentIcon = selected;
-        if (playBoth || localControlsRole(target)) {
-            if (!CharacterAnimations.isDisabled(myAnimSet)) myAnimSet = selected;
+        if (localControlsRole(target)) {
+            if (!CharacterAnimations.isDisabled(myAnimSet)) myAnimSet = animationDefinition;
         } else if (partnerControlsRole(target)) {
-            if (!CharacterAnimations.isDisabled(partnerAnimSet)) partnerAnimSet = selected;
+            if (!CharacterAnimations.isDisabled(partnerAnimSet)) partnerAnimSet = animationDefinition;
         }
-        String activeSet = playBoth || localControlsRole(target) ? myAnimSet
-                : partnerControlsRole(target) ? partnerAnimSet : selected;
+        String activeSet = localControlsRole(target) ? myAnimSet
+                : partnerControlsRole(target) ? partnerAnimSet : animationDefinition;
         GameplayCamera.setBaseOffset(target.equals("boyfriend"),
                 CharacterAnimations.baseCameraOffset(activeSet,
                         target.equals("dad") ? "opponent" : "player"));
@@ -841,6 +894,49 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         else HitsoundPlayer.play(assetResolver.sound(sound), gain);
     }
 
+    @Override
+    public void eventAddCharacter(String tag, String definition, double x, double y, double z,
+                                  double rotation, String animation, String role) {
+        extraCharacters.create(tag, definition, x, y, z, (float) rotation, animation, role);
+    }
+
+    @Override
+    public void eventRemoveCharacter(String tag) {
+        extraCharacters.remove(tag);
+    }
+
+    @Override
+    public void eventTweenCharacter(String tag, Double x, Double y, Double z, Double rotation,
+                                    double seconds, String easing) {
+        // bf/dad target the real stage performers (Legacy/Minecraft); other tags
+        // fall through to the client-only Add Character roster.
+        PerformerTween performer = performerTweenFor(tag);
+        if (performer != null) {
+            performer.begin(x, y, z, rotation, seconds, easing);
+            return;
+        }
+        extraCharacters.tween(tag, x, y, z, rotation, seconds, easing);
+    }
+
+    private PerformerTween performerTweenFor(String tag) {
+        if (tag == null) return null;
+        String value = tag.trim().toLowerCase(java.util.Locale.ROOT);
+        return switch (value) {
+            case "bf", "boyfriend", "player" -> playerPerformerTween;
+            case "dad", "opponent" -> opponentPerformerTween;
+            default -> null;
+        };
+    }
+
+    /**
+     * Lua bf/dad property routing. Only active outside FNF mode, where those
+     * names address the 3D stage performers rather than Psych sprites.
+     */
+    private PerformerTween luaPerformerTween(String tag) {
+        if (playbackPolicy == null || playbackPolicy.usesPsychCamera()) return null;
+        return performerTweenFor(tag);
+    }
+
     private boolean localControlsRole(String role) {
         return (myChartSideIsPlayer && role.equals("boyfriend"))
                 || (!myChartSideIsPlayer && role.equals("dad"));
@@ -851,18 +947,66 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                 || (!myChartSideIsPlayer && role.equals("boyfriend")));
     }
 
-    private void playMinecraftCharacterAnimation(String role, String animation) {
-        if (role.equals("gf")) return;
-        String action = minecraftAnimationName(animation);
-        if ((playBoth || localControlsRole(role)) && minecraft.player != null) {
-            CharacterAnimations.play(minecraft.player, myAnimSet, myRole(), action);
-            lastSingMs = System.currentTimeMillis();
+    private boolean playMinecraftCharacterAnimation(String role, String animation) {
+        if (extraCharacters.exists(role)) return extraCharacters.play(role, animation);
+        role = minecraftCharacterRole(role);
+        if (role.equals("gf")) return false;
+        boolean played = false;
+        if (localControlsRole(role) && minecraft.player != null) {
+            float[] cameraOffset = playMinecraftAnimation(minecraft.player, myAnimSet, myRole(), animation);
+            if (cameraOffset != null) {
+                lastSingMs = System.currentTimeMillis();
+                GameplayCamera.sing(role.equals("boyfriend"), cameraOffset[0], cameraOffset[1]);
+                played = true;
+            }
         }
         if (partnerControlsRole(role) && minecraft.level != null) {
             Player partner = minecraft.level.getPlayerByUUID(partnerId);
             if (partner != null) {
-                CharacterAnimations.play(partner, partnerAnimSet, partnerRole(), action);
-                partnerLastSingMs = System.currentTimeMillis();
+                float[] cameraOffset = playMinecraftAnimation(partner, partnerAnimSet, partnerRole(), animation);
+                if (cameraOffset != null) {
+                    partnerLastSingMs = System.currentTimeMillis();
+                    GameplayCamera.sing(role.equals("boyfriend"), cameraOffset[0], cameraOffset[1]);
+                    played = true;
+                }
+            }
+        }
+        return played;
+    }
+
+    private static float[] playMinecraftAnimation(Player player, String set, String role,
+                                                  String requestedAnimation) {
+        if (requestedAnimation == null || requestedAnimation.isBlank()) return null;
+        float[] exact = CharacterAnimations.play(player, set, role, requestedAnimation);
+        if (exact != null) return exact;
+        String conventional = minecraftAnimationName(requestedAnimation);
+        return conventional.equalsIgnoreCase(requestedAnimation.trim()) ? null
+                : CharacterAnimations.play(player, set, role, conventional);
+    }
+
+    private static String minecraftCharacterRole(String role) {
+        if (role == null) return "boyfriend";
+        String normalized = role.trim().toLowerCase(java.util.Locale.ROOT);
+        if (normalized.equals("gf") || normalized.equals("girlfriend")
+                || normalized.equals("speakers")) return "gf";
+        if (normalized.equals("dad") || normalized.equals("opponent")) return "dad";
+        return "boyfriend";
+    }
+
+    /** Play the Blockified/BBS counterpart of Psych's Hey! event. */
+    private void playMinecraftHey(String role, double durationSeconds) {
+        if (!"boyfriend".equals(role)) return; // Psych Hey! targets BF, GF, or both.
+        long idleMarker = System.currentTimeMillis()
+                + Math.max(0, Math.round(durationSeconds * 1000.0)) - Math.round(singHoldMs());
+        if (localControlsRole(role) && minecraft.player != null
+                && CharacterAnimations.play(minecraft.player, myAnimSet, myRole(), "hey") != null) {
+            lastSingMs = idleMarker;
+        }
+        if (partnerControlsRole(role) && minecraft.level != null) {
+            Player partner = minecraft.level.getPlayerByUUID(partnerId);
+            if (partner != null && CharacterAnimations.play(partner, partnerAnimSet,
+                    partnerRole(), "hey") != null) {
+                partnerLastSingMs = idleMarker;
             }
         }
     }
@@ -874,6 +1018,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         if (lower.startsWith("singup")) return "up";
         if (lower.startsWith("singright")) return "right";
         if (lower.contains("miss")) return "miss";
+        if (lower.contains("hey") || lower.contains("cheer")) return "hey";
         if (lower.contains("idle") || lower.startsWith("dance")) return "idle";
         return lower;
     }
@@ -921,6 +1066,27 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         }
     }
 
+    /**
+     * How long a sing animation holds before the character returns to idle. FNF
+     * ties this to the chart instead of wall time: Psych's default singDuration
+     * of four steps is one beat, so it scales with the current BPM.
+     */
+    private void prepareCharacterForms() {
+        if (minecraft.player != null) {
+            CharacterAnimations.prepare(minecraft.player, myAnimSet, myRole());
+        }
+        if (partnerId != null && minecraft.level != null) {
+            Player partner = minecraft.level.getPlayerByUUID(partnerId);
+            if (partner != null) CharacterAnimations.prepare(partner, partnerAnimSet, partnerRole());
+        }
+    }
+
+    private double singHoldMs() {
+        double bpm = conductor.bpmAt(Math.max(0, songPos));
+        if (!Double.isFinite(bpm) || bpm <= 0) return 600;
+        return Mth.clamp(60000.0 / bpm, 100.0, 3000.0);
+    }
+
     private void playIdle(Player p, String set, String role, int beat) {
         String suffix = "player".equals(role) ? playerIdleSuffix : opponentIdleSuffix;
         boolean hasSecondIdle = CharacterAnimations.hasAction(set, "idle2");
@@ -961,6 +1127,198 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         p.yBodyRotO = yaw;
     }
 
+    /**
+     * Stage-local offset (X right, Y up, Z forward) plus a yaw offset for one main
+     * performer, interpolated over time. Applied to the real Minecraft entity so
+     * the gameplay camera, which follows the entity, tracks the movement too.
+     */
+    private static final class PerformerTween {
+        private boolean active;
+        private long start;
+        private double durationMs;
+        private String ease = "linear";
+        private double fromX, fromY, fromZ, fromRotation;
+        private double toX, toY, toZ, toRotation;
+        private boolean tweenRotation;
+        double x, y, z, rotation;
+        // The performer's resting world position/yaw, i.e. exactly where the song
+        // teleported it. 0,0,0 maps here, so the transform offset is honored for free.
+        double homeX, homeY, homeZ;
+        float homeYaw;
+        boolean homeKnown;
+
+        void begin(Double tx, Double ty, Double tz, Double rot, double seconds, String easing) {
+            fromX = x; fromY = y; fromZ = z; fromRotation = rotation;
+            toX = tx == null ? x : finite(tx);
+            toY = ty == null ? y : finite(ty);
+            toZ = tz == null ? z : finite(tz);
+            tweenRotation = rot != null;
+            toRotation = rot == null || !Double.isFinite(rot) ? rotation : rot;
+            if (seconds <= 0) {
+                x = toX; y = toY; z = toZ;
+                if (tweenRotation) rotation = toRotation;
+                active = false;
+                return;
+            }
+            durationMs = seconds * 1000.0;
+            ease = easing == null || easing.isBlank() ? "linear" : easing;
+            start = System.currentTimeMillis();
+            active = true;
+        }
+
+        void update(long now) {
+            if (!active) return;
+            double t = durationMs <= 0 ? 1 : Math.min(1.0, (now - start) / durationMs);
+            double f = Easing.apply(ease, t);
+            x = fromX + (toX - fromX) * f;
+            y = fromY + (toY - fromY) * f;
+            z = fromZ + (toZ - fromZ) * f;
+            if (tweenRotation) rotation = fromRotation + (toRotation - fromRotation) * f;
+            if (t >= 1.0) active = false;
+        }
+
+        void captureHome(double hx, double hy, double hz, float yaw) {
+            homeX = hx; homeY = hy; homeZ = hz; homeYaw = yaw;
+            homeKnown = true;
+        }
+
+        // Direct offset control for Lua setProperty / doTween, which drive the
+        // value each frame; cancel any timed tween so the two do not fight.
+        void setOffsetX(double value) { active = false; x = finite(value); }
+        void setOffsetY(double value) { active = false; y = finite(value); }
+        void setOffsetZ(double value) { active = false; z = finite(value); }
+        void setOffsetRotation(double value) {
+            active = false; rotation = finite(value); tweenRotation = true;
+        }
+
+        boolean rotates() { return tweenRotation || rotation != 0; }
+
+        boolean engaged() {
+            return active || x != 0 || y != 0 || z != 0 || rotation != 0;
+        }
+
+        void reset() {
+            active = false;
+            x = y = z = rotation = 0;
+            tweenRotation = false;
+            homeKnown = false;
+        }
+
+        private static double finite(double value) {
+            return Double.isFinite(value) ? value : 0;
+        }
+    }
+
+    /** Moves the main performers each frame while a stage-offset tween is engaged. */
+    private void applyPerformerTweens() {
+        if (playbackPolicy == null || playbackPolicy.usesPsychCamera()) return;
+        if (phase != Phase.PLAYING && phase != Phase.COUNTDOWN) return;
+        long now = System.currentTimeMillis();
+        playerPerformerTween.update(now);
+        opponentPerformerTween.update(now);
+        applyPerformer(true, playerPerformerTween);
+        applyPerformer(false, opponentPerformerTween);
+    }
+
+    private void applyPerformer(boolean playerSide, PerformerTween tween) {
+        if (minecraft.level == null) return;
+        Entity entity = performerEntity(playerSide);
+        if (entity == null || entity.isRemoved()) return;
+
+        // While no offset is applied, keep learning the performer's real resting
+        // spot (its teleport position, transform included). This is what 0,0,0
+        // resolves to, and it also holds a moving performer's return target fixed.
+        if (!tween.engaged()) {
+            tween.captureHome(entity.getX(), entity.getY(), entity.getZ(), entity.getYRot());
+            return;
+        }
+        if (!tween.homeKnown) {
+            tween.captureHome(entity.getX(), entity.getY(), entity.getZ(), entity.getYRot());
+        }
+
+        Direction facing = Direction.NORTH;
+        var state = minecraft.level.getBlockState(machinePos);
+        if (state.hasProperty(FunkinMachineBlock.FACING)) {
+            facing = state.getValue(FunkinMachineBlock.FACING);
+        }
+        // Offsets are stage-local: X camera-right, Y up, Z camera-forward.
+        Direction right = facing.getCounterClockWise();
+        double worldX = tween.homeX + right.getStepX() * tween.x + facing.getStepX() * tween.z;
+        double worldY = tween.homeY + tween.y;
+        double worldZ = tween.homeZ + right.getStepZ() * tween.x + facing.getStepZ() * tween.z;
+        entity.setPos(worldX, worldY, worldZ);
+
+        // Rotate only performers the local client does not steer, so a moving
+        // opponent/bot can turn without fighting the local player's own look.
+        if (tween.rotates() && entity != minecraft.player) {
+            float yaw = tween.homeYaw + (float) tween.rotation;
+            entity.setYRot(yaw);
+            if (entity instanceof Player performer) {
+                performer.setYHeadRot(yaw);
+                performer.setYBodyRot(yaw);
+            }
+        }
+    }
+
+    /** Returns a displaced performer to its resting spot, then clears the tween. */
+    private void resetPerformer(boolean playerSide, PerformerTween tween) {
+        if (tween.homeKnown && tween.engaged() && minecraft.level != null) {
+            Entity entity = performerEntity(playerSide);
+            if (entity != null && !entity.isRemoved()) {
+                entity.setPos(tween.homeX, tween.homeY, tween.homeZ);
+                entity.setYRot(tween.homeYaw);
+                if (entity instanceof Player performer) {
+                    performer.setYHeadRot(tween.homeYaw);
+                    performer.setYBodyRot(tween.homeYaw);
+                }
+            }
+        }
+        tween.reset();
+    }
+
+    private static boolean isGravityProperty(String property) {
+        return property.equals("grav") || property.equals("gravity");
+    }
+
+    // Original noGravity per performer entity, so a chart that disables gravity is
+    // undone on restart or quit instead of leaving the player floating.
+    private final java.util.Map<Integer, Boolean> performerGravityOriginal = new java.util.HashMap<>();
+
+    private void setPerformerGravity(Entity entity, boolean enabled) {
+        performerGravityOriginal.putIfAbsent(entity.getId(), entity.isNoGravity());
+        entity.setNoGravity(!enabled);
+    }
+
+    private void restorePerformerGravity() {
+        if (!performerGravityOriginal.isEmpty() && minecraft.level != null) {
+            for (var entry : performerGravityOriginal.entrySet()) {
+                Entity entity = minecraft.level.getEntity(entry.getKey());
+                if (entity != null) entity.setNoGravity(entry.getValue());
+            }
+        }
+        performerGravityOriginal.clear();
+    }
+
+    /** Resolves a bf/dad Lua tag to the live stage entity, in any playback mode. */
+    private Entity performerEntityForTag(String tag) {
+        if (tag == null) return null;
+        return switch (tag.trim().toLowerCase(java.util.Locale.ROOT)) {
+            case "bf", "boyfriend", "player" -> performerEntity(true);
+            case "dad", "opponent" -> performerEntity(false);
+            default -> null;
+        };
+    }
+
+    /** The Minecraft entity standing on the requested chart side, if present. */
+    private Entity performerEntity(boolean playerSide) {
+        if (playerSide == myChartSideIsPlayer) return minecraft.player;
+        if (partnerId != null) {
+            return minecraft.level == null ? null : minecraft.level.getPlayerByUUID(partnerId);
+        }
+        return minecraft.level == null || botEntityId < 0 ? null
+                : minecraft.level.getEntity(botEntityId);
+    }
+
     private String myRole() {
         return myChartSideIsPlayer ? "player" : "opponent";
     }
@@ -978,7 +1336,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
      */
     private double liveSongPos() {
         if (songPlayer.isStarted() && !songPlayer.isPaused()) {
-            return songPlayer.positionMs() - chart.offsetMs + ClientOptions.get().offsetMs;
+            return songPlayer.positionMs() + chart.offsetMs + ClientOptions.get().offsetMs;
         }
         return songPos;
     }
@@ -1212,19 +1570,18 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     }
 
     private void sing(int lane, boolean miss, SongChart.Note note) {
-        lastSingMs = System.currentTimeMillis();
-        animatePsychNote(note, lane, miss, myChartSideIsPlayer ? "boyfriend" : "dad");
-        if (minecraft.player != null) {
+        String visualRole = note == null ? (myChartSideIsPlayer ? "boyfriend" : "dad")
+                : note.gfNote ? "gf" : note.playerSide ? "boyfriend" : "dad";
+        animatePsychNote(note, lane, miss, visualRole);
+        if (localControlsRole(visualRole) && minecraft.player != null) {
+            lastSingMs = System.currentTimeMillis();
             String suffix = note == null || note.animSuffix == null ? "" : note.animSuffix;
-            String action = miss ? "miss" + suffix : DIR_NAMES[lane] + suffix;
+            boolean heyNote = !miss && note != null && "Hey!".equalsIgnoreCase(note.noteType);
+            String action = heyNote ? "hey" : miss ? "miss" + suffix : DIR_NAMES[lane] + suffix;
             float[] camOff = CharacterAnimations.play(minecraft.player, myAnimSet, myRole(),
                     action);
             if (camOff != null && !miss) {
                 GameplayCamera.sing(myChartSideIsPlayer, camOff[0], camOff[1]);
-                // playing both sides: the camera may be focused on either side, nudge both
-                if (playBoth) {
-                    GameplayCamera.sing(!myChartSideIsPlayer, camOff[0], camOff[1]);
-                }
             }
         }
     }
@@ -1304,8 +1661,10 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         if (partnerId != null && minecraft.level != null) {
             Player partner = minecraft.level.getPlayerByUUID(partnerId);
             if (partner != null) {
+                boolean heyNote = judgement != 4 && matchedNote != null
+                        && "Hey!".equalsIgnoreCase(matchedNote.noteType);
                 float[] camOff = CharacterAnimations.play(partner, partnerAnimSet, partnerRole(),
-                        judgement == 4 ? "miss" : DIR_NAMES[lane]);
+                        heyNote ? "hey" : judgement == 4 ? "miss" : DIR_NAMES[lane]);
                 if (camOff != null && judgement != 4) {
                     GameplayCamera.sing(!myChartSideIsPlayer, camOff[0], camOff[1]);
                 }
@@ -1335,6 +1694,10 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
 
     @Override
     public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
+        if (isForceExitChord(keyCode, modifiers)) {
+            forceExit();
+            return true;
+        }
         if (editorPreview && (keyCode == GLFW.GLFW_KEY_F12 || keyCode == GLFW.GLFW_KEY_ESCAPE)) {
             exit();
             return true;
@@ -1509,6 +1872,10 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         PsychLuaRuntime oldLua = luaRuntime;
         luaRuntime = null;
         if (oldLua != null) oldLua.close();
+        extraCharacters.clear();
+        restorePerformerGravity();
+        resetPerformer(true, playerPerformerTween);
+        resetPerformer(false, opponentPerformerTween);
 
         // onCreate may edit unspawnNotes. Restore the parsed chart before the
         // new VM runs onCreate again on the next logic tick.
@@ -1549,6 +1916,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         lastBeat = -1;
         lastSingMs = 0;
         partnerLastSingMs = 0;
+        myIdleAnchor = partnerIdleAnchor = Long.MIN_VALUE;
         Arrays.fill(lastHoldSingMs, 0);
         camSection = -1; // re-evaluate camera focus from the top of the chart
         cameraFocusOverride = null;
@@ -1588,6 +1956,26 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         minecraft.setScreen(reopenMenu
                 ? new WaitingScreen(Component.literal("Returning to song list..."))
                 : null);
+    }
+
+    /**
+     * Hard-coded recovery path for a broken chart or Lua script. This is deliberately
+     * not exposed as a configurable key mapping, so Ctrl+Shift+Enter always remains
+     * available. Explicit disposal also handles the vanilla pause overlay, where this
+     * gameplay screen is alive but is not Minecraft's current screen.
+     */
+    void forceExit() {
+        if (forceExitStarted) return;
+        forceExitStarted = true;
+        exit();
+        disposeResources();
+    }
+
+    static boolean isForceExitChord(int keyCode, int modifiers) {
+        boolean enter = keyCode == GLFW.GLFW_KEY_ENTER || keyCode == GLFW.GLFW_KEY_KP_ENTER;
+        return enter
+                && (modifiers & GLFW.GLFW_MOD_CONTROL) != 0
+                && (modifiers & GLFW.GLFW_MOD_SHIFT) != 0;
     }
 
     @Override
@@ -1726,9 +2114,11 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         return psychScene == null ? PsychLuaRuntime.VIRTUAL_HEIGHT * 0.5 : psychScene.cameraY();
     }
     public double psychLuaCharacterMidpointX(String role) {
+        if (extraCharacters.exists(role)) return extraCharacters.x(role);
         return psychScene == null ? 0 : psychScene.midpointX(role);
     }
     public double psychLuaCharacterMidpointY(String role) {
+        if (extraCharacters.exists(role)) return extraCharacters.y(role);
         return psychScene == null ? 0 : psychScene.midpointY(role);
     }
     public void psychLuaSetHealth(double value) { health = (float) Math.max(0, Math.min(2, value)); }
@@ -1932,6 +2322,37 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
 
     public Object psychLuaGetProperty(String path) {
         if (path == null) return null;
+        int extraDot = path.indexOf('.');
+        if (extraDot > 0 && extraCharacters.exists(path.substring(0, extraDot))) {
+            String tag = path.substring(0, extraDot);
+            String property = path.substring(extraDot + 1);
+            return switch (property) {
+                case "x" -> extraCharacters.x(tag);
+                case "y" -> extraCharacters.y(tag);
+                case "z" -> extraCharacters.z(tag);
+                case "angle", "rotation", "rotation.y", "rotationY", "angleY" ->
+                        extraCharacters.rotation(tag);
+                case "visible" -> extraCharacters.visible(tag);
+                case "grav", "gravity" -> extraCharacters.gravity(tag);
+                default -> null;
+            };
+        }
+        if (extraDot > 0 && isGravityProperty(path.substring(extraDot + 1))) {
+            Entity performer = performerEntityForTag(path.substring(0, extraDot));
+            if (performer != null) return !performer.isNoGravity();
+        }
+        if (extraDot > 0) {
+            PerformerTween performer = luaPerformerTween(path.substring(0, extraDot));
+            if (performer != null) {
+                return switch (path.substring(extraDot + 1)) {
+                    case "x" -> performer.x;
+                    case "y" -> performer.y;
+                    case "z" -> performer.z;
+                    case "angle", "rotation", "rotation.y", "rotationY", "angleY" -> performer.rotation;
+                    default -> null;
+                };
+            }
+        }
         if ("fnf".equals(effectiveHudStyle())) {
             if (path.equals("healthBar.leftBar.color")) return fnfOpponentBarColor();
             if (path.equals("healthBar.rightBar.color")) return fnfPlayerBarColor();
@@ -1974,6 +2395,43 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
 
     public boolean psychLuaSetProperty(String path, Object value) {
         if (path == null) return false;
+        int extraDot = path.indexOf('.');
+        if (extraDot > 0 && extraCharacters.exists(path.substring(0, extraDot))) {
+            String tag = path.substring(0, extraDot);
+            String property = path.substring(extraDot + 1);
+            return switch (property) {
+                case "x" -> extraCharacters.setX(tag, noteNumber(value, extraCharacters.x(tag)));
+                case "y" -> extraCharacters.setY(tag, noteNumber(value, extraCharacters.y(tag)));
+                case "z" -> extraCharacters.setZ(tag, noteNumber(value, extraCharacters.z(tag)));
+                case "angle", "rotation", "rotation.y", "rotationY", "angleY" ->
+                        extraCharacters.setRotation(tag, noteNumber(value, extraCharacters.rotation(tag)));
+                case "visible" -> extraCharacters.setVisible(tag, noteBool(value, true));
+                case "grav", "gravity" -> extraCharacters.setGravity(tag, noteBool(value, true));
+                default -> false;
+            };
+        }
+        if (extraDot > 0 && isGravityProperty(path.substring(extraDot + 1))) {
+            Entity performer = performerEntityForTag(path.substring(0, extraDot));
+            if (performer != null) {
+                setPerformerGravity(performer, noteBool(value, true));
+                return true;
+            }
+        }
+        if (extraDot > 0) {
+            PerformerTween performer = luaPerformerTween(path.substring(0, extraDot));
+            if (performer != null) {
+                String property = path.substring(extraDot + 1);
+                switch (property) {
+                    case "x" -> performer.setOffsetX(noteNumber(value, performer.x));
+                    case "y" -> performer.setOffsetY(noteNumber(value, performer.y));
+                    case "z" -> performer.setOffsetZ(noteNumber(value, performer.z));
+                    case "angle", "rotation", "rotation.y", "rotationY", "angleY" ->
+                            performer.setOffsetRotation(noteNumber(value, performer.rotation));
+                    default -> { return false; }
+                }
+                return true;
+            }
+        }
         // Lua may inspect the gameplay score and customize scoreTxt, but the
         // actual scored value is owned by note judgements.
         if (path.equals("songScore") || path.equals("score")) return true;
@@ -2013,7 +2471,14 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     }
 
     public void psychLuaTriggerEvent(String name, String value1, String value2) {
-        executeEvent(-1, new SongChart.Event(songPos, name, value1, value2));
+        psychLuaTriggerEvent(name, value1, value2, "", "", "", "");
+    }
+
+    /** Extended trigger so Lua can fire events that use Value 3-6. */
+    public void psychLuaTriggerEvent(String name, String value1, String value2,
+                                     String value3, String value4, String value5, String value6) {
+        executeEvent(-1, new SongChart.Event(songPos, name, value1, value2,
+                value3, value4, value5, value6, false));
     }
 
     public boolean psychLuaRunMinecraftCommand(String command, String runner) {
@@ -2033,27 +2498,75 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     }
 
     public boolean psychLuaPlayCharacterAnimation(String role, String animation, boolean force) {
-        return psychScene != null && psychScene.playAnimation(role, animation, force);
+        if (extraCharacters.exists(role)) return extraCharacters.play(role, animation);
+        boolean psychPlayed = psychScene != null && psychScene.playAnimation(role, animation, force);
+        return playMinecraftCharacterAnimation(role, animation) || psychPlayed;
     }
 
     public boolean psychLuaCharacterDance(String role) {
+        if (extraCharacters.exists(role)) return extraCharacters.dance(role);
         return psychScene != null && psychScene.dance(role);
     }
 
     public double psychLuaCharacterX(String role) {
+        if (extraCharacters.exists(role)) return extraCharacters.x(role);
         return psychScene == null ? 0 : psychScene.characterX(role);
     }
 
     public double psychLuaCharacterY(String role) {
+        if (extraCharacters.exists(role)) return extraCharacters.y(role);
         return psychScene == null ? 0 : psychScene.characterY(role);
     }
 
     public boolean psychLuaSetCharacterX(String role, double value) {
+        if (extraCharacters.exists(role)) return extraCharacters.setX(role, value);
         return psychScene != null && psychScene.setCharacterX(role, value);
     }
 
     public boolean psychLuaSetCharacterY(String role, double value) {
+        if (extraCharacters.exists(role)) return extraCharacters.setY(role, value);
         return psychScene != null && psychScene.setCharacterY(role, value);
+    }
+
+    public boolean psychLuaExtraCharacterExists(String tag) {
+        return extraCharacters.exists(tag);
+    }
+
+    public boolean psychLuaAddCharacter(String tag, String definition, double x, double y, double z,
+                                        double rotation, String animation, String role) {
+        return extraCharacters.create(tag, definition, x, y, z, (float) rotation, animation, role);
+    }
+
+    public boolean psychLuaRemoveCharacter(String tag) {
+        return extraCharacters.remove(tag);
+    }
+
+    public boolean psychLuaSetCharacterPosition(String tag, double x, double y, double z) {
+        return extraCharacters.setPosition(tag, x, y, z);
+    }
+
+    public boolean psychLuaSetCharacterZ(String tag, double value) {
+        return extraCharacters.setZ(tag, value);
+    }
+
+    public double psychLuaCharacterZ(String tag) {
+        return extraCharacters.z(tag);
+    }
+
+    public boolean psychLuaSetCharacterRotation(String tag, double value) {
+        return extraCharacters.setRotation(tag, value);
+    }
+
+    public double psychLuaCharacterRotation(String tag) {
+        return extraCharacters.rotation(tag);
+    }
+
+    public boolean psychLuaSetCharacterVisible(String tag, boolean visible) {
+        return extraCharacters.setVisible(tag, visible);
+    }
+
+    public boolean psychLuaChangeExtraCharacter(String tag, String definition, String role) {
+        return extraCharacters.changeDefinition(tag, definition, role);
     }
 
     public void psychLuaEndSong() { finishSong(false); }
@@ -2110,8 +2623,12 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         // Every non-world gameplay element shares Psych's 1280x720 space.
         // Physical size therefore follows resolution, never Minecraft GUI scale.
         PsychCanvas.push(gui, 1f);
-        float hudZoom = appliedHudZoom();
-        pushHudCamera(gui, hudZoom);
+        // Notes, receptors, ratings and Lua HUD always follow the beat bop (like
+        // Psych's camHUD). The native health bar/score use their own zoom so the
+        // bop leaves the non-FNF HUD elements alone in Legacy and Minecraft modes.
+        float gameHudZoom = GameplayCamera.hudZoom(true);
+        float barHudZoom = appliedHudZoom();
+        pushHudCamera(gui, gameHudZoom);
         if (luaRuntime != null) {
             luaRuntime.renderHudInCanvas(gui, Integer.MIN_VALUE, HudLayerOrder.RECEPTORS);
         }
@@ -2207,7 +2724,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         if (fnfHud && luaRuntime != null) {
             // Objects ordered above native HUD remain above fixed time bar too,
             // while still receiving camHUD zoom themselves.
-            pushHudCamera(gui, hudZoom);
+            pushHudCamera(gui, gameHudZoom);
             luaRuntime.renderHudInCanvas(gui, HudLayerOrder.HUD, Integer.MAX_VALUE);
             gui.pose().popPose();
         }
@@ -2216,16 +2733,22 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         if (!fnfHud) {
             // Native styles use Minecraft GUI coordinates. Their physical size
             // now follows both window resolution and the vanilla GUI-scale option.
-            pushHudCamera(gui, hudZoom, width, height);
-            renderHud(gui, noteSize);
+            // The health bar / score stay out of the beat bop; only the ratings
+            // and Lua HUD bop alongside the notes.
+            pushHudCamera(gui, barHudZoom, width, height);
+            renderHudBar(gui, noteSize);
             gui.pose().popPose();
             renderSongProgress(gui);
+
+            pushHudCamera(gui, gameHudZoom, width, height);
+            renderCommonHud(gui);
+            gui.pose().popPose();
 
             // Keep setObjectOrder semantics: Lua objects above the HUD anchor
             // still draw above native HUD styles, but retain Psych coordinates.
             if (luaRuntime != null) {
                 PsychCanvas.push(gui, 1f);
-                pushHudCamera(gui, hudZoom);
+                pushHudCamera(gui, gameHudZoom);
                 luaRuntime.renderHudInCanvas(gui, HudLayerOrder.HUD, Integer.MAX_VALUE);
                 gui.pose().popPose();
                 PsychCanvas.pop(gui);
@@ -2361,13 +2884,18 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     private int numberY(int barY) { return barY - 9; }
 
     private void renderHud(GuiGraphics gui, float noteSize) {
+        renderHudBar(gui, noteSize);
+        renderCommonHud(gui);
+    }
+
+    /** Style-specific health bar / score, without the shared rating popups. */
+    private void renderHudBar(GuiGraphics gui, float noteSize) {
         String style = effectiveHudStyle();
         switch (style) {
             case "fnf" -> renderFnfHud(gui);
             case "vanilla" -> renderVanillaHud(gui);
             default -> renderTextHud(gui, style);
         }
-        renderCommonHud(gui);
     }
 
     private String scoreLine(String style) {
@@ -2427,15 +2955,19 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
 
         String animationPlayerIcon = blockifiedAnimationIcon("boyfriend");
         String animationOpponentIcon = blockifiedAnimationIcon("dad");
-        String currentPlayerIcon = eventPlayerIcon != null
-                ? changedCharacterIcon(eventPlayerIcon, "player") : !animationPlayerIcon.isBlank()
-                ? animationPlayerIcon : assetResolver.characterIcon(chart.player1);
-        String currentOpponentIcon = eventOpponentIcon != null
-                ? changedCharacterIcon(eventOpponentIcon, "opponent")
+        boolean songIconsAllowed = !restrictsMinecraftSongAssets();
+        String currentPlayerIcon = songIconsAllowed
+                ? eventPlayerIcon != null ? changedCharacterIcon(eventPlayerIcon, "player")
+                : !animationPlayerIcon.isBlank() ? animationPlayerIcon
+                : assetResolver.characterIcon(chart.player1)
+                : animationPlayerIcon;
+        String currentOpponentIcon = songIconsAllowed
+                ? eventOpponentIcon != null ? changedCharacterIcon(eventOpponentIcon, "opponent")
                 : !animationOpponentIcon.isBlank() ? animationOpponentIcon
                 : runtimeSongEntry != null && runtimeSongEntry.opponentIcon != null
                 && !runtimeSongEntry.opponentIcon.isBlank()
-                ? runtimeSongEntry.opponentIcon : assetResolver.characterIcon(chart.player2);
+                ? runtimeSongEntry.opponentIcon : assetResolver.characterIcon(chart.player2)
+                : animationOpponentIcon;
         String playerIcon = selectedIcon(ClientOptions.get().playerIcon, currentPlayerIcon);
         String botIcon = selectedIcon(ClientOptions.get().botIcon, currentOpponentIcon);
         int oppColor = fnfHud.opponentColor >= 0 ? fnfHud.opponentColor
@@ -2460,7 +2992,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         float t = Math.min(1f, beatFrac * 2f);
         float outCirc = (float) Math.sqrt(1f - (t - 1f) * (t - 1f));
         float bop = (1f - outCirc) * 0.30f;
-        float iconSize = 64f * (1f + bop);
+        float iconSize = 64f * FNF_NATIVE_UI_SCALE * (1f + bop);
         int iconY = barY + barH / 2;
         float gap = iconSize * 0.34f;
         gui.setColor(1, 1, 1, (float) fnfHud.barAlpha);
@@ -2480,7 +3012,8 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             String line = fnfHud.scoreTextOverride == null ? fnfScoreText() : fnfHud.scoreTextOverride;
             gui.pose().pushPose();
             gui.pose().translate(fnfHud.scoreX + fnfHud.scoreWidth * 0.5, fnfHud.scoreY, 0);
-            gui.pose().scale((float) fnfHud.scoreScaleX, (float) fnfHud.scoreScaleY, 1);
+            gui.pose().scale((float) fnfHud.scoreScaleX * FNF_NATIVE_UI_SCALE,
+                    (float) fnfHud.scoreScaleY * FNF_NATIVE_UI_SCALE, 1);
             if (fnfHud.scoreAngle != 0) {
                 gui.pose().mulPose(com.mojang.math.Axis.ZP.rotationDegrees((float) fnfHud.scoreAngle));
             }
@@ -2529,30 +3062,41 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                 : layoutHeight * 0.4f;
         long now = System.currentTimeMillis();
         popups.removeIf(p -> now - p.bornMs > 700);
+        float ratingScale = "fnf".equals(effectiveHudStyle()) ? FNF_NATIVE_UI_SCALE : 1f;
         for (Popup p : popups) {
             float age = (now - p.bornMs) / 700f;
             int alpha = (int) (255 * (1 - age));
             if (alpha <= 8) continue;
             int color = (alpha << 24) | (p.color & 0xFFFFFF);
-            int y = (int) (baseY - age * 18);
-            gui.drawCenteredString(font, p.text, (int) baseX, y, color);
+            float y = baseY - age * 18 * ratingScale;
+            gui.pose().pushPose();
+            gui.pose().translate(baseX, y, 0);
+            gui.pose().scale(ratingScale, ratingScale, 1);
+            gui.drawCenteredString(font, p.text, 0, 0, color);
+            gui.pose().popPose();
         }
     }
 
     private String blockifiedAnimationIcon(String role) {
         if (playbackPolicy != null && playbackPolicy.usesPsychCamera()) return "";
-        String set = playBoth || localControlsRole(role) ? myAnimSet
+        String set = localControlsRole(role) ? myAnimSet
                 : partnerControlsRole(role) ? partnerAnimSet : "";
         return set.isBlank() ? "" : CharacterAnimations.icon(set,
                 role.equals("dad") ? "opponent" : "player");
     }
 
     private String changedCharacterIcon(String characterId, String role) {
+        if (restrictsMinecraftSongAssets()) return "";
         if (playbackPolicy == null || !playbackPolicy.usesPsychCamera()) {
-            String icon = CharacterAnimations.icon(characterId, role);
+            String icon = CharacterAnimations.icon(CharacterAnimations.modSet(characterId), role);
             if (!icon.isBlank()) return icon;
         }
         return assetResolver.characterIcon(characterId);
+    }
+
+    private boolean restrictsMinecraftSongAssets() {
+        return playbackPolicy != null && playbackPolicy.mode() == PlaybackMode.MINECRAFT
+                && !playbackPolicy.songAssets();
     }
 
     private static String selectedIcon(String setting, String songIcon) {
@@ -2692,7 +3236,9 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     private void disposeResources() {
         if (resourcesDisposed) return;
         resourcesDisposed = true;
+        restorePerformerGravity();
         if (luaRuntime != null) luaRuntime.close();
+        extraCharacters.close();
         customNoteTextures.close();
         if (psychScene != null) psychScene.close();
         GameplayCamera.end();

@@ -19,6 +19,15 @@ final class MinecraftPauseOverlayScreen extends PauseScreen {
     }
 
     @Override
+    public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
+        if (GameplayScreen.isForceExitChord(keyCode, modifiers)) {
+            gameplay.forceExit();
+            return true;
+        }
+        return super.keyPressed(keyCode, scanCode, modifiers);
+    }
+
+    @Override
     public void removed() {
         super.removed();
         // Disconnecting through vanilla menu never restores parent screen.

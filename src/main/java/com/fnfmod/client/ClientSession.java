@@ -44,8 +44,8 @@ public final class ClientSession {
     public static boolean opponentSide;
     /** Solo side choice sent with the last song selection: 0 player, 1 opponent, 2 both. */
     public static byte pendingPlaySide;
-    public static PlaybackMode pendingPlaybackMode = PlaybackMode.LEGACY;
-    public static PlaybackMode playbackMode = PlaybackMode.LEGACY;
+    public static PlaybackMode pendingPlaybackMode = PlaybackMode.MINECRAFT;
+    public static PlaybackMode playbackMode = PlaybackMode.MINECRAFT;
     /** Server-resolved rich-resource permission for the selected playback mode/source. */
     public static boolean songAssets = true;
 
@@ -68,7 +68,7 @@ public final class ClientSession {
         difficulty = "";
         duet = false;
         opponentSide = false;
-        playbackMode = PlaybackMode.LEGACY;
+        playbackMode = PlaybackMode.MINECRAFT;
         songAssets = true;
         chart = null;
         resolvedFolder = null;
@@ -280,8 +280,8 @@ public final class ClientSession {
                     chart.needsVoices ? entry.voicesPlayerFor(difficulty) : null,
                     chart.needsVoices ? entry.voicesOpponentFor(difficulty) : null);
 
-            Path animationRoot = entry.runtimeRoot();
-            CharacterAnimations.useSongFolder(animationRoot);
+            Path animationRoot = songAssets ? entry.animationRoot() : null;
+            CharacterAnimations.useSongFolder(animationRoot, chart.player1, chart.player2);
             String animationSet = ClientOptions.get().animationSet;
             Direction facing = Direction.NORTH;
             if (Minecraft.getInstance().level != null) {
@@ -291,7 +291,8 @@ public final class ClientSession {
                 }
             }
             CharacterTransform transform = CharacterTransform.load(
-                    animationSet, animationRoot, facing, opponentSide);
+                    animationSet, animationRoot, facing, opponentSide,
+                    opponentSide ? chart.player2 : chart.player1);
             PacketDistributor.sendToServer(new FnfPayloads.ReadyC2S(activePos, animationSet,
                     transform.positionOffset().x, transform.positionOffset().y,
                     transform.positionOffset().z, transform.rotationOffset()));

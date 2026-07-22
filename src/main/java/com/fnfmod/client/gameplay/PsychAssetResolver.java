@@ -1,6 +1,7 @@
 package com.fnfmod.client.gameplay;
 
 import com.fnfmod.gameplay.PlaybackPolicy;
+import com.fnfmod.gameplay.PlaybackMode;
 import com.fnfmod.song.SongEntry;
 import com.fnfmod.song.SongLibrary;
 
@@ -37,19 +38,37 @@ public final class PsychAssetResolver {
         List<Path> roots = new ArrayList<>();
         // Current song/mod obeys its source directory's checklist.
         if (policy.allows(entry, content)) {
-            add(roots, songFolder);
+            addSongRoot(roots, songFolder, content);
             if (entry != null) {
-                add(roots, entry.modRoot);
-                add(roots, entry.folder);
+                addSongRoot(roots, entry.modRoot, content);
+                addSongRoot(roots, entry.folder, content);
                 if (content == SongLibrary.ExternalContent.CHARACTERS
                         || content == SongLibrary.ExternalContent.ICONS) {
-                    add(roots, entry.characterRoot);
+                    addSongRoot(roots, entry.characterRoot, content);
                 }
             }
         }
         // Shared Psych assets obey the first configured directory's checklist,
         // independently from whichever directory supplied this song/chart.
-        if (policy.songAssets()) add(roots, SongLibrary.primaryExternalAssetRoot(content));
+        if (policy.songAssets() && policy.mode() != PlaybackMode.MINECRAFT) {
+            add(roots, SongLibrary.primaryExternalAssetRoot(content));
+        }
+        return List.copyOf(roots);
+    }
+
+    /**
+     * Custom-note skins often refer to an engine-bundled atlas (for example
+     * HURTNOTE_assets) rather than a file copied into the mod. Keep the user's
+     * first configured asset directory as the shared priority, then fall back
+     * to the assets folder belonging to this song's own Psych-style mods tree.
+     */
+    public List<Path> customNoteRoots() {
+        List<Path> roots = new ArrayList<>(roots(SongLibrary.ExternalContent.IMAGES));
+        if (policy != null && policy.mode() != PlaybackMode.MINECRAFT
+                && policy.allows(entry, SongLibrary.ExternalContent.IMAGES)) {
+            Path sourceAssets = sourceEngineAssets();
+            add(roots, sourceAssets);
+        }
         return List.copyOf(roots);
     }
 
@@ -133,8 +152,37 @@ public final class PsychAssetResolver {
         }
     }
 
+    /** Minecraft rich resources may not escape the selected installed mod/cache root. */
+    private void addSongRoot(List<Path> roots, Path path, SongLibrary.ExternalContent content) {
+        if (policy != null && policy.mode() == PlaybackMode.MINECRAFT && isRichAsset(content)
+                && entry != null && entry.modRoot != null) {
+            Path candidate = normalize(path);
+            Path owner = normalize(entry.modRoot);
+            if (candidate == null || owner == null || !candidate.startsWith(owner)) return;
+        }
+        add(roots, path);
+    }
+
+    private static boolean isRichAsset(SongLibrary.ExternalContent content) {
+        return content != SongLibrary.ExternalContent.CHARTS
+                && content != SongLibrary.ExternalContent.EVENTS
+                && content != SongLibrary.ExternalContent.LUA;
+    }
+
     private static Path normalize(Path path) {
         return path == null ? null : path.toAbsolutePath().normalize();
+    }
+
+    private Path sourceEngineAssets() {
+        if (entry == null || entry.modRoot == null) return null;
+        Path mod = normalize(entry.modRoot);
+        Path mods = mod == null ? null : mod.getParent();
+        if (mods == null || mods.getFileName() == null
+                || !mods.getFileName().toString().equalsIgnoreCase("mods")) return null;
+        Path engine = mods.getParent();
+        if (engine == null) return null;
+        Path assets = engine.resolve("assets").normalize();
+        return Files.isDirectory(assets) ? assets : null;
     }
 
     private String stageLibrary(String stageId) {

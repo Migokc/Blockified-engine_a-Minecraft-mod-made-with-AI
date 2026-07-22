@@ -12,9 +12,10 @@ import java.nio.file.Path;
 public record PlaybackPolicy(PlaybackMode mode, boolean songAssets) {
 
     public static PlaybackPolicy resolve(PlaybackMode mode, SongEntry entry) {
-        PlaybackMode resolved = mode == null ? PlaybackMode.LEGACY : mode;
+        PlaybackMode resolved = mode == null ? PlaybackMode.MINECRAFT : mode;
         boolean assets = entry != null && entry.fullModLayout
-                && (resolved != PlaybackMode.MINECRAFT || isInstalledMod(entry));
+                && (resolved != PlaybackMode.MINECRAFT
+                || isInstalledModSong(entry));
         return new PlaybackPolicy(resolved, assets);
     }
 
@@ -35,10 +36,21 @@ public record PlaybackPolicy(PlaybackMode mode, boolean songAssets) {
         return mode == PlaybackMode.FNF;
     }
 
-    private static boolean isInstalledMod(SongEntry entry) {
+    /**
+     * Minecraft presentation accepts rich song resources when the song belongs to
+     * config/fnfmod/mods/&lt;mod&gt;. A chart-only override saved under
+     * config/fnfmod/songs also qualifies when its original_directory.txt names an
+     * installed mod, so an edited chart keeps that mod's characters and animations.
+     * An origin outside config/fnfmod/mods stays lightweight.
+     */
+    private static boolean isInstalledModSong(SongEntry entry) {
         if (entry == null) return false;
         Path mods = SongLibrary.modsDir().toAbsolutePath().normalize();
-        return inside(entry.modRoot, mods);
+        Path songs = SongLibrary.songsDir().toAbsolutePath().normalize();
+        if (inside(entry.chartOriginRoot, mods)) return true;
+        return inside(entry.modRoot, mods)
+                && inside(entry.folder, entry.modRoot)
+                && !inside(entry.folder, songs);
     }
 
     private static boolean inside(Path path, Path root) {

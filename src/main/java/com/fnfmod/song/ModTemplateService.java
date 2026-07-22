@@ -8,7 +8,7 @@ import java.util.List;
 /** Creates an empty Psych-compatible pack with Blockified-specific extension folders. */
 public final class ModTemplateService {
     private static final List<String> ROOT_FOLDERS = List.of(
-            "animations",          // Blockified playerAnimator character definitions
+            "animations",          // Blockified BBS form/state character definitions
             "characters",
             "custom_events",
             "custom_notetypes",

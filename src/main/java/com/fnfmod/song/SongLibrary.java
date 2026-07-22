@@ -803,20 +803,19 @@ public class SongLibrary {
             }
             if (original.isVslice()) finalizeVSlice(original);
 
-            // Keep the source only as a chart/audio library. Runtime resources must
-            // resolve from the local override, never from the origin pack.
+            // The locally saved chart wins, while the exact source pack remains
+            // its complete runtime resource root. This keeps edited charts fully
+            // playable without copying a potentially large mod into songs/.
             original.chartOriginRoot = source;
-            original.characterRoot = null;
             original.folder = localDir;
-            original.modRoot = null;
-            original.fullModLayout = false;
-            original.externalContent = basicSongContent();
-            original.opponentIconFile = null;
-            original.luaFiles.clear();
-            // The origin reference supplies only charts and song audio. Events
-            // must exist in the lightweight local folder to be used.
-            original.eventsFile = override.eventsFile;
-            original.eventsOverride = override.eventsFile != null;
+            original.fullModLayout = original.modRoot != null;
+            original.externalContent = allExternalContent();
+            // A separately saved events.json replaces the source events. Without
+            // one, keep the source event timeline just like every other asset.
+            if (override.eventsFile != null) {
+                original.eventsFile = override.eventsFile;
+                original.eventsOverride = true;
+            }
             // A complete local import must take priority over the referenced
             // source while keeping the reference as a fallback for missing data.
             if (override.instFile != null) original.instFile = override.instFile;
@@ -830,7 +829,8 @@ public class SongLibrary {
                 original.chartOverrides.put(difficulty, local.getValue());
                 if (!original.difficulties.contains(difficulty)) original.difficulties.add(difficulty);
             }
-            FnfMod.LOGGER.info("Chart override {} inherits assets from {}", override.id, source);
+            FnfMod.LOGGER.info("Edited chart {} inherits complete runtime assets from {}",
+                    override.id, source);
             return original;
         } catch (Exception e) {
             FnfMod.LOGGER.warn("Could not resolve chart override source for {}: {}", override.id, e.toString());

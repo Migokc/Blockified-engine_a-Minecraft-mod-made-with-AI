@@ -31,6 +31,9 @@ public class FnfSettingsScreen extends Screen {
     private int folderScroll;
     private boolean draggingFolderThumb;
     private String selectedFolder;
+    // Directory edits rescan the whole library, which is heavy; defer that until
+    // the user leaves the Directories page instead of running it per change.
+    private boolean foldersDirty;
 
     public FnfSettingsScreen(Screen parent) {
         super(Component.literal("Options"));
@@ -56,6 +59,12 @@ public class FnfSettingsScreen extends Screen {
     }
 
     private void switchTo(String newCategory) {
+        // Apply deferred directory changes when leaving the Directories page
+        // (Back, Done, or Esc all funnel through here).
+        if ("folders".equals(category) && !"folders".equals(newCategory) && foldersDirty) {
+            foldersDirty = false;
+            SongLibrary.rescan();
+        }
         category = newCategory;
         init();
     }
@@ -320,7 +329,7 @@ public class FnfSettingsScreen extends Screen {
                             : list.get(Math.min(Math.max(0, removed), list.size() - 1));
                 }
                 SongLibrary.setExternalFolders(list);
-                SongLibrary.rescan();
+                foldersDirty = true;
                 switchTo("folders");
             }).bounds(listX + listW - 22, folderListTop() + row * FOLDER_ROW_H, 20, 20).build());
         }
@@ -344,7 +353,7 @@ public class FnfSettingsScreen extends Screen {
                 boolean enabled = selected.contains(type);
                 addRenderableWidget(Button.builder(Component.literal((enabled ? "[x] " : "[ ] ") + name), b -> {
                     SongLibrary.setExternalFolderContent(selectedFolder, type, !enabled);
-                    SongLibrary.rescan();
+                    foldersDirty = true;
                     switchTo("folders");
                 }).bounds(x, y, buttonW, 20).build());
             }
@@ -358,7 +367,7 @@ public class FnfSettingsScreen extends Screen {
         if (index < 0 || next < 0 || next >= folders.size()) return;
         java.util.Collections.swap(folders, index, next);
         SongLibrary.setExternalFolders(folders);
-        SongLibrary.rescan();
+        foldersDirty = true;
 
         int visible = folderVisibleRows();
         if (next < folderScroll) folderScroll = next;
@@ -426,7 +435,7 @@ public class FnfSettingsScreen extends Screen {
                 if (!list.contains(picked)) list.add(picked);
                 selectedFolder = picked;
                 SongLibrary.setExternalFolders(list);
-                SongLibrary.rescan();
+                foldersDirty = true;
                 folderScroll = folderMaxScroll(list.size());
                 if (minecraft.screen == this && "folders".equals(category)) switchTo("folders");
             });
@@ -697,7 +706,8 @@ public class FnfSettingsScreen extends Screen {
     private Component animsLabel() {
         String selected = ClientOptions.get().animationSet;
         String shown = CharacterAnimations.NONE_SET.equalsIgnoreCase(selected) ? "None"
-                : CharacterAnimations.DEFAULT_SET.equalsIgnoreCase(selected) ? "Default (song)" : selected;
+                : CharacterAnimations.DEFAULT_SET.equalsIgnoreCase(selected) ? "Default (song)"
+                : selected + ".json";
         return Component.literal("Animations: " + shown);
     }
 
@@ -750,7 +760,7 @@ public class FnfSettingsScreen extends Screen {
             gui.drawCenteredString(font, "Positive = notes judged later. Tune until hits feel centered.",
                     width / 2, hintY(0), 0xAAAAAA);
         } else if ("visuals".equals(category)) {
-            gui.drawCenteredString(font, "skins/  splashes/  animations/<name>/  icons/<pack>/<name>.png",
+            gui.drawCenteredString(font, "skins/  splashes/  animations/<name>.json  icons/<pack>/<name>.png",
                     width / 2, hintY(1), 0xAAAAAA);
             gui.drawCenteredString(font, "All folders under config/fnfmod/",
                     width / 2, hintY(0), 0xAAAAAA);

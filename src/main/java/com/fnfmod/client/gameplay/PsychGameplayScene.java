@@ -3,6 +3,7 @@ package com.fnfmod.client.gameplay;
 import com.fnfmod.FnfMod;
 import com.fnfmod.chart.SongChart;
 import com.fnfmod.client.camera.GameplayCamera;
+import com.fnfmod.client.math.Easing;
 import com.fnfmod.client.render.PsychCanvas;
 import com.fnfmod.client.render.SparrowAtlas;
 import com.fnfmod.gameplay.PlaybackPolicy;
@@ -59,6 +60,7 @@ public final class PsychGameplayScene implements AutoCloseable {
         double scaleX;
         double scaleY;
         double alpha = 1;
+        int color = 0xFFFFFF;
         double angle;
         double holdTimer;
         double heyTimer;
@@ -248,7 +250,13 @@ public final class PsychGameplayScene implements AutoCloseable {
             float cx = (float) (x + atlasFrame.frameW * sx * 0.5 - current.offsetX() * sx);
             float cy = (float) (y + atlasFrame.frameH * sy * 0.5 - current.offsetY() * sy);
             float oldAlpha = SparrowAtlas.globalAlpha;
+            float oldTintR = SparrowAtlas.tintR;
+            float oldTintG = SparrowAtlas.tintG;
+            float oldTintB = SparrowAtlas.tintB;
             SparrowAtlas.globalAlpha = (float) Math.max(0, Math.min(1, alpha));
+            SparrowAtlas.tintR = oldTintR * ((color >> 16 & 255) / 255f);
+            SparrowAtlas.tintG = oldTintG * ((color >> 8 & 255) / 255f);
+            SparrowAtlas.tintB = oldTintB * ((color & 255) / 255f);
             gui.pose().pushPose();
             gui.pose().translate(cx, cy, 0);
             if (angle != 0) gui.pose().mulPose(com.mojang.math.Axis.ZP.rotationDegrees((float) angle));
@@ -257,6 +265,9 @@ public final class PsychGameplayScene implements AutoCloseable {
             atlas.drawScaled(gui, atlasFrame, 0, 0, Math.abs(sx));
             gui.pose().popPose();
             SparrowAtlas.globalAlpha = oldAlpha;
+            SparrowAtlas.tintR = oldTintR;
+            SparrowAtlas.tintG = oldTintG;
+            SparrowAtlas.tintB = oldTintB;
         }
 
         double midpointX() {
@@ -271,6 +282,7 @@ public final class PsychGameplayScene implements AutoCloseable {
             return switch (name) {
                 case "x" -> x; case "y" -> y; case "alpha" -> alpha; case "angle" -> angle;
                 case "visible" -> visible; case "flipX" -> flipX;
+                case "color" -> color;
                 case "antialiasing" -> antialiasing;
                 case "width" -> logicalWidth; case "height" -> logicalHeight;
                 case "cameraPosition[0]" -> cameraX; case "cameraPosition[1]" -> cameraY;
@@ -294,6 +306,7 @@ public final class PsychGameplayScene implements AutoCloseable {
                 case "scale.y" -> scaleY = number; case "heyTimer" -> heyTimer = Math.max(0, number);
                 case "holdTimer" -> holdTimer = Math.max(0, number);
                 case "visible" -> visible = bool(value); case "flipX" -> flipX = bool(value);
+                case "color" -> color = (int) ((long) number) & 0xFFFFFF;
                 case "antialiasing" -> { antialiasing = bool(value); atlas.setAntialiasing(antialiasing); }
                 case "specialAnim" -> specialAnim = bool(value);
                 case "animation.curAnim.curFrame" -> {
@@ -310,6 +323,7 @@ public final class PsychGameplayScene implements AutoCloseable {
             y = baseY;
             angle = 0;
             alpha = 1;
+            color = 0xFFFFFF;
             visible = true;
             holdTimer = heyTimer = 0;
             specialAnim = false;
@@ -336,6 +350,14 @@ public final class PsychGameplayScene implements AutoCloseable {
     private double targetCameraY = cameraY;
     private boolean cameraInitialized;
     private boolean cameraForced;
+    private boolean cameraExtendedOffset;
+    private boolean cameraExternalOverride;
+    private double cameraOffsetEventX;
+    private double cameraOffsetEventY;
+    private double cameraEventFromX;
+    private double cameraEventFromY;
+    private long cameraEventTransitionStart;
+    private String cameraEventEase = "smooth";
     private int girlfriendDanceSpeed = 1;
 
     private PsychGameplayScene(CharacterSprite boyfriend, CharacterSprite dad,
@@ -423,7 +445,7 @@ public final class PsychGameplayScene implements AutoCloseable {
                     stagePosition[0] + position[0], stagePosition[1] + position[1],
                     number(data, "scale", 1), bool(data, "flip_x", false) != playerSide,
                     camera[0], camera[1], number(data, "sing_duration", 4),
-                    (int) number(data, "dance_every", 0), bool(data, "antialiasing", true),
+                    (int) number(data, "dance_every", 0), characterAntialiasing(data),
                     id.equalsIgnoreCase("gf") || id.toLowerCase(Locale.ROOT).startsWith("gf-"));
             loadedAtlas = null;
             return sprite;
@@ -481,6 +503,14 @@ public final class PsychGameplayScene implements AutoCloseable {
         catch (Exception ignored) { return fallback; }
     }
 
+    /** Psych stores this as an inverted no_antialiasing flag. */
+    private static boolean characterAntialiasing(JsonObject object) {
+        if (object.has("no_antialiasing")) return !bool(object, "no_antialiasing", false);
+        if (object.has("noAntialiasing")) return !bool(object, "noAntialiasing", false);
+        // Compatibility with older Blockified files that used a direct flag.
+        return bool(object, "antialiasing", true);
+    }
+
     private static boolean bool(Object value) {
         if (value instanceof Boolean b) return b;
         if (value instanceof Number n) return n.doubleValue() != 0;
@@ -502,20 +532,45 @@ public final class PsychGameplayScene implements AutoCloseable {
     public double cameraY() { return cameraY; }
     public double targetCameraX() { return targetCameraX; }
     public double targetCameraY() { return targetCameraY; }
-    public void setTargetCameraX(double value) { targetCameraX = value; }
-    public void setTargetCameraY(double value) { targetCameraY = value; }
-    public void setCameraX(double value) { cameraX = value; cameraInitialized = true; }
-    public void setCameraY(double value) { cameraY = value; cameraInitialized = true; }
+    public void setTargetCameraX(double value) { if (!cameraExternalOverride) targetCameraX = value; }
+    public void setTargetCameraY(double value) { if (!cameraExternalOverride) targetCameraY = value; }
+    public void setCameraX(double value) { if (!cameraExternalOverride) { cameraX = value; cameraInitialized = true; } }
+    public void setCameraY(double value) { if (!cameraExternalOverride) { cameraY = value; cameraInitialized = true; } }
 
     public void forceCamera(Double x, Double y) {
+        cameraEventTransitionStart = 0;
         if (x == null && y == null) {
             cameraForced = false;
+            cameraExtendedOffset = false;
+            cameraExternalOverride = false;
+            cameraOffsetEventX = cameraOffsetEventY = 0;
             updateCameraTarget();
             return;
         }
+        cameraExtendedOffset = false;
+        cameraExternalOverride = false;
         cameraForced = true;
         targetCameraX = x == null ? 0 : x;
         targetCameraY = y == null ? 0 : y;
+    }
+
+    /** Blockified 3D extension mirrored onto camGame as center-relative offsets. */
+    public void forceCameraExtended(Double x, Double y, boolean overrideMovement, String easing) {
+        cameraEventFromX = cameraX;
+        cameraEventFromY = cameraY;
+        cameraEventTransitionStart = System.currentTimeMillis();
+        cameraEventEase = GameplayCamera.normalizeCameraEase(easing);
+        cameraOffsetEventX = x == null ? 0 : x * 128.0;
+        cameraOffsetEventY = y == null ? 0 : -y * 128.0;
+        cameraExtendedOffset = true;
+        cameraExternalOverride = overrideMovement;
+        cameraForced = overrideMovement;
+        if (overrideMovement) {
+            targetCameraX = PsychCanvas.WIDTH * 0.5 + cameraOffsetEventX;
+            targetCameraY = PsychCanvas.HEIGHT * 0.5 + cameraOffsetEventY;
+        } else {
+            updateCameraTarget();
+        }
     }
 
     public void update(double seconds, double stepMs, double playbackRate) {
@@ -528,6 +583,12 @@ public final class PsychGameplayScene implements AutoCloseable {
             cameraX = targetCameraX;
             cameraY = targetCameraY;
             cameraInitialized = true;
+        } else if (cameraEventTransitionStart != 0) {
+            double progress = (System.currentTimeMillis() - cameraEventTransitionStart) / 500.0;
+            double eased = Easing.apply(cameraEventEase, progress);
+            cameraX = cameraEventFromX + (targetCameraX - cameraEventFromX) * eased;
+            cameraY = cameraEventFromY + (targetCameraY - cameraEventFromY) * eased;
+            if (progress >= 1) cameraEventTransitionStart = 0;
         } else {
             cameraX += (targetCameraX - cameraX) * follow;
             cameraY += (targetCameraY - cameraY) * follow;
@@ -564,6 +625,10 @@ public final class PsychGameplayScene implements AutoCloseable {
                 targetCameraX = target.midpointX() - 100 - target.cameraX + stage.cameraBoyfriend()[0];
                 targetCameraY = target.midpointY() - 100 + target.cameraY + stage.cameraBoyfriend()[1];
             }
+        }
+        if (cameraExtendedOffset) {
+            targetCameraX += cameraOffsetEventX;
+            targetCameraY += cameraOffsetEventY;
         }
     }
 
@@ -731,13 +796,14 @@ public final class PsychGameplayScene implements AutoCloseable {
     public Object property(String path) {
         CharacterSprite target = sprite(path);
         int dot = path == null ? -1 : path.indexOf('.');
-        return target == null || dot < 0 ? null : target.property(path.substring(dot + 1));
+        return target == null || dot < 0 ? null : target.property(characterProperty(path.substring(dot + 1)));
     }
 
     public boolean setProperty(String path, Object value) {
         CharacterSprite target = sprite(path);
         int dot = path == null ? -1 : path.indexOf('.');
-        return target != null && dot >= 0 && target.setProperty(path.substring(dot + 1), value);
+        return target != null && dot >= 0
+                && target.setProperty(characterProperty(path.substring(dot + 1)), value);
     }
 
     public double characterX(String role) {
@@ -777,11 +843,18 @@ public final class PsychGameplayScene implements AutoCloseable {
         if (raw == null) return "";
         String tag = raw.contains(".") ? raw.substring(0, raw.indexOf('.')) : raw;
         return switch (tag.trim().toLowerCase(Locale.ROOT)) {
-            case "boyfriend", "bf", "player", "0" -> "boyfriend";
-            case "dad", "opponent", "1" -> "dad";
-            case "gf", "girlfriend", "speakers", "2" -> "gf";
+            case "boyfriend", "boyfriendgroup", "bf", "player", "0" -> "boyfriend";
+            case "dad", "dadgroup", "opponent", "opponentgroup", "1" -> "dad";
+            case "gf", "gfgroup", "girlfriend", "girlfriendgroup", "speakers", "2" -> "gf";
             default -> tag.trim().toLowerCase(Locale.ROOT);
         };
+    }
+
+    private static String characterProperty(String raw) {
+        String property = raw == null ? "" : raw;
+        // FlxTypedSpriteGroup access used by many Psych scripts.
+        if (property.startsWith("members[0].")) property = property.substring("members[0].".length());
+        return property;
     }
 
     public void reset() {
@@ -791,6 +864,10 @@ public final class PsychGameplayScene implements AutoCloseable {
         cameraRole = "boyfriend";
         cameraInitialized = false;
         cameraForced = false;
+        cameraExtendedOffset = false;
+        cameraExternalOverride = false;
+        cameraOffsetEventX = cameraOffsetEventY = 0;
+        cameraEventTransitionStart = 0;
         girlfriendDanceSpeed = 1;
         updateCameraTarget();
     }

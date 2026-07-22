@@ -24,7 +24,13 @@ public record CharacterTransform(Vec3 positionOffset, float rotationOffset) {
 
     public static CharacterTransform load(String setName, Path songFolder, Direction facing,
                                           boolean opponent) {
-        Path config = CharacterDefinitionPaths.characterJson(setName, songFolder, opponent);
+        return load(setName, songFolder, facing, opponent, null);
+    }
+
+    public static CharacterTransform load(String setName, Path songFolder, Direction facing,
+                                          boolean opponent, String defaultCharacter) {
+        Path config = CharacterDefinitionPaths.characterJson(
+                setName, songFolder, opponent, defaultCharacter);
         if (config == null) return DEFAULT;
 
         try {

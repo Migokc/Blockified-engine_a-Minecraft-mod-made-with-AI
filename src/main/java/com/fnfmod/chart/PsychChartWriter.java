@@ -130,6 +130,13 @@ public final class PsychChartWriter {
             payload.add(event.name);
             payload.add(event.value1);
             payload.add(event.value2);
+            if (!event.value3.isBlank() || !event.value4.isBlank() || !event.value5.isBlank()
+                    || !event.value6.isBlank()) {
+                payload.add(event.value3);
+                payload.add(event.value4);
+                payload.add(event.value5);
+                if (!event.value6.isBlank()) payload.add(event.value6);
+            }
             if (event.beforeSong) payload.add("load");
             payloads.add(payload);
         }

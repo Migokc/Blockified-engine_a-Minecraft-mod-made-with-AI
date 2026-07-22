@@ -19,6 +19,7 @@ import com.fnfmod.client.render.LuaWorldObjectRenderer;
 import com.fnfmod.client.render.HudLayerOrder;
 import com.fnfmod.client.render.SparrowAtlas;
 import com.fnfmod.client.render.PsychCanvas;
+import com.fnfmod.client.render.PsychCameraTransform;
 import com.fnfmod.song.SongEntry;
 import com.fnfmod.song.SongLibrary;
 import net.minecraft.client.Minecraft;
@@ -471,7 +472,8 @@ public final class PsychLuaRuntime implements AutoCloseable {
         fn(g, "setVar", args -> { sharedVars.put(args.checkjstring(1), args.arg(2)); return args.arg(2); });
         fn(g, "getVar", args -> sharedVars.getOrDefault(args.checkjstring(1), LuaValue.NIL));
         fn(g, "triggerEvent", args -> { host.psychLuaTriggerEvent(args.optjstring(1, ""),
-                args.optjstring(2, ""), args.optjstring(3, "")); return LuaValue.NIL; });
+                args.optjstring(2, ""), args.optjstring(3, ""), args.optjstring(4, ""),
+                args.optjstring(5, ""), args.optjstring(6, ""), args.optjstring(7, "")); return LuaValue.NIL; });
         fn(g, "runMinecraftCommand", args -> LuaValue.valueOf(host.psychLuaRunMinecraftCommand(
                 args.optjstring(1, ""), args.optjstring(2, "player"))));
         // Short Blockified alias; explicit name remains preferred in shared Psych scripts.
@@ -481,11 +483,9 @@ public final class PsychLuaRuntime implements AutoCloseable {
         fn(g, "endSong", args -> { host.psychLuaEndSong(); return LuaValue.TRUE; });
         fn(g, "restartSong", args -> { host.psychLuaRestartSong(); return LuaValue.TRUE; });
         fn(g, "exitSong", args -> { host.psychLuaExitSong(); return LuaValue.TRUE; });
-        fn(g, "keyboardPressed", args -> LuaValue.valueOf(keyDown(keyCode(args.optjstring(1, "")))));
-        fn(g, "keyboardJustPressed", args -> { int key = keyCode(args.optjstring(1, ""));
-                return LuaValue.valueOf(keyDown(key) && !previousKeys.getOrDefault(key, false)); });
-        fn(g, "keyboardReleased", args -> { int key = keyCode(args.optjstring(1, ""));
-                return LuaValue.valueOf(!keyDown(key) && previousKeys.getOrDefault(key, false)); });
+        fn(g, "keyboardPressed", args -> LuaValue.valueOf(keyboardDown(args.optjstring(1, ""))));
+        fn(g, "keyboardJustPressed", args -> LuaValue.valueOf(keyboardJustPressed(args.optjstring(1, ""))));
+        fn(g, "keyboardReleased", args -> LuaValue.valueOf(keyboardReleased(args.optjstring(1, ""))));
         fn(g, "keyPressed", args -> LuaValue.valueOf(controlDown(args.optjstring(1, ""))));
         fn(g, "keyJustPressed", args -> { String control = controlName(args.optjstring(1, ""));
                 return LuaValue.valueOf(controlDown(control) && !previousControls.getOrDefault(control, false)); });
@@ -548,14 +548,20 @@ public final class PsychLuaRuntime implements AutoCloseable {
         fn(g, "setObjectOrder", args -> { LuaObject o = object(args.checkjstring(1));
                 o.order = args.optint(2, 0); o.orderExplicit = true; return LuaValue.NIL; });
         fn(g, "getObjectOrder", args -> LuaValue.valueOf(object(args.checkjstring(1)).order));
-        fn(g, "setObjectAntialiasing", args -> { LuaObject o = object(args.checkjstring(1));
-                setAntialiasing(o, args.optboolean(2, true)); return LuaValue.NIL; });
-        fn(g, "setSpriteAntialiasing", args -> { LuaObject o = object(args.checkjstring(1));
-                setAntialiasing(o, args.optboolean(2, true)); return LuaValue.NIL; });
-        fn(g, "setGraphicSize", args -> { setGraphicSize(object(args.checkjstring(1)),
-                args.optdouble(2, 0), args.arg(3).isnil() ? 0 : args.optdouble(3, 0)); return LuaValue.NIL; });
-        fn(g, "scaleObject", args -> { LuaObject o = object(args.checkjstring(1)); o.scaleX = args.optdouble(2, 1);
-                o.scaleY = args.optdouble(3, 1); return LuaValue.NIL; });
+        fn(g, "setObjectAntialiasing", args -> { setTargetAntialiasing(args.checkjstring(1),
+                args.optboolean(2, true)); return LuaValue.NIL; });
+        fn(g, "setSpriteAntialiasing", args -> { setTargetAntialiasing(args.checkjstring(1),
+                args.optboolean(2, true)); return LuaValue.NIL; });
+        fn(g, "setGraphicSize", args -> { String tag = args.checkjstring(1);
+                double w = args.optdouble(2, 0); double h = args.arg(3).isnil() ? 0 : args.optdouble(3, 0);
+                if (isCharacterTag(tag)) setCharacterGraphicSize(tag, w, h);
+                else setGraphicSize(object(tag), w, h); return LuaValue.NIL; });
+        fn(g, "scaleObject", args -> { String tag = args.checkjstring(1);
+                double x = args.optdouble(2, 1); double y = args.optdouble(3, 1);
+                if (isCharacterTag(tag)) { host.psychLuaSetProperty(tag + ".scale.x", x);
+                    host.psychLuaSetProperty(tag + ".scale.y", y); }
+                else { LuaObject o = object(tag); o.scaleX = x; o.scaleY = y; }
+                return LuaValue.NIL; });
         fn(g, "loadGraphic", args -> { LuaObject o = object(args.checkjstring(1));
                 o.image = args.optjstring(2, ""); o.sizeExplicit = false; loadObjectImage(o, o.image); return LuaValue.NIL; });
         fn(g, "loadFrames", args -> LuaValue.valueOf(loadObjectAtlas(object(args.checkjstring(1)),
@@ -577,10 +583,16 @@ public final class PsychLuaRuntime implements AutoCloseable {
         fn(g, "getMidpointY", args -> { String tag = args.checkjstring(1);
                 return LuaValue.valueOf(isCharacterTag(tag) ? host.psychLuaCharacterMidpointY(tag)
                         : object(tag).y + object(tag).height / 2); });
-        fn(g, "getGraphicMidpointX", args -> LuaValue.valueOf(object(args.checkjstring(1)).x + object(args.checkjstring(1)).width / 2));
-        fn(g, "getGraphicMidpointY", args -> LuaValue.valueOf(object(args.checkjstring(1)).y + object(args.checkjstring(1)).height / 2));
-        fn(g, "getScreenPositionX", args -> LuaValue.valueOf(object(args.checkjstring(1)).x));
-        fn(g, "getScreenPositionY", args -> LuaValue.valueOf(object(args.checkjstring(1)).y));
+        fn(g, "getGraphicMidpointX", args -> { String tag = args.checkjstring(1);
+                return LuaValue.valueOf(isCharacterTag(tag) ? host.psychLuaCharacterMidpointX(tag)
+                        : object(tag).x + object(tag).width / 2); });
+        fn(g, "getGraphicMidpointY", args -> { String tag = args.checkjstring(1);
+                return LuaValue.valueOf(isCharacterTag(tag) ? host.psychLuaCharacterMidpointY(tag)
+                        : object(tag).y + object(tag).height / 2); });
+        fn(g, "getScreenPositionX", args -> { String tag = args.checkjstring(1);
+                return LuaValue.valueOf(isCharacterTag(tag) ? host.psychLuaCharacterX(tag) : object(tag).x); });
+        fn(g, "getScreenPositionY", args -> { String tag = args.checkjstring(1);
+                return LuaValue.valueOf(isCharacterTag(tag) ? host.psychLuaCharacterY(tag) : object(tag).y); });
         fn(g, "objectsOverlap", args -> LuaValue.valueOf(overlap(object(args.checkjstring(1)), object(args.checkjstring(2)))));
         fn(g, "getMouseX", args -> LuaValue.ZERO); fn(g, "getMouseY", args -> LuaValue.ZERO);
 
@@ -629,6 +641,26 @@ public final class PsychLuaRuntime implements AutoCloseable {
                 args.optjstring(1, "boyfriend"), args.optdouble(2, 0))));
         fn(g, "setCharacterY", args -> LuaValue.valueOf(host.psychLuaSetCharacterY(
                 args.optjstring(1, "boyfriend"), args.optdouble(2, 0))));
+        fn(g, "addBlockifiedCharacter", args -> LuaValue.valueOf(host.psychLuaAddCharacter(
+                args.checkjstring(1), args.checkjstring(2), args.optdouble(3, 0),
+                args.optdouble(4, 0), args.optdouble(5, 0), args.optdouble(6, 0),
+                args.optjstring(7, "idle"), args.optjstring(8, "player"))));
+        fn(g, "makeBlockifiedCharacter", args -> LuaValue.valueOf(host.psychLuaAddCharacter(
+                args.checkjstring(1), args.checkjstring(2), args.optdouble(3, 0),
+                args.optdouble(4, 0), args.optdouble(5, 0), args.optdouble(6, 0),
+                args.optjstring(7, "idle"), args.optjstring(8, "player"))));
+        fn(g, "removeBlockifiedCharacter", args -> LuaValue.valueOf(
+                host.psychLuaRemoveCharacter(args.checkjstring(1))));
+        fn(g, "blockifiedCharacterExists", args -> LuaValue.valueOf(
+                host.psychLuaExtraCharacterExists(args.checkjstring(1))));
+        fn(g, "setBlockifiedCharacterPosition", args -> LuaValue.valueOf(
+                host.psychLuaSetCharacterPosition(args.checkjstring(1), args.optdouble(2, 0),
+                        args.optdouble(3, 0), args.optdouble(4, 0))));
+        fn(g, "setBlockifiedCharacterRotation", args -> LuaValue.valueOf(
+                host.psychLuaSetCharacterRotation(args.checkjstring(1), args.optdouble(2, 0))));
+        fn(g, "changeBlockifiedCharacter", args -> LuaValue.valueOf(
+                host.psychLuaChangeExtraCharacter(args.checkjstring(1), args.checkjstring(2),
+                        args.optjstring(3, ""))));
         fn(g, "getCameraFollowX", args -> toLua(host.psychLuaGetProperty("camFollow.x")));
         fn(g, "getCameraFollowY", args -> toLua(host.psychLuaGetProperty("camFollow.y")));
         fn(g, "setCameraFollowPoint", args -> { host.psychLuaSetProperty("camFollow.x", args.optdouble(1, 0));
@@ -983,12 +1015,32 @@ public final class PsychLuaRuntime implements AutoCloseable {
                 && a.y < b.y + b.height && a.y + a.height > b.y;
     }
 
-    private static boolean isCharacterTag(String raw) {
+    private boolean isCharacterTag(String raw) {
         if (raw == null) return false;
+        if (host.psychLuaExtraCharacterExists(raw)) return true;
         String tag = raw.toLowerCase(Locale.ROOT);
-        return tag.equals("boyfriend") || tag.equals("bf") || tag.equals("player")
-                || tag.equals("dad") || tag.equals("opponent")
-                || tag.equals("gf") || tag.equals("girlfriend") || tag.equals("speakers");
+        return tag.equals("boyfriend") || tag.equals("boyfriendgroup")
+                || tag.equals("bf") || tag.equals("player")
+                || tag.equals("dad") || tag.equals("dadgroup")
+                || tag.equals("opponent") || tag.equals("opponentgroup")
+                || tag.equals("gf") || tag.equals("gfgroup")
+                || tag.equals("girlfriend") || tag.equals("girlfriendgroup")
+                || tag.equals("speakers");
+    }
+
+    private void setTargetAntialiasing(String tag, boolean enabled) {
+        if (isCharacterTag(tag)) host.psychLuaSetProperty(tag + ".antialiasing", enabled);
+        else setAntialiasing(object(tag), enabled);
+    }
+
+    private void setCharacterGraphicSize(String tag, double width, double height) {
+        double sourceWidth = number(host.psychLuaGetProperty(tag + ".width"), 0);
+        double sourceHeight = number(host.psychLuaGetProperty(tag + ".height"), 0);
+        if (sourceWidth <= 0 || sourceHeight <= 0 || width <= 0) return;
+        double scaleX = width / sourceWidth;
+        double scaleY = height > 0 ? height / sourceHeight : scaleX;
+        host.psychLuaSetProperty(tag + ".scale.x", scaleX);
+        host.psychLuaSetProperty(tag + ".scale.y", scaleY);
     }
 
     private Script findScript(String query) {
@@ -1032,6 +1084,36 @@ public final class PsychLuaRuntime implements AutoCloseable {
         return GLFW.glfwGetKey(window, key) == GLFW.GLFW_PRESS;
     }
 
+    private boolean keyboardDown(String name) {
+        for (int key : physicalKeyCodes(name)) if (keyDown(key)) return true;
+        return false;
+    }
+
+    private boolean keyboardJustPressed(String name) {
+        for (int key : physicalKeyCodes(name)) {
+            if (keyDown(key) && !previousKeys.getOrDefault(key, false)) return true;
+        }
+        return false;
+    }
+
+    private boolean keyboardReleased(String name) {
+        for (int key : physicalKeyCodes(name)) {
+            if (!keyDown(key) && previousKeys.getOrDefault(key, false)) return true;
+        }
+        return false;
+    }
+
+    private static int[] physicalKeyCodes(String raw) {
+        String key = controlName(raw);
+        return switch (key) {
+            case "SHIFT" -> new int[]{GLFW.GLFW_KEY_LEFT_SHIFT, GLFW.GLFW_KEY_RIGHT_SHIFT};
+            case "CONTROL", "CTRL" -> new int[]{GLFW.GLFW_KEY_LEFT_CONTROL, GLFW.GLFW_KEY_RIGHT_CONTROL};
+            case "ALT" -> new int[]{GLFW.GLFW_KEY_LEFT_ALT, GLFW.GLFW_KEY_RIGHT_ALT};
+            case "SUPER", "META", "WINDOWS" -> new int[]{GLFW.GLFW_KEY_LEFT_SUPER, GLFW.GLFW_KEY_RIGHT_SUPER};
+            default -> new int[]{keyCode(key)};
+        };
+    }
+
     private static String controlName(String raw) {
         return raw == null ? "" : raw.trim().toUpperCase(Locale.ROOT).replace(' ', '_');
     }
@@ -1040,18 +1122,25 @@ public final class PsychLuaRuntime implements AutoCloseable {
         String control = controlName(raw);
         queriedControls.add(control);
         return switch (control) {
-            case "NOTE_LEFT" -> FnfKeys.NOTE_LEFT.isDown();
-            case "NOTE_DOWN" -> FnfKeys.NOTE_DOWN.isDown();
-            case "NOTE_UP" -> FnfKeys.NOTE_UP.isDown();
-            case "NOTE_RIGHT" -> FnfKeys.NOTE_RIGHT.isDown();
-            case "UI_LEFT" -> keyDown(GLFW.GLFW_KEY_LEFT);
-            case "UI_DOWN" -> keyDown(GLFW.GLFW_KEY_DOWN);
-            case "UI_UP" -> keyDown(GLFW.GLFW_KEY_UP);
-            case "UI_RIGHT" -> keyDown(GLFW.GLFW_KEY_RIGHT);
-            case "ACCEPT" -> keyDown(GLFW.GLFW_KEY_ENTER);
-            case "BACK" -> keyDown(GLFW.GLFW_KEY_ESCAPE);
+            // Psych's short direction names are note controls, not arrow keys.
+            case "LEFT", "NOTE_LEFT" -> FnfKeys.NOTE_LEFT.isDown();
+            case "DOWN", "NOTE_DOWN" -> FnfKeys.NOTE_DOWN.isDown();
+            case "UP", "NOTE_UP" -> FnfKeys.NOTE_UP.isDown();
+            case "RIGHT", "NOTE_RIGHT" -> FnfKeys.NOTE_RIGHT.isDown();
+            case "UI_LEFT" -> keyDown(GLFW.GLFW_KEY_LEFT) || FnfKeys.NOTE_LEFT.isDown();
+            case "UI_DOWN" -> keyDown(GLFW.GLFW_KEY_DOWN) || FnfKeys.NOTE_DOWN.isDown();
+            case "UI_UP" -> keyDown(GLFW.GLFW_KEY_UP) || FnfKeys.NOTE_UP.isDown();
+            case "UI_RIGHT" -> keyDown(GLFW.GLFW_KEY_RIGHT) || FnfKeys.NOTE_RIGHT.isDown();
+            case "ACCEPT" -> keyDown(GLFW.GLFW_KEY_SPACE) || keyDown(GLFW.GLFW_KEY_ENTER)
+                    || keyDown(GLFW.GLFW_KEY_KP_ENTER);
+            case "BACK" -> keyDown(GLFW.GLFW_KEY_BACKSPACE) || keyDown(GLFW.GLFW_KEY_ESCAPE);
             case "PAUSE" -> keyDown(GLFW.GLFW_KEY_ENTER) || keyDown(GLFW.GLFW_KEY_ESCAPE);
             case "RESET" -> keyDown(GLFW.GLFW_KEY_R);
+            case "VOLUME_MUTE" -> keyDown(GLFW.GLFW_KEY_0);
+            case "VOLUME_UP" -> keyDown(GLFW.GLFW_KEY_KP_ADD) || keyDown(GLFW.GLFW_KEY_EQUAL);
+            case "VOLUME_DOWN" -> keyDown(GLFW.GLFW_KEY_KP_SUBTRACT) || keyDown(GLFW.GLFW_KEY_MINUS);
+            case "DEBUG_1" -> keyDown(GLFW.GLFW_KEY_7);
+            case "DEBUG_2" -> keyDown(GLFW.GLFW_KEY_8);
             default -> keyDown(keyCode(control));
         };
     }
@@ -1065,19 +1154,71 @@ public final class PsychLuaRuntime implements AutoCloseable {
             if (c >= '0' && c <= '9') return GLFW.GLFW_KEY_0 + c - '0';
         }
         return switch (key) {
+            case "APOSTROPHE", "QUOTE" -> GLFW.GLFW_KEY_APOSTROPHE;
+            case "COMMA" -> GLFW.GLFW_KEY_COMMA;
+            case "MINUS", "DASH" -> GLFW.GLFW_KEY_MINUS;
+            case "PERIOD", "DOT" -> GLFW.GLFW_KEY_PERIOD;
+            case "SLASH" -> GLFW.GLFW_KEY_SLASH;
+            case "ZERO" -> GLFW.GLFW_KEY_0; case "ONE" -> GLFW.GLFW_KEY_1;
+            case "TWO" -> GLFW.GLFW_KEY_2; case "THREE" -> GLFW.GLFW_KEY_3;
+            case "FOUR" -> GLFW.GLFW_KEY_4; case "FIVE" -> GLFW.GLFW_KEY_5;
+            case "SIX" -> GLFW.GLFW_KEY_6; case "SEVEN" -> GLFW.GLFW_KEY_7;
+            case "EIGHT" -> GLFW.GLFW_KEY_8; case "NINE" -> GLFW.GLFW_KEY_9;
+            case "SEMICOLON" -> GLFW.GLFW_KEY_SEMICOLON;
+            case "EQUAL", "PLUS" -> GLFW.GLFW_KEY_EQUAL;
+            case "LEFT_BRACKET", "LBRACKET", "OPEN_BRACKET" -> GLFW.GLFW_KEY_LEFT_BRACKET;
+            case "BACKSLASH" -> GLFW.GLFW_KEY_BACKSLASH;
+            case "RIGHT_BRACKET", "RBRACKET", "CLOSE_BRACKET" -> GLFW.GLFW_KEY_RIGHT_BRACKET;
+            case "GRAVE_ACCENT", "GRAVE", "BACKQUOTE", "TILDE" -> GLFW.GLFW_KEY_GRAVE_ACCENT;
             case "LEFT" -> GLFW.GLFW_KEY_LEFT; case "RIGHT" -> GLFW.GLFW_KEY_RIGHT;
             case "UP" -> GLFW.GLFW_KEY_UP; case "DOWN" -> GLFW.GLFW_KEY_DOWN;
             case "SPACE" -> GLFW.GLFW_KEY_SPACE; case "ENTER", "RETURN" -> GLFW.GLFW_KEY_ENTER;
             case "ESC", "ESCAPE" -> GLFW.GLFW_KEY_ESCAPE; case "TAB" -> GLFW.GLFW_KEY_TAB;
-            case "SHIFT" -> GLFW.GLFW_KEY_LEFT_SHIFT; case "CONTROL", "CTRL" -> GLFW.GLFW_KEY_LEFT_CONTROL;
-            case "ALT" -> GLFW.GLFW_KEY_LEFT_ALT; case "BACKSPACE" -> GLFW.GLFW_KEY_BACKSPACE;
+            case "SHIFT", "LEFT_SHIFT", "LSHIFT" -> GLFW.GLFW_KEY_LEFT_SHIFT;
+            case "RIGHT_SHIFT", "RSHIFT" -> GLFW.GLFW_KEY_RIGHT_SHIFT;
+            case "CONTROL", "CTRL", "LEFT_CONTROL", "LEFT_CTRL", "LCTRL" -> GLFW.GLFW_KEY_LEFT_CONTROL;
+            case "RIGHT_CONTROL", "RIGHT_CTRL", "RCTRL" -> GLFW.GLFW_KEY_RIGHT_CONTROL;
+            case "ALT", "LEFT_ALT", "LALT" -> GLFW.GLFW_KEY_LEFT_ALT;
+            case "RIGHT_ALT", "RALT", "ALT_GR" -> GLFW.GLFW_KEY_RIGHT_ALT;
+            case "LEFT_SUPER", "LEFT_META", "LEFT_WINDOWS" -> GLFW.GLFW_KEY_LEFT_SUPER;
+            case "RIGHT_SUPER", "RIGHT_META", "RIGHT_WINDOWS" -> GLFW.GLFW_KEY_RIGHT_SUPER;
+            case "MENU" -> GLFW.GLFW_KEY_MENU;
+            case "BACKSPACE" -> GLFW.GLFW_KEY_BACKSPACE;
+            case "INSERT" -> GLFW.GLFW_KEY_INSERT;
             case "DELETE" -> GLFW.GLFW_KEY_DELETE; case "HOME" -> GLFW.GLFW_KEY_HOME;
             case "END" -> GLFW.GLFW_KEY_END; case "PAGEUP", "PAGE_UP" -> GLFW.GLFW_KEY_PAGE_UP;
             case "PAGEDOWN", "PAGE_DOWN" -> GLFW.GLFW_KEY_PAGE_DOWN;
+            case "CAPS_LOCK", "CAPSLOCK" -> GLFW.GLFW_KEY_CAPS_LOCK;
+            case "SCROLL_LOCK", "SCROLLLOCK" -> GLFW.GLFW_KEY_SCROLL_LOCK;
+            case "NUM_LOCK", "NUMLOCK" -> GLFW.GLFW_KEY_NUM_LOCK;
+            case "PRINT_SCREEN", "PRINTSCREEN" -> GLFW.GLFW_KEY_PRINT_SCREEN;
+            case "PAUSE" -> GLFW.GLFW_KEY_PAUSE;
             case "F1" -> GLFW.GLFW_KEY_F1; case "F2" -> GLFW.GLFW_KEY_F2; case "F3" -> GLFW.GLFW_KEY_F3;
             case "F4" -> GLFW.GLFW_KEY_F4; case "F5" -> GLFW.GLFW_KEY_F5; case "F6" -> GLFW.GLFW_KEY_F6;
             case "F7" -> GLFW.GLFW_KEY_F7; case "F8" -> GLFW.GLFW_KEY_F8; case "F9" -> GLFW.GLFW_KEY_F9;
             case "F10" -> GLFW.GLFW_KEY_F10; case "F11" -> GLFW.GLFW_KEY_F11; case "F12" -> GLFW.GLFW_KEY_F12;
+            case "F13" -> GLFW.GLFW_KEY_F13; case "F14" -> GLFW.GLFW_KEY_F14; case "F15" -> GLFW.GLFW_KEY_F15;
+            case "F16" -> GLFW.GLFW_KEY_F16; case "F17" -> GLFW.GLFW_KEY_F17; case "F18" -> GLFW.GLFW_KEY_F18;
+            case "F19" -> GLFW.GLFW_KEY_F19; case "F20" -> GLFW.GLFW_KEY_F20; case "F21" -> GLFW.GLFW_KEY_F21;
+            case "F22" -> GLFW.GLFW_KEY_F22; case "F23" -> GLFW.GLFW_KEY_F23; case "F24" -> GLFW.GLFW_KEY_F24;
+            case "F25" -> GLFW.GLFW_KEY_F25;
+            case "NUMPADZERO", "NUMPAD_0", "KP_0" -> GLFW.GLFW_KEY_KP_0;
+            case "NUMPADONE", "NUMPAD_1", "KP_1" -> GLFW.GLFW_KEY_KP_1;
+            case "NUMPADTWO", "NUMPAD_2", "KP_2" -> GLFW.GLFW_KEY_KP_2;
+            case "NUMPADTHREE", "NUMPAD_3", "KP_3" -> GLFW.GLFW_KEY_KP_3;
+            case "NUMPADFOUR", "NUMPAD_4", "KP_4" -> GLFW.GLFW_KEY_KP_4;
+            case "NUMPADFIVE", "NUMPAD_5", "KP_5" -> GLFW.GLFW_KEY_KP_5;
+            case "NUMPADSIX", "NUMPAD_6", "KP_6" -> GLFW.GLFW_KEY_KP_6;
+            case "NUMPADSEVEN", "NUMPAD_7", "KP_7" -> GLFW.GLFW_KEY_KP_7;
+            case "NUMPADEIGHT", "NUMPAD_8", "KP_8" -> GLFW.GLFW_KEY_KP_8;
+            case "NUMPADNINE", "NUMPAD_9", "KP_9" -> GLFW.GLFW_KEY_KP_9;
+            case "NUMPADDECIMAL", "NUMPAD_DECIMAL", "KP_DECIMAL" -> GLFW.GLFW_KEY_KP_DECIMAL;
+            case "NUMPADDIVIDE", "NUMPAD_DIVIDE", "KP_DIVIDE" -> GLFW.GLFW_KEY_KP_DIVIDE;
+            case "NUMPADMULTIPLY", "NUMPAD_MULTIPLY", "KP_MULTIPLY" -> GLFW.GLFW_KEY_KP_MULTIPLY;
+            case "NUMPADMINUS", "NUMPAD_SUBTRACT", "KP_SUBTRACT" -> GLFW.GLFW_KEY_KP_SUBTRACT;
+            case "NUMPADPLUS", "NUMPAD_ADD", "KP_ADD" -> GLFW.GLFW_KEY_KP_ADD;
+            case "NUMPADENTER", "NUMPAD_ENTER", "KP_ENTER" -> GLFW.GLFW_KEY_KP_ENTER;
+            case "NUMPADEQUAL", "NUMPAD_EQUAL", "KP_EQUAL" -> GLFW.GLFW_KEY_KP_EQUAL;
             default -> -1;
         };
     }
@@ -1398,9 +1539,10 @@ public final class PsychLuaRuntime implements AutoCloseable {
         if (closed || objects.isEmpty()) return;
         if (applyCanvas) {
             if (group == CameraGroup.GAME) {
-                PsychCanvas.push(gui, GameplayCamera.gameZoom(),
-                        host.psychLuaGameCameraX() - GameplayCamera.gameShakeX(),
-                        host.psychLuaGameCameraY() - GameplayCamera.gameShakeY());
+                // Lua game sprites apply their camera transform individually.
+                // A single zoomed parent matrix makes scrollFactor=0 overlays
+                // resize even though they are intended to follow the camera.
+                PsychCanvas.push(gui, 1f);
             } else {
                 PsychCanvas.push(gui, 1f);
             }
@@ -1461,15 +1603,23 @@ public final class PsychLuaRuntime implements AutoCloseable {
         int color = (o.color & 0x00FFFFFF) | alpha << 24;
         double drawX = o.x;
         double drawY = o.y;
+        double cameraScaleX = 1;
+        double cameraScaleY = 1;
         if (cameraGroup(o.camera) == CameraGroup.GAME) {
-            double scrollLeft = host.psychLuaGameCameraX() - VIRTUAL_WIDTH * 0.5;
-            double scrollTop = host.psychLuaGameCameraY() - VIRTUAL_HEIGHT * 0.5;
-            drawX += scrollLeft * (1 - o.scrollFactorX);
-            drawY += scrollTop * (1 - o.scrollFactorY);
+            PsychCameraTransform.Result transformed = PsychCameraTransform.apply(
+                    o.x, o.y, o.scrollFactorX, o.scrollFactorY,
+                    host.psychLuaGameCameraX(), host.psychLuaGameCameraY(),
+                    GameplayCamera.gameZoom(), GameplayCamera.gameShakeX(),
+                    GameplayCamera.gameShakeY());
+            drawX = transformed.x();
+            drawY = transformed.y();
+            cameraScaleX = transformed.scaleX();
+            cameraScaleY = transformed.scaleY();
         }
         gui.pose().pushPose();
         gui.pose().translate(drawX, drawY, z);
-        gui.pose().scale((float) o.scaleX, (float) o.scaleY, 1);
+        gui.pose().scale((float) (o.scaleX * cameraScaleX),
+                (float) (o.scaleY * cameraScaleY), 1);
         if (o.angle != 0) gui.pose().mulPose(com.mojang.math.Axis.ZP.rotationDegrees((float) o.angle));
         // Gui batches do not guarantee that the previous layer left source-alpha
         // blending active. Every Lua object must support the full 0..1 range.

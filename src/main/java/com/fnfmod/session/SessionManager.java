@@ -16,10 +16,12 @@ import net.minecraft.core.Direction;
 import net.minecraft.world.entity.decoration.ArmorStand;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.network.chat.Component;
+import net.minecraft.nbt.CompoundTag;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
@@ -69,7 +71,7 @@ public final class SessionManager {
         CharacterTransform guestTransform = CharacterTransform.DEFAULT;
         /** solo only: 0 = player, 1 = opponent, 2 = both */
         byte playSide = 0;
-        PlaybackPolicy playbackPolicy = PlaybackPolicy.resolve(PlaybackMode.LEGACY, null);
+        PlaybackPolicy playbackPolicy = PlaybackPolicy.resolve(PlaybackMode.MINECRAFT, null);
         /** decorative bot armor stand in solo play */
         ArmorStand botStand;
         /** invisible command target at the Funkin' Machine/speakers. */
@@ -78,14 +80,24 @@ public final class SessionManager {
         final Set<Integer> executedServerEvents = new HashSet<>();
         long luaCommandWindowNanos;
         int luaCommandsInWindow;
+        /** First state seen for each block changed by a song command. */
+        final Map<WorldBlockKey, BlockSnapshot> changedBlocks = new HashMap<>();
     }
 
     private static final Map<Key, Session> SESSIONS = new HashMap<>();
+
+    private record WorldBlockKey(ResourceKey<Level> dimension, BlockPos pos) {}
+    private record BlockSnapshot(BlockState state, CompoundTag blockEntity) {}
+    /** Commands execute synchronously on server thread. Null outside a song command. */
+    private static Session activeMutationSession;
+    private static boolean restoringWorld;
 
     /** Where each participant stood before being placed on the stage. */
     private record ReturnPoint(double x, double y, double z, float yaw, float pitch) {}
 
     private static final Map<UUID, ReturnPoint> RETURN_POINTS = new HashMap<>();
+    /** Full player NBT before stage placement: inventory, XP, effects, abilities, etc. */
+    private static final Map<UUID, CompoundTag> PLAYER_STATE_BEFORE = new HashMap<>();
     /** Real health captured before a vanilla-HUD song, restored afterwards. */
     private static final Map<UUID, Float> HEALTH_BEFORE = new HashMap<>();
     private record FoodBefore(int level, float saturation, float exhaustion) {}
@@ -307,6 +319,7 @@ public final class SessionManager {
      */
     private static void placeOnStage(ServerPlayer player, BlockPos machinePos, byte playSide,
                                      CharacterTransform transform) {
+        PLAYER_STATE_BEFORE.putIfAbsent(player.getUUID(), player.saveWithoutId(new CompoundTag()));
         RETURN_POINTS.putIfAbsent(player.getUUID(), new ReturnPoint(
                 player.getX(), player.getY(), player.getZ(), player.getYRot(), player.getXRot()));
 
@@ -318,7 +331,9 @@ public final class SessionManager {
         // camera looks back toward the machine; its screen-right is facing.getCounterClockWise()
         Direction right = facing.getCounterClockWise();
         Vec3 posOffset = transform.positionOffset();
-        double side = playSide == 0 ? 1.5 : playSide == 1 ? -1.5 : 0.0; // both = center stage
+        // BOTH controls both chart sides, but visually occupies the normal
+        // player slot. It is not a third/center stage role.
+        double side = playSide == 1 ? -1.5 : 1.5;
         double x = machinePos.getX() + 0.5 + facing.getStepX() * 2.0
                 + right.getStepX() * side + posOffset.x;
         double y = machinePos.getY() + posOffset.y;
@@ -336,8 +351,6 @@ public final class SessionManager {
 
     /** Spawns the decorative bot armor stand on the opposite stage spot from the player. */
     private static void spawnBotStand(Session session, BlockPos machinePos) {
-        // BOTH mode centers the player and has no unplayed side to represent.
-        if (session.playSide == 2) return;
         ServerPlayer host = session.host;
         if (!(host.level() instanceof ServerLevel level)) return;
         Direction facing = Direction.NORTH;
@@ -345,11 +358,11 @@ public final class SessionManager {
         if (state.hasProperty(FunkinMachineBlock.FACING)) facing = state.getValue(FunkinMachineBlock.FACING);
         Direction right = facing.getCounterClockWise();
         // player is on 'playSide'; the bot sits on the opposite side (or opponent slot in "both")
-        double botSide = session.playSide == 0 ? -1.5 : 1.5;
+        double botSide = session.playSide == 1 ? 1.5 : -1.5;
         double x = machinePos.getX() + 0.5 + facing.getStepX() * 2.0 + right.getStepX() * botSide;
         double z = machinePos.getZ() + 0.5 + facing.getStepZ() * 2.0 + right.getStepZ() * botSide;
         // face toward the camera but angled slightly to the side the player is on
-        float yaw = facing.toYRot() + (session.playSide == 0 ? 20f : -20f);
+        float yaw = facing.toYRot() + (session.playSide == 1 ? -20f : 20f);
 
         ArmorStand stand = new ArmorStand(level, x, machinePos.getY(), z);
         stand.setYRot(yaw);
@@ -380,15 +393,12 @@ public final class SessionManager {
         if (session.duet) {
             session.host.addTag(playerTag);
             if (session.guest != null) session.guest.addTag(opponentTag);
-        } else if (session.playSide == 0) {
+        } else if (session.playSide != 1) {
             session.host.addTag(playerTag);
             if (session.botStand != null) session.botStand.addTag(opponentTag);
         } else if (session.playSide == 1) {
             session.host.addTag(opponentTag);
             if (session.botStand != null) session.botStand.addTag(playerTag);
-        } else {
-            session.host.addTag(playerTag);
-            session.host.addTag(opponentTag);
         }
 
         ServerLevel level = session.host.serverLevel();
@@ -434,8 +444,7 @@ public final class SessionManager {
             SongChart chart = SongLibrary.loadChart(entry, session.difficulty);
             if (payload.eventIndex() < 0 || payload.eventIndex() >= chart.events.size()) return;
             SongChart.Event event = chart.events.get(payload.eventIndex());
-            if (!ChartEventTypes.isMinecraftCommand(event.name)
-                    || !"server".equalsIgnoreCase(event.value2.trim())) {
+            if (!ChartEventTypes.isMinecraftCommand(event.name)) {
                 FnfMod.LOGGER.warn("Rejected unlisted server command event from {} for song {}",
                         player.getGameProfile().getName(), session.songId);
                 return;
@@ -449,10 +458,15 @@ public final class SessionManager {
                     event.value1, payload.pos(), machineFacing).trim();
             while (command.startsWith("/")) command = command.substring(1).trim();
             if (command.isEmpty() || player.getServer() == null) return;
-            player.getServer().getCommands().performPrefixedCommand(
-                    player.getServer().createCommandSourceStack()
-                            .withLevel(player.serverLevel())
-                            .withPosition(Vec3.atCenterOf(payload.pos())), command);
+            String trackedCommand = command;
+            boolean serverRunner = "server".equalsIgnoreCase(event.value2.trim());
+            runTrackedCommand(session, () -> player.getServer().getCommands().performPrefixedCommand(
+                    serverRunner
+                            ? player.getServer().createCommandSourceStack()
+                                    .withLevel(player.serverLevel())
+                                    .withPosition(Vec3.atCenterOf(payload.pos()))
+                            : player.createCommandSourceStack(),
+                    trackedCommand));
         } catch (Exception e) {
             FnfMod.LOGGER.warn("Could not run server command event for {}: {}",
                     session.songId, e.toString());
@@ -465,9 +479,11 @@ public final class SessionManager {
         if (session == null || session.state != State.PLAYING || session.host != player) return;
         var server = player.getServer();
         if (server == null) return;
+        boolean serverRunner = "server".equalsIgnoreCase(payload.runner().trim());
         // Lua is client-provided. Never grant arbitrary server-source commands to
-        // untrusted dedicated-server players. Integrated-world owner remains trusted.
-        if (!player.hasPermissions(2) && !server.isSingleplayerOwner(player.getGameProfile())) {
+        // untrusted dedicated-server players. Player-run commands retain normal permissions.
+        if (serverRunner && !player.hasPermissions(2)
+                && !server.isSingleplayerOwner(player.getGameProfile())) {
             player.sendSystemMessage(Component.literal(
                     "Blockified Lua: server commands require operator permission"));
             return;
@@ -487,10 +503,14 @@ public final class SessionManager {
                     payload.command(), payload.pos(), machineFacing).trim();
             while (command.startsWith("/")) command = command.substring(1).trim();
             if (command.isEmpty()) return;
-            server.getCommands().performPrefixedCommand(
-                    server.createCommandSourceStack()
-                            .withLevel(player.serverLevel())
-                            .withPosition(Vec3.atCenterOf(payload.pos())), command);
+            String trackedCommand = command;
+            runTrackedCommand(session, () -> server.getCommands().performPrefixedCommand(
+                    serverRunner
+                            ? server.createCommandSourceStack()
+                                    .withLevel(player.serverLevel())
+                                    .withPosition(Vec3.atCenterOf(payload.pos()))
+                            : player.createCommandSourceStack(),
+                    trackedCommand));
         } catch (Exception error) {
             FnfMod.LOGGER.warn("Could not run Lua server command for {}: {}",
                     session.songId, error.toString());
@@ -521,6 +541,7 @@ public final class SessionManager {
         boolean allEnded = session.hostEnded && (session.guest == null || session.guestEnded || !session.duet);
         if (allEnded) {
             clearSessionActors(session);
+            restoreWorld(session);
             SESSIONS.remove(session.key);
         }
     }
@@ -571,6 +592,15 @@ public final class SessionManager {
 
     /** Teleports the player back to where they stood before the song, if recorded. */
     private static void restorePosition(ServerPlayer player) {
+        CompoundTag playerState = PLAYER_STATE_BEFORE.remove(player.getUUID());
+        if (playerState != null) {
+            try {
+                player.load(playerState);
+            } catch (Exception e) {
+                FnfMod.LOGGER.warn("Could not restore player state of {}: {}",
+                        player.getGameProfile().getName(), e.toString());
+            }
+        }
         Boolean inv = INVULN_BEFORE.remove(player.getUUID());
         if (inv != null) {
             try {
@@ -628,6 +658,7 @@ public final class SessionManager {
     private static void cancel(Session session, ServerPlayer leaver, String reason) {
         if (session == null) return;
         clearSessionActors(session);
+        restoreWorld(session);
         SESSIONS.remove(session.key);
         for (ServerPlayer p : new ServerPlayer[]{session.host, session.guest}) {
             if (p == null) continue;
@@ -635,6 +666,53 @@ public final class SessionManager {
                 PacketDistributor.sendToPlayer(p, new FnfPayloads.SessionCancelS2C(session.key.pos(), reason));
             }
             restorePosition(p);
+        }
+    }
+
+    private static void runTrackedCommand(Session session, Runnable command) {
+        Session previous = activeMutationSession;
+        activeMutationSession = session;
+        try {
+            command.run();
+        } finally {
+            activeMutationSession = previous;
+        }
+    }
+
+    /** Called by LevelMutationMixin before setBlock mutates server state. */
+    public static void captureBlockBeforeMutation(Level level, BlockPos pos) {
+        Session session = activeMutationSession;
+        if (session == null || restoringWorld || level.isClientSide()) return;
+        WorldBlockKey key = new WorldBlockKey(level.dimension(), pos.immutable());
+        if (session.changedBlocks.containsKey(key)) return;
+        BlockEntity entity = level.getBlockEntity(pos);
+        CompoundTag entityTag = entity == null ? null : entity.saveWithFullMetadata(level.registryAccess());
+        session.changedBlocks.put(key, new BlockSnapshot(level.getBlockState(pos), entityTag));
+    }
+
+    private static void restoreWorld(Session session) {
+        if (session.changedBlocks.isEmpty() || session.host.getServer() == null) return;
+        restoringWorld = true;
+        try {
+            for (var entry : session.changedBlocks.entrySet()) {
+                ServerLevel level = session.host.getServer().getLevel(entry.getKey().dimension());
+                if (level == null) continue;
+                BlockPos pos = entry.getKey().pos();
+                BlockSnapshot snapshot = entry.getValue();
+                level.setBlock(pos, snapshot.state(), 3);
+                if (snapshot.blockEntity() != null) {
+                    BlockEntity entity = level.getBlockEntity(pos);
+                    if (entity != null) {
+                        entity.loadWithComponents(snapshot.blockEntity(), level.registryAccess());
+                        entity.setChanged();
+                    }
+                }
+            }
+        } catch (Exception e) {
+            FnfMod.LOGGER.error("Could not fully restore song world changes", e);
+        } finally {
+            restoringWorld = false;
+            session.changedBlocks.clear();
         }
     }
 

@@ -2,21 +2,64 @@
 
 A feature-full Friday Night Funkin' engine inside of Minecraft — **NeoForge 1.21.1**.
 
-Requires: [playerAnimator](https://modrinth.com/mod/playeranimator) (2.0.0+ for 1.21.1) on the client.
+Current release: **2.0.0bbs**.
+
+### 2.0.0bbs highlights
+
+- BBS FS character forms, named animation states, bundled character assets, and
+  visual character editor.
+- Custom Blockified performers controlled by chart events and Lua.
+- Expanded Psych Engine compatibility for stages, characters, events, Lua,
+  keyboard input, cameras, notes, and HUD behavior.
+- Per-song rollback restores participant position, inventory, XP, effects,
+  abilities, health, food, and other saved player state on finish, quit, loss,
+  or disconnect.
+- Chart and Lua commands use a copy-on-write world journal. Blocks and block
+  entities changed synchronously by those commands return to their original
+  state when play ends, without cloning entire chunks or overwriting unrelated
+  world changes. Delayed mutations such as later TNT or creeper explosions are
+  not currently part of this command transaction.
+
+Optional BBS character-animation stack for Minecraft 1.21.1:
+
+- [BBS FS mod](https://modrinth.com/mod/bbs-mod/) 2.3.1+
+- [Sinytra Connector](https://github.com/Sinytra/Connector) 2.0.0-beta.15+
+- [Forgified Fabric API](https://github.com/Sinytra/ForgifiedFabricAPI) 0.116.7+
+
+BBS FS remains a Fabric jar; Connector and Forgified Fabric API translate it at
+runtime for NeoForge. Keep all three as separate jars beside Blockified Engine
+when using BBS forms. Blockified Engine still loads without them; BBS animation
+control is disabled until the complete stack is installed.
 
 ## What it does
 
 - **Funkin' Machine block** (Functional Blocks creative tab). Right-click it to open the song menu.
 - **Lightweight songs or complete mods**: use `config/fnfmod/songs/<song-name>/`
   for basic chart/audio entries, or `config/fnfmod/mods/<mod>/` for full creations.
+- **Play as Both** merges both chart sides into the existing centered four-lane
+  layout, while stage placement, performers, camera focus, and animation routing
+  remain visually identical to **Play as Player**.
 - **4 keybinds** (default `D F J K`) — rebindable in *Options → Controls → Funkin' Machine*.
 - **Multiplayer**: the first player to click the machine picks the song ("Play VS"), the second player to click joins as the opponent side. On servers, only songs installed **on the server** are playable — the server streams the chart + audio to players who don't have them (cached in `config/fnfmod/cache/`).
 - **Chart editor**: `/fnf editor [song]` or the button in the song menu. Saves Psych Engine format.
+- **Character editor**: open it from the song menu to create/edit named character
+  JSONs such as `bf.json` and optional `bf-opp.json`, choose BBS forms and states, preview animations, and
+  preview base/per-animation camera offsets without writing JSON manually. Its
+  animation list accepts custom names in addition to the built-in FNF action slots.
+- **Emergency song exit**: `Ctrl+Shift+Enter` always exits the active song. This
+  recovery shortcut is intentionally fixed and cannot be rebound or disabled.
 - `/fnf reload` reloads all FNF content without restarting. Targeted forms:
   `/fnf reload songs|skins|splashes|animations|icons|hitsounds|fonts|options|scores`.
 
 After selecting a song, the **Look** button chooses its presentation profile:
 
+- **Minecraft** is the default and uses the Minecraft presentation. Complete
+  packs installed in `config/fnfmod/mods/` may use rich resources from their own
+  mod folder. It does not use the shared engine-assets fallback. Packs selected
+  through external **Directories** remain restricted to charts, audio, events,
+  and Lua/config code in this mode. Any chart whose selected file is under
+  `config/fnfmod/songs/` exposes no rich song assets in Minecraft mode, even if
+  `original_directory.txt` points to a complete pack.
 - **FNF** uses a fixed 1280x720 game canvas, Psych character JSON/Sparrow
   animations, Lua stage foreground/background insertion, the FNF HUD, Psych-style
   section focus, camera follow, separate game/HUD zoom, and measure bumps. Psych
@@ -24,11 +67,6 @@ After selecting a song, the **Look** button chooses its presentation profile:
   girlfriend/speakers; the chart's `gfVersion` selects the third performer. Static
   stage JSON objects and stage Lua from Psych's `stages/`, global `scripts/`, and
   song data/audio folders are loaded in stage order.
-- **Minecraft** uses the Minecraft presentation. Complete packs installed in
-  `config/fnfmod/mods/` may use their own rich resources. Packs selected through
-  external **Directories** remain restricted to charts, audio, events, and Lua/config
-  code in this mode. Lightweight `config/fnfmod/songs/` entries never expose rich
-  resources in any mode.
 - **Legacy** preserves the original Blockified Engine presentation and loading.
 
 The host's choice is authoritative in multiplayer and is sent with the song manifest.
@@ -98,7 +136,7 @@ My-Mod/
   stages/
   custom_events/
   custom_notetypes/
-  animations/              <- Blockified playerAnimator definitions
+  animations/              <- Blockified mappings for BBS forms/states
   characters/
   images/
   sounds/
@@ -114,6 +152,61 @@ loaded only from complete packs (plus explicitly global config folders). Songs i
 installed packs have priority
 over later paths in the Settings **Directories** list. `/fnf reload songs` rescans
 both standalone songs and complete packs.
+
+### Blockified BBS character animations
+
+`animations/<character>.json` and optional `<character>-opp.json` may define any
+number of named animation mappings. The conventional `idle`, `left`, `down`, `up`,
+`right`, `miss`, and `hey` names continue to drive normal gameplay, but they are
+not a fixed whitelist. Custom names work with the chart **Play Animation** event
+and Lua `characterPlayAnim` in every presentation mode:
+
+```json
+{
+  "bbsForm": "My BF form",
+  "animations": {
+    "idle": "idle",
+    "left": "singLEFT",
+    "attack": "sword-swing",
+    "victory": {
+      "state": "victory-pose",
+      "cameraOffset": [1.5, -0.5]
+    }
+  }
+}
+```
+
+The JSON key (`attack`) is the name used by events and Lua. The string value, or
+an object's `state`, is the animation-state ID defined on the selected BBS form.
+An object may additionally specify `cameraOffset`. If `state` is omitted from an
+object, Blockified uses the JSON key as the BBS state ID. In the character editor,
+use **+** and **-** beside the animation camera fields to add or remove custom
+entries; custom names, BBS state IDs, offsets, and previews are editable there.
+
+Songs can also create any number of named, client-side BBS performers. The chart
+editor's **Add Character** event accepts a tag, character definition, local
+`X,Y,Z` position, yaw offset, and initial `animation,side`; **Remove Character**
+removes that tag. Stage-local X points camera-right, Y points up, and Z points
+camera-forward. These performers never create server entities or armor stands.
+
+Lua exposes the same roster:
+
+```lua
+addBlockifiedCharacter('backup', 'backupSinger', -3, 0, 1, 0, 'idle', 'opponent')
+characterPlayAnim('backup', 'hey', true)
+doTweenX('backupMove', 'backup', 2, 1.0, 'sineInOut')
+setProperty('backup.z', -1)
+setProperty('backup.angle', 45)
+removeBlockifiedCharacter('backup')
+```
+
+`makeBlockifiedCharacter` aliases the add call. Dedicated helpers include
+`blockifiedCharacterExists`, `setBlockifiedCharacterPosition`,
+`setBlockifiedCharacterRotation`, and `changeBlockifiedCharacter`. Standard
+`characterPlayAnim`, `characterDance`, `get/setCharacterX/Y`, generic properties,
+and X/Y/Z/angle tweens recognize the custom tag.
+Definition names use the active mod by default; prefix one with `global:` to use
+a user definition from `config/fnfmod/animations` explicitly.
 
 Each external path in **Settings > Directories** has its own checklist for Charts,
 Song Audio, Events, Lua, Images, Icons, Characters, and Fonts. Existing paths start
@@ -150,9 +243,13 @@ data/<song>/*.lua
 packs. Pack-scoped song scripts belong in `mods/<pack>/data/<song>/` or
 `mods/<pack>/songs/<song>/`. Lightweight `songs/<song>` entries do not run Lua.
 
-Charts saved from another directory keep `original_directory.txt` only to find
-the original audio and unsaved difficulty charts. Events and every rich resource
-must be present locally in a complete `config/fnfmod/mods/<pack>/` pack.
+Charts saved from another directory keep `original_directory.txt` and use that
+exact source pack for unsaved difficulties, audio, events, Lua, images, icons,
+characters, stages, sounds, fonts, and animations. The locally saved chart takes
+priority, and a local `events.json` replaces the source event file. This exception
+applies to Legacy and FNF presentation. Minecraft presentation treats every chart
+stored under `config/fnfmod/songs/<song>` as asset-restricted; ordinary lightweight
+entries remain limited to their basic files in every mode.
 
 Gameplay callbacks include create/update, countdown/song start, step/beat/section,
 note hits/misses, events, pause/resume, song end, and destroy. Supported APIs cover
@@ -176,11 +273,27 @@ animation offsets, `-loop` animations, miss/special completion, `Hey!` notes, an
 the common `characterPlayAnim`, `characterDance`, `getCharacterX/Y`, and
 `setCharacterX/Y` Lua calls. Character aliases `boyfriend`/`bf`, `dad`, and
 `gf`/`girlfriend`/`speakers` are accepted by character properties and animation calls.
+Psych character JSON `no_antialiasing` is honored in the FNF look: `true` uses
+nearest/pixel filtering and `false` uses smooth filtering. The direct
+`antialiasing` field remains accepted as a Blockified compatibility alias.
+FNF character properties can be read, written, and tweened through `boyfriend`,
+`dad`, and `gf`, plus Psych's `boyfriendGroup`, `dadGroup`, and `gfGroup` aliases.
+Supported visual fields include `x`, `y`, `alpha`, `angle`, `visible`, `flipX`,
+`color`, `scale.x`, `scale.y`, and `antialiasing`. Fractional character alpha is
+preserved; `doTweenX/Y/Alpha/Angle` target the same live character properties.
+`scaleObject`, `setGraphicSize`, and the sprite-antialiasing helpers also recognize
+character and character-group names rather than creating dummy Lua sprites.
 Automatic beat impulses can be controlled without snapping an active bop using
 `setCameraBopEnabled('game'|'hud'|'both', enabled)` (alias
 `setDefaultCameraBop`) or `camGame.bopEnabled` / `camHUD.bopEnabled`.
 `setProperty('character.antialiasing', boolean)` and
 `setObjectAntialiasing(tag, boolean)` affect character and Lua sprite filtering.
+
+Psych keyboard polling is supported. `keyPressed`, `keyJustPressed`, and
+`keyReleased` read Psych control names (including the four note directions), while
+`keyboardPressed`, `keyboardJustPressed`, and `keyboardReleased` accept physical
+key names such as `A`, `SPACE`, `LEFT`, `F1`, `NUMPAD_ENTER`, or `RIGHT_SHIFT`.
+Generic `SHIFT`, `CONTROL`, `ALT`, and `SUPER` names recognize either side.
 
 Blockified Lua can run Minecraft commands with the same placeholders and
 camera-relative expressions used by chart command events:
@@ -394,54 +507,70 @@ Negative X moves left and negative Y moves up.
 }
 ```
 
-## Character animations (playerAnimator) + animation sets
+## Character animations (BBS FS) + animation sets
+
+Use **Character Editor** in the Funkin' Machine song selector to edit the global
+files visually. The set and role buttons cycle named JSONs and player/opponent data;
+the form/action buttons cycle BBS forms and FNF actions. **Preview State** plays the
+currently entered BBS state on the model, while the red cross shows the selected
+base plus action camera offset. **Save** writes the same JSON format documented below.
 
 The animation setting has two built-in choices:
 
-- **None** disables playerAnimator character animations.
-- **Default (song)** uses the active complete mod's animation files. If the mod
-  does not define any, loose files in `config/fnfmod/animations/` are the fallback.
+- **None** disables BBS character animation control.
+- **Default (song)** uses the active chart's character IDs. For example, a chart
+  whose `player1` is `bf` and `player2` is `dad` uses the active mod's
+  `animations/bf.json` and `animations/dad.json`. Global `default.json` (or the
+  legacy global `character.json`) is the fallback.
 
-Pack-local Emotecraft/Blockbench animation `.json` files can be placed directly
-in `config/fnfmod/mods/<pack>/`, or in its `animations/` folder. Actions are
-`idle, idle2, left, down, up, right, miss`.
-`idle2` is optional — when present, idle and idle2 alternate every beat
-(FNF danceLeft/danceRight; those two names also work as aliases).
+The **Animations** selector lists only character JSON definitions found directly
+in `config/fnfmod/animations/`. It never lists raw BBS forms or definitions from
+installed mods. `idle2` remains opt-in through a JSON definition; when mapped,
+`idle` and `idle2` alternate every beat. Existing playerAnimator/Emotecraft
+animation files are not compatible with BBS FS and are ignored.
 
-**Animation sets:** each subfolder of global `config/fnfmod/animations/` is a
-selectable character. A complete pack can provide named character sets in either
-`mods/<pack>/animations/<character>/` or `mods/<pack>/characters/<character>/`.
-The former has priority when both exist. These names are also used by the
-**Change Character** event, which switches the playerAnimator set and icon.
+**Animation definitions:** each `config/fnfmod/animations/<name>.json` is a
+user-selectable mapping. A complete pack can privately provide
+`mods/<pack>/animations/<character>.json`; those names are available to that
+pack's chart and **Change Character** events but cannot be selected in Settings.
+The old `animations/<name>/character.json` layout is still read for compatibility,
+but new files and Character Editor saves use the named-file layout.
 Pick yours with the **"Anims:"** button in the Funkin' Machine menu — in VS mode
-each player uses their own set, and your partner sees it too (if they have the
-same set installed). Selecting **None** remains an explicit opt-out, so Change
-Character does not enable playerAnimator after the user disables it.
+each player uses their own set. Selecting **None** remains an explicit opt-out, so
+Change Character does not enable BBS control after the user disables it.
 
-A set can include a Blockified `character.json` that defines its icon, additive
-rotation, animation mappings, and camera centers:
+A definition selects a BBS form and maps
+FNF actions to animation-state IDs:
 
 ```json
 {
+  "bbsForm": "My BF form",
   "icon": "bf",
   "rotation": 0,
   "cameraOffset": [0.0, 0.5],
   "animations": {
-    "idle":  "my_idle",
-    "left":  { "anim": "my_left",  "cameraOffset": [-1.0, 0.0] },
-    "down":  { "anim": "my_down",  "cameraOffset": [0.0, -1.0] },
-    "up":    { "anim": "my_up",    "cameraOffset": [0.0,  1.0] },
-    "right": { "anim": "my_right", "cameraOffset": [1.0,  0.0] },
-    "miss":  "my_miss"
+    "idle":  "idle",
+    "idle2": "danceRight",
+    "left":  { "state": "singLEFT",  "cameraOffset": [-1.0, 0.0] },
+    "down":  { "state": "singDOWN",  "cameraOffset": [0.0, -1.0] },
+    "up":    { "state": "singUP",    "cameraOffset": [0.0,  1.0] },
+    "right": { "state": "singRIGHT", "cameraOffset": [1.0,  0.0] },
+    "miss":  "miss",
+    "hey":   "hey"
   }
 }
 ```
 
-To give the opponent different data, put `character-opp.json` beside
-`character.json` and use the same schema. Its animation mappings, icon,
+`bbsForm` may be a BBS user-form name, display name, form ID, or the final path
+segment of an installed BBS model form. The object key `anim` remains accepted as
+an alias for `state`. If `bbsForm` is omitted, Blockified triggers states on the
+form already worn by that player. If only `bbsForm` is provided, conventional
+state IDs are mapped automatically.
+
+To give a selected definition different opponent-side data, add an `-opp` file
+beside it (for example, `bf-opp.json` beside `bf.json`) using the same schema. Its form, state mappings, icon,
 `rotation`, and camera offsets override only the opponent side. Missing fields
-fall back to `character.json`. Opponent animations are no longer automatically
-mirrored.
+fall back to the normal named JSON.
 
 `icon` is the icon key without `icon-` or `.png`. For example, `"icon": "bf"`
 uses `icon-bf.png` from the song/mod icon folders or from
@@ -449,19 +578,22 @@ uses `icon-bf.png` from the song/mod icon folders or from
 when Change Character selects the set.
 
 `rotation` is a degree offset added to the normal character rotation, so `0`
-preserves the default and negative values rotate the other way.
-It rotates only the character; the gameplay camera keeps the stage's normal direction.
-Command events can use `<character_rotation:degrees>` for the same additive angle,
-for example `execute as <player> at @s run tp @s ~ ~ ~ <character_rotation:90>`.
+preserves the default and negative values rotate the other way. It rotates only
+the character; the gameplay camera keeps the stage's normal direction. Command
+events can use `<character_rotation:degrees>` for the same additive angle.
 
 `cameraOffset` values are in blocks: x = screen right, y = screen up. The top-level
-one is the character's camera center; per-animation ones nudge the camera while
-that animation plays (like FNF's sing offsets). Without `character.json`,
-animations named `fnf_idle`, `fnf_left`, ... (or just `idle`, `left`, ...) are
-picked up automatically. The legacy role-based `mapping.json`
-(`"player"`/`"opponent"`) still works for the default set.
+one is the character's camera center; per-state ones nudge the camera while that
+state plays. The legacy role-based `mapping.json` (`"player"`/`"opponent"`) still
+works for the default set.
 
-Animations play on the actual player entities during gameplay (both players in VS mode).
+States play on the actual BBS forms during gameplay (both players in VS mode).
+When Blockified temporarily applies a form, it restores the player's previous BBS
+form when gameplay ends.
+
+`hey` is used by the **Hey!** chart event and by `Hey!` note types. The event's
+duration controls when the BBS character may return to its beat-synced idle.
+Definitions with only `bbsForm` use the conventional `hey` state name.
 
 ## Camera
 
@@ -470,8 +602,8 @@ FNF-style screen-space animation nudges. Focus follows the chart:
 `mustHitSection` = camera on the player side,
 otherwise the opponent side (in solo the machine block stands in for the opponent).
 Legacy and Minecraft modes use the **Camera Behavior** event to change Must-Hit
-camera movement. Value 1 is a speed multiplier; Value 2 is `smooth`, `expo`,
-`linear`, or `constant`. Constant snaps directly to the current target. An event
+camera movement. Value 1 is a speed multiplier; Value 2 is an easing curve.
+Constant snaps directly to the current target. An event
 with both values empty restores normal speed and smooth easing. This event does
 not alter FNF mode. The old per-section `fnfmodCamEase` extension is no longer
 read or written. First-person view is switched to third-person for the song and
@@ -493,20 +625,34 @@ restored afterwards.
 - The event dropdown includes `.lua`/`.txt` definitions from the active pack's
   `custom_events/` folder and imported event names already present in the chart.
   Scroll the dropdown when the list is taller than the current GUI resolution.
+- Empty Value fields show event-specific hints. The wrapped description below the
+  controls stays inside the panel; **Event Help...** opens the complete scrollable
+  value guide. Psych built-ins follow Psych Engine 1.0.4's event guidance, while
+  Minecraft Command and Blockified camera events have Blockified-specific guides.
 - **Camera Zoom** events use Value 1 as a persistent zoom offset (`0` normal,
   positive in, negative out) and Value 2 as a 500 ms easing preset.
-- **Camera Focus** events override Must Hit focus using Value 1 (`player` or
-  `opponent`) and Value 2 easing. A later Camera Focus with both values empty
+- **Camera Focus** events override Must Hit focus using Value 1 (`player`,
+  `opponent`, or `gf`) and Value 2 easing. A later Camera Focus with both values empty
   restores normal Must Hit section tracking.
 - **Camera Behavior** events change Legacy/Minecraft Must-Hit camera speed and
   easing. Leave both values empty to reset the behavior.
+- **Camera Follow Pos** remains Psych-compatible when only Values 1 and 2 are
+  used. Value 3 enables Minecraft 3D movement (`X = camera-right`, `Y = up`,
+  `Z = camera-forward`), Value 4 selects easing, and Value 5 can override normal
+  and Lua focus movement. Empty extra values retain normal Psych behavior.
+- **Camera Rotation 3D** uses Values 1/2/3 for additive pitch/yaw/roll and Value 4
+  for easing. Leave all three rotations empty to return to the normal view.
+- Every Blockified easing control has a separate **in / out / inOut** selector.
+  Supported curves are Smooth, Sine, Cubic, Quint, Circ, Elastic, Quad, Quart,
+  Expo, Back, Bounce, Linear, and Constant.
 - Psych built-ins are available in the dropdown: **Hey!**, **Set GF Speed**,
   **Add Camera Zoom**, **Play Animation**, **Camera Follow Pos**,
   **Alt Idle Animation**, **Screen Shake**, **Change Character**,
-  **Change Scroll Speed**, **Set Property**, and **Play Sound**. `Hey!` and
-  `Set GF Speed` are FNF-profile-only, matching Psych. Other events use Psych
-  semantics in FNF mode and Minecraft-aware camera/body variants in Minecraft
-  and Legacy modes. **Camera Zoom** remains Blockified Engine's persistent,
+  **Change Scroll Speed**, **Set Property**, and **Play Sound**. `Set GF Speed`
+  is FNF-profile-only, matching Psych. Other events use Psych semantics in FNF
+  mode and Minecraft-aware camera/body variants in Minecraft and Legacy modes.
+  **Hey!** uses the mapped BBS `hey` state outside the Psych scene as well.
+  **Camera Zoom** remains Blockified Engine's persistent,
   eased zoom; **Add Camera Zoom** is Psych's temporary game/HUD impulse.
 - Snap: 4th–64th. Save writes `config/fnfmod/songs/<file>/<file>.json` (Psych format).
 
@@ -551,6 +697,8 @@ The source keeps reusable behavior outside GUI screens where possible:
   ordering. Immutable records in `LuaWorldObject.java` are delegated to the
   separate sprite and text renderers, so another world-object type can be added
   without exposing live script objects or growing `PsychLuaRuntime`.
+- `client/anim/CharacterDefinitionFile.java` owns loss-preserving character JSON
+  parsing/writing for the visual character editor.
 - `client/gameplay/PsychAssetResolver.java` owns ordered Psych asset lookup;
   `client/audio/PsychSoundPlayer.java` owns per-song Lua/event sound lifetime.
 

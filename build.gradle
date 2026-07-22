@@ -18,12 +18,9 @@ java {
 
 repositories {
     mavenCentral()
-    maven { url = 'https://maven.kosmx.dev/' }
 }
 
 dependencies {
-    // playerAnimator (required at runtime, modid: playeranimator)
-    implementation "dev.kosmx.player-anim:player-animation-lib-forge:2.0.4+1.21.1"
     // Sandboxed Lua 5.x runtime for Psych Engine script compatibility.
     // Bundle it: players should only need this mod jar, not a separate Lua mod.
     jarJar(implementation("org.luaj:luaj-jse:3.0.1")) {

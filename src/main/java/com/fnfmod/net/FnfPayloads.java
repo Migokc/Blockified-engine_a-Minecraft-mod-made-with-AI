@@ -297,15 +297,16 @@ public final class FnfPayloads {
         public Type<? extends CustomPacketPayload> type() { return TYPE; }
     }
 
-    /** Requests a server-run command from Blockified Lua. Server applies strict trust checks. */
-    public record LuaCommandC2S(BlockPos pos, String command) implements CustomPacketPayload {
+    /** Requests a tracked Lua command. Server preserves player/server runner semantics. */
+    public record LuaCommandC2S(BlockPos pos, String command, String runner) implements CustomPacketPayload {
         public static final Type<LuaCommandC2S> TYPE = new Type<>(FnfMod.id("lua_command"));
         public static final StreamCodec<FriendlyByteBuf, LuaCommandC2S> CODEC = StreamCodec.of(
                 (buf, value) -> {
                     buf.writeBlockPos(value.pos());
                     buf.writeUtf(value.command(), 32767);
+                    buf.writeUtf(value.runner(), 16);
                 },
-                buf -> new LuaCommandC2S(buf.readBlockPos(), buf.readUtf(32767)));
+                buf -> new LuaCommandC2S(buf.readBlockPos(), buf.readUtf(32767), buf.readUtf(16)));
 
         @Override
         public Type<? extends CustomPacketPayload> type() { return TYPE; }

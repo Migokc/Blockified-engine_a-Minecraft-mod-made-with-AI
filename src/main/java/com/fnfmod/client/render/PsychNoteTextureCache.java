@@ -33,21 +33,27 @@ public final class PsychNoteTextureCache implements AutoCloseable {
         Style(SparrowAtlas atlas) {
             this.atlas = atlas;
             for (int lane = 0; lane < 4; lane++) {
-                heads[lane] = atlas.findAnimation(COLORS[lane], "note" + CAPS[lane],
+                heads[lane] = find(atlas, COLORS[lane], COLORS[lane] + "Scroll",
+                        "note" + CAPS[lane],
                         COLORS[lane] + " alone", DIRECTIONS[lane] + " note",
                         "note" + DIRECTIONS[lane].toUpperCase(Locale.ROOT));
-                receptors[lane][0] = atlas.findAnimation(
+                receptors[lane][0] = find(atlas,
                         "arrow" + DIRECTIONS[lane].toUpperCase(Locale.ROOT),
                         DIRECTIONS[lane] + " static", DIRECTIONS[lane] + " receptor");
-                receptors[lane][1] = atlas.findAnimation(
+                receptors[lane][1] = find(atlas,
                         DIRECTIONS[lane] + " press", DIRECTIONS[lane] + " pressed");
-                receptors[lane][2] = atlas.findAnimation(
+                receptors[lane][2] = find(atlas,
                         DIRECTIONS[lane] + " confirm", DIRECTIONS[lane] + " confirmed");
-                pieces[lane] = atlas.findAnimation(COLORS[lane] + " hold piece",
-                        COLORS[lane] + " hold", DIRECTIONS[lane] + " hold piece");
-                ends[lane] = atlas.findAnimation(COLORS[lane] + " hold end",
+                pieces[lane] = find(atlas, COLORS[lane] + " hold piece",
+                        COLORS[lane] + "hold", COLORS[lane] + " hold",
+                        DIRECTIONS[lane] + " hold piece", DIRECTIONS[lane] + "hold");
+                ends[lane] = find(atlas, COLORS[lane] + " hold end",
+                        COLORS[lane] + "holdend",
                         COLORS[lane] + " end hold",
                         lane == 0 ? "pruple end hold" : COLORS[lane] + " hold end");
+                if (heads[lane] == null) heads[lane] = findLaneAnimation(atlas, lane, Part.HEAD);
+                if (pieces[lane] == null) pieces[lane] = findLaneAnimation(atlas, lane, Part.HOLD);
+                if (ends[lane] == null) ends[lane] = findLaneAnimation(atlas, lane, Part.END);
                 SparrowAtlas.Frame head = frame(heads[lane]);
                 if (head != null) referenceSize = Math.max(referenceSize,
                         Math.max(head.frameW, head.frameH));
@@ -66,17 +72,82 @@ public final class PsychNoteTextureCache implements AutoCloseable {
         SparrowAtlas.Frame frame(String animation) {
             return animation == null ? null : atlas.frame(animation, 0);
         }
+
+        private enum Part { HEAD, HOLD, END }
+
+        /**
+         * Psych's addByPrefix is exact, but mods use inconsistent capitalization
+         * and descriptive prefixes. Preserve exact matches first, then accept the
+         * same prefix case-insensitively so otherwise-valid atlases still render.
+         */
+        private static String find(SparrowAtlas atlas, String... candidates) {
+            String exact = atlas.findAnimation(candidates);
+            if (exact != null) return exact;
+            for (String candidate : candidates) {
+                for (String animation : atlas.animationNames()) {
+                    if (animation.equalsIgnoreCase(candidate)) return animation;
+                }
+            }
+            return null;
+        }
+
+        private static String findLaneAnimation(SparrowAtlas atlas, int lane, Part part) {
+            List<String> matches = new ArrayList<>();
+            for (String animation : atlas.animationNames()) {
+                String lower = animation.toLowerCase(Locale.ROOT);
+                if (!containsWord(lower, COLORS[lane]) && !containsWord(lower, DIRECTIONS[lane])) continue;
+                boolean hold = lower.contains("hold") || lower.contains("sustain");
+                boolean end = lower.contains("end") || lower.contains("tail");
+                boolean excludedHead = lower.contains("splash") || lower.contains("impact")
+                        || lower.contains("static") || lower.contains("press")
+                        || lower.contains("confirm") || lower.contains("receptor")
+                        || lower.startsWith("arrow");
+                boolean accepted = switch (part) {
+                    case HEAD -> !hold && !end && !excludedHead;
+                    case HOLD -> hold && !end;
+                    case END -> hold && end;
+                };
+                if (accepted) matches.add(animation);
+            }
+            Collections.sort(matches, String.CASE_INSENSITIVE_ORDER);
+            return matches.isEmpty() ? null : matches.get(0);
+        }
+
+        private static boolean containsWord(String text, String word) {
+            int from = 0;
+            while (true) {
+                int at = text.indexOf(word, from);
+                if (at < 0) return false;
+                boolean before = at == 0 || !Character.isLetterOrDigit(text.charAt(at - 1));
+                int afterIndex = at + word.length();
+                boolean after = afterIndex >= text.length()
+                        || !Character.isLetterOrDigit(text.charAt(afterIndex));
+                if (before && after) return true;
+                from = at + 1;
+            }
+        }
     }
 
-    private final Path songFolder;
-    private final Path modRoot;
+    private final List<Path> roots;
     private final boolean enabled;
     private final Map<String, Style> styles = new HashMap<>();
     private final Set<String> missing = new HashSet<>();
 
     public PsychNoteTextureCache(Path songFolder, Path modRoot, boolean enabled) {
-        this.songFolder = normalize(songFolder);
-        this.modRoot = normalize(modRoot);
+        this(java.util.Arrays.asList(songFolder, modRoot), enabled);
+    }
+
+    public PsychNoteTextureCache(List<Path> roots, boolean enabled) {
+        List<Path> normalized = new ArrayList<>();
+        if (roots != null) {
+            for (Path root : roots) {
+                Path value = normalize(root);
+                if (value != null && Files.isDirectory(value) && !normalized.contains(value)) {
+                    normalized.add(value);
+                }
+            }
+        }
+        this.roots = List.copyOf(normalized);
         this.enabled = enabled;
     }
 
@@ -145,9 +216,10 @@ public final class PsychNoteTextureCache implements AutoCloseable {
         if (!enabled) return null;
         if (rawSound == null || rawSound.isBlank() || rawSound.equalsIgnoreCase("hitsound")) return null;
         String sound = stripExtension(rawSound.trim().replace('\\', '/')) + ".ogg";
-        for (Path root : new Path[]{songFolder, modRoot}) {
+        for (Path root : roots) {
             if (root == null) continue;
-            for (String prefix : new String[]{"sounds", "assets/sounds", ""}) {
+            for (String prefix : new String[]{"sounds", "shared/sounds", "assets/sounds",
+                    "assets/shared/sounds", ""}) {
                 Path base = prefix.isBlank() ? root : root.resolve(prefix);
                 Path candidate = base.resolve(sound).normalize();
                 if (candidate.startsWith(root) && Files.isRegularFile(candidate)) return candidate;
@@ -196,7 +268,8 @@ public final class PsychNoteTextureCache implements AutoCloseable {
         Path xml = resolve(texture + ".xml");
         if (png == null || xml == null) {
             missing.add(key);
-            FnfMod.LOGGER.warn("Custom note texture {} needs matching PNG and XML files", rawTexture);
+            FnfMod.LOGGER.warn("Custom note texture {} needs matching PNG and XML files in {}",
+                    rawTexture, roots);
             return null;
         }
         SparrowAtlas atlas = SparrowAtlas.load(png, xml);
@@ -210,12 +283,21 @@ public final class PsychNoteTextureCache implements AutoCloseable {
     }
 
     private Path resolve(String relative) {
-        for (Path root : new Path[]{songFolder, modRoot}) {
-            if (root == null) continue;
-            for (String prefix : new String[]{"images", "assets/images", ""}) {
+        for (Path root : roots) {
+            for (String prefix : new String[]{"images", "shared/images", "assets/images",
+                    "assets/shared/images", ""}) {
                 Path base = prefix.isBlank() ? root : root.resolve(prefix);
                 Path candidate = base.resolve(relative).normalize();
                 if (candidate.startsWith(root) && Files.isRegularFile(candidate)) return candidate;
+                // Psych 1.0 stores defaults such as noteSplashes as
+                // images/noteSplashes/noteSplashes.{png,xml}.
+                int slash = relative.lastIndexOf('/');
+                int dot = relative.lastIndexOf('.');
+                if (slash < 0 && dot > 0) {
+                    String name = relative.substring(0, dot);
+                    Path nested = base.resolve(name).resolve(relative).normalize();
+                    if (nested.startsWith(root) && Files.isRegularFile(nested)) return nested;
+                }
             }
         }
         return null;

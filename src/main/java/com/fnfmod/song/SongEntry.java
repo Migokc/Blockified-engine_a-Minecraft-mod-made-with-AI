@@ -102,6 +102,23 @@ public class SongEntry {
         return fullModLayout ? modRoot : null;
     }
 
+    /**
+     * Root used to resolve character animations. A chart-only override saved under
+     * songs/ has no mod layout of its own, so it inherits the animations folder of
+     * the pack named by its original_directory.txt.
+     */
+    public Path animationRoot() {
+        Path root = runtimeRoot();
+        return root != null ? root : chartOriginRoot;
+    }
+
+    /** A chart saved under songs/ that links back to its exact original pack. */
+    public boolean isLocalEditedOverride() {
+        if (chartOriginRoot == null || folder == null) return false;
+        Path songs = SongLibrary.songsDir().toAbsolutePath().normalize();
+        return folder.toAbsolutePath().normalize().startsWith(songs);
+    }
+
     public VSliceVariation variationFor(String difficulty) {
         return difficultyValue(vsliceVariations, difficulty);
     }
@@ -188,7 +205,7 @@ public class SongEntry {
                 addChartNoteTextureFiles(out, difficulty, runtimeRoot);
             }
             boolean packageRuntimeAssets = isInstalledModRoot(runtimeRoot)
-                    || policy.mode() == PlaybackMode.FNF;
+                    || isLocalEditedOverride() || policy.mode() == PlaybackMode.FNF;
             if (policy.allows(this, SongLibrary.ExternalContent.LUA)) {
                 if (policy.songAssets() && packageRuntimeAssets) {
                     addTree(out, runtimeRoot.resolve("custom_notetypes"));
@@ -208,6 +225,7 @@ public class SongEntry {
             }
             if (policy.songAssets() && packageRuntimeAssets) {
                 addTree(out, runtimeRoot.resolve("sounds"));
+                addTree(out, runtimeRoot.resolve("music"));
                 if (policy.allows(this, SongLibrary.ExternalContent.IMAGES)) {
                     addTree(out, runtimeRoot.resolve("images"));
                 }
@@ -327,7 +345,8 @@ public class SongEntry {
         String first = relative.getName(0).toString().toLowerCase(java.util.Locale.ROOT);
         return first.equals("custom_notetypes") || first.equals("custom_events")
                 || first.equals("scripts") || first.equals("images") || first.equals("fonts")
-                || first.equals("sounds") || first.equals("characters") || first.equals("stages")
+                || first.equals("sounds") || first.equals("music")
+                || first.equals("characters") || first.equals("stages")
                 || first.equals("animations")
                 || (first.equals("data") || first.equals("songs")) && relative.getFileName().toString()
                 .toLowerCase(java.util.Locale.ROOT).endsWith(".lua");

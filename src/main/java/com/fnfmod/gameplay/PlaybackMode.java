@@ -4,8 +4,8 @@ import java.util.Locale;
 
 /** Visual and resource-loading profile selected before a song starts. */
 public enum PlaybackMode {
-    FNF((byte) 0, "FNF", "Psych-style camera and FNF presentation"),
     MINECRAFT((byte) 1, "Minecraft", "Rich assets only from installed fnfmod/mods packs"),
+    FNF((byte) 0, "FNF", "Psych-style camera and FNF presentation"),
     LEGACY((byte) 2, "Legacy", "The original Blockified Engine behavior");
 
     private final byte networkId;
@@ -40,15 +40,15 @@ public enum PlaybackMode {
         for (PlaybackMode mode : values()) {
             if (mode.networkId == id) return mode;
         }
-        return LEGACY;
+        return MINECRAFT;
     }
 
     public static PlaybackMode parse(String value) {
-        if (value == null) return LEGACY;
+        if (value == null) return MINECRAFT;
         try {
             return valueOf(value.trim().toUpperCase(Locale.ROOT));
         } catch (IllegalArgumentException ignored) {
-            return LEGACY;
+            return MINECRAFT;
         }
     }
 }

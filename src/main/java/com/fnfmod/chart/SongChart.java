@@ -12,7 +12,11 @@ public class SongChart {
     public String title = "Unknown";
     public double startBpm = 120.0;
     public double speed = 1.0;
-    /** Extra audio offset in ms (positive = notes later relative to audio). */
+    /**
+     * Song audio offset in ms. Positive delays the song so it sounds later than
+     * the chart (silent lead-in); negative plays it earlier, seeking past the
+     * intro so nothing is heard before the chart starts.
+     */
     public double offsetMs = 0.0;
     public boolean needsVoices = true;
     public String player1 = "bf";
@@ -139,6 +143,11 @@ public class SongChart {
         public String name = "";
         public String value1 = "";
         public String value2 = "";
+        /** Blockified extension fields. Psych-compatible events leave these empty. */
+        public String value3 = "";
+        public String value4 = "";
+        public String value5 = "";
+        public String value6 = "";
         /** Runs once while the gameplay screen is loaded, before audio starts. */
         public boolean beforeSong;
 
@@ -147,15 +156,29 @@ public class SongChart {
         }
 
         public Event(double timeMs, String name, String value1, String value2, boolean beforeSong) {
+            this(timeMs, name, value1, value2, "", "", "", beforeSong);
+        }
+
+        public Event(double timeMs, String name, String value1, String value2,
+                     String value3, String value4, String value5, boolean beforeSong) {
+            this(timeMs, name, value1, value2, value3, value4, value5, "", beforeSong);
+        }
+
+        public Event(double timeMs, String name, String value1, String value2,
+                     String value3, String value4, String value5, String value6, boolean beforeSong) {
             this.timeMs = timeMs;
             this.name = name == null ? "" : name;
             this.value1 = value1 == null ? "" : value1;
             this.value2 = value2 == null ? "" : value2;
+            this.value3 = value3 == null ? "" : value3;
+            this.value4 = value4 == null ? "" : value4;
+            this.value5 = value5 == null ? "" : value5;
+            this.value6 = value6 == null ? "" : value6;
             this.beforeSong = beforeSong;
         }
 
         public Event copy() {
-            return new Event(timeMs, name, value1, value2, beforeSong);
+            return new Event(timeMs, name, value1, value2, value3, value4, value5, value6, beforeSong);
         }
     }
 

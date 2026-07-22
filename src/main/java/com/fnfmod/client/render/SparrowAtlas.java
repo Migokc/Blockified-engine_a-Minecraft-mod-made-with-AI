@@ -247,7 +247,13 @@ public class SparrowAtlas implements AutoCloseable {
         com.mojang.blaze3d.systems.RenderSystem.enableBlend();
         com.mojang.blaze3d.systems.RenderSystem.defaultBlendFunc();
         boolean tinted = globalAlpha < 1f || tintR < 1f || tintG < 1f || tintB < 1f;
-        if (tinted) gui.setColor(tintR, tintG, tintB, globalAlpha);
+        if (tinted) {
+            // setColor is shader state, while blit may be buffered. Flush on both
+            // sides so a later reset cannot turn a fractional character alpha
+            // back into fully opaque rendering before its vertices are drawn.
+            gui.flush();
+            gui.setColor(tintR, tintG, tintB, globalAlpha);
+        }
         gui.pose().pushPose();
         gui.pose().translate(drawX, drawY, 0);
         gui.pose().scale(scale, scale, 1);
@@ -259,6 +265,9 @@ public class SparrowAtlas implements AutoCloseable {
         gui.blit(textureOverride != null ? textureOverride : textureId,
                 0, 0, f.x, f.y, f.w, f.h, texWidth, texHeight);
         gui.pose().popPose();
-        if (tinted) gui.setColor(1f, 1f, 1f, 1f);
+        if (tinted) {
+            gui.flush();
+            gui.setColor(1f, 1f, 1f, 1f);
+        }
     }
 }
