@@ -22,9 +22,9 @@ Current release: **2.0.0bbs**.
 
 Required BBS character-animation stack for Minecraft 1.21.1:
 
-- [BBS FS mod](https://modrinth.com/mod/bbs-mod/) 2.3.1+
-- [Sinytra Connector](https://github.com/Sinytra/Connector) 2.0.0-beta.15+
-- [Forgified Fabric API](https://github.com/Sinytra/ForgifiedFabricAPI) 0.116.7+
+- [BBS FS mod](https://modrinth.com/mod/bbs-fs) 2.3.1+
+- [Sinytra Connector](https://modrinth.com/mod/connector) 2.0.0-beta.15+
+- [Forgified Fabric API](https://modrinth.com/mod/forgified-fabric-api) 0.116.7+
 
 BBS FS remains a Fabric jar; Connector and Forgified Fabric API translate it at
 runtime for NeoForge. Keep all three as separate jars beside Blockified Engine
