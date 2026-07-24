@@ -51,6 +51,7 @@ public final class Easing {
             case "back" -> back(t, direction);
             case "bounce" -> bounce(t, direction);
             case "smooth", "smoothstep" -> t * t * (3 - 2 * t);
+            case "smootherstep" -> t * t * t * (t * (t * 6 - 15) + 10);
             default -> t;
         };
     }

@@ -778,6 +778,17 @@ public final class PsychGameplayScene implements AutoCloseable {
         return target == null ? 0 : target.midpointY();
     }
 
+    /** Stage-defined starting position, before events or Lua moved the character. */
+    public double defaultX(String role) {
+        CharacterSprite target = sprite(role);
+        return target == null ? 0 : target.baseX;
+    }
+
+    public double defaultY(String role) {
+        CharacterSprite target = sprite(role);
+        return target == null ? 0 : target.baseY;
+    }
+
     public double characterCamera(String role, int axis) {
         CharacterSprite target = sprite(role);
         if (target == null) return 0;

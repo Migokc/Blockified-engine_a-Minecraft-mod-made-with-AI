@@ -4,10 +4,12 @@
   "compatibilityLevel": "JAVA_21",
   "minVersion": "0.8",
   "mixins": [
+    "EntityPushMixin",
     "LevelMutationMixin"
   ],
   "client": [
-    "CameraMixin"
+    "CameraMixin",
+    "EntityShadowMixin"
   ],
   "injectors": {
     "defaultRequire": 1

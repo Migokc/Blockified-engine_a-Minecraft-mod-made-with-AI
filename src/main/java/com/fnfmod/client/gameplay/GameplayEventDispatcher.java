@@ -36,7 +36,20 @@ public final class GameplayEventDispatcher {
             executeCommand(eventIndex, event);
         } else if (ChartEventTypes.isCameraZoom(event.name)) {
             try {
-                GameplayCamera.zoomTo(Float.parseFloat(event.value1.trim()), event.value2);
+                // value1 = zoom amount, value2 = duration seconds (empty = default),
+                // value3 = easing. Older charts stored the easing in value2, so a
+                // non-numeric value2 is treated as that legacy easing.
+                double durationMs = 0;
+                String easing = event.value3;
+                String rawDuration = event.value2 == null ? "" : event.value2.trim();
+                if (!rawDuration.isEmpty()) {
+                    try {
+                        durationMs = Double.parseDouble(rawDuration) * 1000.0;
+                    } catch (NumberFormatException legacyEasing) {
+                        if (easing == null || easing.isBlank()) easing = rawDuration;
+                    }
+                }
+                GameplayCamera.zoomTo(Float.parseFloat(event.value1.trim()), durationMs, easing);
             } catch (NumberFormatException ignored) {}
         } else if (ChartEventTypes.isCameraFocus(event.name)) {
             cameraFocusHandler.accept(event);

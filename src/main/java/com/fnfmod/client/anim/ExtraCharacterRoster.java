@@ -1,6 +1,8 @@
 package com.fnfmod.client.anim;
 
 import com.fnfmod.client.math.Easing;
+import com.fnfmod.gameplay.PerformerCollisions;
+import com.fnfmod.gameplay.PerformerShadows;
 import com.mojang.authlib.GameProfile;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
@@ -92,13 +94,43 @@ public final class ExtraCharacterRoster implements AutoCloseable {
         updateTransform(entry);
         current.addEntity(player);
 
-        play(key, animation == null || animation.isBlank() ? "idle" : animation);
+        startAnimation(entry, animation == null || animation.isBlank() ? "idle" : animation);
         return true;
+    }
+
+    /**
+     * Starts a performer's first animation. A loopIdle definition must not have
+     * its idle triggered explicitly: that turns the BBS main state into a
+     * one-shot trigger which expires and leaves the model frozen. Applying the
+     * form alone lets BBS run the looping main state, which is how the player
+     * and partner performers are already started.
+     */
+    private void startAnimation(Entry entry, String animation) {
+        if ("idle".equalsIgnoreCase(animation)
+                && CharacterAnimations.loopIdle(entry.definition, entry.role)) {
+            CharacterAnimations.prepare(entry.entity, entry.definition, entry.role);
+            return;
+        }
+        play(entry.tag, animation);
+    }
+
+    /**
+     * Returns every performer to its idle pose on the beat. loopIdle definitions
+     * are skipped for the reason above; BBS keeps their idle running by itself.
+     */
+    public void danceAll() {
+        for (Entry entry : entries.values()) {
+            if (CharacterAnimations.loopIdle(entry.definition, entry.role)) continue;
+            play(entry.tag, "idle");
+        }
     }
 
     public boolean remove(String tag) {
         Entry entry = entries.remove(key(tag));
         if (entry == null) return false;
+        // Drop the per-entity overrides so a recycled id cannot inherit them.
+        PerformerCollisions.setEnabled(entry.entity.getId(), true);
+        PerformerShadows.setEnabled(entry.entity.getId(), true);
         CharacterAnimations.release(entry.entity);
         ClientLevel owner = entry.entity.level() instanceof ClientLevel clientLevel ? clientLevel : null;
         if (owner != null && owner.getEntity(entry.entity.getId()) != null) {
@@ -118,6 +150,10 @@ public final class ExtraCharacterRoster implements AutoCloseable {
     }
 
     public boolean dance(String tag) {
+        Entry entry = entries.get(key(tag));
+        if (entry == null) return false;
+        // Re-triggering a looping main state would expire it, so leave it running.
+        if (CharacterAnimations.loopIdle(entry.definition, entry.role)) return true;
         return play(tag, "idle");
     }
 
@@ -230,13 +266,59 @@ public final class ExtraCharacterRoster implements AutoCloseable {
         return entry != null && !entry.entity.isNoGravity();
     }
 
+    /**
+     * Chart performers never push anything by default, because they are created
+     * with {@code noPhysics}. Turning collisions on lets one act like a solid
+     * body again; the registry keeps the two directions in step for the mixin.
+     */
+    public boolean setCollision(String tag, boolean enabled) {
+        Entry entry = entries.get(key(tag));
+        if (entry == null) return false;
+        entry.entity.noPhysics = !enabled;
+        PerformerCollisions.setEnabled(entry.entity.getId(), enabled);
+        return true;
+    }
+
+    public boolean collision(String tag) {
+        Entry entry = entries.get(key(tag));
+        return entry != null && !entry.entity.noPhysics
+                && PerformerCollisions.enabled(entry.entity.getId());
+    }
+
+    /** Applies a collision setting to every performer this roster owns. */
+    public void setAllCollisions(boolean enabled) {
+        for (Entry entry : entries.values()) {
+            entry.entity.noPhysics = !enabled;
+            PerformerCollisions.setEnabled(entry.entity.getId(), enabled);
+        }
+    }
+
+    /** Shows or hides one performer's vanilla blob shadow. On by default. */
+    public boolean setShadow(String tag, boolean enabled) {
+        Entry entry = entries.get(key(tag));
+        if (entry == null) return false;
+        PerformerShadows.setEnabled(entry.entity.getId(), enabled);
+        return true;
+    }
+
+    public boolean shadow(String tag) {
+        Entry entry = entries.get(key(tag));
+        return entry != null && PerformerShadows.enabled(entry.entity.getId());
+    }
+
+    public void setAllShadows(boolean enabled) {
+        for (Entry entry : entries.values()) {
+            PerformerShadows.setEnabled(entry.entity.getId(), enabled);
+        }
+    }
+
     public boolean changeDefinition(String tag, String definition, String role) {
         Entry entry = entries.get(key(tag));
         if (entry == null || definition == null || definition.isBlank()) return false;
         entry.definition = CharacterAnimations.runtimeSet(definition);
         if (role != null && !role.isBlank()) entry.role = normalizeRole(role);
         updateTransform(entry);
-        play(tag, "idle");
+        startAnimation(entry, "idle");
         return true;
     }
 

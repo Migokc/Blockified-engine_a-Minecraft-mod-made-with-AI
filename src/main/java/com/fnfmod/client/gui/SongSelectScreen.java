@@ -73,7 +73,10 @@ public class SongSelectScreen extends Screen {
 
         addRenderableWidget(Button.builder(Component.literal("Chart Editor"), b -> {
             ClientSession.leave();
-            minecraft.setScreen(new ChartEditorScreen(null));
+            // Carry the machine through: it anchors the playtest stage, so without
+            // it the editor cannot place performers or the camera and playtesting
+            // is disabled entirely.
+            minecraft.setScreen(new ChartEditorScreen(null, null, null, null, null, pos));
         }).bounds(right, 40, 100, 20).build());
 
         addRenderableWidget(Button.builder(Component.literal("Character Editor"), b ->

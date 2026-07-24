@@ -2,7 +2,20 @@
 
 A feature-full Friday Night Funkin' engine inside of Minecraft — **NeoForge 1.21.1**.
 
-Current release: **2.0.0bbs**.
+Current release: **2.0.2bbs**.
+
+### 2.0.2bbs highlights
+
+- Broad Psych Engine `TemplateScript.lua` compatibility: expanded callbacks,
+  live script variables, cancelable hooks, rating controls, and botplay.
+- Persistent Lua save slots and achievements with sandboxed paths under
+  `config/fnfmod/saves/`.
+- Functional camera flash/fade/shake effects, custom substates, multi-property
+  tweens, colour tweens, and tagged sound/music fades.
+- Shared Psych rating and full-combo classification across gameplay, results,
+  editor playtests, and Lua.
+- Per-performer collision and shadow controls, plus expanded BBS form handling
+  and chart-editor support.
 
 ### 2.0.0bbs highlights
 
@@ -251,21 +264,67 @@ applies to Legacy and FNF presentation. Minecraft presentation treats every char
 stored under `config/fnfmod/songs/<song>` as asset-restricted; ordinary lightweight
 entries remain limited to their basic files in every mode.
 
-Gameplay callbacks include create/update, countdown/song start, step/beat/section,
-note hits/misses, events, pause/resume, song end, and destroy. Supported APIs cover
-gameplay properties/groups, score/health, strum transforms, timers, tweens, input,
-variables, random/string/color and controlled file helpers, event/camera calls,
-Lua text, static PNG sprites, and animated Sparrow PNG/XML sprites from `images/`.
+Gameplay callbacks follow Psych's `TemplateScript.lua`: create/update, countdown
+start and tick, song start, step/beat/section, note spawn, note hit/miss pre and
+post, key press/release pre and post, ghost tap, events (including `onEventPushed`
+and `eventEarlyTrigger`), camera moves, rating and score updates, pause/resume,
+game over, custom substates, tween/timer/sound completion, song end, and destroy.
+Callbacks that Psych lets a script cancel honor `Function_Stop` here too: returning
+it from `onGameOver` cancels the death, from `onKeyPressPre` swallows the input,
+and from `onRecalculateRating` skips the score update.
+
+All 106 documented Psych script variables are exposed, and the live ones —
+`curBeat`, `curStep`, `curSection`, `mustHitSection`, `altAnim`, `gfSection`,
+`score`, `misses`, `hits`, `combo`, `rating`, `ratingName`, `ratingFC`,
+`totalPlayed`, `totalNotesHit`, `playbackRate`, `inGameOver`, and the rest — are
+refreshed every frame. `week` and `weekRaw` are empty because Blockified has no
+story mode, and `shadersEnabled` reports `false`, so scripts branching on them
+skip the paths Blockified cannot run.
+
+Supported APIs cover gameplay properties/groups, score/health/rating, strum
+transforms, timers, tweens, input, save data, achievements, variables,
+random/string/color and controlled file helpers, event/camera calls, Lua text,
+static PNG sprites, and animated Sparrow PNG/XML sprites from `images/`.
 In the FNF HUD style, Psych's native object names are scriptable: `healthBar`,
 `healthBarBG`, and `scoreTxt` expose position, dimensions, alpha, visibility,
 colors, score text, and score-text transforms. `healthBar.percent` reads 0–100
-and can also set Blockified health; `score`/`songScore` expose the read-only numeric
-score. `setScore`, `addScore`, and writes to those properties are safe no-ops.
+and can also set Blockified health. `setScore`, `addScore`, `setHits`, `addHits`,
+`setRatingPercent`, `setRatingName`, and `setRatingFC` all take effect, but a run
+a script changed is never saved as a personal best — the same rule botplay follows.
 `setHealthBarColors(left, right)` is supported.
+
 Lua tweens support `Sine`, `Cubic`/`Cube`, `Quint`, `Circ`, `Elastic`, `Quad`,
-`Quart`, `Expo`, `Back`, and `Bounce`, each with `In`, `Out`, and `InOut`
-variants (for example `sineIn`, `bounceOut`, or `elasticInOut`). Names are
-case-insensitive; `linear` remains the default.
+`Quart`, `Expo`, `Back`, `Bounce`, `Smooth`, and `SmootherStep`, each with `In`,
+`Out`, and `InOut` variants (for example `sineIn`, `bounceOut`, or `elasticInOut`).
+Names are case-insensitive; `linear` remains the default. `startTween` drives every
+key of a values table at once and accepts `ease` and `startDelay` options;
+`doTweenColor` blends per colour channel rather than across the packed value.
+`soundFadeIn`, `soundFadeOut`, `soundFadeCancel`, `musicFadeIn`, and `musicFadeOut`
+ramp tagged sounds; a blank tag addresses the music channel.
+
+`cameraShake`, `cameraFlash`, and `cameraFade` are real screen effects. Each of
+`game`, `hud`, and `other` keeps its own overlay, and a running effect is not
+replaced unless the call passes `forceReset`, matching Flixel.
+
+`openCustomSubstate`, `insertToCustomSubstate`, and `closeCustomSubstate` work.
+Substate members draw above every other layer, and a substate opened with
+`pauseGame` holds the song, notes, and events until it closes.
+
+`getPropertyFromClass` and `setPropertyFromClass` map Psych's common engine paths
+(`ClientPrefs.data.*`, `PlayState.instance.*`, `FlxG.width`/`height`) onto the
+matching Blockified property. Other class paths return `nil` instead of guessing.
+
+Save data is stored as JSON under `config/fnfmod/saves/`. `initSaveData`,
+`setDataFromSave`, `getDataFromSave`, `flushSaveData`, and `eraseSaveData` behave
+like Psych's FlxSave slots: values stay in memory until the script flushes them.
+Achievements keep their own slot and are written as they change. Save and folder
+names are reduced to plain file-name characters, so a script cannot write outside
+that folder. `deleteFile` is limited to the song folder, like `saveFile`.
+
+`getModSetting` reads `mods/<pack>/data/settings.json` and returns the declared
+default value. `getTranslationPhrase` returns the caller's default phrase with
+Psych's `{1}`/`{2}` argument substitution; `getFileTranslation` returns its input.
+The Discord Rich Presence calls are accepted and ignored.
 Psych `playSound`, `playMusic`, tagged sound controls, sound properties, precaching,
 looping, and `onSoundFinished` load OGG files from `sounds/` or `music/`.
 FNF-mode characters honor Psych `sing_duration`, dance-left/right beat frequency,
@@ -348,10 +407,21 @@ state up to that point; F12 remains the quick preview shortcut.
 
 Lua runs client-side in a sandbox. Direct Java access, process execution, and
 unrestricted filesystem access are disabled. Psych features that require its actual
-HaxeFlixel runtime cannot exist unchanged in Minecraft: HScript/Haxe reflection,
-Flixel shaders, video/dialogue, custom substates, Psych sound objects, and
-FlxAnimate texture atlases currently return safely without crashing. Sparrow XML
-animation is supported.
+HaxeFlixel runtime cannot exist unchanged in Minecraft. These accept their normal
+arguments and return safely without crashing, so a shared script keeps running:
+
+- HScript (`addHScript`, `runHaxeFunction`, `addHaxeLibrary`, `callOnHScript`,
+  `setOnHScript`) and Haxe class instantiation/method calls (`createInstance`,
+  `callMethod`, `instanceArg`)
+- Flixel GLSL shaders. The `setShader*` calls do nothing; the `getShader*` calls
+  return a typed empty value rather than `nil`, so reading one back cannot cause
+  an arithmetic error inside the script
+- FlxAnimate texture atlases (`loadAnimateAtlas`, `addAnimationBySymbol`)
+- Video and dialogue cutscenes (`startVideo`, `startDialogue`)
+- Flixel groups (`addToGroup`, `removeFromGroup`, `updateHitboxFromGroup`)
+- Gamepad polling, the time bar, and story-mode `loadSong`
+
+Sparrow XML animation is supported.
 
 ### Lua custom fonts
 
@@ -700,7 +770,13 @@ The source keeps reusable behavior outside GUI screens where possible:
 - `client/anim/CharacterDefinitionFile.java` owns loss-preserving character JSON
   parsing/writing for the visual character editor.
 - `client/gameplay/PsychAssetResolver.java` owns ordered Psych asset lookup;
-  `client/audio/PsychSoundPlayer.java` owns per-song Lua/event sound lifetime.
+  `client/audio/PsychSoundPlayer.java` owns per-song Lua/event sound lifetime,
+  including tagged volume fades.
+- `gameplay/PsychRating.java` owns Psych's rating-name tiers and full-combo
+  classification, so gameplay, results, and Lua all report the same values.
+- `client/camera/CameraOverlay.java` owns per-camera flash and fade state.
+- `client/lua/LuaSaveData.java` owns Lua save slots and achievement persistence
+  under `config/fnfmod/saves/`.
 
 These classes are intended as stable starting points for contributors. Keep file
 I/O, parsing, and rendering out of screens when adding comparable features.

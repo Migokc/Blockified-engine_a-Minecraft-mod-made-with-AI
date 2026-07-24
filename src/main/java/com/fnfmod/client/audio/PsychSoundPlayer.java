@@ -33,7 +33,14 @@ public final class PsychSoundPlayer implements AutoCloseable {
     private final Map<Path, Integer> buffers = new HashMap<>();
     private final Map<String, Integer> taggedSources = new LinkedHashMap<>();
     private final List<Integer> untaggedSources = new ArrayList<>();
+    private final Map<String, Fade> fades = new LinkedHashMap<>();
     private int nextUntagged;
+
+    /**
+     * A running volume ramp on a tagged sound. {@code stopWhenDone} reproduces
+     * Psych's soundFadeOut, which stops the sound once it reaches silence.
+     */
+    private record Fade(float from, float to, long start, long durationMs, boolean stopWhenDone) {}
 
     public PsychSoundPlayer(Function<String, Path> resolver, Consumer<String> finishedCallback) {
         this.resolver = resolver;
@@ -64,7 +71,44 @@ public final class PsychSoundPlayer implements AutoCloseable {
         }
     }
 
+    /** Starts a Psych volume ramp. A zero duration applies the target immediately. */
+    public void fade(String tag, float durationSeconds, float from, float to, boolean stopWhenDone) {
+        if (tag == null || !taggedSources.containsKey(tag)) return;
+        long durationMs = Math.max(0, (long) (durationSeconds * 1000));
+        if (durationMs == 0) {
+            fades.remove(tag);
+            setVolume(tag, to);
+            if (stopWhenDone && to <= 0) stop(tag);
+            return;
+        }
+        setVolume(tag, from);
+        fades.put(tag, new Fade(from, to, System.currentTimeMillis(), durationMs, stopWhenDone));
+    }
+
+    /** Psych's soundFadeCancel: leaves the sound at whatever volume it reached. */
+    public void cancelFade(String tag) {
+        fades.remove(tag);
+    }
+
+    private void updateFades() {
+        long now = System.currentTimeMillis();
+        for (var entry : new ArrayList<>(fades.entrySet())) {
+            String tag = entry.getKey();
+            Fade fade = entry.getValue();
+            if (!taggedSources.containsKey(tag)) {
+                fades.remove(tag);
+                continue;
+            }
+            double progress = Math.min(1, (now - fade.start) / (double) fade.durationMs);
+            setVolume(tag, (float) (fade.from + (fade.to - fade.from) * progress));
+            if (progress < 1) continue;
+            fades.remove(tag);
+            if (fade.stopWhenDone && fade.to <= 0) stop(tag);
+        }
+    }
+
     public void update() {
+        updateFades();
         List<String> finished = new ArrayList<>();
         var iterator = taggedSources.entrySet().iterator();
         while (iterator.hasNext()) {
@@ -197,6 +241,6 @@ public final class PsychSoundPlayer implements AutoCloseable {
         for (int buffer : buffers.values()) {
             if (buffer != 0) try { AL10.alDeleteBuffers(buffer); } catch (Throwable ignored) {}
         }
-        taggedSources.clear(); untaggedSources.clear(); buffers.clear();
+        taggedSources.clear(); untaggedSources.clear(); buffers.clear(); fades.clear();
     }
 }

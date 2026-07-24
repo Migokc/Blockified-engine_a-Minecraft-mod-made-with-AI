@@ -76,6 +76,7 @@ public final class GameplayCamera {
     private static long eventZoomStart;
     private static String eventZoomEase = "smooth";
     private static final double EVENT_ZOOM_DURATION_MS = 500.0;
+    private static double eventZoomDurationMs = EVENT_ZOOM_DURATION_MS;
     private static long lastFrameNano;
     private static float cameraSpeed = DEFAULT_CAMERA_SPEED;
     private static String cameraEase = "smooth";
@@ -118,6 +119,7 @@ public final class GameplayCamera {
         rotationEventStart = 0;
         gameShakeEnd = hudShakeEnd = 0;
         gameShakeIntensity = hudShakeIntensity = 0;
+        CameraOverlay.reset();
         curOffset = fromOffset = Vec3.ZERO;
         offsetInitialized = false;
         transStart = 0;
@@ -168,6 +170,7 @@ public final class GameplayCamera {
         rotationEventStart = 0;
         gameShakeEnd = hudShakeEnd = 0;
         gameShakeIntensity = hudShakeIntensity = 0;
+        CameraOverlay.reset();
         curOffset = fromOffset = Vec3.ZERO;
         offsetInitialized = false;
         transStart = 0;
@@ -429,13 +432,23 @@ public final class GameplayCamera {
         return gameBopEnabled;
     }
 
-    /** Tweens to a persistent FOV zoom offset. Zero restores the normal zoom. */
+    /** Tweens to a persistent FOV zoom offset over the default duration. */
     public static void zoomTo(float amount, String easeName) {
+        zoomTo(amount, 0, easeName);
+    }
+
+    /**
+     * Tweens to a persistent FOV zoom offset over durationMs. Zero restores the
+     * default duration. Zero amount restores the normal zoom.
+     */
+    public static void zoomTo(float amount, double durationMs, String easeName) {
         if (!active || !Float.isFinite(amount)) return;
         updateEventZoom(System.currentTimeMillis());
         eventZoomFrom = eventZoom;
         eventZoomTarget = Math.max(-1f, Math.min(0.9f, amount));
         eventZoomEase = easeName == null ? "smooth" : easeName.trim().toLowerCase();
+        eventZoomDurationMs = durationMs > 0 && Double.isFinite(durationMs)
+                ? durationMs : EVENT_ZOOM_DURATION_MS;
         eventZoomStart = System.currentTimeMillis();
     }
 
@@ -502,7 +515,7 @@ public final class GameplayCamera {
 
     private static void updateEventZoom(long nowMs) {
         if (eventZoomStart == 0) return;
-        double t = (nowMs - eventZoomStart) / EVENT_ZOOM_DURATION_MS;
+        double t = (nowMs - eventZoomStart) / eventZoomDurationMs;
         if (t >= 1) {
             eventZoom = eventZoomTarget;
             eventZoomStart = 0;

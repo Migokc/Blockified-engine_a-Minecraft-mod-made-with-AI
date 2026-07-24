@@ -38,7 +38,7 @@ public final class ChartEventTypes {
 
     private static final List<Definition> BUILTINS = List.of(
             definition(MINECRAFT_COMMAND, "", "player"),
-            definition(CAMERA_ZOOM, "0", "smooth"),
+            new Definition(CAMERA_ZOOM, "0", "", "smooth", "", "", ""),
             definition(CAMERA_FOCUS, "player", "smooth"),
             definition(CAMERA_BEHAVIOR, "1", "smooth"),
             definition(HEY, "", "0.6"),
@@ -149,7 +149,8 @@ public final class ChartEventTypes {
         Definition definition = definition(name);
         if (definition == null) return 0;
         return switch (definition.name) {
-            case CAMERA_ZOOM, CAMERA_FOCUS, CAMERA_BEHAVIOR -> 2;
+            case CAMERA_FOCUS, CAMERA_BEHAVIOR -> 2;
+            case CAMERA_ZOOM -> 3;
             case CAMERA_FOLLOW_POS, CAMERA_ROTATION_3D, TWEEN_CHARACTER -> 4;
             default -> 0;
         };
@@ -170,9 +171,10 @@ public final class ChartEventTypes {
                     "Rotation: <camera_rotation> faces the stage camera; <character_rotation:degrees> adds a yaw offset to the normal performer direction.",
                     "Value 2: player runs the command as the local player with normal permissions. server runs it once from the Funkin' Machine after host/operator permission checks.");
             case CAMERA_ZOOM -> String.join("\n",
-                    "Changes Blockified's persistent camera zoom over 0.5 seconds. Unlike Add Camera Zoom, this does not immediately decay.",
+                    "Changes Blockified's persistent camera zoom over a duration. Unlike Add Camera Zoom, this does not immediately decay.",
                     "Value 1: Zoom amount from -1 to 0.9. Positive zooms in; negative zooms out; 0 restores normal zoom.",
-                    "Value 2: Easing curve plus in/out/inOut direction. constant snaps immediately.");
+                    "Value 2: Duration in seconds to reach the zoom. Leave empty for the default 0.5 seconds.",
+                    "Value 3: Easing curve plus in/out/inOut direction. constant snaps immediately.");
             case CAMERA_FOCUS -> String.join("\n",
                     "Overrides Must Hit camera focus until released.",
                     "Value 1: player/BF, opponent/Dad, or GF/speakers. Leave empty to restore normal Must Hit section focus.",
@@ -300,7 +302,8 @@ public final class ChartEventTypes {
         if (definition == null) return "custom value 2";
         return switch (definition.name) {
             case MINECRAFT_COMMAND -> "player or server";
-            case CAMERA_ZOOM, CAMERA_FOCUS, CAMERA_BEHAVIOR -> "easing";
+            case CAMERA_FOCUS, CAMERA_BEHAVIOR -> "easing";
+            case CAMERA_ZOOM -> "duration s; default 0.5";
             case HEY -> "duration; default 0.6";
             case ADD_CAMERA_ZOOM -> "HUD zoom; default 0.03";
             case PLAY_ANIMATION -> "Dad, BF, GF, or custom tag";
@@ -322,6 +325,7 @@ public final class ChartEventTypes {
         Definition definition = definition(name);
         if (definition == null) return "custom value 3";
         return switch (definition.name) {
+            case CAMERA_ZOOM -> "easing; default is smooth";
             case CAMERA_FOLLOW_POS -> "3D forward offset (blocks)";
             case CAMERA_ROTATION_3D -> "Z rotation / roll";
             case ADD_CHARACTER -> "stage X,Y,Z";

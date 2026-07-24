@@ -17,6 +17,8 @@ public class ClientOptions {
     /** Your strumline centered, opponent notes split to the screen edges. */
     public boolean middlescroll = false;
     public boolean ghostTapping = true;
+    /** Bot auto-plays your notes. Scores are shown but never saved. */
+    public boolean botplay = false;
     public double offsetMs = 0;
     public double scrollSpeedMult = 1.0;
     /** true = constant scroll speed (overrides chart), false = multiplier of chart speed. */

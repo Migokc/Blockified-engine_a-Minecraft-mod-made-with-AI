@@ -8,6 +8,7 @@ import com.fnfmod.chart.SongChart;
 import com.fnfmod.client.ClientOptions;
 import com.fnfmod.client.ClientSession;
 import com.fnfmod.client.FnfKeys;
+import com.fnfmod.client.camera.CameraOverlay;
 import com.fnfmod.client.camera.GameplayCamera;
 import com.fnfmod.client.audio.PsychSoundPlayer;
 import com.fnfmod.client.gameplay.PsychAssetResolver;
@@ -76,6 +77,13 @@ public final class PsychLuaRuntime implements AutoCloseable {
         List<SparrowAtlas.Frame> frames = List.of();
         double frameRate = 24;
         boolean looped = true;
+        /**
+         * Sheet this animation's frames belong to. loadMultipleFrames lets one
+         * sprite mix animations from several atlases, so the frame coordinates
+         * are only meaningful against the sheet they were read from.
+         */
+        ResourceLocation texture;
+        int textureWidth, textureHeight;
     }
 
     private static final class LuaObject {
@@ -100,6 +108,22 @@ public final class PsychLuaRuntime implements AutoCloseable {
         DynamicTexture dynamicTexture;
         int textureWidth, textureHeight;
         SparrowAtlas atlas;
+        /** Extra sheets merged in by loadMultipleFrames, owned by this object. */
+        final List<SparrowAtlas> extraAtlases = new ArrayList<>();
+        /** Psych text styling. */
+        double borderSize;
+        int borderColor = 0xFF000000;
+        String borderStyle = "outline";
+        String alignment = "left";
+        boolean italic;
+        /**
+         * Psych's FlxText autoSize. False (the default for text made with a width)
+         * wraps at the field width; true lets the field grow and never wraps.
+         */
+        boolean autoSize;
+        double heightLimit;
+        /** Psych blend mode name; only "add" changes rendering, the rest draw normally. */
+        String blend = "";
         final Map<String, LuaAnimation> animations = new LinkedHashMap<>();
         final Map<String, double[]> animationOffsets = new LinkedHashMap<>();
         String currentAnimation;
@@ -112,8 +136,17 @@ public final class PsychLuaRuntime implements AutoCloseable {
         Timer advance(long next) { return new Timer(tag, intervalMs, totalLoops, next, completed + 1); }
     }
 
-    private record Tween(String tag, String path, double from, double to, long start,
-                         long durationMs, String ease) {}
+    /** One numeric property a tween drives. */
+    private record TweenTarget(String path, double from, double to) {}
+
+    /**
+     * A tween over any number of numeric properties, plus an optional packed-color
+     * property. Colors interpolate per channel rather than across the packed int,
+     * which would run through unrelated hues.
+     */
+    private record Tween(String tag, List<TweenTarget> targets, long start, long durationMs,
+                         String ease, String colorPath, int colorFrom, int colorTo,
+                         long startDelayMs) {}
 
     private final GameplayScreen host;
     private final SongChart chart;
@@ -127,6 +160,16 @@ public final class PsychLuaRuntime implements AutoCloseable {
     private final List<Script> scripts = new ArrayList<>();
     private final Map<String, LuaObject> objects = new LinkedHashMap<>();
     private final Map<String, LuaValue> sharedVars = new HashMap<>();
+    /** Sheets kept warm by precacheImage; closed with the runtime. */
+    private final Map<String, SparrowAtlas> precached = new LinkedHashMap<>();
+    /**
+     * Psych custom substate. Members are Lua object tags drawn above everything
+     * else while the substate is open; a substate opened with pauseGame holds
+     * gameplay the way Psych's own substates do.
+     */
+    private String substateName;
+    private boolean substatePauses;
+    private final List<String> substateMembers = new ArrayList<>();
     private final Map<String, Timer> timers = new LinkedHashMap<>();
     private final Map<String, Tween> tweens = new LinkedHashMap<>();
     private final Set<String> warned = new LinkedHashSet<>();
@@ -436,7 +479,7 @@ public final class PsychLuaRuntime implements AutoCloseable {
         g.set("downscroll", LuaValue.valueOf(ClientOptions.get().downscroll));
         g.set("middlescroll", LuaValue.valueOf(ClientOptions.get().middlescroll));
         g.set("ghostTapping", LuaValue.valueOf(ClientOptions.get().ghostTapping));
-        g.set("botPlay", LuaValue.FALSE);
+        g.set("botPlay", LuaValue.valueOf(ClientOptions.get().botplay));
         g.set("practice", LuaValue.FALSE);
         g.set("isStoryMode", LuaValue.FALSE);
         g.set("buildTarget", "windows");
@@ -449,6 +492,71 @@ public final class PsychLuaRuntime implements AutoCloseable {
             g.set("defaultOpponentStrumX" + i, host.psychLuaStrumX(false, i));
             g.set("defaultOpponentStrumY" + i, host.psychLuaStrumY(false, i));
         }
+        installScriptLocation(g, file);
+        installChartConstants(g);
+        installPreferenceConstants(g);
+    }
+
+    /** Psych's script-location globals. Mod folders are reported relative to the pack root. */
+    private void installScriptLocation(Globals g, Path file) {
+        String mod = modRoot == null ? "" : modRoot.getFileName().toString();
+        g.set("modFolder", mod);
+        g.set("currentModDirectory", mod);
+        g.set("luaDebugMode", LuaValue.FALSE);
+        g.set("luaDeprecatedWarnings", LuaValue.FALSE);
+    }
+
+    private void installChartConstants(Globals g) {
+        String difficulty = ClientSession.difficulty == null || ClientSession.difficulty.isBlank()
+                ? "normal" : ClientSession.difficulty;
+        g.set("difficulty", difficulty);
+        g.set("difficultyNameTranslation", difficulty);
+        g.set("chartPath", songFolder == null ? "" : songFolder.toString());
+        // Blockified has no story mode, so Psych's week fields stay empty rather
+        // than inventing a value a script could branch on incorrectly.
+        g.set("week", "");
+        g.set("weekRaw", "");
+        g.set("seenCutscene", LuaValue.FALSE);
+        g.set("deaths", 0);
+        g.set("healthGainMult", 1.0);
+        g.set("healthLossMult", 1.0);
+        g.set("instakillOnMiss", LuaValue.FALSE);
+        for (String role : new String[]{"Boyfriend", "Opponent", "Girlfriend"}) {
+            String lookup = switch (role) {
+                case "Opponent" -> "dad";
+                case "Girlfriend" -> "gf";
+                default -> "boyfriend";
+            };
+            g.set("default" + role + "X", host.psychLuaDefaultCharacterX(lookup));
+            g.set("default" + role + "Y", host.psychLuaDefaultCharacterY(lookup));
+        }
+    }
+
+    /**
+     * Psych's client-preference globals. Options Blockified does not have keep
+     * Psych's documented default so a script reading them still branches sanely.
+     */
+    private void installPreferenceConstants(Globals g) {
+        ClientOptions options = ClientOptions.get();
+        g.set("hideHud", LuaValue.valueOf("none".equals(ClientOptions.effectiveHudStyle())));
+        g.set("noteOffset", options.offsetMs);
+        g.set("noResetButton", LuaValue.FALSE);
+        g.set("framerate", Minecraft.getInstance().options.framerateLimit().get());
+        g.set("timeBarType", "Time Left");
+        g.set("scoreZoom", LuaValue.TRUE);
+        g.set("cameraZoomOnBeat", LuaValue.TRUE);
+        g.set("flashingLights", LuaValue.TRUE);
+        g.set("healthBarAlpha", 1.0);
+        g.set("lowQuality", LuaValue.FALSE);
+        g.set("shadersEnabled", LuaValue.FALSE);
+        g.set("guitarHeroSustains", LuaValue.TRUE);
+        g.set("noteSkin", chart.noteTexture == null || chart.noteTexture.isBlank()
+                ? "Default" : chart.noteTexture);
+        g.set("splashSkin", chart.noteSplashTexture == null || chart.noteSplashTexture.isBlank()
+                ? "Psych" : chart.noteSplashTexture);
+        g.set("splashAlpha", 0.6);
+        g.set("noteSkinPostfix", "");
+        g.set("splashSkinPostfix", "");
     }
 
     private void installCallbacks(Globals g) {
@@ -457,10 +565,39 @@ public final class PsychLuaRuntime implements AutoCloseable {
         fn(g, "getHealth", args -> LuaValue.valueOf(host.psychLuaHealth()));
         fn(g, "setHealth", args -> { host.psychLuaSetHealth(args.optdouble(1, 1)); return LuaValue.NIL; });
         fn(g, "addHealth", args -> { host.psychLuaSetHealth(host.psychLuaHealth() + args.optdouble(1, 0)); return LuaValue.NIL; });
-        // Blockified score is read-only to Lua. Keep Psych's function names as
-        // safe no-ops so shared scripts do not fail when they call them.
-        fn(g, "addScore", args -> LuaValue.NIL);
-        fn(g, "setScore", args -> LuaValue.NIL);
+        // Scripts may drive the score, but a run they touched is never saved as a
+        // personal best, so charts can show custom scoring without faking records.
+        fn(g, "addScore", args -> { host.psychLuaAddScore(args.optint(1, 0)); return LuaValue.NIL; });
+        fn(g, "setScore", args -> { host.psychLuaSetScore(args.optint(1, 0)); return LuaValue.NIL; });
+        fn(g, "addHits", args -> { host.psychLuaAddHits(args.optint(1, 0)); return LuaValue.NIL; });
+        fn(g, "setHits", args -> { host.psychLuaSetHits(args.optint(1, 0)); return LuaValue.NIL; });
+        fn(g, "setRatingPercent", args -> {
+            host.psychLuaSetRatingPercent(args.optdouble(1, 0)); return LuaValue.NIL; });
+        fn(g, "setRatingName", args -> {
+            host.psychLuaSetRatingName(args.optjstring(1, "")); return LuaValue.NIL; });
+        fn(g, "setRatingFC", args -> {
+            host.psychLuaSetRatingFC(args.optjstring(1, "")); return LuaValue.NIL; });
+        // Blockified redraws the HUD every frame, so the score text is always current.
+        fn(g, "updateScoreText", args -> LuaValue.NIL);
+        fn(g, "cameraShake", args -> {
+            String camera = args.optjstring(1, "game");
+            double intensity = args.optdouble(2, 0.05);
+            double duration = args.optdouble(3, 0.5);
+            boolean hud = camera.toLowerCase(Locale.ROOT).contains("hud");
+            GameplayCamera.shake(hud ? 0 : duration, hud ? 0 : intensity,
+                    hud ? duration : 0, hud ? intensity : 0);
+            return LuaValue.NIL;
+        });
+        fn(g, "cameraFlash", args -> {
+            CameraOverlay.flash(args.optjstring(1, "game"), color(args.optjstring(2, "FFFFFF")),
+                    args.optdouble(3, 1), luaBoolean(args, 4, false));
+            return LuaValue.NIL;
+        });
+        fn(g, "cameraFade", args -> {
+            CameraOverlay.fade(args.optjstring(1, "game"), color(args.optjstring(2, "FFFFFF")),
+                    args.optdouble(3, 1), luaBoolean(args, 4, false), luaBoolean(args, 5, false));
+            return LuaValue.NIL;
+        });
         fn(g, "addMisses", args -> { host.psychLuaAddMisses(args.optint(1, 0)); return LuaValue.NIL; });
         fn(g, "setMisses", args -> { host.psychLuaSetMisses(args.optint(1, 0)); return LuaValue.NIL; });
         fn(g, "getProperty", args -> toLua(getProperty(args.checkjstring(1))));
@@ -537,6 +674,29 @@ public final class PsychLuaRuntime implements AutoCloseable {
         fn(g, "getTextFont", args -> LuaValue.valueOf(object(args.checkjstring(1)).fontName));
         fn(g, "setTextWidth", args -> { object(args.checkjstring(1)).width = Math.max(0, args.optdouble(2, 0)); return LuaValue.NIL; });
         fn(g, "getTextWidth", args -> LuaValue.valueOf(object(args.checkjstring(1)).width));
+        fn(g, "setTextHeight", args -> {
+            object(args.checkjstring(1)).heightLimit = Math.max(0, args.optdouble(2, 0));
+            return LuaValue.TRUE;
+        });
+        fn(g, "setTextAutoSize", args -> {
+            object(args.checkjstring(1)).autoSize = luaBoolean(args, 2, true);
+            return LuaValue.TRUE;
+        });
+        fn(g, "setTextItalic", args -> {
+            object(args.checkjstring(1)).italic = luaBoolean(args, 2, false);
+            return LuaValue.TRUE;
+        });
+        fn(g, "setTextAlignment", args -> {
+            object(args.checkjstring(1)).alignment = args.optjstring(2, "left");
+            return LuaValue.TRUE;
+        });
+        fn(g, "setTextBorder", args -> {
+            LuaObject target = object(args.checkjstring(1));
+            target.borderSize = args.optdouble(2, 0);
+            target.borderColor = color(args.optjstring(3, "000000"));
+            target.borderStyle = args.optjstring(4, "outline");
+            return LuaValue.TRUE;
+        });
         fn(g, "setTextColor", args -> { object(args.checkjstring(1)).color = color(args.optjstring(2, "FFFFFF")); return LuaValue.NIL; });
         fn(g, "setObjectCamera", args -> { object(args.checkjstring(1)).camera = args.optjstring(2, "game"); return LuaValue.NIL; });
         fn(g, "setWorldSpriteBillboard", args -> { object(args.checkjstring(1)).worldBillboard = args.optboolean(2, true); return LuaValue.NIL; });
@@ -566,6 +726,15 @@ public final class PsychLuaRuntime implements AutoCloseable {
                 o.image = args.optjstring(2, ""); o.sizeExplicit = false; loadObjectImage(o, o.image); return LuaValue.NIL; });
         fn(g, "loadFrames", args -> LuaValue.valueOf(loadObjectAtlas(object(args.checkjstring(1)),
                 args.optjstring(2, ""), args.optjstring(3, "auto"))));
+        fn(g, "loadMultipleFrames", args -> LuaValue.valueOf(loadMultipleFrames(args)));
+        fn(g, "updateHitbox", args -> { updateHitbox(object(args.checkjstring(1))); return LuaValue.NIL; });
+        fn(g, "setBlendMode", args -> {
+            object(args.checkjstring(1)).blend = args.optjstring(2, "");
+            return LuaValue.TRUE;
+        });
+        fn(g, "getPixelColor", args -> LuaValue.valueOf(
+                pixelColor(args.checkjstring(1), args.optint(2, 0), args.optint(3, 0))));
+        fn(g, "precacheImage", args -> { precacheImage(args.optjstring(1, "")); return LuaValue.NIL; });
         fn(g, "addAnimationByPrefix", args -> LuaValue.valueOf(addAnimationByPrefix(args)));
         fn(g, "luaSpriteAddAnimationByPrefix", args -> LuaValue.valueOf(addAnimationByPrefix(args)));
         fn(g, "addAnimationByIndices", args -> LuaValue.valueOf(addAnimationByIndices(args, true)));
@@ -613,6 +782,16 @@ public final class PsychLuaRuntime implements AutoCloseable {
                 startTween(tag, path, number(getProperty(path), 1), value, duration, ease); return LuaValue.NIL; });
         noteTweenFn(g, "noteTweenX", "x"); noteTweenFn(g, "noteTweenY", "y");
         noteTweenFn(g, "noteTweenAngle", "angle"); noteTweenFn(g, "noteTweenAlpha", "alpha");
+        noteTweenFn(g, "noteTweenDirection", "direction");
+        fn(g, "doTweenColor", args -> {
+            startColorTween(args.checkjstring(1), args.checkjstring(2), args.optjstring(3, "FFFFFF"),
+                    args.optdouble(4, 1), args.optjstring(5, "linear"));
+            return LuaValue.valueOf(args.checkjstring(1));
+        });
+        fn(g, "startTween", args -> {
+            startTweenTable(args);
+            return LuaValue.valueOf(args.checkjstring(1));
+        });
 
         fn(g, "getRandomInt", args -> LuaValue.valueOf(randomInt(args.optint(1, 0), args.optint(2, Integer.MAX_VALUE), args.optjstring(3, ""))));
         fn(g, "getRandomFloat", args -> LuaValue.valueOf(args.optdouble(1, 0) + random.nextDouble() * (args.optdouble(2, 1) - args.optdouble(1, 0))));
@@ -629,6 +808,86 @@ public final class PsychLuaRuntime implements AutoCloseable {
         fn(g, "getTextFromFile", args -> LuaValue.valueOf(readSafe(args.checkjstring(1))));
         fn(g, "directoryFileList", args -> directoryList(args.checkjstring(1)));
         fn(g, "saveFile", args -> LuaValue.valueOf(writeSafe(args.checkjstring(1), args.optjstring(2, ""))));
+        fn(g, "deleteFile", args -> LuaValue.valueOf(deleteSafe(args.checkjstring(1))));
+
+        // Save data. Psych keeps values in memory until the script flushes them.
+        fn(g, "initSaveData", args -> {
+            LuaSaveData.init(args.checkjstring(1), args.optjstring(2, "psychenginemods"));
+            return LuaValue.NIL;
+        });
+        fn(g, "flushSaveData", args -> {
+            LuaSaveData.flush(args.checkjstring(1), args.optjstring(2, "psychenginemods"));
+            return LuaValue.NIL;
+        });
+        fn(g, "eraseSaveData", args -> {
+            LuaSaveData.erase(args.checkjstring(1), args.optjstring(2, "psychenginemods"));
+            return LuaValue.NIL;
+        });
+        fn(g, "getDataFromSave", args -> {
+            Object value = LuaSaveData.get(args.checkjstring(1), "psychenginemods", args.checkjstring(2));
+            return value == null ? args.arg(3) : toLua(value);
+        });
+        fn(g, "setDataFromSave", args -> {
+            LuaSaveData.set(args.checkjstring(1), "psychenginemods", args.checkjstring(2),
+                    fromLua(args.arg(3)));
+            return LuaValue.NIL;
+        });
+
+        // Achievements are stored in their own slot and flushed as they change.
+        fn(g, "achievementExists", args -> LuaValue.valueOf(LuaSaveData.exists(args.checkjstring(1))));
+        fn(g, "isAchievementUnlocked", args -> LuaValue.valueOf(LuaSaveData.unlocked(args.checkjstring(1))));
+        fn(g, "unlockAchievement", args -> {
+            String name = args.checkjstring(1);
+            LuaSaveData.unlock(name);
+            return LuaValue.valueOf(name);
+        });
+        fn(g, "getAchievementScore", args -> LuaValue.valueOf(LuaSaveData.score(args.checkjstring(1))));
+        fn(g, "setAchievementScore", args -> LuaValue.valueOf(LuaSaveData.setScore(
+                args.checkjstring(1), args.optdouble(2, 0), luaBoolean(args, 3, true))));
+        fn(g, "addAchievementScore", args -> LuaValue.valueOf(LuaSaveData.addScore(
+                args.checkjstring(1), args.optdouble(2, 1), luaBoolean(args, 3, true))));
+
+        // Blockified has no translation tables, so a phrase resolves to the
+        // caller's default and asset paths are already in the only language present.
+        fn(g, "getTranslationPhrase", args -> {
+            String fallback = args.optjstring(2, args.checkjstring(1));
+            return LuaValue.valueOf(formatTranslation(fallback, args.arg(3)));
+        });
+        fn(g, "getFileTranslation", args -> LuaValue.valueOf(args.checkjstring(1)));
+
+        // Discord Rich Presence is not part of Blockified; accept and ignore so
+        // shared scripts that advertise a song do not error.
+        fn(g, "changeDiscordPresence", args -> LuaValue.NIL);
+        fn(g, "changeDiscordClientID", args -> LuaValue.NIL);
+
+        fn(g, "getModSetting", args -> modSetting(args.checkjstring(1), args.optjstring(2, "")));
+
+        // Shaders are unsupported, but these must still return the right kind of
+        // value: a script that reads a uniform back would otherwise use nil as a
+        // number and error inside its own code rather than here.
+        fn(g, "getShaderBool", args -> LuaValue.FALSE);
+        fn(g, "getShaderInt", args -> LuaValue.ZERO);
+        fn(g, "getShaderFloat", args -> LuaValue.ZERO);
+        fn(g, "getShaderBoolArray", args -> new LuaTable());
+        fn(g, "getShaderIntArray", args -> new LuaTable());
+        fn(g, "getShaderFloatArray", args -> new LuaTable());
+
+        fn(g, "openCustomSubstate", args -> {
+            openSubstate(args.checkjstring(1), luaBoolean(args, 2, false));
+            return LuaValue.NIL;
+        });
+        fn(g, "closeCustomSubstate", args -> { closeSubstate(); return LuaValue.NIL; });
+        fn(g, "insertToCustomSubstate", args -> {
+            insertToSubstate(args.checkjstring(1), args.optint(2, -1));
+            return LuaValue.NIL;
+        });
+
+        fn(g, "getPropertyFromClass", args -> toLua(
+                classProperty(args.checkjstring(1), args.checkjstring(2))));
+        fn(g, "setPropertyFromClass", args -> {
+            setClassProperty(args.checkjstring(1), args.checkjstring(2), fromLua(args.arg(3)));
+            return LuaValue.NIL;
+        });
         fn(g, "characterPlayAnim", args -> LuaValue.valueOf(host.psychLuaPlayCharacterAnimation(
                 args.checkjstring(1), args.checkjstring(2), args.optboolean(3, false))));
         fn(g, "characterDance", args -> LuaValue.valueOf(
@@ -651,6 +910,29 @@ public final class PsychLuaRuntime implements AutoCloseable {
                 args.optjstring(7, "idle"), args.optjstring(8, "player"))));
         fn(g, "removeBlockifiedCharacter", args -> LuaValue.valueOf(
                 host.psychLuaRemoveCharacter(args.checkjstring(1))));
+        // Character-to-character pushing. Block collision, gravity and everything
+        // else stay untouched, so a performer with collisions off still stands on
+        // the ground and simply stops shoving (and being shoved by) other characters.
+        fn(g, "setCharacterCollision", args -> LuaValue.valueOf(
+                host.psychLuaSetCharacterCollision(args.checkjstring(1), luaBoolean(args, 2, true))));
+        fn(g, "getCharacterCollision", args -> LuaValue.valueOf(
+                host.psychLuaCharacterCollision(args.checkjstring(1))));
+        fn(g, "setCharacterCollisions", args -> LuaValue.valueOf(
+                host.psychLuaSetCharacterCollision(args.checkjstring(1), luaBoolean(args, 2, true))));
+        fn(g, "setAllCharacterCollisions", args -> {
+            host.psychLuaSetAllCharacterCollisions(luaBoolean(args, 1, true));
+            return LuaValue.NIL;
+        });
+        // Vanilla blob shadow under a character. Shadows stay on unless a script
+        // turns them off, so existing songs look the same.
+        fn(g, "setCharacterShadow", args -> LuaValue.valueOf(
+                host.psychLuaSetCharacterShadow(args.checkjstring(1), luaBoolean(args, 2, true))));
+        fn(g, "getCharacterShadow", args -> LuaValue.valueOf(
+                host.psychLuaCharacterShadow(args.checkjstring(1))));
+        fn(g, "setAllCharacterShadows", args -> {
+            host.psychLuaSetAllCharacterShadows(luaBoolean(args, 1, true));
+            return LuaValue.NIL;
+        });
         fn(g, "blockifiedCharacterExists", args -> LuaValue.valueOf(
                 host.psychLuaExtraCharacterExists(args.checkjstring(1))));
         fn(g, "setBlockifiedCharacterPosition", args -> LuaValue.valueOf(
@@ -713,6 +995,32 @@ public final class PsychLuaRuntime implements AutoCloseable {
         fn(g, "getSoundPitch", args -> LuaValue.valueOf(soundPlayer.pitch(args.optjstring(1, ""))));
         fn(g, "getSoundTime", args -> LuaValue.valueOf(soundPlayer.timeMs(args.optjstring(1, ""))));
         fn(g, "getSoundVolume", args -> LuaValue.valueOf(soundPlayer.volume(args.optjstring(1, ""))));
+        fn(g, "soundFadeIn", args -> {
+            soundPlayer.fade(soundTag(args.optjstring(1, "")), (float) args.optdouble(2, 1),
+                    (float) args.optdouble(3, 0), (float) args.optdouble(4, 1), false);
+            return LuaValue.NIL;
+        });
+        fn(g, "soundFadeOut", args -> {
+            String tag = soundTag(args.optjstring(1, ""));
+            soundPlayer.fade(tag, (float) args.optdouble(2, 1), soundPlayer.volume(tag),
+                    (float) args.optdouble(3, 0), true);
+            return LuaValue.NIL;
+        });
+        fn(g, "soundFadeCancel", args -> {
+            soundPlayer.cancelFade(soundTag(args.optjstring(1, "")));
+            return LuaValue.NIL;
+        });
+        // Psych's music fades are the same ramps aimed at the music channel.
+        fn(g, "musicFadeIn", args -> {
+            soundPlayer.fade("__music", (float) args.optdouble(1, 1),
+                    (float) args.optdouble(2, 0), (float) args.optdouble(3, 1), false);
+            return LuaValue.NIL;
+        });
+        fn(g, "musicFadeOut", args -> {
+            soundPlayer.fade("__music", (float) args.optdouble(1, 1),
+                    soundPlayer.volume("__music"), (float) args.optdouble(2, 0), true);
+            return LuaValue.NIL;
+        });
         fn(g, "setSoundPitch", args -> { soundPlayer.setPitch(args.optjstring(1, ""),
                 (float) args.optdouble(2, 1)); return LuaValue.NIL; });
         fn(g, "setSoundTime", args -> { soundPlayer.setTimeMs(args.optjstring(1, ""),
@@ -725,28 +1033,38 @@ public final class PsychLuaRuntime implements AutoCloseable {
             return LuaValue.NIL;
         });
 
-        registerNoOps(g, "updateHitbox", "setBlendMode", "precacheImage",
-                "addCharacterToList", "soundFadeIn", "soundFadeOut",
-                "soundFadeCancel", "cameraShake", "cameraFlash", "cameraFade",
-                "setTimeBarColors", "setTextBorder", "setTextAlignment", "setTextItalic",
-                "setTextHeight", "setTextAutoSize",
-                "loadMultipleFrames", "makeFlxAnimateSprite", "loadAnimateAtlas", "addAnimationBySymbol",
-                "addAnimationBySymbolIndices", "initLuaShader", "setSpriteShader", "removeSpriteShader",
+        // WARNING: this runs after every real registration above, so a name listed
+        // here overwrites its implementation. Only genuinely unsupported Psych
+        // functions belong in this list.
+        registerNoOps(g,
+                // Adobe Animate texture atlases have no Minecraft equivalent.
+                "makeFlxAnimateSprite", "loadAnimateAtlas", "addAnimationBySymbol",
+                "addAnimationBySymbolIndices",
+                // GLSL shaders on Flixel sprites. The setters report failure by
+                // returning nil; the getters below return typed empties instead,
+                // so a script reading one back does not get a nil arithmetic error.
+                "initLuaShader", "setSpriteShader", "removeSpriteShader",
                 "setShaderBool", "setShaderInt", "setShaderFloat", "setShaderBoolArray", "setShaderIntArray",
-                "setShaderFloatArray", "setShaderSampler2D", "openCustomSubstate", "closeCustomSubstate",
-                "insertToCustomSubstate", "startDialogue", "startVideo", "addHScript", "removeHScript",
-                "runHaxeFunction", "addHaxeLibrary", "updateScoreText", "startCountdown",
-                "close", "getModSetting", "getPropertyFromClass",
-                "setPropertyFromClass", "callMethod", "callMethodFromClass", "createInstance", "addInstance",
-                "instanceArg", "addToGroup", "removeFromGroup", "deleteFile", "initSaveData", "flushSaveData",
-                "getDataFromSave", "setDataFromSave", "eraseSaveData", "getPixelColor",
+                "setShaderFloatArray", "setShaderSampler2D",
+                // HScript needs Haxe's interpreter.
+                "addHScript", "removeHScript", "runHaxeFunction", "addHaxeLibrary",
+                "callOnHScript", "setOnHScript",
+                // Video and dialogue substates.
+                "startDialogue", "startVideo",
+                // Arbitrary Haxe method calls and class instantiation.
+                "callMethod", "callMethodFromClass", "createInstance", "addInstance", "instanceArg",
+                // Flixel groups.
+                "addToGroup", "removeFromGroup", "updateHitboxFromGroup",
+                // Blockified has no time bar or story-mode week to load into.
+                "setTimeBarColors", "loadSong", "addCharacterToList",
+                // The countdown is driven by the gameplay screen, not by scripts.
+                "startCountdown", "close",
+                // Controllers are not read during gameplay.
+                "gamepadAnalogX", "gamepadAnalogY", "gamepadJustPressed", "gamepadPressed",
+                "gamepadReleased",
+                // Legacy Blockified aliases kept so old scripts do not error.
                 "luaSpriteMakeGraphic", "scaleLuaSprite", "setLuaSpriteCamera", "setLuaSpriteScrollFactor",
-                "getPropertyLuaSprite", "setPropertyLuaSprite", "addHits", "setHits", "setRatingFC",
-                "setRatingName", "setRatingPercent", "loadSong", "musicFadeIn", "musicFadeOut",
-                "gamepadAnalogX",
-                "gamepadAnalogY", "gamepadJustPressed", "gamepadPressed", "gamepadReleased",
-                "doTweenColor", "startTween", "noteTweenDirection",
-                "updateHitboxFromGroup", "callOnHScript", "setOnHScript");
+                "getPropertyLuaSprite", "setPropertyLuaSprite");
     }
 
     private void fn(Globals globals, String name, Function<Varargs, LuaValue> function) {
@@ -865,6 +1183,116 @@ public final class PsychLuaRuntime implements AutoCloseable {
         return true;
     }
 
+    /**
+     * Psych's loadMultipleFrames: merges extra Sparrow sheets into one sprite so
+     * later addAnimationByPrefix calls can name symbols from any of them. The
+     * first sheet stays the object's primary graphic; each animation remembers
+     * which sheet its frames came from so they blit from the right texture.
+     */
+    private boolean loadMultipleFrames(Varargs args) {
+        LuaObject object = object(args.checkjstring(1));
+        List<String> images = new ArrayList<>();
+        LuaValue second = args.arg(2);
+        if (second.istable()) {
+            for (int i = 1; i <= second.length(); i++) images.add(second.get(i).tojstring());
+        } else {
+            for (int i = 2; i <= args.narg(); i++) images.add(args.checkjstring(i));
+        }
+        if (images.isEmpty()) return false;
+
+        for (SparrowAtlas extra : object.extraAtlases) extra.close();
+        object.extraAtlases.clear();
+        if (!loadObjectAtlas(object, images.get(0), "auto")) return false;
+
+        for (int i = 1; i < images.size(); i++) {
+            SparrowAtlas extra = loadAtlas(images.get(i));
+            if (extra == null) {
+                warnOnce("loadMultipleFrames: no Sparrow XML for " + images.get(i));
+                continue;
+            }
+            extra.setAntialiasing(object.antialiasing);
+            object.extraAtlases.add(extra);
+        }
+        return true;
+    }
+
+    /** Loads one Sparrow sheet by image name without binding it to an object. */
+    private SparrowAtlas loadAtlas(String imageName) {
+        Path png = resolveImage(imageName);
+        if (png == null) return null;
+        String filename = png.getFileName().toString();
+        int dot = filename.lastIndexOf('.');
+        Path xml = png.resolveSibling((dot < 0 ? filename : filename.substring(0, dot)) + ".xml");
+        SparrowAtlas atlas = SparrowAtlas.load(png, xml);
+        if (atlas != null && atlas.allFrames().isEmpty()) {
+            atlas.close();
+            return null;
+        }
+        return atlas;
+    }
+
+    /**
+     * Psych's updateHitbox: resets the drawn size to the source graphic scaled by
+     * the sprite's scale, undoing an earlier setGraphicSize.
+     */
+    private static void updateHitbox(LuaObject object) {
+        object.width = Math.max(1, object.graphicWidth) * Math.abs(object.scaleX);
+        object.height = Math.max(1, object.graphicHeight) * Math.abs(object.scaleY);
+        object.sizeExplicit = true;
+    }
+
+    /**
+     * Psych's getPixelColor, returning packed ARGB from the sprite's source image.
+     * Reads the atlas sheet or the uploaded graphic, so it works for both static
+     * and animated Lua sprites.
+     */
+    private int pixelColor(String tag, int x, int y) {
+        LuaObject object = objects.get(tag);
+        if (object == null) return 0;
+        NativeImage image = object.atlas != null ? object.atlas.image()
+                : object.dynamicTexture == null ? null : object.dynamicTexture.getPixels();
+        if (image == null) return 0;
+        if (x < 0 || y < 0 || x >= image.getWidth() || y >= image.getHeight()) return 0;
+        // NativeImage packs ABGR; Psych scripts expect ARGB.
+        int abgr = image.getPixelRGBA(x, y);
+        int alpha = abgr >>> 24;
+        int blue = (abgr >> 16) & 0xFF;
+        int green = (abgr >> 8) & 0xFF;
+        int red = abgr & 0xFF;
+        return alpha << 24 | red << 16 | green << 8 | blue;
+    }
+
+    /**
+     * Psych's precacheImage. Loading the sheet now moves the disk read and GPU
+     * upload off the first frame that shows it, which is the whole point of the call.
+     */
+    private void precacheImage(String imageName) {
+        if (imageName == null || imageName.isBlank() || precached.containsKey(imageName)) return;
+        SparrowAtlas atlas = loadAtlas(imageName);
+        if (atlas != null) {
+            precached.put(imageName, atlas);
+            return;
+        }
+        // Not an animated sheet; a plain PNG still benefits from being read early.
+        Path png = resolveImage(imageName);
+        if (png == null) warnOnce("precacheImage: image not found: " + imageName);
+    }
+
+    /**
+     * Looks a symbol prefix up across the sprite's primary sheet and any sheets
+     * added by loadMultipleFrames, so an animation can name a symbol from any of them.
+     */
+    private static List<SparrowAtlas.Frame> framesByPrefix(LuaObject object, String prefix) {
+        List<SparrowAtlas.Frame> frames = object.atlas == null
+                ? List.of() : object.atlas.framesByPrefix(prefix);
+        if (!frames.isEmpty()) return frames;
+        for (SparrowAtlas extra : object.extraAtlases) {
+            List<SparrowAtlas.Frame> found = extra.framesByPrefix(prefix);
+            if (!found.isEmpty()) return found;
+        }
+        return List.of();
+    }
+
     private static void setGraphicSize(LuaObject object, double requestedWidth, double requestedHeight) {
         double sourceWidth = Math.max(1, object.graphicWidth);
         double sourceHeight = Math.max(1, object.graphicHeight);
@@ -885,7 +1313,7 @@ public final class PsychLuaRuntime implements AutoCloseable {
         LuaObject object = objects.get(args.checkjstring(1));
         if (object == null || object.atlas == null) return false;
         String name = args.checkjstring(2);
-        List<SparrowAtlas.Frame> frames = object.atlas.framesByPrefix(args.checkjstring(3));
+        List<SparrowAtlas.Frame> frames = framesByPrefix(object, args.checkjstring(3));
         if (frames.isEmpty()) {
             warnOnce("animation prefix '" + args.checkjstring(3) + "' not found in " + object.image);
             return false;
@@ -900,7 +1328,7 @@ public final class PsychLuaRuntime implements AutoCloseable {
         String name = args.checkjstring(2);
         int indicesArg = withPrefix ? 4 : 3;
         List<SparrowAtlas.Frame> source = withPrefix
-                ? object.atlas.framesByPrefix(args.checkjstring(3)) : object.atlas.allFrames();
+                ? framesByPrefix(object, args.checkjstring(3)) : object.atlas.allFrames();
         List<Integer> indices = luaIndices(args.arg(indicesArg));
         List<SparrowAtlas.Frame> frames = new ArrayList<>();
         for (int index : indices) if (index >= 0 && index < source.size()) frames.add(source.get(index));
@@ -917,13 +1345,34 @@ public final class PsychLuaRuntime implements AutoCloseable {
 
     private void putAnimation(LuaObject object, String name, List<SparrowAtlas.Frame> frames,
                               double frameRate, boolean looped) {
+        putAnimation(object, name, frames, frameRate, looped, sheetOf(object, frames));
+    }
+
+    private void putAnimation(LuaObject object, String name, List<SparrowAtlas.Frame> frames,
+                              double frameRate, boolean looped, SparrowAtlas sheet) {
         LuaAnimation animation = new LuaAnimation();
         animation.name = name;
         animation.frames = List.copyOf(frames);
         animation.frameRate = Math.max(0, frameRate);
         animation.looped = looped;
+        if (sheet != null) {
+            animation.texture = sheet.texture();
+            animation.textureWidth = sheet.width();
+            animation.textureHeight = sheet.height();
+        }
         object.animations.put(name, animation);
         if (object.currentAnimation == null) startAnimation(object, name, true, false, 0);
+    }
+
+    /** Finds which of the object's sheets these frames came from, primary first. */
+    private static SparrowAtlas sheetOf(LuaObject object, List<SparrowAtlas.Frame> frames) {
+        if (frames.isEmpty()) return object.atlas;
+        SparrowAtlas.Frame first = frames.get(0);
+        if (object.atlas != null && object.atlas.allFrames().contains(first)) return object.atlas;
+        for (SparrowAtlas extra : object.extraAtlases) {
+            if (extra.allFrames().contains(first)) return extra;
+        }
+        return object.atlas;
     }
 
     private boolean playAnimation(Varargs args) {
@@ -999,6 +1448,8 @@ public final class PsychLuaRuntime implements AutoCloseable {
             object.atlas.close();
             object.atlas = null;
         }
+        for (SparrowAtlas extra : object.extraAtlases) extra.close();
+        object.extraAtlases.clear();
         object.texture = null;
         object.textureWidth = 0;
         object.textureHeight = 0;
@@ -1356,8 +1807,104 @@ public final class PsychLuaRuntime implements AutoCloseable {
     }
 
     private void startTween(String tag, String path, double from, double to, double seconds, String ease) {
-        tweens.put(tag, new Tween(tag, path, from, to, System.currentTimeMillis(),
-                Math.max(1, (long) (seconds * 1000)), ease == null ? "linear" : ease));
+        tweens.put(tag, new Tween(tag, List.of(new TweenTarget(path, from, to)),
+                System.currentTimeMillis(), Math.max(1, (long) (seconds * 1000)),
+                ease == null ? "linear" : ease, null, 0, 0, 0));
+    }
+
+    /**
+     * Psych's doTweenColor. Blends the packed colour channel by channel so the
+     * sprite passes through the colours between the two, not through the integers.
+     */
+    private void startColorTween(String tag, String target, String colorText,
+                                 double seconds, String ease) {
+        String path = target + ".color";
+        int from = (int) number(getProperty(path), 0xFFFFFF);
+        int to = color(colorText);
+        tweens.put(tag, new Tween(tag, List.of(), System.currentTimeMillis(),
+                Math.max(1, (long) (seconds * 1000)), ease == null ? "linear" : ease,
+                path, from, to, 0));
+    }
+
+    /**
+     * Psych's startTween: one tween driving every key of a values table, with an
+     * options table for ease and start delay. A {@code color} key is routed
+     * through the per-channel blend instead of being treated as a plain number.
+     */
+    private void startTweenTable(Varargs args) {
+        String tag = args.checkjstring(1);
+        String target = args.checkjstring(2);
+        LuaValue values = args.arg(3);
+        if (!values.istable()) {
+            warnOnce("startTween: values must be a table of properties");
+            return;
+        }
+        double seconds = args.optdouble(4, 1);
+        LuaValue options = args.arg(5);
+        String ease = "linear";
+        double startDelay = 0;
+        if (options.istable()) {
+            LuaValue easeValue = options.get("ease");
+            if (!easeValue.isnil()) ease = easeValue.tojstring();
+            LuaValue delayValue = options.get("startDelay");
+            if (!delayValue.isnil()) startDelay = delayValue.todouble();
+        }
+
+        List<TweenTarget> targets = new ArrayList<>();
+        String colorPath = null;
+        int colorFrom = 0;
+        int colorTo = 0;
+        for (LuaValue key : values.checktable().keys()) {
+            String property = key.tojstring();
+            String path = target + "." + property;
+            LuaValue value = values.get(key);
+            if (property.equals("color")) {
+                colorPath = path;
+                colorFrom = (int) number(getProperty(path), 0xFFFFFF);
+                colorTo = value.isnumber() ? value.toint() : color(value.tojstring());
+                continue;
+            }
+            double from = number(getProperty(path), 0);
+            targets.add(new TweenTarget(path, from, value.todouble()));
+        }
+        if (targets.isEmpty() && colorPath == null) {
+            warnOnce("startTween: '" + target + "' had no tweenable properties");
+            return;
+        }
+        tweens.put(tag, new Tween(tag, List.copyOf(targets), System.currentTimeMillis(),
+                Math.max(1, (long) (seconds * 1000)), ease, colorPath, colorFrom, colorTo,
+                Math.max(0, (long) (startDelay * 1000))));
+    }
+
+    /** Blank tags address the music channel, matching stopSound's behaviour. */
+    private static String soundTag(String tag) {
+        return tag == null || tag.isBlank() ? "__music" : tag;
+    }
+
+    /** Strum members are addressed through the host's group API, everything else by path. */
+    private void applyTweenValue(String path, double value) {
+        if (path.startsWith("strumLineNotes.")) {
+            String[] parts = path.split("\\.");
+            if (parts.length >= 3) {
+                host.psychLuaSetGroup("strumLineNotes", Integer.parseInt(parts[1]), parts[2], value);
+            }
+            return;
+        }
+        setProperty(path, value);
+    }
+
+    /** Per-channel RGB blend, returned as a packed 0xRRGGBB value. */
+    private static double blendColor(int from, int to, double progress) {
+        int red = channel(from, 16, to, progress);
+        int green = channel(from, 8, to, progress);
+        int blue = channel(from, 0, to, progress);
+        return red << 16 | green << 8 | blue;
+    }
+
+    private static int channel(int from, int shift, int to, double progress) {
+        int start = (from >> shift) & 0xFF;
+        int end = (to >> shift) & 0xFF;
+        return Math.max(0, Math.min(255, (int) Math.round(start + (end - start) * progress)));
     }
 
     private void runTimer(String tag, double seconds, int loops) {
@@ -1380,6 +1927,7 @@ public final class PsychLuaRuntime implements AutoCloseable {
         if (beat != lastBeat) { lastBeat = beat; setAll("curBeat", beat); call("onBeatHit"); }
         if (section != lastSection) { lastSection = section; setAll("curSection", section); call("onSectionHit"); }
         if (!songStarted && host.psychLuaSongStarted()) { songStarted = true; call("onSongStart"); }
+        updateSubstate(elapsedSeconds);
         call("onUpdatePost", elapsedSeconds);
         for (int key : queriedKeys) previousKeys.put(key, keyDown(key));
         for (String control : queriedControls) previousControls.put(control, controlDown(control));
@@ -1417,18 +1965,33 @@ public final class PsychLuaRuntime implements AutoCloseable {
         setAll("combo", host.psychLuaCombo());
         setAll("health", host.psychLuaHealth());
         setAll("mustHitSection", host.psychLuaMustHit());
-        setAll("startedCountdown", true);
+        setAll("gfSection", host.psychLuaGfSection());
+        setAll("altAnim", host.psychLuaAltAnim());
+        setAll("hits", host.psychLuaHits());
+        setAll("deaths", host.psychLuaDeaths());
+        setAll("totalPlayed", host.psychLuaTotalPlayed());
+        setAll("totalNotesHit", host.psychLuaTotalNotesHit());
+        setAll("rating", host.psychLuaRating());
+        setAll("ratingName", host.psychLuaRatingName());
+        setAll("ratingFC", host.psychLuaRatingFC());
+        setAll("playbackRate", host.psychLuaPlaybackRate());
+        setAll("inGameOver", host.psychLuaInGameOver());
+        setAll("startedCountdown", host.psychLuaStartedCountdown());
     }
 
     private void updateTweensAndTimers() {
         long now = System.currentTimeMillis();
         for (Tween tween : new ArrayList<>(tweens.values())) {
-            double t = Math.min(1, (now - tween.start) / (double) tween.durationMs);
-            double value = tween.from + (tween.to - tween.from) * PsychEasing.apply(tween.ease, t);
-            if (tween.path.startsWith("strumLineNotes.")) {
-                String[] parts = tween.path.split("\\.");
-                if (parts.length >= 3) host.psychLuaSetGroup("strumLineNotes", Integer.parseInt(parts[1]), parts[2], value);
-            } else setProperty(tween.path, value);
+            long elapsed = now - tween.start - tween.startDelayMs;
+            if (elapsed < 0) continue; // still inside the tween's start delay
+            double t = Math.min(1, elapsed / (double) tween.durationMs);
+            double eased = PsychEasing.apply(tween.ease, t);
+            for (TweenTarget target : tween.targets) {
+                applyTweenValue(target.path, target.from + (target.to - target.from) * eased);
+            }
+            if (tween.colorPath != null) {
+                applyTweenValue(tween.colorPath, blendColor(tween.colorFrom, tween.colorTo, eased));
+            }
             if (t >= 1) { tweens.remove(tween.tag); call("onTweenCompleted", tween.tag); }
         }
         for (Timer timer : new ArrayList<>(timers.values())) {
@@ -1469,6 +2032,49 @@ public final class PsychLuaRuntime implements AutoCloseable {
     public boolean onPause() { return !isStop(call("onPause")); }
     public void onResume() { call("onResume"); }
     public boolean onEndSong() { return !isStop(call("onEndSong")); }
+
+    /** Fired for a keypress that hit no note; Psych calls this instead of a miss. */
+    public void onGhostTap(int lane) { call("onGhostTap", lane); }
+
+    /** Psych splits key input into a cancellable pre pass and a plain notification. */
+    public boolean onKeyPressPre(int lane) { return !isStop(call("onKeyPressPre", lane)); }
+    public void onKeyPress(int lane) { call("onKeyPress", lane); }
+    public boolean onKeyReleasePre(int lane) { return !isStop(call("onKeyReleasePre", lane)); }
+    public void onKeyRelease(int lane) { call("onKeyRelease", lane); }
+
+    /** Returning Function_Stop from onGameOver cancels the death, as in Psych. */
+    public boolean onGameOver() { return !isStop(call("onGameOver")); }
+    public void onGameOverStart() { call("onGameOverStart"); }
+    public void onGameOverConfirm(boolean retry) { call("onGameOverConfirm", retry); }
+
+    public void onCountdownStarted() { call("onCountdownStarted"); }
+
+    /** {@code counter} counts 0-4 across "3", "2", "1", "Go!", and the silent final tick. */
+    public boolean onCountdownTick(int counter) {
+        return !isStop(call("onCountdownTick", counter));
+    }
+
+    public void onSpawnNote(int index, int lane, String type, boolean sustain, double strumTime) {
+        call("onSpawnNote", index, lane, type, sustain, strumTime);
+    }
+
+    /** Announced once per chart event when the chart is first loaded. */
+    public void onEventPushed(String name, String value1, String value2, double time) {
+        call("onEventPushed", name, value1, value2, time);
+    }
+
+    public void eventEarlyTrigger(String name, String value1, String value2, double time) {
+        call("eventEarlyTrigger", name, value1, value2, time);
+    }
+
+    /** {@code focus} is the character role the camera moved to. */
+    public void onMoveCamera(String focus) { call("onMoveCamera", focus); }
+
+    /** Returning Function_Stop keeps Blockified's own rating values unchanged. */
+    public boolean onRecalculateRating() { return !isStop(call("onRecalculateRating")); }
+
+    public boolean preUpdateScore(boolean miss) { return !isStop(call("preUpdateScore", miss)); }
+    public void onUpdateScore(boolean miss) { call("onUpdateScore", miss); }
 
     public void reloadFonts() { fontLoader.close(); }
 
@@ -1589,7 +2195,8 @@ public final class PsychLuaRuntime implements AutoCloseable {
                             frame.frameX, frame.frameY, frame.rotated);
                     double[] offset = currentAnimationOffset(o);
                     worldObjects.add(new LuaWorldObject.Sprite(
-                            o.texture, o.textureWidth, o.textureHeight, renderFrame, offset[0], offset[1],
+                            activeTexture(o), activeTextureWidth(o), activeTextureHeight(o),
+                            renderFrame, offset[0], offset[1],
                             o.x, o.y, o.z, o.width, o.height, o.graphicWidth, o.graphicHeight,
                             o.scaleX, o.scaleY, o.alpha, o.angle, o.rotationX, o.rotationY, o.color,
                             o.worldBillboard, o.worldLighting));
@@ -1624,22 +2231,23 @@ public final class PsychLuaRuntime implements AutoCloseable {
         // Gui batches do not guarantee that the previous layer left source-alpha
         // blending active. Every Lua object must support the full 0..1 range.
         RenderSystem.enableBlend();
-        RenderSystem.defaultBlendFunc();
+        // Psych's "add" blend brightens what is underneath; every other mode it
+        // accepts has no distinct Minecraft equivalent and draws normally.
+        boolean additive = "add".equalsIgnoreCase(o.blend) || "additive".equalsIgnoreCase(o.blend);
+        if (additive) {
+            RenderSystem.blendFunc(com.mojang.blaze3d.platform.GlStateManager.SourceFactor.SRC_ALPHA,
+                    com.mojang.blaze3d.platform.GlStateManager.DestFactor.ONE);
+        } else {
+            RenderSystem.defaultBlendFunc();
+        }
         if (o.textObject) {
             float scale = Math.max(0.25f, o.textSize / 9f);
             gui.pose().scale(scale, scale, 1);
             Font selected = o.fontName.isBlank() ? null : fontLoader.get(o.fontName);
             Font font = selected == null ? Minecraft.getInstance().font : selected;
-            int wrapWidth = o.width <= 0 ? Integer.MAX_VALUE
+            int wrapWidth = o.width <= 0 || o.autoSize ? Integer.MAX_VALUE
                     : Math.max(1, (int) Math.floor(o.width / scale));
-            if (wrapWidth == Integer.MAX_VALUE) {
-                gui.drawString(font, o.text, 0, 0, color, false);
-            } else {
-                int line = 0;
-                for (var part : font.split(Component.literal(o.text), wrapWidth)) {
-                    gui.drawString(font, part, 0, line++ * 9, color, false);
-                }
-            }
+            renderText(gui, o, font, wrapWidth, color);
         } else if (o.texture != null) {
             float red = ((o.color >> 16) & 255) / 255f;
             float green = ((o.color >> 8) & 255) / 255f;
@@ -1672,6 +2280,96 @@ public final class PsychLuaRuntime implements AutoCloseable {
                 ? null : object.atlas.allFrames().get(0);
     }
 
+    /**
+     * Draws a Lua text object with Psych's alignment, border, and italic styling.
+     * The border is stroked first so the fill always sits on top of it, matching
+     * FlxText's outline and shadow styles.
+     */
+    private void renderText(GuiGraphics gui, LuaObject o, Font font, int wrapWidth, int color) {
+        List<net.minecraft.util.FormattedCharSequence> lines = wrapWidth == Integer.MAX_VALUE
+                ? List.of(Component.literal(o.text).getVisualOrderText())
+                : font.split(Component.literal(o.text), wrapWidth);
+        // Psych stops drawing once the text passes an explicit height limit.
+        int maxLines = o.heightLimit <= 0 ? lines.size()
+                : Math.max(1, (int) Math.floor(o.heightLimit / 9.0));
+        int borderAlpha = Math.max(0, Math.min(255, (int) Math.round(o.alpha * 255)));
+        int borderColor = (o.borderColor & 0x00FFFFFF) | borderAlpha << 24;
+        int stroke = (int) Math.round(Math.abs(o.borderSize));
+
+        for (int i = 0; i < Math.min(maxLines, lines.size()); i++) {
+            var line = lines.get(i);
+            int y = i * 9;
+            int x = alignedX(o, font.width(line), wrapWidth);
+            if (stroke > 0) drawTextBorder(gui, o, font, line, x, y, stroke, borderColor);
+            drawTextLine(gui, o, font, line, x, y, color);
+        }
+    }
+
+    /** Psych's left/center/right/justify alignment inside the wrap width. */
+    private static int alignedX(LuaObject o, int lineWidth, int wrapWidth) {
+        if (wrapWidth == Integer.MAX_VALUE) return 0;
+        return switch (o.alignment.toLowerCase(Locale.ROOT)) {
+            case "center", "centered" -> (wrapWidth - lineWidth) / 2;
+            case "right" -> wrapWidth - lineWidth;
+            default -> 0;
+        };
+    }
+
+    private void drawTextBorder(GuiGraphics gui, LuaObject o, Font font,
+                                net.minecraft.util.FormattedCharSequence line,
+                                int x, int y, int stroke, int borderColor) {
+        if ("shadow".equalsIgnoreCase(o.borderStyle)) {
+            drawTextLine(gui, o, font, line, x + stroke, y + stroke, borderColor);
+            return;
+        }
+        // Outline draws the eight surrounding offsets, like FlxText's OUTLINE style.
+        for (int dx = -stroke; dx <= stroke; dx++) {
+            for (int dy = -stroke; dy <= stroke; dy++) {
+                if (dx == 0 && dy == 0) continue;
+                drawTextLine(gui, o, font, line, x + dx, y + dy, borderColor);
+            }
+        }
+    }
+
+    /** Italic is a horizontal shear, since Minecraft fonts have no oblique variant. */
+    private void drawTextLine(GuiGraphics gui, LuaObject o, Font font,
+                              net.minecraft.util.FormattedCharSequence line,
+                              int x, int y, int color) {
+        if (!o.italic) {
+            gui.drawString(font, line, x, y, color, false);
+            return;
+        }
+        gui.pose().pushPose();
+        org.joml.Matrix4f shear = new org.joml.Matrix4f().set(new float[]{
+                1, 0, 0, 0,
+                -0.2f, 1, 0, 0,
+                0, 0, 1, 0,
+                0, 0, 0, 1});
+        gui.pose().translate(0, y, 0);
+        gui.pose().mulPose(shear);
+        gui.pose().translate(0, -y, 0);
+        gui.drawString(font, line, x, y, color, false);
+        gui.pose().popPose();
+    }
+
+    /** The sheet the current animation draws from, falling back to the object's own. */
+    private static ResourceLocation activeTexture(LuaObject object) {
+        LuaAnimation animation = currentAnimation(object);
+        return animation != null && animation.texture != null ? animation.texture : object.texture;
+    }
+
+    private static int activeTextureWidth(LuaObject object) {
+        LuaAnimation animation = currentAnimation(object);
+        return animation != null && animation.texture != null
+                ? animation.textureWidth : object.textureWidth;
+    }
+
+    private static int activeTextureHeight(LuaObject object) {
+        LuaAnimation animation = currentAnimation(object);
+        return animation != null && animation.texture != null
+                ? animation.textureHeight : object.textureHeight;
+    }
+
     private static void renderAtlasFrame(GuiGraphics gui, LuaObject object, SparrowAtlas.Frame frame) {
         double[] offset = currentAnimationOffset(object);
         // Keep one scale for the whole atlas. Scaling every frame against its
@@ -1686,8 +2384,8 @@ public final class PsychLuaRuntime implements AutoCloseable {
             gui.pose().translate(0, frame.w, 0);
             gui.pose().mulPose(com.mojang.math.Axis.ZP.rotationDegrees(-90));
         }
-        gui.blit(object.texture, 0, 0, frame.x, frame.y, frame.w, frame.h,
-                Math.max(1, object.textureWidth), Math.max(1, object.textureHeight));
+        gui.blit(activeTexture(object), 0, 0, frame.x, frame.y, frame.w, frame.h,
+                Math.max(1, activeTextureWidth(object)), Math.max(1, activeTextureHeight(object)));
         gui.pose().popPose();
     }
 
@@ -1724,6 +2422,160 @@ public final class PsychLuaRuntime implements AutoCloseable {
             Files.writeString(target, content);
             return true;
         } catch (Exception ignored) { return false; }
+    }
+
+    // ------------------------------------------------------------- substates
+
+    private void openSubstate(String name, boolean pauseGame) {
+        if (substateName != null) closeSubstate();
+        substateName = name == null ? "" : name;
+        substatePauses = pauseGame;
+        substateMembers.clear();
+        call("onCustomSubstateCreate", substateName);
+        call("onCustomSubstateCreatePost", substateName);
+    }
+
+    private void closeSubstate() {
+        if (substateName == null) return;
+        String name = substateName;
+        substateName = null;
+        substatePauses = false;
+        substateMembers.clear();
+        call("onCustomSubstateDestroy", name);
+    }
+
+    /** Psych inserts an existing Lua sprite into the open substate at a position. */
+    private void insertToSubstate(String tag, int position) {
+        if (substateName == null || tag == null || !objects.containsKey(tag)) return;
+        substateMembers.remove(tag);
+        if (position < 0 || position >= substateMembers.size()) substateMembers.add(tag);
+        else substateMembers.add(position, tag);
+    }
+
+    /** True while a substate opened with pauseGame is holding gameplay. */
+    public boolean substatePausesGame() {
+        return substateName != null && substatePauses;
+    }
+
+    public boolean substateOpen() {
+        return substateName != null;
+    }
+
+    /** Draws the open substate's members above every other layer. */
+    public void renderSubstate(GuiGraphics gui) {
+        if (closed || substateName == null) return;
+        float z = 0;
+        for (String tag : substateMembers) {
+            LuaObject object = objects.get(tag);
+            if (object != null && object.visible) renderObject(gui, object, z++);
+        }
+    }
+
+    private void updateSubstate(double elapsedSeconds) {
+        if (substateName == null) return;
+        call("onCustomSubstateUpdate", substateName, elapsedSeconds);
+        call("onCustomSubstateUpdatePost", substateName, elapsedSeconds);
+    }
+
+    // ------------------------------------------------------- class reflection
+
+    /**
+     * Psych scripts reach into engine classes through these calls. Blockified has
+     * no Haxe classes, so the well-known Psych paths are mapped onto the equivalent
+     * Blockified property; anything else returns nil rather than guessing.
+     */
+    private Object classProperty(String classVar, String variable) {
+        String path = classPropertyPath(classVar, variable);
+        if (path == null) return null;
+        return switch (path) {
+            case "@screenWidth" -> VIRTUAL_WIDTH;
+            case "@screenHeight" -> VIRTUAL_HEIGHT;
+            default -> getProperty(path);
+        };
+    }
+
+    private void setClassProperty(String classVar, String variable, Object value) {
+        String path = classPropertyPath(classVar, variable);
+        if (path == null || path.startsWith("@")) return;
+        setProperty(path, value);
+    }
+
+    /**
+     * Maps a Psych class path to a Blockified property path. Client preferences
+     * and PlayState fields are already exposed as script globals, so they route
+     * through the same property lookup a plain getProperty would use.
+     */
+    private static String classPropertyPath(String classVar, String variable) {
+        if (classVar == null || variable == null) return null;
+        String owner = classVar.substring(classVar.lastIndexOf('.') + 1);
+        String field = variable.startsWith("data.") ? variable.substring(5) : variable;
+        return switch (owner) {
+            case "ClientPrefs" -> field;
+            case "PlayState" -> field.startsWith("instance.") ? field.substring(9) : field;
+            case "FlxG" -> switch (field) {
+                case "width" -> "@screenWidth";
+                case "height" -> "@screenHeight";
+                default -> null;
+            };
+            default -> null;
+        };
+    }
+
+    /** Deletion is confined to the song folder, exactly like saveFile's writes. */
+    private boolean deleteSafe(String path) {
+        if (songFolder == null) return false;
+        try {
+            Path target = songFolder.resolve(path).normalize();
+            if (!target.startsWith(songFolder)) return false;
+            return Files.deleteIfExists(target);
+        } catch (Exception ignored) { return false; }
+    }
+
+    /**
+     * Psych substitutes {@code {1}}, {@code {2}}, ... in a translated phrase with
+     * the supplied arguments. The phrase itself is the caller's default here.
+     */
+    private static String formatTranslation(String phrase, LuaValue args) {
+        if (phrase == null || !args.istable()) return phrase == null ? "" : phrase;
+        String result = phrase;
+        LuaTable table = args.checktable();
+        for (int i = 1; i <= table.length(); i++) {
+            result = result.replace("{" + i + "}", table.get(i).tojstring());
+        }
+        return result;
+    }
+
+    /**
+     * Psych's getModSetting reads a value the player chose from the pack's
+     * settings.json. Blockified has no settings UI, so the declared default is
+     * returned; a script branching on it still behaves as the pack intended.
+     */
+    private LuaValue modSetting(String saveTag, String modName) {
+        Path root = modName == null || modName.isBlank() ? modRoot
+                : SongLibrary.modsDir().resolve(modName);
+        if (root == null) return LuaValue.NIL;
+        Path settings = root.resolve("data").resolve("settings.json");
+        if (!Files.isRegularFile(settings)) settings = root.resolve("settings.json");
+        if (!Files.isRegularFile(settings)) return LuaValue.NIL;
+        try {
+            var parsed = com.google.gson.JsonParser.parseString(Files.readString(settings));
+            if (!parsed.isJsonArray()) return LuaValue.NIL;
+            for (var element : parsed.getAsJsonArray()) {
+                if (!element.isJsonObject()) continue;
+                var entry = element.getAsJsonObject();
+                if (!entry.has("save") || !entry.get("save").getAsString().equals(saveTag)) continue;
+                if (!entry.has("value")) return LuaValue.NIL;
+                var value = entry.get("value");
+                if (!value.isJsonPrimitive()) return LuaValue.NIL;
+                var primitive = value.getAsJsonPrimitive();
+                if (primitive.isBoolean()) return LuaValue.valueOf(primitive.getAsBoolean());
+                if (primitive.isNumber()) return LuaValue.valueOf(primitive.getAsDouble());
+                return LuaValue.valueOf(primitive.getAsString());
+            }
+        } catch (Exception error) {
+            warnOnce("getModSetting: " + compactError(error));
+        }
+        return LuaValue.NIL;
     }
 
     private LuaValue directoryList(String folder) {
@@ -1809,6 +2661,8 @@ public final class PsychLuaRuntime implements AutoCloseable {
         call("onDestroy");
         closed = true;
         for (LuaObject object : objects.values()) disposeGraphic(object);
+        for (SparrowAtlas atlas : precached.values()) atlas.close();
+        precached.clear();
         soundPlayer.close();
         fontLoader.close();
         scripts.clear(); objects.clear(); timers.clear(); tweens.clear(); sharedVars.clear();

@@ -589,6 +589,12 @@ public class FnfSettingsScreen extends Screen {
                 HitsoundPlayer.play();
             }
         });
+
+        addRenderableWidget(Button.builder(toggleLabel("Botplay", ClientOptions.get().botplay), b -> {
+            ClientOptions.get().botplay = !ClientOptions.get().botplay;
+            ClientOptions.save();
+            b.setMessage(toggleLabel("Botplay", ClientOptions.get().botplay));
+        }).bounds(x, rowY(6), w, 20).build());
     }
 
     private Component scrollSpeedMsg() {

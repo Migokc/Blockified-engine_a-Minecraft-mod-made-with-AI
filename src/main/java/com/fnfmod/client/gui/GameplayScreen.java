@@ -19,6 +19,10 @@ import com.fnfmod.client.gameplay.PsychBuiltinEventHandler;
 import com.fnfmod.client.gameplay.PsychAssetResolver;
 import com.fnfmod.gameplay.PlaybackMode;
 import com.fnfmod.gameplay.PlaybackPolicy;
+import com.fnfmod.gameplay.PerformerCollisions;
+import com.fnfmod.gameplay.PerformerShadows;
+import com.fnfmod.gameplay.PsychRating;
+import com.fnfmod.client.camera.CameraOverlay;
 import com.fnfmod.client.lua.PsychLuaRuntime;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.Camera;
@@ -101,6 +105,8 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     private final double[] secStarts;
     private final boolean[] secFocusPlayer;
     private final boolean[] secFocusGirlfriend;
+    /** Per-section alt-animation flag, exposed to Lua as Psych's {@code altAnim}. */
+    private final boolean[] secAltAnim;
     private final double[] secBeatMs;
     private int camSection = -1;
     /** Null follows Must Hit sections; otherwise an event owns camera focus. */
@@ -108,6 +114,8 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
 
     private static class GameNote {
         final SongChart.Note data;
+        /** Set once the note enters the scroll window and onSpawnNote has fired. */
+        boolean spawnAnnounced;
         boolean hit, missed, holdDropped;
         boolean holdComplete;
         /** ms when the hold was released (>=0 = in the re-tap grace window), -1 = held. */
@@ -135,6 +143,26 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
 
     // scoring
     private int score, combo, misses, maxCombo;
+    /** Game overs this session, exposed to Lua as Psych's {@code deaths}. */
+    private int deaths;
+    /** Last Psych countdown index announced to Lua; -1 before the countdown starts. */
+    private int lastCountdownTick = -1;
+    private boolean countdownAnnounced;
+    /**
+     * Rating values a script forced with setRatingPercent/Name/FC. Null means the
+     * value is still computed from live counters, so a script can override one
+     * part of the rating without freezing the rest.
+     */
+    private Double forcedRatingPercent;
+    private String forcedRatingName;
+    private String forcedRatingFC;
+    /**
+     * Set once a script writes score, hits, or a rating. Such a run is shown
+     * normally but never saved as a personal best, the same treatment botplay gets.
+     */
+    private boolean scriptAlteredScore;
+    /** When a pausing Lua substate took over, so the song can be resumed in step. */
+    private long substatePausedAtMs = -1;
     private final int[] judgements = new int[5]; // sick good bad shit miss
     private double accuracySum;
     private int accuracyCount;
@@ -169,16 +197,12 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     private boolean preSongEventsProcessed;
     /**
      * Sustain notes replay the sing animation so it keeps moving through the hold.
-     * BBS advances an animation state one frame per game tick, so two frames is
-     * 100 ms — short enough to loop cleanly instead of visibly restarting.
+     * BBS advances an animation state one frame per game tick (50 ms), so replaying
+     * every frame keeps the loop as tight as the animation itself.
      */
-    private static final long BBS_HOLD_LOOP_MS = 100;
+    private static final long BBS_HOLD_LOOP_MS = 50;
     private long lastSingMs;
     private long partnerLastSingMs;
-    // For loop-idle characters: the sing timestamp the idle was last (re)started
-    // for, so the idle fires once per return-to-idle instead of every beat.
-    private long myIdleAnchor = Long.MIN_VALUE;
-    private long partnerIdleAnchor = Long.MIN_VALUE;
     private int lastSentHealthHalf = Integer.MIN_VALUE;
     private int lastSentFoodLevel = Integer.MIN_VALUE;
     private long lastVanillaHudSyncMs;
@@ -196,6 +220,10 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     private boolean editorPlaytest;
     private boolean editorPreview;
     private double editorStartMs;
+    // Where the player stood before an editor playtest teleported them to the
+    // machine stage, restored when the playtest returns to the editor.
+    private Vec3 editorReturnPos;
+    private float editorReturnYaw, editorReturnPitch;
     private Supplier<Screen> editorReturnFactory;
     private PsychLuaRuntime luaRuntime;
     private final GameplayEventDispatcher eventDispatcher;
@@ -217,6 +245,8 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     private final double[] luaStrumAlpha = new double[8];
     private final double[] luaStrumAngle = new double[8];
     private final boolean[] luaStrumDownScroll = new boolean[8];
+    /** Psych strum scroll direction in degrees; 90 is the normal vertical path. */
+    private final double[] luaStrumDirection = new double[8];
     private double eventScrollMultiplier = 1;
     private double eventScrollFrom = 1;
     private double eventScrollTarget = 1;
@@ -270,6 +300,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         Arrays.fill(luaStrumY, Double.NaN);
         Arrays.fill(luaStrumAlpha, 1.0);
         Arrays.fill(luaStrumDownScroll, ClientOptions.get().downscroll);
+        Arrays.fill(luaStrumDirection, 90.0);
 
         for (int i = 0; i < 4; i++) {
             myLanes[i] = new ArrayList<>();
@@ -294,6 +325,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         secStarts = new double[n];
         secFocusPlayer = new boolean[n];
         secFocusGirlfriend = new boolean[n];
+        secAltAnim = new boolean[n];
         secBeatMs = new double[n];
         double time = 0;
         double bpm = chart.startBpm;
@@ -303,6 +335,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             secStarts[i] = time;
             secFocusPlayer[i] = s == null || s.mustHit;
             secFocusGirlfriend[i] = s != null && s.gfSection;
+            secAltAnim[i] = s != null && s.altAnim;
             secBeatMs[i] = 60000.0 / bpm;
             time += (s == null ? 4 : s.sectionBeats) * (60000.0 / bpm);
         }
@@ -316,6 +349,19 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     public static GameplayScreen editorPlaytest(BlockPos machinePos, SongChart chart, SongPlayer player,
                                                 double startMs, boolean preview, String songId, Path songFolder,
                                                 SongEntry songEntry, Supplier<Screen> returnFactory) {
+        return editorPlaytest(machinePos, chart, player, startMs, preview, songId, songFolder,
+                songEntry, returnFactory, null);
+    }
+
+    /**
+     * {@code requestedPolicy} is the look the chart was opened with. The editor
+     * has to supply it because opening the editor tears the session down, so by
+     * the time a playtest starts there is no session left to read the look from.
+     */
+    public static GameplayScreen editorPlaytest(BlockPos machinePos, SongChart chart, SongPlayer player,
+                                                double startMs, boolean preview, String songId, Path songFolder,
+                                                SongEntry songEntry, Supplier<Screen> returnFactory,
+                                                PlaybackPolicy requestedPolicy) {
         GameplayScreen screen = new GameplayScreen(machinePos, chart, player, PlayMode.PLAYER,
                 null, "", CharacterAnimations.DEFAULT_SET, -1, System.currentTimeMillis() + 1000);
         screen.editorPlaytest = true;
@@ -327,9 +373,17 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         screen.runtimeSongEntry = songEntry;
         boolean currentSessionSong = ClientSession.activePos != null && songId != null
                 && songId.equals(ClientSession.songId);
-        screen.playbackPolicy = currentSessionSong
-                ? new PlaybackPolicy(ClientSession.playbackMode, ClientSession.songAssets)
-                : PlaybackPolicy.resolve(PlaybackMode.LEGACY, songEntry);
+        if (requestedPolicy != null) {
+            // The look the editor was opened with, which is the only accurate
+            // source once the session has been left.
+            screen.playbackPolicy = requestedPolicy;
+        } else if (currentSessionSong) {
+            screen.playbackPolicy = new PlaybackPolicy(ClientSession.playbackMode, ClientSession.songAssets);
+        } else {
+            // No look was chosen for this chart. Use the same default a normal
+            // play starts from, so a playtest is not silently a different mode.
+            screen.playbackPolicy = PlaybackPolicy.resolve(PlaybackMode.MINECRAFT, songEntry);
+        }
         CharacterAnimations.useSongFolder(screen.playbackPolicy.songAssets() && songEntry != null
                 ? songEntry.animationRoot() : null, chart.player1, chart.player2);
         screen.assetResolver = new PsychAssetResolver(songFolder, songEntry, screen.playbackPolicy, chart.stage);
@@ -394,16 +448,23 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         float[] myBase = CharacterAnimations.baseCameraOffset(myAnimSet, myRole());
 
         if (editorPlaytest) {
-            // The real gameplay session has already restored the player before
-            // opening the editor, so its old stage coordinates no longer match.
-            // Build a virtual opponent relative to the player's current position.
-            Vec3 playerFocus = mc.player.position().add(0, 1.0, 0);
-            Vec3 opponentFocus = playerFocus.add(
-                    -right.getStepX() * 3.0, 0, -right.getStepZ() * 3.0);
-            Supplier<Vec3> virtualOpponent = () -> opponentFocus;
+            // Put the performer on the machine's real stage so the camera, player
+            // and opponent spot line up exactly as a normally selected song does.
+            // The player's original transform is restored when the editor reopens.
+            float yaw = facing.toYRot();
+            if (editorReturnPos == null) {
+                editorReturnPos = mc.player.position();
+                editorReturnYaw = mc.player.getYRot();
+                editorReturnPitch = mc.player.getXRot();
+            }
+            mc.player.setPos(playerSpot.x, playerSpot.y, playerSpot.z);
+            mc.player.setYRot(yaw);
+            mc.player.setYHeadRot(yaw);
+            mc.player.setYBodyRot(yaw);
+            Supplier<Vec3> opponentFocus = () -> opponentSpot.add(0, 1.0, 0);
             float[] opponentBase = CharacterAnimations.baseCameraOffset(
                     CharacterAnimations.DEFAULT_SET, "opponent");
-            GameplayCamera.begin(playerFocus, facing.toYRot(), mePos, mePos, virtualOpponent,
+            GameplayCamera.begin(playerSpot.add(0, 1.0, 0), yaw, mePos, mePos, opponentFocus,
                     myBase, opponentBase, playbackPolicy.mode());
             return;
         }
@@ -438,11 +499,14 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
 
     private void updateSongPos() {
         if (phase == Phase.PAUSED || phase == Phase.GAMEOVER) return;
+        // A substate opened with pauseGame holds the song where it is, like Psych.
+        if (luaRuntime != null && luaRuntime.substatePausesGame()) return;
         double base = editorPlaytest ? editorStartMs : 0;
         double audioOffset = chart.offsetMs;
         if (!songPlayer.isStarted()) {
             double countdownTime = System.currentTimeMillis() - startAtEpochMs;
             songPos = countdownTime + base;
+            if (phase == Phase.COUNTDOWN) announceCountdown(countdownTime);
             if (phase == Phase.COUNTDOWN && countdownTime >= 0) {
                 phase = Phase.PLAYING;
             }
@@ -459,6 +523,42 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         if (songPlayer.isStarted()) {
             songPos = songPlayer.positionMs() + audioOffset + ClientOptions.get().offsetMs;
         }
+    }
+
+    /**
+     * Starts and stops the song alongside a pausing Lua substate, reusing the same
+     * countdown-shift the pause menu applies so reopening does not skip the intro.
+     */
+    private void syncSubstatePause() {
+        boolean pausing = luaRuntime != null && luaRuntime.substatePausesGame();
+        if (pausing && substatePausedAtMs < 0) {
+            substatePausedAtMs = System.currentTimeMillis();
+            songPlayer.pause();
+        } else if (!pausing && substatePausedAtMs >= 0) {
+            long held = System.currentTimeMillis() - substatePausedAtMs;
+            substatePausedAtMs = -1;
+            if (songPlayer.isStarted()) songPlayer.resume();
+            else startAtEpochMs += held;
+        }
+    }
+
+    /**
+     * Mirrors Psych's countdown hooks onto Blockified's one-second cadence.
+     * {@code counter} runs 0-3 across "3", "2", "1", and "Go!", matching the
+     * indices Psych passes to {@code onCountdownTick}.
+     */
+    private void announceCountdown(double countdownTime) {
+        if (luaRuntime == null || countdownTime > 0) return;
+        if (!countdownAnnounced) {
+            countdownAnnounced = true;
+            luaRuntime.onCountdownStarted();
+        }
+        int remainingSeconds = (int) Math.ceil(-countdownTime / 1000.0);
+        if (remainingSeconds > 4) return;
+        int counter = 4 - remainingSeconds;
+        if (counter <= lastCountdownTick) return;
+        lastCountdownTick = counter;
+        luaRuntime.onCountdownTick(counter);
     }
 
     private double pxPerMs() {
@@ -518,6 +618,11 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             luaRuntime = PsychLuaRuntime.load(this, chart, runtimeSongId, runtimeSongFolder,
                     runtimeSongEntry, playbackPolicy);
             rebuildNoteLanesAfterLuaCreate();
+            // Psych announces the whole event list once, right after scripts load,
+            // so a script can pre-cache assets for events it will receive later.
+            for (SongChart.Event event : chart.events) {
+                luaRuntime.onEventPushed(event.name, event.value1, event.value2, event.timeMs);
+            }
         }
         // Morph the performers during the count-in. applyForm is a no-op once the
         // form is already on, so retrying each frame just covers a partner or bot
@@ -549,6 +654,10 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         }
 
         if (phase != Phase.PLAYING && phase != Phase.COUNTDOWN) return;
+        syncSubstatePause();
+        // While a pausing substate is open the chart does not advance, so notes,
+        // events and holds are all left exactly where they were.
+        if (luaRuntime != null && luaRuntime.substatePausesGame()) return;
 
         songPlayer.resync();
         if (phase == Phase.PLAYING) processEvents();
@@ -565,6 +674,11 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             if (myStrumFlash[i] > 0) myStrumFlash[i] -= dtMs;
             if (otherStrumFlash[i] > 0) otherStrumFlash[i] -= dtMs;
         }
+
+        announceSpawnedNotes();
+
+        // botplay hits your notes automatically before misses are swept
+        botplayTick();
 
         // misses (notes that scrolled past)
         sweepMisses(myLanes, myLaneIndex);
@@ -675,7 +789,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                 if (psychScene != null) {
                     psychScene.focus(cameraTarget);
                 }
-                if (luaRuntime != null) luaRuntime.call("onMoveCamera", cameraTarget);
+                if (luaRuntime != null) luaRuntime.onMoveCamera(cameraTarget);
             }
         }
 
@@ -690,21 +804,22 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             }
             if (phase == Phase.PLAYING && psychScene != null) psychScene.beat(beat);
             if (phase == Phase.PLAYING) {
+                // loopIdle characters are driven by their BBS "main" state, which
+                // setForm starts and each sing returns to on its own. Re-triggering
+                // idle would expire that looping state, so leave it to BBS.
                 double singHold = singHoldMs();
                 if (nowMs - lastSingMs > singHold && minecraft.player != null
-                        && !(CharacterAnimations.loopIdle(myAnimSet, myRole()) && myIdleAnchor == lastSingMs)) {
+                        && !CharacterAnimations.loopIdle(myAnimSet, myRole())) {
                     playIdle(minecraft.player, myAnimSet, myRole(), beat);
-                    myIdleAnchor = lastSingMs;
                 }
                 if (partnerId != null && minecraft.level != null && nowMs - partnerLastSingMs > singHold
-                        && !(CharacterAnimations.loopIdle(partnerAnimSet, partnerRole())
-                        && partnerIdleAnchor == partnerLastSingMs)) {
+                        && !CharacterAnimations.loopIdle(partnerAnimSet, partnerRole())) {
                     Player partner = minecraft.level.getPlayerByUUID(partnerId);
-                    if (partner != null) {
-                        playIdle(partner, partnerAnimSet, partnerRole(), beat);
-                        partnerIdleAnchor = partnerLastSingMs;
-                    }
+                    if (partner != null) playIdle(partner, partnerAnimSet, partnerRole(), beat);
                 }
+                // Chart-added performers get the same beat idle. loopIdle ones are
+                // skipped inside danceAll, exactly like the two above.
+                extraCharacters.danceAll();
             }
         }
 
@@ -1280,6 +1395,15 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         return property.equals("grav") || property.equals("gravity");
     }
 
+    private static boolean isShadowProperty(String property) {
+        return property.equals("shadow") || property.equals("shadows");
+    }
+
+    private static boolean isCollisionProperty(String property) {
+        return property.equals("collision") || property.equals("collisions")
+                || property.equals("solid");
+    }
+
     // Original noGravity per performer entity, so a chart that disables gravity is
     // undone on restart or quit instead of leaving the player floating.
     private final java.util.Map<Integer, Boolean> performerGravityOriginal = new java.util.HashMap<>();
@@ -1287,6 +1411,60 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     private void setPerformerGravity(Entity entity, boolean enabled) {
         performerGravityOriginal.putIfAbsent(entity.getId(), entity.isNoGravity());
         entity.setNoGravity(!enabled);
+    }
+
+    /**
+     * Turns character-to-character pushing on or off for one performer. Real
+     * players keep their block collision: only the push between entities is
+     * suppressed, through {@link PerformerCollisions}.
+     */
+    public boolean psychLuaSetCharacterCollision(String tag, boolean enabled) {
+        if (extraCharacters.exists(tag)) return extraCharacters.setCollision(tag, enabled);
+        Entity performer = performerEntityForTag(tag);
+        if (performer == null) return false;
+        PerformerCollisions.setEnabled(performer.getId(), enabled);
+        return true;
+    }
+
+    public boolean psychLuaCharacterCollision(String tag) {
+        if (extraCharacters.exists(tag)) return extraCharacters.collision(tag);
+        Entity performer = performerEntityForTag(tag);
+        return performer != null && PerformerCollisions.enabled(performer.getId());
+    }
+
+    /**
+     * Shows or hides one performer's vanilla blob shadow. This is the dark oval
+     * on the ground, not a BBS form's shader shadow.
+     */
+    public boolean psychLuaSetCharacterShadow(String tag, boolean enabled) {
+        if (extraCharacters.exists(tag)) return extraCharacters.setShadow(tag, enabled);
+        Entity performer = performerEntityForTag(tag);
+        if (performer == null) return false;
+        PerformerShadows.setEnabled(performer.getId(), enabled);
+        return true;
+    }
+
+    public boolean psychLuaCharacterShadow(String tag) {
+        if (extraCharacters.exists(tag)) return extraCharacters.shadow(tag);
+        Entity performer = performerEntityForTag(tag);
+        return performer != null && PerformerShadows.enabled(performer.getId());
+    }
+
+    public void psychLuaSetAllCharacterShadows(boolean enabled) {
+        for (boolean side : new boolean[]{true, false}) {
+            Entity performer = performerEntity(side);
+            if (performer != null) PerformerShadows.setEnabled(performer.getId(), enabled);
+        }
+        extraCharacters.setAllShadows(enabled);
+    }
+
+    /** Applies one collision setting to both players and every chart performer. */
+    public void psychLuaSetAllCharacterCollisions(boolean enabled) {
+        for (boolean side : new boolean[]{true, false}) {
+            Entity performer = performerEntity(side);
+            if (performer != null) PerformerCollisions.setEnabled(performer.getId(), enabled);
+        }
+        extraCharacters.setAllCollisions(enabled);
     }
 
     private void restorePerformerGravity() {
@@ -1377,6 +1555,25 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         hitAttempt(lane, true);
     }
 
+    /** Bot auto-hits your notes on time and sustains holds. Score is not saved. */
+    private void botplayTick() {
+        if (!ClientOptions.get().botplay || phase != Phase.PLAYING) return;
+        for (int lane = 0; lane < 4; lane++) {
+            List<GameNote> list = myLanes[lane];
+            for (int i = myLaneIndex[lane]; i < list.size(); i++) {
+                GameNote n = list.get(i);
+                if (n.data.timeMs > songPos) break;
+                if (!n.hit && !n.missed) {
+                    if (!laneHeld[lane]) laneHeld[lane] = true;
+                    hitAttempt(lane, false);
+                }
+            }
+            // Keep the lane pressed while a sustain runs so the hold logic sustains
+            // it; release once nothing is holding, so tap receptors relax normally.
+            laneHeld[lane] = !activeHolds[lane].isEmpty();
+        }
+    }
+
     private void hitAttempt(int lane, boolean allowGhostMiss) {
         double inputPos = liveSongPos();
         GameNote best = findClosest(myLanes[lane], myLaneIndex[lane], inputPos);
@@ -1460,6 +1657,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             score += points[judgement];
             combo++;
             maxCombo = Math.max(maxCombo, combo);
+            recalculateRating(false);
         }
         health = Math.min(2f, health + (float) n.data.hitHealth);
         strumFlashFor(n)[n.data.lane] = 150;
@@ -1495,6 +1693,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         sendNoteEvent(lane, (byte) 4);
         if (luaRuntime != null) luaRuntime.onNoteMiss(
                 chart.notes.indexOf(n.data), lane, n.data.noteType, n.data.sustainMs > 30);
+        recalculateRating(true);
         checkDeath();
     }
 
@@ -1504,7 +1703,10 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         health = Math.max(0, health - 0.04f);
         muteVoices(myChartSideIsPlayer);
         sing(lane, true);
-        if (luaRuntime != null) luaRuntime.onNoteMissPress(lane);
+        if (luaRuntime != null) {
+            luaRuntime.onGhostTap(lane);
+            luaRuntime.onNoteMissPress(lane);
+        }
         checkDeath();
     }
 
@@ -1522,6 +1724,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         sendNoteEvent(lane, (byte) 4);
         if (luaRuntime != null) luaRuntime.onNoteMiss(
                 chart.notes.indexOf(hold.data), lane, hold.data.noteType, true);
+        recalculateRating(true);
         checkDeath();
     }
 
@@ -1544,7 +1747,43 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             luaRuntime.onNoteMiss(index, note.data.lane, note.data.noteType, note.data.sustainMs > 30);
             luaRuntime.onGoodNoteHit(index, note.data.lane, note.data.noteType, note.data.sustainMs > 30);
         }
+        recalculateRating(true);
         checkDeath();
+    }
+
+    /**
+     * Fires Psych's onSpawnNote as each note enters the scroll window. Blockified
+     * builds every note up front, so "spawn" is the moment the note would first
+     * become visible rather than an allocation.
+     */
+    private void announceSpawnedNotes() {
+        if (luaRuntime == null) return;
+        double window = height / Math.max(0.0001, pxPerMs());
+        double cutoff = songPos + window;
+        for (List<GameNote>[] lanes : List.of(myLanes, otherLanes)) {
+            for (List<GameNote> lane : lanes) {
+                for (GameNote note : lane) {
+                    if (note.data.timeMs > cutoff) break; // lanes stay time-sorted
+                    if (note.spawnAnnounced) continue;
+                    note.spawnAnnounced = true;
+                    luaRuntime.onSpawnNote(chart.notes.indexOf(note.data), note.data.lane,
+                            note.data.noteType, note.data.sustainMs > 30, note.data.timeMs);
+                }
+            }
+        }
+    }
+
+    /**
+     * Psych's rating pipeline: scripts may veto the recalculation with
+     * Function_Stop, then get a pre/post pair around the score display update.
+     * Blockified computes its rating from live counters, so the hooks exist for
+     * script notification and cancellation rather than to hold a cached value.
+     */
+    private void recalculateRating(boolean miss) {
+        if (luaRuntime == null) return;
+        if (!luaRuntime.onRecalculateRating()) return;
+        if (!luaRuntime.preUpdateScore(miss)) return;
+        luaRuntime.onUpdateScore(miss);
     }
 
     private void comboBreak() {
@@ -1559,8 +1798,15 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
 
     private void checkDeath() {
         if (health <= 0 && phase == Phase.PLAYING) {
+            // Psych lets onGameOver cancel the death outright, so ask before committing.
+            if (luaRuntime != null && !luaRuntime.onGameOver()) {
+                health = Math.max(health, 0.001f);
+                return;
+            }
             phase = Phase.GAMEOVER;
+            deaths++;
             songPlayer.pause();
+            if (luaRuntime != null) luaRuntime.onGameOverStart();
             if (duet) finishSong(true);
         }
     }
@@ -1607,7 +1853,8 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             endSent = true;
             PacketDistributor.sendToServer(new FnfPayloads.SongEndC2S(
                     machinePos, score, misses, accuracy(), failed));
-            if (!failed) saveBestScore();
+            // Botplay and script-altered results are shown but never recorded as a personal best.
+            if (!failed && !ClientOptions.get().botplay && !scriptAlteredScore) saveBestScore();
         }
         if (!failed) phase = Phase.RESULTS;
     }
@@ -1722,8 +1969,14 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             return true;
         }
         if (phase == Phase.GAMEOVER) {
-            if (keyCode == GLFW.GLFW_KEY_R && !duet) restart();
-            if (enter || keyCode == GLFW.GLFW_KEY_BACKSPACE) exit();
+            if (keyCode == GLFW.GLFW_KEY_R && !duet) {
+                if (luaRuntime != null) luaRuntime.onGameOverConfirm(true);
+                restart();
+            }
+            if (enter || keyCode == GLFW.GLFW_KEY_BACKSPACE) {
+                if (luaRuntime != null) luaRuntime.onGameOverConfirm(false);
+                exit();
+            }
             return true;
         }
         if (phase == Phase.RESULTS) {
@@ -1732,7 +1985,12 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         }
 
         int lane = FnfKeys.laneForKey(keyCode, scanCode);
+        // Botplay owns the strumline; swallow lane keys so manual taps can't
+        // interfere, while leaving pause, restart and force-exit keys alone.
+        if (lane >= 0 && ClientOptions.get().botplay) return true;
         if (lane >= 0 && !laneHeld[lane]) {
+            // Psych's pre pass can swallow the press entirely before anything reacts.
+            if (luaRuntime != null && !luaRuntime.onKeyPressPre(lane)) return true;
             laneHeld[lane] = true;
             // Judge input during the countdown too: notes at the very start of a chart
             // otherwise only get the half of their hit window after the song begins
@@ -1752,6 +2010,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                 hitAttempt(lane, phase == Phase.PLAYING && !resumed);
                 if (phase == Phase.COUNTDOWN) myStrumFlash[lane] = Math.max(myStrumFlash[lane], 40);
             }
+            if (luaRuntime != null) luaRuntime.onKeyPress(lane);
             return true;
         }
         return super.keyPressed(keyCode, scanCode, modifiers);
@@ -1763,8 +2022,11 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             enterReady = true;
         }
         int lane = FnfKeys.laneForKey(keyCode, scanCode);
+        if (lane >= 0 && ClientOptions.get().botplay) return true;
         if (lane >= 0) {
+            if (luaRuntime != null && !luaRuntime.onKeyReleasePre(lane)) return true;
             laneHeld[lane] = false;
+            if (luaRuntime != null) luaRuntime.onKeyRelease(lane);
             return true;
         }
         return super.keyReleased(keyCode, scanCode, modifiers);
@@ -1854,8 +2116,11 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         Path originalDirectory = sourceEntry == null ? ClientSession.resolvedFolder
                 : (sourceEntry.chartOriginRoot != null ? sourceEntry.chartOriginRoot
                 : (sourceEntry.modRoot != null ? sourceEntry.modRoot : sourceEntry.folder));
+        // Captured before the session is reset below: the playtest needs the look
+        // this song was actually running with, not a default.
         ChartEditorScreen editor = new ChartEditorScreen(currentSongId,
-                ClientSession.difficulty, chart, ClientSession.resolvedFolder, originalDirectory, machinePos);
+                ClientSession.difficulty, chart, ClientSession.resolvedFolder, originalDirectory,
+                machinePos, playbackPolicy);
 
         GameplayCamera.end();
         PacketDistributor.sendToServer(new FnfPayloads.LeaveC2S(machinePos, false, false));
@@ -1866,19 +2131,26 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         minecraft.setScreen(editor);
     }
 
+    /**
+     * Restarts by tearing this run down and playing the song again from a brand
+     * new screen, which is exactly what quitting and re-entering does. Resetting
+     * fields in place had to remember every piece of state a chart, event or Lua
+     * script could touch, and anything missed - tween targets in particular -
+     * carried over into the next attempt. Rebuilding cannot miss anything.
+     */
     private void restart() {
-        // A restart is a fresh Psych song run. Destroy the old VM first so its
-        // objects, timers, tweens and globals cannot leak into the next run.
-        PsychLuaRuntime oldLua = luaRuntime;
-        luaRuntime = null;
-        if (oldLua != null) oldLua.close();
-        extraCharacters.clear();
-        restorePerformerGravity();
+        // Drop every per-run resource. The audio player is kept because the new
+        // screen reuses this instance, and marking the run disposed here stops
+        // removed() from tearing the replacement's camera down behind it.
+        disposeResources(false);
+        // Performer tweens move the real entities, and the new screen cannot know
+        // where they started. Put them back on their marks before it takes over.
         resetPerformer(true, playerPerformerTween);
         resetPerformer(false, opponentPerformerTween);
+        if (minecraft.player != null) CharacterAnimations.stop(minecraft.player);
 
-        // onCreate may edit unspawnNotes. Restore the parsed chart before the
-        // new VM runs onCreate again on the next logic tick.
+        // onCreate and chart events may edit notes, so hand the new screen the
+        // chart exactly as it was parsed.
         chart.notes.clear();
         originalLuaNotes.stream().map(SongChart.Note::copy).forEach(chart.notes::add);
         chart.sortNotes();
@@ -1886,61 +2158,65 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         songPlayer.reset();
         songPlayer.setPlaybackRate(1f);
         songPlayer.setPlayerVoiceVolume(1f);
-        for (int i = 0; i < 4; i++) {
-            for (GameNote n : myLanes[i]) { n.hit = false; n.missed = false; n.holdDropped = false; n.holdComplete = false; n.releasedMs = -1; }
-            for (GameNote n : otherLanes[i]) { n.hit = false; n.missed = false; n.holdDropped = false; n.holdComplete = false; n.releasedMs = -1; }
-            myLaneIndex[i] = 0;
-            otherLaneIndex[i] = 0;
-            activeHolds[i].clear();
-            myStrumFlash[i] = 0;
-            otherStrumFlash[i] = 0;
-            laneHeld[i] = false;
-        }
-        Arrays.fill(luaStrumX, Double.NaN);
-        Arrays.fill(luaStrumY, Double.NaN);
-        Arrays.fill(luaStrumAlpha, 1.0);
-        Arrays.fill(luaStrumAngle, 0.0);
-        Arrays.fill(luaStrumDownScroll, ClientOptions.get().downscroll);
-        score = 0; combo = 0; misses = 0; maxCombo = 0;
-        java.util.Arrays.fill(judgements, 0);
-        accuracySum = 0; accuracyCount = 0;
-        health = 1f;
-        popups.clear();
-        splashes.clear();
-        coverEnds.clear();
-        endSent = false;
-        voicesMutedUntil = -1;
         songPlayer.setOpponentVoiceVolume(1f);
-        eventIndex = 0;
-        preSongEventsProcessed = false;
-        lastBeat = -1;
-        lastSingMs = 0;
-        partnerLastSingMs = 0;
-        myIdleAnchor = partnerIdleAnchor = Long.MIN_VALUE;
-        Arrays.fill(lastHoldSingMs, 0);
-        camSection = -1; // re-evaluate camera focus from the top of the chart
-        cameraFocusOverride = null;
-        playerIdleSuffix = opponentIdleSuffix = "";
-        eventPlayerIcon = eventOpponentIcon = null;
-        myAnimSet = initialMyAnimSet;
-        partnerAnimSet = initialPartnerAnimSet;
-        eventScrollMultiplier = eventScrollFrom = eventScrollTarget = 1;
-        eventScrollStartMs = eventScrollDurationMs = 0;
-        GameplayCamera.resetSongState();
-        if (psychScene != null) psychScene.close();
-        psychScene = PsychGameplayScene.load(chart, runtimeSongFolder, runtimeSongEntry, playbackPolicy);
-        applyPsychCameraDefaults();
-        startAtEpochMs = System.currentTimeMillis() + 2000;
-        if (editorPlaytest) prepareEditorStart();
-        phase = Phase.COUNTDOWN;
-        lastFrameNano = System.nanoTime();
+
+        GameplayScreen next = new GameplayScreen(machinePos, chart, songPlayer, mode, partnerId,
+                partnerName, initialPartnerAnimSet, botEntityId, System.currentTimeMillis() + 2000);
+        if (editorPlaytest) carryEditorPlaytestState(next);
+        minecraft.setScreen(next);
+    }
+
+    /**
+     * Copies the editor playtest setup onto a restarted screen. The normal
+     * constructor resolves its song from the active session, which a playtest
+     * does not have, so the same overrides the playtest factory applies are
+     * repeated here.
+     */
+    private void carryEditorPlaytestState(GameplayScreen next) {
+        next.editorPlaytest = true;
+        next.editorPreview = editorPreview;
+        next.editorStartMs = editorStartMs;
+        next.editorReturnFactory = editorReturnFactory;
+        next.editorReturnPos = editorReturnPos;
+        next.editorReturnYaw = editorReturnYaw;
+        next.editorReturnPitch = editorReturnPitch;
+        next.runtimeSongId = runtimeSongId;
+        next.runtimeSongFolder = runtimeSongFolder;
+        next.runtimeSongEntry = runtimeSongEntry;
+        next.playbackPolicy = playbackPolicy;
+        CharacterAnimations.useSongFolder(
+                playbackPolicy.songAssets() && runtimeSongEntry != null
+                        ? runtimeSongEntry.animationRoot() : null,
+                chart.player1, chart.player2);
+        next.assetResolver = new PsychAssetResolver(runtimeSongFolder, runtimeSongEntry,
+                playbackPolicy, chart.stage);
+        next.customNoteTextures.close();
+        next.psychScene.close();
+        next.customNoteTextures = new PsychNoteTextureCache(
+                next.assetResolver.customNoteRoots(),
+                playbackPolicy.allows(runtimeSongEntry, SongLibrary.ExternalContent.IMAGES));
+        next.psychScene = PsychGameplayScene.load(chart, runtimeSongFolder, runtimeSongEntry,
+                playbackPolicy);
+        // The constructor already started a session camera; swap it for the
+        // editor-safe virtual stage, exactly like the playtest factory does.
+        GameplayCamera.end();
+        next.beginCamera();
+        next.applyPsychCameraDefaults();
+        next.prepareEditorStart();
     }
 
     private void exit() {
         GameplayCamera.end();
         if (editorPlaytest) {
             songPlayer.dispose();
-            if (minecraft.player != null) CharacterAnimations.stop(minecraft.player);
+            if (minecraft.player != null) {
+                CharacterAnimations.stop(minecraft.player);
+                if (editorReturnPos != null) {
+                    minecraft.player.setPos(editorReturnPos.x, editorReturnPos.y, editorReturnPos.z);
+                    minecraft.player.setYRot(editorReturnYaw);
+                    minecraft.player.setXRot(editorReturnPitch);
+                }
+            }
             minecraft.setScreen(editorReturnFactory == null ? null : editorReturnFactory.get());
             return;
         }
@@ -2125,6 +2401,78 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     public void psychLuaAddMisses(int value) { misses = Math.max(0, misses + value); }
     public void psychLuaSetMisses(int value) { misses = Math.max(0, value); }
 
+    /** Psych's {@code hits}: judged notes that were not misses. */
+    public int psychLuaHits() {
+        return judgements[0] + judgements[1] + judgements[2] + judgements[3];
+    }
+    /** Psych's {@code totalPlayed}: every judged note, hits and misses alike. */
+    public int psychLuaTotalPlayed() { return accuracyCount; }
+    /** Psych's {@code totalNotesHit}: accumulated per-judgement accuracy weight. */
+    public double psychLuaTotalNotesHit() { return accuracySum; }
+    public double psychLuaRating() {
+        return forcedRatingPercent != null ? forcedRatingPercent
+                : PsychRating.percent(accuracySum, accuracyCount);
+    }
+    public String psychLuaRatingName() {
+        return forcedRatingName != null ? forcedRatingName
+                : PsychRating.name(psychLuaRating(), accuracyCount);
+    }
+    public String psychLuaRatingFC() {
+        return forcedRatingFC != null ? forcedRatingFC
+                : PsychRating.fullCombo(misses, judgements[0], judgements[1], judgements[2], judgements[3]);
+    }
+    public void psychLuaSetRatingPercent(double value) {
+        forcedRatingPercent = Math.max(0, Math.min(1, value));
+        scriptAlteredScore = true;
+    }
+    public void psychLuaSetRatingName(String value) {
+        forcedRatingName = value;
+        scriptAlteredScore = true;
+    }
+    public void psychLuaSetRatingFC(String value) {
+        forcedRatingFC = value;
+        scriptAlteredScore = true;
+    }
+
+    /**
+     * Psych's addHits/setHits. Blockified derives hits from the judgement tally,
+     * so a script adjusting it moves the "sick" bucket, keeping hits, totalPlayed,
+     * and the rating percent consistent with each other.
+     */
+    public void psychLuaSetHits(int value) {
+        int current = psychLuaHits();
+        psychLuaAddHits(value - current);
+    }
+
+    public void psychLuaAddHits(int value) {
+        if (value == 0) return;
+        judgements[0] = Math.max(0, judgements[0] + value);
+        accuracyCount = Math.max(0, accuracyCount + value);
+        accuracySum = Math.max(0, accuracySum + value);
+        scriptAlteredScore = true;
+    }
+
+    public void psychLuaAddScore(int value) { score += value; scriptAlteredScore = true; }
+    public void psychLuaSetScore(int value) { score = value; scriptAlteredScore = true; }
+    public int psychLuaDeaths() { return deaths; }
+    public boolean psychLuaInGameOver() { return phase == Phase.GAMEOVER; }
+    /** Psych counts the countdown as started once gameplay is no longer waiting to begin. */
+    public boolean psychLuaStartedCountdown() {
+        return phase != Phase.COUNTDOWN || System.currentTimeMillis() >= startAtEpochMs;
+    }
+    public double psychLuaPlaybackRate() { return songPlayer.playbackRate(); }
+    public boolean psychLuaAltAnim() {
+        int section = Math.max(0, Math.min(psychLuaSection(), secAltAnim.length - 1));
+        return secAltAnim.length > 0 && secAltAnim[section];
+    }
+    /** Stage-defined character positions, before any event or Lua movement. */
+    public double psychLuaDefaultCharacterX(String role) {
+        return psychScene == null ? 0 : psychScene.defaultX(role);
+    }
+    public double psychLuaDefaultCharacterY(String role) {
+        return psychScene == null ? 0 : psychScene.defaultY(role);
+    }
+
     public double psychLuaStrumX(boolean playerSide, int lane) {
         int safeLane = Math.max(0, Math.min(3, lane));
         int index = (playerSide ? 4 : 0) + safeLane;
@@ -2206,7 +2554,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             case "y" -> psychLuaStrumY(playerSide, lane);
             case "alpha" -> luaStrumAlpha[i];
             case "angle" -> luaStrumAngle[i];
-            case "direction" -> 90.0;
+            case "direction" -> luaStrumDirection[i];
             case "downScroll" -> luaStrumDownScroll[i];
             case "visible" -> luaStrumAlpha[i] > 0;
             default -> null;
@@ -2275,6 +2623,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             case "y" -> luaStrumY[i] = number.doubleValue();
             case "alpha" -> luaStrumAlpha[i] = Math.max(0, Math.min(1, number.doubleValue()));
             case "angle" -> luaStrumAngle[i] = number.doubleValue();
+            case "direction" -> luaStrumDirection[i] = number.doubleValue();
             default -> { }
         }
     }
@@ -2334,12 +2683,22 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                         extraCharacters.rotation(tag);
                 case "visible" -> extraCharacters.visible(tag);
                 case "grav", "gravity" -> extraCharacters.gravity(tag);
+                case "collision", "collisions", "solid" -> extraCharacters.collision(tag);
+                case "shadow", "shadows" -> extraCharacters.shadow(tag);
                 default -> null;
             };
         }
         if (extraDot > 0 && isGravityProperty(path.substring(extraDot + 1))) {
             Entity performer = performerEntityForTag(path.substring(0, extraDot));
             if (performer != null) return !performer.isNoGravity();
+        }
+        if (extraDot > 0 && isCollisionProperty(path.substring(extraDot + 1))) {
+            Entity performer = performerEntityForTag(path.substring(0, extraDot));
+            if (performer != null) return PerformerCollisions.enabled(performer.getId());
+        }
+        if (extraDot > 0 && isShadowProperty(path.substring(extraDot + 1))) {
+            Entity performer = performerEntityForTag(path.substring(0, extraDot));
+            if (performer != null) return PerformerShadows.enabled(performer.getId());
         }
         if (extraDot > 0) {
             PerformerTween performer = luaPerformerTween(path.substring(0, extraDot));
@@ -2407,6 +2766,9 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                         extraCharacters.setRotation(tag, noteNumber(value, extraCharacters.rotation(tag)));
                 case "visible" -> extraCharacters.setVisible(tag, noteBool(value, true));
                 case "grav", "gravity" -> extraCharacters.setGravity(tag, noteBool(value, true));
+                case "collision", "collisions", "solid" ->
+                        extraCharacters.setCollision(tag, noteBool(value, true));
+                case "shadow", "shadows" -> extraCharacters.setShadow(tag, noteBool(value, true));
                 default -> false;
             };
         }
@@ -2414,6 +2776,20 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             Entity performer = performerEntityForTag(path.substring(0, extraDot));
             if (performer != null) {
                 setPerformerGravity(performer, noteBool(value, true));
+                return true;
+            }
+        }
+        if (extraDot > 0 && isCollisionProperty(path.substring(extraDot + 1))) {
+            Entity performer = performerEntityForTag(path.substring(0, extraDot));
+            if (performer != null) {
+                PerformerCollisions.setEnabled(performer.getId(), noteBool(value, true));
+                return true;
+            }
+        }
+        if (extraDot > 0 && isShadowProperty(path.substring(extraDot + 1))) {
+            Entity performer = performerEntityForTag(path.substring(0, extraDot));
+            if (performer != null) {
+                PerformerShadows.setEnabled(performer.getId(), noteBool(value, true));
                 return true;
             }
         }
@@ -2494,7 +2870,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         cameraFocusOverride = role;
         GameplayCamera.focus(!role.equals("dad"), "smooth", 500);
         if (psychScene != null) psychScene.focus(role);
-        if (luaRuntime != null) luaRuntime.call("onMoveCamera", role);
+        if (luaRuntime != null) luaRuntime.onMoveCamera(role);
     }
 
     public boolean psychLuaPlayCharacterAnimation(String role, String animation, boolean force) {
@@ -2619,6 +2995,8 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         } else if (luaRuntime != null) {
             luaRuntime.renderGame(gui);
         }
+        // Game-camera flash/fade covers the stage but not the HUD, like Flixel.
+        drawCameraOverlay(gui, CameraOverlay.Target.GAME);
 
         // Every non-world gameplay element shares Psych's 1280x720 space.
         // Physical size therefore follows resolution, never Minecraft GUI scale.
@@ -2755,6 +3133,9 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             }
         }
 
+        // HUD overlay sits above the note field but below menus and the top camera.
+        drawCameraOverlay(gui, CameraOverlay.Target.HUD);
+
         switch (phase) {
             case COUNTDOWN -> renderCountdown(gui);
             case PAUSED -> renderPause(gui);
@@ -2763,6 +3144,15 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             default -> {}
         }
         if (luaRuntime != null) luaRuntime.renderOther(gui);
+        drawCameraOverlay(gui, CameraOverlay.Target.OTHER);
+        // A Psych custom substate sits above every gameplay and camera layer.
+        if (luaRuntime != null) luaRuntime.renderSubstate(gui);
+    }
+
+    /** Fills the screen with a camera's active flash or fade colour, if any. */
+    private void drawCameraOverlay(GuiGraphics gui, CameraOverlay.Target target) {
+        int color = CameraOverlay.colorFor(target);
+        if (color != 0) gui.fill(0, 0, width, height, color);
     }
 
     private void pushHudCamera(GuiGraphics gui, float zoom) {
@@ -3172,6 +3562,12 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         gui.drawCenteredString(font, "CLEAR!", 0, 0, 0xFF66FF66);
         gui.pose().popPose();
 
+        if (ClientOptions.get().botplay) {
+            gui.drawString(font, "BOTPLAY", px + 6, py + 5, 0xFFFFCC33);
+            gui.drawString(font, "not saved", px + panelW - 6 - font.width("not saved"),
+                    py + 5, 0xFFFFCC33);
+        }
+
         int ty = py + 30;
         resultLine(gui, px, ty, "Score", String.valueOf(score), panelW);
         resultLine(gui, px, ty + 12, "Max Combo", String.valueOf(maxCombo), panelW);
@@ -3234,15 +3630,27 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     }
 
     private void disposeResources() {
+        disposeResources(true);
+    }
+
+    /**
+     * Tears the run down. A restart keeps the audio player alive because the
+     * replacement screen reuses that same instance; everything else is rebuilt
+     * from scratch. Setting the disposed flag first makes the later
+     * {@link #removed()} call a no-op, so nothing is torn down twice.
+     */
+    private void disposeResources(boolean disposeAudio) {
         if (resourcesDisposed) return;
         resourcesDisposed = true;
         restorePerformerGravity();
+        PerformerCollisions.clear();
+        PerformerShadows.clear();
         if (luaRuntime != null) luaRuntime.close();
         extraCharacters.close();
         customNoteTextures.close();
         if (psychScene != null) psychScene.close();
         GameplayCamera.end();
-        songPlayer.dispose();
+        if (disposeAudio) songPlayer.dispose();
         restoreVanillaMusic();
     }
 

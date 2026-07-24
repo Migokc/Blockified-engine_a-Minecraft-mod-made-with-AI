@@ -24,6 +24,7 @@ import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.components.Tooltip;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
+import com.fnfmod.block.FunkinMachineBlock;
 import net.minecraft.core.BlockPos;
 import net.minecraft.util.FormattedCharSequence;
 import net.minecraft.util.Mth;
@@ -62,8 +63,8 @@ public final class ChartEditorScreen extends Screen {
             "A/D - Change Sections",
             "Q/E - Decrease/Increase Note Sustain Length",
             "Hold Shift/Alt to Increase/Decrease move by 4x",
-            "F12 - Preview Chart",
-            "Enter - Playtest Chart",
+            "F12 - Preview Chart (always available)",
+            "Enter - Playtest Chart (needs a Funkin' Machine)",
             "Shift + Enter - Playtest from Conductor's Time",
             "Space - Stop/Resume song",
             "Alt + Click - Select Note(s)",
@@ -95,13 +96,17 @@ public final class ChartEditorScreen extends Screen {
     private final Path suppliedSongFolder;
     private final Path suppliedOriginalDirectory;
     private final BlockPos sourceMachinePos;
+    /** Look the chart was opened with; null when it was not opened from a live song. */
+    private final PlaybackPolicy sourcePolicy;
     private final List<UiLabel> labels = new ArrayList<>();
     private final List<SongChart.Note> sectionClipboard = new ArrayList<>();
     private final List<SongChart.Note> noteClipboard = new ArrayList<>();
+    private final List<SongChart.Event> eventClipboard = new ArrayList<>();
     private final Set<SongChart.Note> selectedNotes = new LinkedHashSet<>();
     private final Set<SongChart.Event> selectedEvents = new LinkedHashSet<>();
-    private final Deque<List<SongChart.Note>> undoHistory = new ArrayDeque<>();
-    private final Deque<List<SongChart.Note>> redoHistory = new ArrayDeque<>();
+    private record EditorState(List<SongChart.Note> notes, List<SongChart.Event> events) {}
+    private final Deque<EditorState> undoHistory = new ArrayDeque<>();
+    private final Deque<EditorState> redoHistory = new ArrayDeque<>();
 
     private SongChart chart;
     private Conductor conductor;
@@ -119,6 +124,14 @@ public final class ChartEditorScreen extends Screen {
     private final List<String> eventTypes = new ArrayList<>(BUILTIN_EVENT_TYPES);
 
     private double viewPositionMs;
+    // Silent lead-in for a positive offset: the playhead advances on the wall clock
+    // through the pre-song gap before the audio starts, instead of skipping it.
+    private long leadInStartNano = -1;
+    private double leadInBaseView;
+    // F12 note-only preview inside the editor (no characters/camera/HUD).
+    private boolean previewMode;
+    private final java.util.Set<SongChart.Note> previewHitNotes = new java.util.HashSet<>();
+    private final long[] previewFlashUntil = new long[8];
     private int snapIndex = 3;
     private int shownSection = -1;
     private int hitsoundIndex;
@@ -200,7 +213,19 @@ public final class ChartEditorScreen extends Screen {
 
     public ChartEditorScreen(String songId, String difficulty, SongChart chart,
                              Path songFolder, Path originalDirectory, BlockPos machinePos) {
+        this(songId, difficulty, chart, songFolder, originalDirectory, machinePos, null);
+    }
+
+    /**
+     * {@code sourcePolicy} is the look the chart was playing with when the editor
+     * opened. Opening the editor leaves the session, so this is captured here or
+     * a playtest would fall back to a different presentation than the real song.
+     */
+    public ChartEditorScreen(String songId, String difficulty, SongChart chart,
+                             Path songFolder, Path originalDirectory, BlockPos machinePos,
+                             PlaybackPolicy sourcePolicy) {
         super(Component.literal("FNF Chart Editor"));
+        this.sourcePolicy = sourcePolicy;
         this.requestedSongId = songId;
         this.requestedDifficulty = difficulty;
         this.suppliedChart = chart;
@@ -583,22 +608,17 @@ public final class ChartEditorScreen extends Screen {
         int actionsY;
         if (extendedCamera || addCharacter || tweenCharacter) {
             int halfValue = (w - 4) / 2;
-            eventValue1Field = labeledBox("Value 1", x, y + 72, halfValue,
+            eventValue1Field = eventValueBox("Value 1", x, y + 72, halfValue,
                     eventValue1Draft, ChartEventTypes.value1Hint(eventTypeDraft));
-            eventValue2Field = labeledBox("Value 2", x + halfValue + 4, y + 72, halfValue,
+            eventValue2Field = eventValueBox("Value 2", x + halfValue + 4, y + 72, halfValue,
                     eventValue2Draft, ChartEventTypes.value2Hint(eventTypeDraft));
-            eventValue3Field = labeledBox("Value 3", x, y + 99, w,
+            eventValue3Field = eventValueBox("Value 3", x, y + 99, w,
                     eventValue3Draft, ChartEventTypes.value3Hint(eventTypeDraft));
-            eventValue1Field.setMaxLength(Integer.MAX_VALUE);
-            eventValue2Field.setMaxLength(Integer.MAX_VALUE);
-            eventValue3Field.setMaxLength(Integer.MAX_VALUE);
             if (addCharacter) {
-                eventValue4Field = labeledBox("Value 4", x, y + 126, w,
+                eventValue4Field = eventValueBox("Value 4", x, y + 126, w,
                         eventValue4Draft, ChartEventTypes.value4Hint(eventTypeDraft));
-                eventValue5Field = labeledBox("Value 5", x, y + 153, w,
+                eventValue5Field = eventValueBox("Value 5", x, y + 153, w,
                         eventValue5Draft, ChartEventTypes.value5Hint(eventTypeDraft));
-                eventValue4Field.setMaxLength(Integer.MAX_VALUE);
-                eventValue5Field.setMaxLength(Integer.MAX_VALUE);
             } else {
                 buildEasingControl(x, y + 126, w, 4, true, true);
             }
@@ -615,9 +635,8 @@ public final class ChartEditorScreen extends Screen {
                         b -> cycleCameraFollowFrame());
                 actionsY = y + 207;
             } else if (tweenCharacter) {
-                eventValue5Field = labeledBox("Value 5", x, y + 153, w,
+                eventValue5Field = eventValueBox("Value 5", x, y + 153, w,
                         eventValue5Draft, ChartEventTypes.value5Hint(eventTypeDraft));
-                eventValue5Field.setMaxLength(Integer.MAX_VALUE);
                 actionsY = y + 180;
             } else {
                 actionsY = y + 180;
@@ -634,19 +653,24 @@ public final class ChartEditorScreen extends Screen {
                 button(x, y + 82, w, "Target: " + target,
                         b -> cycleCameraFocusTarget(hasShiftDown() ? -1 : 1));
             } else {
-                eventValue1Field = labeledBox("Value 1", x, y + 72, w, eventValue1Draft,
+                eventValue1Field = eventValueBox("Value 1", x, y + 72, w, eventValue1Draft,
                         ChartEventTypes.value1Hint(eventTypeDraft));
-                eventValue1Field.setMaxLength(Integer.MAX_VALUE);
             }
-            if (cameraZoom || cameraFocus || cameraBehavior) {
+            if (cameraFocus || cameraBehavior) {
                 buildEasingControl(x, y + 99, w, 2, cameraBehavior,
                         !cameraFocus || !eventValue1Draft.isBlank());
-            } else {
-                eventValue2Field = labeledBox("Value 2", x, y + 99, w,
+                actionsY = y + 126;
+            } else if (cameraZoom) {
+                // Value 2 = duration (seconds), Value 3 = easing.
+                eventValue2Field = eventValueBox("Value 2", x, y + 99, w,
                         eventValue2Draft, ChartEventTypes.value2Hint(eventTypeDraft));
-                eventValue2Field.setMaxLength(Integer.MAX_VALUE);
+                buildEasingControl(x, y + 126, w, 3, false, true);
+                actionsY = y + 153;
+            } else {
+                eventValue2Field = eventValueBox("Value 2", x, y + 99, w,
+                        eventValue2Draft, ChartEventTypes.value2Hint(eventTypeDraft));
+                actionsY = y + 126;
             }
-            actionsY = y + 126;
         }
         int half = (w - 4) / 2;
         button(x, actionsY, half, "Add Event", b -> addEventAtFieldTime());
@@ -732,6 +756,10 @@ public final class ChartEditorScreen extends Screen {
             redo.active = !redoHistory.isEmpty(); y += 16;
             button(x + 4, y, w - 8, "Copy Section", b -> copySection(shownSection)); y += 16;
             button(x + 4, y, w - 8, "Paste Section", b -> pasteSection(shownSection)); y += 16;
+            Button snapNotes = button(x + 4, y, w - 8, "Snap Notes to Grid", b -> snapNotesToGrid());
+            snapNotes.setTooltip(Tooltip.create(Component.literal(
+                    "Realigns notes (and hold ends) to the current Beat Snap. Snaps the "
+                            + "selection if any, otherwise every note. Use after changing the BPM."))); y += 16;
             button(x + 4, y, w - 8, "Clear All Notes", b -> {
                 if (chart.notes.isEmpty()) return;
                 recordNoteChange();
@@ -744,6 +772,8 @@ public final class ChartEditorScreen extends Screen {
             Button removeSelectedTypes = button(x + 4, y, w - 8, "Remove Selected Types", b -> removeSelectedCustomNoteTypes());
             removeSelectedTypes.active = selectedNotes.stream().anyMatch(this::isCustomNote); y += 16;
             Button clearEvents = button(x + 4, y, w - 8, "Clear All Events", b -> {
+                if (chart.events.isEmpty()) return;
+                recordNoteChange();
                 chart.events.clear();
                 selectedEvents.clear();
                 selectedEvent = null;
@@ -767,9 +797,24 @@ public final class ChartEditorScreen extends Screen {
     private static final java.util.function.Predicate<String> NUMERIC_FILTER =
             value -> value.isEmpty() || value.matches("-?\\d*\\.?\\d*");
 
+    /** Minecraft's own EditBox default, kept for fields that never needed more. */
+    private static final int VANILLA_BOX_MAX_LENGTH = 32;
+
+    /**
+     * Event Value fields hold command text and property paths, so they get twice
+     * the vanilla allowance.
+     */
+    private static final int EVENT_VALUE_MAX_LENGTH = VANILLA_BOX_MAX_LENGTH * 2;
+
     private EditBox labeledBox(String label, int x, int y, int w, String value, String hint) {
         label(label, x, y, 0xFFDDDDDD, false);
         return box(x, y + 10, w, value, hint);
+    }
+
+    /** Labeled field sized for event values, which allow longer text than a plain box. */
+    private EditBox eventValueBox(String label, int x, int y, int w, String value, String hint) {
+        label(label, x, y, 0xFFDDDDDD, false);
+        return box(x, y + 10, w, value, hint, EVENT_VALUE_MAX_LENGTH);
     }
 
     /** Labeled field constrained to numeric input, so decimal BPM/offset stick. */
@@ -780,7 +825,17 @@ public final class ChartEditorScreen extends Screen {
     }
 
     private EditBox box(int x, int y, int w, String value, String hint) {
+        return box(x, y, w, value, hint, VANILLA_BOX_MAX_LENGTH);
+    }
+
+    /**
+     * The max length must be applied before the value: {@link EditBox#setValue}
+     * truncates against whatever limit is set at that moment, so assigning it
+     * afterwards silently cuts the existing text to the vanilla default.
+     */
+    private EditBox box(int x, int y, int w, String value, String hint, int maxLength) {
         EditBox field = addRenderableWidget(new EditBox(font, x, y, Math.max(8, w), 14, Component.literal(hint)));
+        field.setMaxLength(maxLength);
         field.setValue(value == null ? "" : value);
         if (!hint.isEmpty()) field.setHint(Component.literal(hint));
         return field;
@@ -905,24 +960,64 @@ public final class ChartEditorScreen extends Screen {
         return null;
     }
 
-    private List<SongChart.Note> noteSnapshot() {
-        List<SongChart.Note> snapshot = new ArrayList<>(chart.notes.size());
-        for (SongChart.Note note : chart.notes) snapshot.add(note.copy());
-        return snapshot;
+    /**
+     * Re-aligns notes to the current Beat Snap. Notes keep their millisecond time
+     * when the BPM changes, so after an edit they land off-grid; this rounds each
+     * note (and its hold end) to the nearest snap step on the current timing map.
+     */
+    private void snapNotesToGrid() {
+        commitVisibleFields();
+        boolean onlySelected = !selectedNotes.isEmpty();
+        List<SongChart.Note> targets = onlySelected
+                ? new ArrayList<>(selectedNotes) : chart.notes;
+        if (targets.isEmpty()) {
+            setStatus("No notes to snap");
+            return;
+        }
+        recordNoteChange();
+        double step = snapStepBeats();
+        int moved = 0;
+        for (SongChart.Note note : targets) {
+            double headBeat = conductor.beatAt(note.timeMs);
+            double snappedHead = Math.max(0, Math.round(headBeat / step) * step);
+            double newHead = conductor.timeOfBeat(snappedHead);
+            if (note.sustainMs > 0) {
+                double endBeat = conductor.beatAt(note.timeMs + note.sustainMs);
+                double snappedEnd = Math.max(snappedHead, Math.round(endBeat / step) * step);
+                note.sustainMs = Math.max(0, conductor.timeOfBeat(snappedEnd) - newHead);
+            }
+            if (Math.abs(newHead - note.timeMs) > 0.01) moved++;
+            note.timeMs = newHead;
+        }
+        chart.sortNotes();
+        setStatus("Snapped " + moved + (onlySelected ? " selected" : "") + " note(s) to grid");
+        rebuildUi();
     }
 
+    private EditorState snapshot() {
+        List<SongChart.Note> notes = new ArrayList<>(chart.notes.size());
+        for (SongChart.Note note : chart.notes) notes.add(note.copy());
+        List<SongChart.Event> events = new ArrayList<>(chart.events.size());
+        for (SongChart.Event event : chart.events) events.add(event.copy());
+        return new EditorState(notes, events);
+    }
+
+    /** Records a restore point covering both notes and events before an edit. */
     private void recordNoteChange() {
-        undoHistory.push(noteSnapshot());
+        undoHistory.push(snapshot());
         while (undoHistory.size() > 100) undoHistory.removeLast();
         redoHistory.clear();
     }
 
-    private void restoreNotes(List<SongChart.Note> snapshot) {
+    private void restoreState(EditorState state) {
         chart.notes.clear();
-        for (SongChart.Note note : snapshot) chart.notes.add(note.copy());
+        for (SongChart.Note note : state.notes()) chart.notes.add(note.copy());
         chart.sortNotes();
+        chart.events.clear();
+        for (SongChart.Event event : state.events()) chart.events.add(event.copy());
+        chart.sortEvents();
         clearSelection();
-        if (activeTab == EditorTab.NOTE) rebuildUi();
+        rebuildUi();
     }
 
     private void undoNotes() {
@@ -930,8 +1025,8 @@ public final class ChartEditorScreen extends Screen {
             setStatus("Nothing to undo");
             return;
         }
-        redoHistory.push(noteSnapshot());
-        restoreNotes(undoHistory.pop());
+        redoHistory.push(snapshot());
+        restoreState(undoHistory.pop());
         setStatus("Undo");
     }
 
@@ -940,8 +1035,8 @@ public final class ChartEditorScreen extends Screen {
             setStatus("Nothing to redo");
             return;
         }
-        undoHistory.push(noteSnapshot());
-        restoreNotes(redoHistory.pop());
+        undoHistory.push(snapshot());
+        restoreState(redoHistory.pop());
         setStatus("Redo");
     }
 
@@ -1078,30 +1173,44 @@ public final class ChartEditorScreen extends Screen {
 
     private void copySelectedNotes() {
         noteClipboard.clear();
-        if (selectedNotes.isEmpty()) return;
-        List<SongChart.Note> ordered = new ArrayList<>(selectedNotes);
-        ordered.sort(java.util.Comparator.comparingDouble(n -> n.timeMs));
-        double first = ordered.get(0).timeMs;
-        for (SongChart.Note note : ordered) {
+        eventClipboard.clear();
+        if (selectedNotes.isEmpty() && selectedEvents.isEmpty()) return;
+        // Shared time origin so notes and events keep their relative offsets.
+        double first = Double.MAX_VALUE;
+        for (SongChart.Note note : selectedNotes) first = Math.min(first, note.timeMs);
+        for (SongChart.Event event : selectedEvents) first = Math.min(first, event.timeMs);
+
+        List<SongChart.Note> notes = new ArrayList<>(selectedNotes);
+        notes.sort(java.util.Comparator.comparingDouble(n -> n.timeMs));
+        for (SongChart.Note note : notes) {
             SongChart.Note copy = note.copy();
             copy.timeMs -= first;
             noteClipboard.add(copy);
         }
-        setStatus("Copied " + noteClipboard.size() + " selected note(s)");
+        List<SongChart.Event> events = new ArrayList<>(selectedEvents);
+        events.sort(java.util.Comparator.comparingDouble(e -> e.timeMs));
+        for (SongChart.Event event : events) {
+            SongChart.Event copy = event.copy();
+            copy.timeMs -= first;
+            eventClipboard.add(copy);
+        }
+        setStatus("Copied " + noteClipboard.size() + " note(s), " + eventClipboard.size() + " event(s)");
     }
 
     private void deleteSelectedNotes() {
-        if (selectedNotes.isEmpty()) return;
+        if (selectedNotes.isEmpty() && selectedEvents.isEmpty()) return;
         recordNoteChange();
-        int count = selectedNotes.size();
+        int notes = selectedNotes.size();
+        int events = selectedEvents.size();
         chart.notes.removeAll(selectedNotes);
+        chart.events.removeAll(selectedEvents);
         clearSelection();
-        setStatus("Deleted " + count + " note(s)");
-        if (activeTab == EditorTab.NOTE) rebuildUi();
+        setStatus("Deleted " + notes + " note(s), " + events + " event(s)");
+        rebuildUi();
     }
 
     private void pasteSelectedNotes() {
-        if (noteClipboard.isEmpty()) return;
+        if (noteClipboard.isEmpty() && eventClipboard.isEmpty()) return;
         recordNoteChange();
         double beat = conductor.beatAt(Math.max(0, viewPositionMs));
         double anchor = conductor.timeOfBeat(Math.max(0, Math.round(beat / snapStepBeats()) * snapStepBeats()));
@@ -1113,9 +1222,18 @@ public final class ChartEditorScreen extends Screen {
             selectedNotes.add(copy);
             selectedNote = copy;
         }
+        for (SongChart.Event stored : eventClipboard) {
+            SongChart.Event copy = stored.copy();
+            copy.timeMs = Math.max(0, copy.timeMs + anchor);
+            chart.events.add(copy);
+            selectedEvents.add(copy);
+            selectedEvent = copy;
+        }
         chart.sortNotes();
-        setStatus("Pasted " + noteClipboard.size() + " note(s)");
-        if (activeTab == EditorTab.NOTE) rebuildUi();
+        chart.sortEvents();
+        if (selectedEvent != null) setEventDraft(selectedEvent);
+        setStatus("Pasted " + noteClipboard.size() + " note(s), " + eventClipboard.size() + " event(s)");
+        rebuildUi();
     }
 
     private void selectSectionNotes() {
@@ -1191,7 +1309,8 @@ public final class ChartEditorScreen extends Screen {
     // --------------------------------------------------------------------- Playback
 
     private boolean isPlaying() {
-        return audio != null && audio.isStarted() && !audio.isPaused();
+        return leadInStartNano >= 0
+                || (audio != null && audio.isStarted() && !audio.isPaused());
     }
 
     private void setPlaybackRate(float rate) {
@@ -1207,22 +1326,103 @@ public final class ChartEditorScreen extends Screen {
             return;
         }
         if (isPlaying()) {
-            viewPositionMs = audio.positionMs();
-            audio.pause();
+            if (leadInStartNano >= 0) {
+                leadInStartNano = -1;
+            } else {
+                viewPositionMs = audioToView(audio.positionMs());
+                audio.pause();
+            }
             if (vortex) snapPlayheadToGrid();
-        } else if (audio.isPaused()) {
-            audio.seekMs(viewPositionMs);
-            audio.resume();
-            resetHitsoundIndex(viewPositionMs);
         } else {
-            audio.start();
-            audio.seekMs(viewPositionMs);
-            resetHitsoundIndex(viewPositionMs);
+            beginPlayback();
         }
+    }
+
+    private void beginPlayback() {
+        resetHitsoundIndex(viewPositionMs);
+        if (viewToAudio(viewPositionMs) < 0) {
+            // Positive offset: the song has not started yet, so play silence and
+            // let the wall clock carry the playhead until the audio catches up.
+            if (audio.isStarted() && !audio.isPaused()) audio.pause();
+            leadInBaseView = viewPositionMs;
+            leadInStartNano = System.nanoTime();
+        } else {
+            startAudioAt(viewToAudio(viewPositionMs));
+        }
+    }
+
+    private void startAudioAt(double audioMs) {
+        if (!audio.isStarted()) audio.start();
+        else if (audio.isPaused()) audio.resume();
+        audio.seekMs(audioMs);
+    }
+
+    /**
+     * Full playtest is only meaningful for a chart opened from a Funkin' Machine.
+     * The machine supplies the stage anchor and facing that place the performers
+     * and the camera; the block is re-checked because it can be broken or replaced
+     * while the editor is open, and a missing one would silently build the stage
+     * facing north around the wrong spot.
+     */
+    private boolean canPlaytest() {
+        if (sourceMachinePos == null || minecraft == null || minecraft.level == null) return false;
+        return minecraft.level.getBlockState(sourceMachinePos)
+                .hasProperty(FunkinMachineBlock.FACING);
+    }
+
+    /** F12: play the chart's notes inside the editor, starting at the playhead. */
+    private void enterPreview() {
+        if (audio == null) {
+            setStatus("No Inst.ogg is available to preview");
+            return;
+        }
+        commitVisibleFields();
+        setFocused(null);
+        openMenu = TopMenu.NONE;
+        previewMode = true;
+        previewHitNotes.clear();
+        java.util.Arrays.fill(previewFlashUntil, 0);
+        if (!isPlaying()) beginPlayback();
+    }
+
+    /** Registers a manual hit on the nearest unhit player note in this lane. */
+    private void previewHitLane(int lane) {
+        previewFlashUntil[4 + lane] = System.currentTimeMillis() + 120;
+        double now = viewPositionMs;
+        SongChart.Note best = null;
+        double bestDist = 180; // ms hit window
+        for (SongChart.Note note : chart.notes) {
+            if (!note.playerSide || note.lane != lane || previewHitNotes.contains(note)) continue;
+            double dist = Math.abs(note.timeMs - now);
+            if (dist < bestDist) {
+                bestDist = dist;
+                best = note;
+            }
+        }
+        if (best != null) previewHitNotes.add(best);
+    }
+
+    private void exitPreview() {
+        if (!previewMode) return;
+        previewMode = false;
+        previewHitNotes.clear();
+        if (isPlaying()) {
+            if (leadInStartNano >= 0) {
+                leadInStartNano = -1;
+            } else if (audio != null) {
+                viewPositionMs = audioToView(audio.positionMs());
+                audio.pause();
+            }
+        }
+        rebuildUi();
     }
 
     private void launchPlaytest(boolean fromCurrentTime, boolean preview) {
         commitVisibleFields();
+        if (!canPlaytest()) {
+            setStatus("Playtest needs a Funkin' Machine — use F12 to preview the notes");
+            return;
+        }
         if (entry == null || entry.instFor(loadedDifficulty) == null) {
             setStatus("A valid Inst.ogg is required to playtest");
             return;
@@ -1235,14 +1435,16 @@ public final class ChartEditorScreen extends Screen {
                     chart.needsVoices ? entry.voicesOpponentFor(loadedDifficulty) : null);
             if (fromCurrentTime) playtestAudio.setPlaybackRate(playbackRate);
             double startMs = fromCurrentTime ? viewPositionMs : 0;
-            BlockPos machine = sourceMachinePos != null ? sourceMachinePos
-                    : (minecraft.player == null ? BlockPos.ZERO : minecraft.player.blockPosition());
+            // Guarded by canPlaytest above. Falling back to the player's own
+            // position used to put the stage anchor on top of the performer,
+            // which is what broke the camera and the player/opponent placement.
+            BlockPos machine = sourceMachinePos;
             String resourceSongId = entry.id == null || entry.id.isBlank()
                     ? (requestedSongId == null ? chart.title : requestedSongId) : entry.id;
             Path resourceFolder = entry.folder != null ? entry.folder : suppliedSongFolder;
             minecraft.setScreen(GameplayScreen.editorPlaytest(machine, chart, playtestAudio, startMs,
                     preview, resourceSongId, resourceFolder, entry,
-                    () -> recreateEditor(startMs)));
+                    () -> recreateEditor(startMs), sourcePolicy));
             playtestAudio = null; // GameplayScreen owns it now.
         } catch (Exception e) {
             if (playtestAudio != null) playtestAudio.dispose();
@@ -1253,7 +1455,7 @@ public final class ChartEditorScreen extends Screen {
 
     private ChartEditorScreen recreateEditor(double positionMs) {
         ChartEditorScreen editor = new ChartEditorScreen(requestedSongId, loadedDifficulty, chart,
-                suppliedSongFolder, originalDirectory, sourceMachinePos);
+                suppliedSongFolder, originalDirectory, sourceMachinePos, sourcePolicy);
         editor.viewPositionMs = Math.max(0, positionMs);
         editor.snapIndex = snapIndex;
         editor.pixelsPerBeat = pixelsPerBeat;
@@ -1262,9 +1464,23 @@ public final class ChartEditorScreen extends Screen {
         return editor;
     }
 
+    /**
+     * The chart offset shifts the song against the notes, so applying it here lets
+     * the editor hear the alignment it will play with. view = note-grid time;
+     * audio buffer = note-grid time − offset (same relationship as gameplay).
+     */
+    private double audioToView(double audioPositionMs) {
+        return audioPositionMs + chart.offsetMs;
+    }
+
+    private double viewToAudio(double viewMs) {
+        return viewMs - chart.offsetMs;
+    }
+
     private void seek(double timeMs) {
+        leadInStartNano = -1; // scrubbing leaves any silent lead-in
         viewPositionMs = Math.max(0, timeMs);
-        if (audio != null && audio.isStarted()) audio.seekMs(viewPositionMs);
+        if (audio != null && audio.isStarted()) audio.seekMs(viewToAudio(viewPositionMs));
         resetHitsoundIndex(viewPositionMs);
     }
 
@@ -1375,6 +1591,24 @@ public final class ChartEditorScreen extends Screen {
             }
             return true;
         }
+        if (previewMode) {
+            int previewLane = com.fnfmod.client.FnfKeys.laneForKey(keyCode, scanCode);
+            if (previewLane >= 0) {
+                previewHitLane(previewLane);
+                return true;
+            }
+            switch (keyCode) {
+                case GLFW.GLFW_KEY_ESCAPE, GLFW.GLFW_KEY_ENTER, GLFW.GLFW_KEY_KP_ENTER,
+                        GLFW.GLFW_KEY_F12 -> exitPreview();
+                case GLFW.GLFW_KEY_SPACE -> togglePlayback();
+                case GLFW.GLFW_KEY_LEFT_BRACKET ->
+                        setPlaybackRate(altDown() ? 1.0f : playbackRate - 0.1f);
+                case GLFW.GLFW_KEY_RIGHT_BRACKET ->
+                        setPlaybackRate(altDown() ? 1.0f : playbackRate + 0.1f);
+                default -> { }
+            }
+            return true;
+        }
         if (keyCode == GLFW.GLFW_KEY_F1) {
             helpVisible = !helpVisible;
             return true;
@@ -1405,9 +1639,10 @@ public final class ChartEditorScreen extends Screen {
             }
             return true;
         }
-        if (keyCode == GLFW.GLFW_KEY_F12) { launchPlaytest(true, true); return true; }
+        if (keyCode == GLFW.GLFW_KEY_F12) { enterPreview(); return true; }
         if (keyCode == GLFW.GLFW_KEY_ENTER || keyCode == GLFW.GLFW_KEY_KP_ENTER) {
-            launchPlaytest(shiftDown(), false);
+            if (canPlaytest()) launchPlaytest(shiftDown(), false);
+            else setStatus("Playtest needs a Funkin' Machine — use F12 to preview the notes");
             return true;
         }
         if (keyCode == GLFW.GLFW_KEY_LEFT_BRACKET || keyCode == GLFW.GLFW_KEY_RIGHT_BRACKET) {
@@ -1470,6 +1705,7 @@ public final class ChartEditorScreen extends Screen {
 
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
+        if (previewMode) return true;
         if (eventDocumentationVisible) {
             if (button == 0) eventDocumentationVisible = false;
             return true;
@@ -1514,6 +1750,7 @@ public final class ChartEditorScreen extends Screen {
             boolean hitEvent = closest != null && closestPixels <= Math.max(7, cw / 2.0);
             if (hitEvent) {
                 if (!shiftDown() && !altDown()) {
+                    recordNoteChange();
                     chart.events.remove(closest);
                     selectedEvents.remove(closest);
                     if (selectedEvent == closest) {
@@ -1602,6 +1839,7 @@ public final class ChartEditorScreen extends Screen {
 
     @Override
     public boolean mouseScrolled(double mouseX, double mouseY, double scrollX, double scrollY) {
+        if (previewMode) return true;
         if (eventDocumentationVisible) {
             int direction = scrollY > 0 ? -1 : scrollY < 0 ? 1 : 0;
             eventDocumentationScroll = Mth.clamp(eventDocumentationScroll + direction,
@@ -1675,10 +1913,23 @@ public final class ChartEditorScreen extends Screen {
     public void render(GuiGraphics gui, int mouseX, int mouseY, float partialTick) {
         renderBackground(gui, mouseX, mouseY, partialTick);
 
-        if (isPlaying()) {
-            viewPositionMs = audio.positionMs();
+        if (leadInStartNano >= 0) {
+            double elapsed = (System.nanoTime() - leadInStartNano) / 1_000_000.0 * playbackRate;
+            viewPositionMs = Math.max(0, leadInBaseView + elapsed);
+            playCrossedHitsounds(viewPositionMs);
+            if (viewToAudio(viewPositionMs) >= 0) {
+                leadInStartNano = -1;
+                startAudioAt(viewToAudio(viewPositionMs));
+            }
+        } else if (isPlaying()) {
+            viewPositionMs = audioToView(audio.positionMs());
             playCrossedHitsounds(viewPositionMs);
         }
+        if (previewMode) {
+            renderPreview(gui);
+            return;
+        }
+
         int sectionNow = sectionIndexAt(viewPositionMs);
         if (sectionNow != shownSection) rebuildUi();
 
@@ -1695,6 +1946,66 @@ public final class ChartEditorScreen extends Screen {
         renderInfoWindow(gui);
         if (helpVisible) renderHelpScreen(gui);
         if (eventDocumentationVisible) renderEventDocumentation(gui);
+    }
+
+    /** Notes-only playback preview: a strumline highway at the current playhead. */
+    private void renderPreview(GuiGraphics gui) {
+        NoteStyle.setDrawAlpha(1f);
+        NoteStyle.setMissed(false);
+        double now = viewPositionMs;
+        // Match gameplay's scroll speed exactly (the inputted Scroll Speed × the
+        // player's multiplier, or constant mode) so the preview reads true.
+        var opts = ClientOptions.get();
+        double effSpeed = opts.constantScrollSpeed ? opts.scrollSpeedMult
+                : Math.max(0.01, chart.speed) * opts.scrollSpeedMult;
+        double px = 0.45 * effSpeed;
+        boolean down = opts.downscroll;
+        float size = Math.min(30f, width / 12f);
+        int gap = (int) (size + 8);
+        int totalW = gap * 8;
+        int baseX = width / 2 - totalW / 2 + gap / 2;
+        int receptorY = down ? height - 90 : 90;
+
+        // divider between opponent (left four) and player (right four)
+        int divX = baseX + 4 * gap - gap / 2 - 4;
+        gui.fill(divX, 0, divX + 1, height, 0x33FFFFFF);
+
+        long nowMs = System.currentTimeMillis();
+        for (int col = 0; col < 8; col++) {
+            int lane = col % 4;
+            float cx = baseX + col * gap;
+            int state = previewFlashUntil[col] > nowMs ? 2 : 0;
+            boolean custom = noteTextures != null && noteTextures.drawReceptor(gui,
+                    editorChartNoteTexture(), lane, state, cx, receptorY, size);
+            if (!custom) NoteStyle.drawReceptor(gui, lane, cx, receptorY, size, state);
+        }
+
+        for (SongChart.Note note : chart.notes) {
+            if (previewHitNotes.contains(note)) continue;
+            double distHead = (note.timeMs - now) * px;
+            double distEnd = (note.timeMs + note.sustainMs - now) * px;
+            float y = (float) (down ? receptorY - distHead : receptorY + distHead);
+            float yEnd = (float) (down ? receptorY - distEnd : receptorY + distEnd);
+            float lo = Math.min(y, yEnd), hi = Math.max(y, yEnd);
+            if (hi < -size || lo > height + size) continue;
+            int col = (note.playerSide ? 4 : 0) + note.lane;
+            float cx = baseX + col * gap;
+            if (note.sustainMs > 0) {
+                boolean customHold = noteTextures != null && noteTextures.drawHold(gui,
+                        editorNoteTexture(note), note.lane, cx, lo, hi, size, yEnd < y);
+                if (!customHold) NoteStyle.drawHoldPiece(gui, note.lane, cx, lo, hi, size, yEnd < y);
+            }
+            if (y > -size && y < height + size) {
+                boolean customNote = noteTextures != null && noteTextures.drawNote(gui,
+                        editorNoteTexture(note), note.lane, cx, y, size);
+                if (!customNote) NoteStyle.drawNote(gui, note.lane, cx, y, size);
+            }
+        }
+
+        drawCentered(gui, "PREVIEW  —  play your lane keys  •  Esc/Enter exit  •  Space pause",
+                width / 2, height - 14, 0xFFFFFF66);
+        drawCentered(gui, String.format(Locale.ROOT, "%.1fx", playbackRate),
+                width / 2, 8, 0xFFAAAAAA);
     }
 
     private void renderGrid(GuiGraphics gui) {
@@ -1876,6 +2187,9 @@ public final class ChartEditorScreen extends Screen {
                 || ChartEventTypes.is(eventTypeDraft, ChartEventTypes.ADD_CHARACTER)
                 || ChartEventTypes.is(eventTypeDraft, ChartEventTypes.TWEEN_CHARACTER)) {
             top = 276;
+        } else if (ChartEventTypes.isCameraZoom(eventTypeDraft)) {
+            // Value 2 duration box + Value 3 easing push the controls lower.
+            top = 249;
         } else {
             top = 219;
         }
@@ -2112,6 +2426,7 @@ public final class ChartEditorScreen extends Screen {
 
     private void addEventToPoint() {
         commitVisibleFields();
+        recordNoteChange();
         SongChart.Event added;
         if (selectedEvent != null) {
             added = selectedEvent.copy();
@@ -2132,6 +2447,7 @@ public final class ChartEditorScreen extends Screen {
     private void removeEventFromPoint() {
         if (selectedEvent == null) return;
         commitVisibleFields();
+        recordNoteChange();
         List<SongChart.Event> group = eventsAtSelectedPoint();
         int index = group.indexOf(selectedEvent);
         SongChart.Event removed = selectedEvent;
@@ -2157,6 +2473,7 @@ public final class ChartEditorScreen extends Screen {
 
     private void addEventAt(double time) {
         commitVisibleFields();
+        recordNoteChange();
         String value2 = eventValue2Draft.isBlank()
                 ? defaultEventValue2(eventTypeDraft, eventValue1Draft) : eventValue2Draft;
         selectedEvent = new SongChart.Event(Math.max(0, time), eventTypeDraft,
@@ -2400,6 +2717,7 @@ public final class ChartEditorScreen extends Screen {
 
     private void deleteSelectedEvent() {
         if (selectedEvent == null && selectedEvents.isEmpty()) return;
+        recordNoteChange();
         int removed = selectedEvents.isEmpty() ? 1 : selectedEvents.size();
         if (selectedEvents.isEmpty()) chart.events.remove(selectedEvent);
         else chart.events.removeAll(selectedEvents);

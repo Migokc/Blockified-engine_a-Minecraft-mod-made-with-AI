@@ -68,6 +68,8 @@ final class BbsFsAnimationBridge {
     private static Method formToData;
     private static Method formFromData;
     private static Field linkPathField;
+    private static Method getModels;
+    private static Method modelManagerGetModel;
     private static final java.util.Set<String> REGISTERED_PACKS = new java.util.HashSet<>();
     private static final Map<String, Object> BUNDLED_FORMS = new HashMap<>();
     private static boolean bundlingAvailable;
@@ -357,6 +359,18 @@ final class BbsFsAnimationBridge {
             dataFromString = dataToStringClass.getMethod("fromString", String.class);
             formToData = formUtilsClass.getMethod("toData", formClass);
             formFromData = formUtilsClass.getMethod("fromData", baseTypeClass);
+
+            // Optional: force a bundled model to load up front so the morph is not
+            // shown as the vanilla player while BBS lazily loads it on first render.
+            try {
+                Class<?> bbsClientClass = Class.forName("mchorse.bbs_mod.BBSModClient");
+                Class<?> modelManagerClass = Class.forName("mchorse.bbs_mod.cubic.model.ModelManager");
+                getModels = findMethod(bbsClientClass, "getModels", true, 0);
+                modelManagerGetModel = modelManagerClass.getMethod("getModel", String.class);
+            } catch (Throwable ignored) {
+                getModels = null;
+                modelManagerGetModel = null;
+            }
             bundlingAvailable = true;
         } catch (Throwable error) {
             bundlingAvailable = false;
@@ -400,14 +414,36 @@ final class BbsFsAnimationBridge {
         try {
             if (java.nio.file.Files.isRegularFile(formJson)) {
                 registerAssetPack(formJson.getParent());
-                Object data = dataFromString.invoke(null, java.nio.file.Files.readString(formJson));
-                if (data != null) form = formFromData.invoke(null, data);
+                String json = java.nio.file.Files.readString(formJson);
+                Object data = dataFromString.invoke(null, json);
+                if (data != null) {
+                    form = formFromData.invoke(null, data);
+                    preloadModels(json);
+                }
             }
         } catch (Throwable error) {
             warnOnce("Failed to load a bundled BBS form", error);
         }
         BUNDLED_FORMS.put(key, form);
         return form;
+    }
+
+    /** Warms BBS's model cache so the bundled model renders immediately once morphed. */
+    private static void preloadModels(String json) {
+        if (getModels == null || modelManagerGetModel == null) return;
+        try {
+            Object models = getModels.invoke(null);
+            if (models == null) return;
+            java.util.regex.Matcher matcher = java.util.regex.Pattern
+                    .compile("\"model\"\\s*:\\s*\"([A-Za-z0-9_./\\-]+)\"").matcher(json);
+            java.util.Set<String> seen = new java.util.HashSet<>();
+            while (matcher.find()) {
+                String id = matcher.group(1);
+                if (seen.add(id)) modelManagerGetModel.invoke(models, id);
+            }
+        } catch (Throwable ignored) {
+            // Preloading is best-effort; normal lazy loading still applies.
+        }
     }
 
     private static String bundledKey(java.nio.file.Path formJson) {
