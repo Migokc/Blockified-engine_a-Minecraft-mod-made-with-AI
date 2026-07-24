@@ -27,8 +27,14 @@ public final class PsychChartWriter {
         song.addProperty("needsVoices", chart.needsVoices);
         song.addProperty("player1", chart.player1);
         song.addProperty("player2", chart.player2);
-        song.addProperty("gfVersion", "gf");
+        song.addProperty("gfVersion", chart.player3);
         song.addProperty("stage", chart.stage);
+        if (chart.noteTexture != null && !chart.noteTexture.isBlank()) {
+            song.addProperty("arrowSkin", chart.noteTexture.trim());
+        }
+        if (chart.noteSplashTexture != null && !chart.noteSplashTexture.isBlank()) {
+            song.addProperty("splashSkin", chart.noteSplashTexture.trim());
+        }
         song.addProperty("validScore", true);
         chart.sortEvents();
         song.add("events", eventArray(chart));
@@ -88,7 +94,6 @@ public final class PsychChartWriter {
             if (s.changeBPM && s.bpm > 0) bpm = s.bpm;
             sec.addProperty("bpm", bpm);
             sec.addProperty("typeOfSection", 0);
-            sec.addProperty("fnfmodCamEase", s.camEase == null ? "smooth" : s.camEase);
             sectionsArr.add(sec);
             time += s.sectionBeats * (60000.0 / bpm);
         }
@@ -125,6 +130,13 @@ public final class PsychChartWriter {
             payload.add(event.name);
             payload.add(event.value1);
             payload.add(event.value2);
+            if (!event.value3.isBlank() || !event.value4.isBlank() || !event.value5.isBlank()
+                    || !event.value6.isBlank()) {
+                payload.add(event.value3);
+                payload.add(event.value4);
+                payload.add(event.value5);
+                if (!event.value6.isBlank()) payload.add(event.value6);
+            }
             if (event.beforeSong) payload.add("load");
             payloads.add(payload);
         }

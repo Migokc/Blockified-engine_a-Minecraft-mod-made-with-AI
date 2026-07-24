@@ -55,6 +55,10 @@ public final class FnfNetworking {
                 (payload, ctx) -> ctx.enqueueWork(() -> {
                     if (ctx.player() instanceof ServerPlayer sp) SessionManager.onCommandEvent(sp, payload);
                 }));
+        registrar.playToServer(FnfPayloads.LuaCommandC2S.TYPE, FnfPayloads.LuaCommandC2S.CODEC,
+                (payload, ctx) -> ctx.enqueueWork(() -> {
+                    if (ctx.player() instanceof ServerPlayer sp) SessionManager.onLuaCommand(sp, payload);
+                }));
         registrar.playToServer(FnfPayloads.LeaveC2S.TYPE, FnfPayloads.LeaveC2S.CODEC,
                 (payload, ctx) -> ctx.enqueueWork(() -> {
                     if (ctx.player() instanceof ServerPlayer sp) SessionManager.onLeave(sp, payload.pos(), payload.finishedOnly(), payload.reopenMenu());
@@ -63,9 +67,11 @@ public final class FnfNetworking {
                 (payload, ctx) -> ctx.enqueueWork(() -> {
                     if (ctx.player() instanceof ServerPlayer sp) SessionManager.onReloadRequest(sp);
                 }));
-        registrar.playToServer(FnfPayloads.SetHealthC2S.TYPE, FnfPayloads.SetHealthC2S.CODEC,
+        registrar.playToServer(FnfPayloads.SyncVanillaHudC2S.TYPE, FnfPayloads.SyncVanillaHudC2S.CODEC,
                 (payload, ctx) -> ctx.enqueueWork(() -> {
-                    if (ctx.player() instanceof ServerPlayer sp) SessionManager.onSetHealth(sp, payload.health());
+                    if (ctx.player() instanceof ServerPlayer sp) {
+                        SessionManager.onSyncVanillaHud(sp, payload.health(), payload.foodLevel());
+                    }
                 }));
     }
 

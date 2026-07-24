@@ -31,7 +31,7 @@ public final class HitsoundPlayer {
     private static final int POOL_SIZE = 6;
 
     private static int buffer;
-    private static String loadedName = "";
+    private static Path loadedFile;
     private static int[] sources;
     private static int nextSource;
 
@@ -51,7 +51,7 @@ public final class HitsoundPlayer {
             // Audio reload must not break command handling.
         }
         buffer = 0;
-        loadedName = "";
+        loadedFile = null;
     }
 
     /** .ogg files directly inside the hitsounds folder. */
@@ -71,9 +71,16 @@ public final class HitsoundPlayer {
     public static void play() {
         String name = ClientOptions.get().hitsound;
         if (name == null || name.isEmpty()) return;
+        play(SongLibrary.hitsoundsDir().resolve(name), (float) ClientOptions.get().hitsoundVolume);
+    }
+
+    /** Plays a Psych note-specific OGG with the supplied per-note gain. */
+    public static void play(Path file, float volume) {
+        if (file == null || !Files.isRegularFile(file) || volume <= 0) return;
         try {
-            if (!name.equals(loadedName)) {
-                loadBuffer(name);
+            Path normalized = file.toAbsolutePath().normalize();
+            if (!normalized.equals(loadedFile)) {
+                loadBuffer(normalized);
             }
             if (buffer == 0) return;
             if (sources == null) {
@@ -85,8 +92,7 @@ public final class HitsoundPlayer {
             AL10.alSourcei(src, AL10.AL_BUFFER, buffer);
             AL10.alSourcei(src, AL10.AL_SOURCE_RELATIVE, AL10.AL_TRUE);
             var options = Minecraft.getInstance().options;
-            float gain = (float) (ClientOptions.get().hitsoundVolume
-                    * options.getSoundSourceVolume(SoundSource.MASTER));
+            float gain = volume * options.getSoundSourceVolume(SoundSource.MASTER);
             AL10.alSourcef(src, AL10.AL_GAIN, Math.max(0f, Math.min(1f, gain)));
             AL10.alSourcePlay(src);
         } catch (Throwable t) {
@@ -94,7 +100,7 @@ public final class HitsoundPlayer {
         }
     }
 
-    private static void loadBuffer(String name) {
+    private static void loadBuffer(Path file) {
         // stop and detach everything before deleting the old buffer
         if (sources != null) {
             for (int src : sources) {
@@ -106,9 +112,7 @@ public final class HitsoundPlayer {
             AL10.alDeleteBuffers(buffer);
             buffer = 0;
         }
-        loadedName = name;
-
-        Path file = SongLibrary.hitsoundsDir().resolve(name);
+        loadedFile = file;
         if (!Files.isRegularFile(file)) return;
 
         ByteBuffer fileData = null;
@@ -129,7 +133,7 @@ public final class HitsoundPlayer {
                 AL10.alBufferData(buffer, format, pcm, sampleRate.get(0));
             }
         } catch (Exception e) {
-            FnfMod.LOGGER.warn("Failed to load hitsound {}: {}", name, e.toString());
+            FnfMod.LOGGER.warn("Failed to load hitsound {}: {}", file, e.toString());
         } finally {
             if (pcm != null) org.lwjgl.system.libc.LibCStdlib.free(pcm);
             if (fileData != null) MemoryUtil.memFree(fileData);

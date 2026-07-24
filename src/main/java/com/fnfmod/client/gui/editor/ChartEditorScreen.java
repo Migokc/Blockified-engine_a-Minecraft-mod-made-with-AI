@@ -2,22 +2,31 @@ package com.fnfmod.client.gui.editor;
 
 import com.fnfmod.FnfMod;
 import com.fnfmod.chart.Conductor;
+import com.fnfmod.chart.ChartEventTypes;
 import com.fnfmod.chart.PsychChartWriter;
 import com.fnfmod.chart.SongChart;
 import com.fnfmod.client.ClientOptions;
 import com.fnfmod.client.audio.SongPlayer;
 import com.fnfmod.client.camera.GameplayCamera;
+import com.fnfmod.client.gameplay.PsychAssetResolver;
 import com.fnfmod.client.gui.GameplayScreen;
+import com.fnfmod.client.math.Easing;
 import com.fnfmod.client.render.NoteStyle;
+import com.fnfmod.client.render.PsychNoteTextureCache;
 import com.fnfmod.song.SongEntry;
+import com.fnfmod.song.SongImportService;
 import com.fnfmod.song.SongLibrary;
+import com.fnfmod.gameplay.PlaybackMode;
+import com.fnfmod.gameplay.PlaybackPolicy;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.components.Tooltip;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
+import com.fnfmod.block.FunkinMachineBlock;
 import net.minecraft.core.BlockPos;
+import net.minecraft.util.FormattedCharSequence;
 import net.minecraft.util.Mth;
 import org.lwjgl.glfw.GLFW;
 
@@ -40,21 +49,23 @@ import java.util.Set;
 public final class ChartEditorScreen extends Screen {
 
     private static final int[] SNAPS = {4, 8, 12, 16, 24, 32, 64};
-    private static final double DEFAULT_PIXELS_PER_BEAT = 64.0;
+    // 120 makes one 16th-note row exactly as tall as a lane cell is wide at the
+    // reference layout, so the default grid reads as squares instead of being
+    // vertically squashed (which previously forced a manual Z zoom to correct).
+    private static final double DEFAULT_PIXELS_PER_BEAT = 120.0;
+    /** Cell width at the editor's reference layout; vertical spacing scales with it. */
+    private static final double REFERENCE_CELL_WIDTH = 30.0;
     private static final int TAB_Y = 24;
     private static final int CONTROL_TOP = 40;
-    private static final String MINECRAFT_COMMAND_EVENT = "Minecraft Command";
-    private static final String CAMERA_ZOOM_EVENT = "Camera Zoom";
-    private static final String CAMERA_FOCUS_EVENT = "Camera Focus";
-    private static final List<String> BUILTIN_EVENT_TYPES = List.of(
-            MINECRAFT_COMMAND_EVENT, CAMERA_ZOOM_EVENT, CAMERA_FOCUS_EVENT);
+    private static final List<String> BUILTIN_EVENT_TYPES = ChartEventTypes.builtinNames();
     private static final String[] HELP_LINES = {
             "W/S/Mouse Wheel - Move Conductor's Time",
             "A/D - Change Sections",
             "Q/E - Decrease/Increase Note Sustain Length",
             "Hold Shift/Alt to Increase/Decrease move by 4x",
-            "F12 - Preview Chart",
-            "Enter - Playtest Chart",
+            "F12 - Preview Chart (always available)",
+            "Enter - Playtest Chart (needs a Funkin' Machine)",
+            "Shift + Enter - Playtest from Conductor's Time",
             "Space - Stop/Resume song",
             "Alt + Click - Select Note(s)",
             "Shift + Click - Select/Unselect Note(s)",
@@ -85,20 +96,26 @@ public final class ChartEditorScreen extends Screen {
     private final Path suppliedSongFolder;
     private final Path suppliedOriginalDirectory;
     private final BlockPos sourceMachinePos;
+    /** Look the chart was opened with; null when it was not opened from a live song. */
+    private final PlaybackPolicy sourcePolicy;
     private final List<UiLabel> labels = new ArrayList<>();
     private final List<SongChart.Note> sectionClipboard = new ArrayList<>();
     private final List<SongChart.Note> noteClipboard = new ArrayList<>();
+    private final List<SongChart.Event> eventClipboard = new ArrayList<>();
     private final Set<SongChart.Note> selectedNotes = new LinkedHashSet<>();
     private final Set<SongChart.Event> selectedEvents = new LinkedHashSet<>();
-    private final Deque<List<SongChart.Note>> undoHistory = new ArrayDeque<>();
-    private final Deque<List<SongChart.Note>> redoHistory = new ArrayDeque<>();
+    private record EditorState(List<SongChart.Note> notes, List<SongChart.Event> events) {}
+    private final Deque<EditorState> undoHistory = new ArrayDeque<>();
+    private final Deque<EditorState> redoHistory = new ArrayDeque<>();
 
     private SongChart chart;
     private Conductor conductor;
     private SongEntry entry;
     private SongPlayer audio;
+    private PsychNoteTextureCache noteTextures;
     private String songId;
     private String saveId;
+    private String importModName;
     private String loadedDifficulty = "normal";
     private String defaultNoteType = "";
     private Path originalDirectory;
@@ -107,6 +124,14 @@ public final class ChartEditorScreen extends Screen {
     private final List<String> eventTypes = new ArrayList<>(BUILTIN_EVENT_TYPES);
 
     private double viewPositionMs;
+    // Silent lead-in for a positive offset: the playhead advances on the wall clock
+    // through the pre-song gap before the audio starts, instead of skipping it.
+    private long leadInStartNano = -1;
+    private double leadInBaseView;
+    // F12 note-only preview inside the editor (no characters/camera/HUD).
+    private boolean previewMode;
+    private final java.util.Set<SongChart.Note> previewHitNotes = new java.util.HashSet<>();
+    private final long[] previewFlashUntil = new long[8];
     private int snapIndex = 3;
     private int shownSection = -1;
     private int hitsoundIndex;
@@ -116,14 +141,20 @@ public final class ChartEditorScreen extends Screen {
     private boolean eventDropdownOpen;
     private int eventDropdownScroll;
     private boolean eventDraftInitialized;
-    private String eventTypeDraft = MINECRAFT_COMMAND_EVENT;
+    private String eventTypeDraft = ChartEventTypes.MINECRAFT_COMMAND;
     private String eventValue1Draft = "";
     private String eventValue2Draft = "player";
+    private String eventValue3Draft = "";
+    private String eventValue4Draft = "";
+    private String eventValue5Draft = "";
+    private String eventValue6Draft = "";
     private double eventTimeDraft;
     private boolean eventBeforeSongDraft;
     private double pixelsPerBeat = DEFAULT_PIXELS_PER_BEAT;
     private float playbackRate = 1.0f;
     private boolean helpVisible;
+    private boolean eventDocumentationVisible;
+    private int eventDocumentationScroll;
     private boolean selectingBox;
     private double selectionStartX;
     /** Vertical selection bounds are chart beats so scrolling cannot move the anchor. */
@@ -155,9 +186,15 @@ public final class ChartEditorScreen extends Screen {
     private EditBox sustainField;
     private EditBox noteTypeField;
     private EditBox saveIdField;
+    private EditBox importModNameField;
     private EditBox eventTimeField;
     private EditBox eventValue1Field;
     private EditBox eventValue2Field;
+    private EditBox eventValue3Field;
+    private EditBox eventValue4Field;
+    private EditBox eventValue5Field;
+    private EditBox noteTextureField;
+    private EditBox noteSplashTextureField;
 
     public ChartEditorScreen(String songId) {
         this(songId, null, null, null, null, null);
@@ -176,7 +213,19 @@ public final class ChartEditorScreen extends Screen {
 
     public ChartEditorScreen(String songId, String difficulty, SongChart chart,
                              Path songFolder, Path originalDirectory, BlockPos machinePos) {
+        this(songId, difficulty, chart, songFolder, originalDirectory, machinePos, null);
+    }
+
+    /**
+     * {@code sourcePolicy} is the look the chart was playing with when the editor
+     * opened. Opening the editor leaves the session, so this is captured here or
+     * a playtest would fall back to a different presentation than the real song.
+     */
+    public ChartEditorScreen(String songId, String difficulty, SongChart chart,
+                             Path songFolder, Path originalDirectory, BlockPos machinePos,
+                             PlaybackPolicy sourcePolicy) {
         super(Component.literal("FNF Chart Editor"));
+        this.sourcePolicy = sourcePolicy;
         this.requestedSongId = songId;
         this.requestedDifficulty = difficulty;
         this.suppliedChart = chart;
@@ -189,6 +238,7 @@ public final class ChartEditorScreen extends Screen {
     @Override
     protected void init() {
         if (chart == null) loadChart();
+        ensureAudioLoaded();
         clampOrInitializeInfoWindow();
         rebuildUi();
     }
@@ -198,10 +248,12 @@ public final class ChartEditorScreen extends Screen {
         String difficulty = requestedDifficulty == null || requestedDifficulty.isBlank()
                 ? "normal" : requestedDifficulty;
         SongEntry libraryEntry = requestedSongId == null ? null : SongLibrary.get(requestedSongId);
-        if (libraryEntry != null) {
-            eventDefinitionRoot = libraryEntry.modRoot != null ? libraryEntry.modRoot : libraryEntry.folder;
+        if (libraryEntry != null && libraryEntry.fullModLayout) {
+            eventDefinitionRoot = libraryEntry.runtimeRoot();
         }
-        if (suppliedSongFolder != null) {
+        if (libraryEntry != null && libraryEntry.fullModLayout) {
+            entry = libraryEntry;
+        } else if (suppliedSongFolder != null) {
             entry = SongLibrary.scanSongDir(suppliedSongFolder);
         }
         if (entry == null && requestedSongId != null) {
@@ -238,19 +290,45 @@ public final class ChartEditorScreen extends Screen {
         chart.rebuildBpmMap();
         conductor = new Conductor(chart);
         saveId = songId == null ? sanitizeId(chart.title) : songId;
+        importModName = sanitizeModFolder(saveId + "-mod");
         loadedDifficulty = difficulty;
         discoverEventTypes();
+        reloadNoteTextures();
 
-        if (entry != null && entry.instFor(difficulty) != null) {
-            try {
-                audio = new SongPlayer();
-                audio.load(entry.instFor(difficulty), entry.voicesFor(difficulty),
-                        entry.voicesPlayerFor(difficulty), entry.voicesOpponentFor(difficulty));
-            } catch (Exception e) {
-                audio = null;
-                FnfMod.LOGGER.warn("Editor: audio unavailable: {}", e.toString());
-            }
+        ensureAudioLoaded();
+    }
+
+    private void reloadNoteTextures() {
+        if (noteTextures != null) noteTextures.close();
+        Path folder = entry != null && entry.folder != null ? entry.folder : suppliedSongFolder;
+        PlaybackPolicy policy = PlaybackPolicy.resolve(PlaybackMode.LEGACY, entry);
+        PsychAssetResolver resolver = new PsychAssetResolver(folder, entry, policy, chart.stage);
+        boolean enabled = entry == null || policy.allows(entry, SongLibrary.ExternalContent.IMAGES);
+        List<Path> roots = entry == null
+                ? java.util.Arrays.asList(folder,
+                SongLibrary.primaryExternalAssetRoot(SongLibrary.ExternalContent.IMAGES))
+                : resolver.customNoteRoots();
+        noteTextures = new PsychNoteTextureCache(
+                roots, enabled);
+    }
+
+    private void ensureAudioLoaded() {
+        if (audio != null || entry == null || entry.instFor(loadedDifficulty) == null) return;
+        SongPlayer candidate = new SongPlayer();
+        try {
+            candidate.load(entry.instFor(loadedDifficulty), entry.voicesFor(loadedDifficulty),
+                    entry.voicesPlayerFor(loadedDifficulty), entry.voicesOpponentFor(loadedDifficulty));
+            audio = candidate;
+        } catch (Exception e) {
+            candidate.dispose();
+            FnfMod.LOGGER.warn("Editor: audio unavailable: {}", e.toString());
         }
+    }
+
+    private void disposeAudio() {
+        if (audio == null) return;
+        audio.dispose();
+        audio = null;
     }
 
     // --------------------------------------------------------------------- UI construction
@@ -277,8 +355,10 @@ public final class ChartEditorScreen extends Screen {
     private void clearFieldReferences() {
         songNameField = songBpmField = songSpeedField = songOffsetField = null;
         playerField = opponentField = sectionBpmField = sectionBeatsField = null;
-        noteTimeField = sustainField = noteTypeField = saveIdField = null;
+        noteTimeField = sustainField = noteTypeField = saveIdField = importModNameField = null;
         eventTimeField = eventValue1Field = eventValue2Field = null;
+        eventValue3Field = eventValue4Field = eventValue5Field = null;
+        noteTextureField = noteSplashTextureField = null;
     }
 
     private void buildTopBar() {
@@ -309,6 +389,7 @@ public final class ChartEditorScreen extends Screen {
 
     private void switchTab(EditorTab tab) {
         commitVisibleFields();
+        eventDocumentationVisible = false;
         activeTab = tab;
         openMenu = TopMenu.NONE;
         rebuildUi();
@@ -321,9 +402,9 @@ public final class ChartEditorScreen extends Screen {
         songNameField = labeledBox("Song Name", x, y, w, chart.title, "song name");
         y += 31;
         int third = (w - 8) / 3;
-        songBpmField = labeledBox("BPM", x, y, third, trim(chart.startBpm), "bpm");
-        songSpeedField = labeledBox("Scroll Speed", x + third + 4, y, third, trim(chart.speed), "speed");
-        songOffsetField = labeledBox("Offset (ms)", x + (third + 4) * 2, y, third, trim(chart.offsetMs), "offset");
+        songBpmField = numberBox("BPM", x, y, third, trim(chart.startBpm), "e.g. 128.5");
+        songSpeedField = numberBox("Scroll Speed", x + third + 4, y, third, trim(chart.speed), "speed");
+        songOffsetField = numberBox("Offset (ms)", x + (third + 4) * 2, y, third, trim(chart.offsetMs), "+later −earlier");
         y += 31;
         int half = (w - 4) / 2;
         playerField = labeledBox("Player", x, y, half, chart.player1, "player");
@@ -364,10 +445,10 @@ public final class ChartEditorScreen extends Screen {
             rebuildUi();
         });
         y += 27;
-        sectionBpmField = labeledBox("Section BPM", x, y, half,
-                section.changeBPM ? trim(section.bpm) : "", "bpm");
+        sectionBpmField = numberBox("Section BPM", x, y, half,
+                section.changeBPM ? trim(section.bpm) : "", "e.g. 128.5");
         sectionBpmField.active = section.changeBPM;
-        sectionBeatsField = labeledBox("Beats per Section", x + half + 4, y, half,
+        sectionBeatsField = numberBox("Beats per Section", x + half + 4, y, half,
                 trim(section.sectionBeats), "beats");
         y += 31;
         button(x, y, half, "Copy Section", b -> copySection(shownSection));
@@ -414,7 +495,7 @@ public final class ChartEditorScreen extends Screen {
             b.setMessage(Component.literal(String.format(Locale.ROOT, "Playback Rate: %.1f", playbackRate)));
         });
         y += 22;
-        button(x, y, w, "Beat Snap: " + snapText(), b -> cycleSnap());
+        button(x, y, w, "Beat Snap: " + snapText(), b -> cycleSnap(hasShiftDown() ? -1 : 1));
         y += 18;
         Button vortexButton = button(x, y, w, "Vortex Editor: " + onOff(vortex), b -> {
             vortex = !vortex;
@@ -443,12 +524,21 @@ public final class ChartEditorScreen extends Screen {
         int w = controlWidth() - 20;
         int y = 52;
         label("Reserved Psych song-data fields", controlX() + controlWidth() / 2, 43, 0xFFDDDDDD, true);
-        for (String name : List.of("Game Over Character", "Death Sound", "Loop Music", "Retry Music",
-                "Note Texture", "Note Splash Texture")) {
+        for (String name : List.of("Game Over Character", "Death Sound", "Loop Music", "Retry Music")) {
             EditBox field = labeledBox(name, x, y, w, "", "not supported yet");
             field.active = false;
             y += 27;
         }
+        noteTextureField = labeledBox("Note Texture", x, y, w,
+                chart.noteTexture == null ? "" : chart.noteTexture, "images/NOTE_assets");
+        noteTextureField.setMaxLength(Integer.MAX_VALUE);
+        noteTextureField.setResponder(value -> chart.noteTexture = value.trim());
+        y += 27;
+        noteSplashTextureField = labeledBox("Note Splash Texture", x, y, w,
+                chart.noteSplashTexture == null ? "" : chart.noteSplashTexture,
+                "images/noteSplashes/noteSplashes");
+        noteSplashTextureField.setMaxLength(Integer.MAX_VALUE);
+        noteSplashTextureField.setResponder(value -> chart.noteSplashTexture = value.trim());
     }
 
     private void buildEventsTab() {
@@ -507,52 +597,99 @@ public final class ChartEditorScreen extends Screen {
         eventTimeField = labeledBox("Time (ms)", x, y + 45, w,
                 trim(eventTimeDraft), "event time");
         eventTimeField.active = !eventBeforeSongDraft;
-        boolean cameraZoom = isCameraZoomType(eventTypeDraft);
-        boolean cameraFocus = isCameraFocusType(eventTypeDraft);
-        if (isMinecraftCommandType(eventTypeDraft)) {
-            label("Value 1", x, y + 72, 0xFFDDDDDD, false);
-            String preview = eventValue1Draft.isBlank() ? "Click to edit command..." : eventValue1Draft;
-            button(x, y + 82, w, font.plainSubstrByWidth(preview, Math.max(8, w - 12)),
-                    b -> openCommandEditor());
-        } else if (cameraFocus) {
-            label("Value 1", x, y + 72, 0xFFDDDDDD, false);
-            String target = eventValue1Draft.isBlank() ? "Normal (Must Hit)" : eventValue1Draft;
-            button(x, y + 82, w, "Target: " + target, b -> cycleCameraFocusTarget());
+        boolean cameraZoom = ChartEventTypes.isCameraZoom(eventTypeDraft);
+        boolean cameraFocus = ChartEventTypes.isCameraFocus(eventTypeDraft);
+        boolean cameraBehavior = ChartEventTypes.isCameraBehavior(eventTypeDraft);
+        boolean cameraFollow = ChartEventTypes.isCameraFollowPos(eventTypeDraft);
+        boolean cameraRotation = ChartEventTypes.isCameraRotation3d(eventTypeDraft);
+        boolean addCharacter = ChartEventTypes.is(eventTypeDraft, ChartEventTypes.ADD_CHARACTER);
+        boolean tweenCharacter = ChartEventTypes.is(eventTypeDraft, ChartEventTypes.TWEEN_CHARACTER);
+        boolean extendedCamera = cameraFollow || cameraRotation;
+        int actionsY;
+        if (extendedCamera || addCharacter || tweenCharacter) {
+            int halfValue = (w - 4) / 2;
+            eventValue1Field = eventValueBox("Value 1", x, y + 72, halfValue,
+                    eventValue1Draft, ChartEventTypes.value1Hint(eventTypeDraft));
+            eventValue2Field = eventValueBox("Value 2", x + halfValue + 4, y + 72, halfValue,
+                    eventValue2Draft, ChartEventTypes.value2Hint(eventTypeDraft));
+            eventValue3Field = eventValueBox("Value 3", x, y + 99, w,
+                    eventValue3Draft, ChartEventTypes.value3Hint(eventTypeDraft));
+            if (addCharacter) {
+                eventValue4Field = eventValueBox("Value 4", x, y + 126, w,
+                        eventValue4Draft, ChartEventTypes.value4Hint(eventTypeDraft));
+                eventValue5Field = eventValueBox("Value 5", x, y + 153, w,
+                        eventValue5Draft, ChartEventTypes.value5Hint(eventTypeDraft));
+            } else {
+                buildEasingControl(x, y + 126, w, 4, true, true);
+            }
+            if (cameraFollow) {
+                label("Value 5", x, y + 153, 0xFFDDDDDD, false);
+                button(x, y + 163, w,
+                        eventValue5Draft.isBlank() || eventValue5Draft.equalsIgnoreCase("default")
+                                ? "Movement: Default" : "Movement: Override Lua + default",
+                        b -> cycleCameraMovementOverride());
+                label("Value 6", x, y + 180, 0xFFDDDDDD, false);
+                button(x, y + 190, w,
+                        cameraFollowUsesCameraFrame(eventValue6Draft)
+                                ? "Frame: Camera Rotation" : "Frame: Machine Facing",
+                        b -> cycleCameraFollowFrame());
+                actionsY = y + 207;
+            } else if (tweenCharacter) {
+                eventValue5Field = eventValueBox("Value 5", x, y + 153, w,
+                        eventValue5Draft, ChartEventTypes.value5Hint(eventTypeDraft));
+                actionsY = y + 180;
+            } else {
+                actionsY = y + 180;
+            }
         } else {
-            eventValue1Field = labeledBox("Value 1", x, y + 72, w, eventValue1Draft,
-                    cameraZoom ? "zoom amount" : "value 1");
-            eventValue1Field.setMaxLength(Integer.MAX_VALUE);
-        }
-        if (cameraZoom || cameraFocus) {
-            label("Value 2", x, y + 99, 0xFFDDDDDD, false);
-            Button easing = button(x, y + 109, w,
-                    cameraFocus && eventValue1Draft.isBlank()
-                            ? "Easing: (empty)" : "Easing: " + normalizedEase(eventValue2Draft),
-                    b -> cycleEventEase());
-            easing.active = !cameraFocus || !eventValue1Draft.isBlank();
-        } else {
-            eventValue2Field = labeledBox("Value 2", x, y + 99, w,
-                    eventValue2Draft, isMinecraftCommandType(eventTypeDraft) ? "player or server" : "value 2");
-            eventValue2Field.setMaxLength(Integer.MAX_VALUE);
+            if (ChartEventTypes.isMinecraftCommand(eventTypeDraft)) {
+                label("Value 1", x, y + 72, 0xFFDDDDDD, false);
+                String preview = eventValue1Draft.isBlank() ? "Click to edit command..." : eventValue1Draft;
+                button(x, y + 82, w, font.plainSubstrByWidth(preview, Math.max(8, w - 12)),
+                        b -> openCommandEditor());
+            } else if (cameraFocus) {
+                label("Value 1", x, y + 72, 0xFFDDDDDD, false);
+                String target = eventValue1Draft.isBlank() ? "Normal (Must Hit)" : eventValue1Draft;
+                button(x, y + 82, w, "Target: " + target,
+                        b -> cycleCameraFocusTarget(hasShiftDown() ? -1 : 1));
+            } else {
+                eventValue1Field = eventValueBox("Value 1", x, y + 72, w, eventValue1Draft,
+                        ChartEventTypes.value1Hint(eventTypeDraft));
+            }
+            if (cameraFocus || cameraBehavior) {
+                buildEasingControl(x, y + 99, w, 2, cameraBehavior,
+                        !cameraFocus || !eventValue1Draft.isBlank());
+                actionsY = y + 126;
+            } else if (cameraZoom) {
+                // Value 2 = duration (seconds), Value 3 = easing.
+                eventValue2Field = eventValueBox("Value 2", x, y + 99, w,
+                        eventValue2Draft, ChartEventTypes.value2Hint(eventTypeDraft));
+                buildEasingControl(x, y + 126, w, 3, false, true);
+                actionsY = y + 153;
+            } else {
+                eventValue2Field = eventValueBox("Value 2", x, y + 99, w,
+                        eventValue2Draft, ChartEventTypes.value2Hint(eventTypeDraft));
+                actionsY = y + 126;
+            }
         }
         int half = (w - 4) / 2;
-        button(x, y + 126, half, "Add Event", b -> addEventAtFieldTime());
-        Button apply = button(x + half + 4, y + 126, half, "Apply Selected", b -> {
+        button(x, actionsY, half, "Add Event", b -> addEventAtFieldTime());
+        Button apply = button(x + half + 4, actionsY, half, "Apply Selected", b -> {
             commitVisibleFields();
             setStatus("Event updated");
             rebuildUi();
         });
         apply.active = selectedEvent != null;
-        Button remove = button(x, y + 144, w, "Delete Selected Event", b -> deleteSelectedEvent());
+        Button remove = button(x, actionsY + 18, half, "Delete Event", b -> deleteSelectedEvent());
         remove.active = selectedEvent != null;
-        label(cameraZoom
-                        ? "Camera Zoom: Value 1 = amount, Value 2 = easing (500ms)"
-                        : cameraFocus
-                        ? "Camera Focus: target + easing; empty values restore Must Hit"
-                        : isMinecraftCommandType(eventTypeDraft)
-                        ? "Minecraft Command: Value 1 = command, Value 2 = player/server"
-                        : "Custom event: Value 1 and Value 2 are passed to its Lua callback",
-                x, y + 165, 0xFFBBBBBB, false);
+        button(x + half + 4, actionsY + 18, half, "Event Help...", b -> openEventDocumentation());
+    }
+
+    private void openEventDocumentation() {
+        commitVisibleFields();
+        helpVisible = false;
+        eventDocumentationScroll = 0;
+        eventDocumentationVisible = true;
     }
 
     private void discoverEventTypes() {
@@ -606,6 +743,11 @@ public final class ChartEditorScreen extends Screen {
             button(x + 4, y, w - 8, "Save", b -> saveChart()); y += 16;
             Button openEvents = button(x + 4, y, w - 8, "Open Events...", b -> {}); openEvents.active = false; y += 16;
             button(x + 4, y, w - 8, "Save Events...", b -> saveEventsOnly()); y += 16;
+            importModNameField = box(x + 4, y + 2, w - 8, importModName, "mod folder (My-Mod)");
+            y += 20;
+            Button importSong = button(x + 4, y, w - 8, "Import Song to Mod", b -> importSongFiles());
+            importSong.setTooltip(Tooltip.create(Component.literal(
+                    "Creates a mod template and imports only charts, events, metadata, and OGG audio"))); y += 16;
             button(x + 4, y, w - 8, "Exit", b -> onClose());
         } else if (openMenu == TopMenu.EDIT) {
             Button undo = button(x + 4, y, w - 8, "Undo", b -> { undoNotes(); rebuildUi(); });
@@ -614,6 +756,10 @@ public final class ChartEditorScreen extends Screen {
             redo.active = !redoHistory.isEmpty(); y += 16;
             button(x + 4, y, w - 8, "Copy Section", b -> copySection(shownSection)); y += 16;
             button(x + 4, y, w - 8, "Paste Section", b -> pasteSection(shownSection)); y += 16;
+            Button snapNotes = button(x + 4, y, w - 8, "Snap Notes to Grid", b -> snapNotesToGrid());
+            snapNotes.setTooltip(Tooltip.create(Component.literal(
+                    "Realigns notes (and hold ends) to the current Beat Snap. Snaps the "
+                            + "selection if any, otherwise every note. Use after changing the BPM."))); y += 16;
             button(x + 4, y, w - 8, "Clear All Notes", b -> {
                 if (chart.notes.isEmpty()) return;
                 recordNoteChange();
@@ -626,6 +772,8 @@ public final class ChartEditorScreen extends Screen {
             Button removeSelectedTypes = button(x + 4, y, w - 8, "Remove Selected Types", b -> removeSelectedCustomNoteTypes());
             removeSelectedTypes.active = selectedNotes.stream().anyMatch(this::isCustomNote); y += 16;
             Button clearEvents = button(x + 4, y, w - 8, "Clear All Events", b -> {
+                if (chart.events.isEmpty()) return;
+                recordNoteChange();
                 chart.events.clear();
                 selectedEvents.clear();
                 selectedEvent = null;
@@ -634,7 +782,8 @@ public final class ChartEditorScreen extends Screen {
             });
             clearEvents.active = !chart.events.isEmpty();
         } else {
-            button(x + 4, y, w - 8, "Beat Snap: " + snapText(), b -> cycleSnap()); y += 16;
+            button(x + 4, y, w - 8, "Beat Snap: " + snapText(),
+                    b -> cycleSnap(hasShiftDown() ? -1 : 1)); y += 16;
             button(x + 4, y, w - 8, "Vortex Editor: " + onOff(vortex), b -> {
                 vortex = !vortex;
                 if (vortex && !isPlaying()) snapPlayheadToGrid();
@@ -644,13 +793,49 @@ public final class ChartEditorScreen extends Screen {
         }
     }
 
+    /** Accepts decimals and a leading sign, plus intermediate states while typing. */
+    private static final java.util.function.Predicate<String> NUMERIC_FILTER =
+            value -> value.isEmpty() || value.matches("-?\\d*\\.?\\d*");
+
+    /** Minecraft's own EditBox default, kept for fields that never needed more. */
+    private static final int VANILLA_BOX_MAX_LENGTH = 32;
+
+    /**
+     * Event Value fields hold command text and property paths, so they get twice
+     * the vanilla allowance.
+     */
+    private static final int EVENT_VALUE_MAX_LENGTH = VANILLA_BOX_MAX_LENGTH * 2;
+
     private EditBox labeledBox(String label, int x, int y, int w, String value, String hint) {
         label(label, x, y, 0xFFDDDDDD, false);
         return box(x, y + 10, w, value, hint);
     }
 
+    /** Labeled field sized for event values, which allow longer text than a plain box. */
+    private EditBox eventValueBox(String label, int x, int y, int w, String value, String hint) {
+        label(label, x, y, 0xFFDDDDDD, false);
+        return box(x, y + 10, w, value, hint, EVENT_VALUE_MAX_LENGTH);
+    }
+
+    /** Labeled field constrained to numeric input, so decimal BPM/offset stick. */
+    private EditBox numberBox(String label, int x, int y, int w, String value, String hint) {
+        EditBox field = labeledBox(label, x, y, w, value, hint);
+        field.setFilter(NUMERIC_FILTER);
+        return field;
+    }
+
     private EditBox box(int x, int y, int w, String value, String hint) {
+        return box(x, y, w, value, hint, VANILLA_BOX_MAX_LENGTH);
+    }
+
+    /**
+     * The max length must be applied before the value: {@link EditBox#setValue}
+     * truncates against whatever limit is set at that moment, so assigning it
+     * afterwards silently cuts the existing text to the vanilla default.
+     */
+    private EditBox box(int x, int y, int w, String value, String hint, int maxLength) {
         EditBox field = addRenderableWidget(new EditBox(font, x, y, Math.max(8, w), 14, Component.literal(hint)));
+        field.setMaxLength(maxLength);
         field.setValue(value == null ? "" : value);
         if (!hint.isEmpty()) field.setHint(Component.literal(hint));
         return field;
@@ -691,20 +876,34 @@ public final class ChartEditorScreen extends Screen {
                 chart.sortNotes();
             }
         }
+        if (noteTextureField != null) chart.noteTexture = noteTextureField.getValue().trim();
+        if (noteSplashTextureField != null) {
+            chart.noteSplashTexture = noteSplashTextureField.getValue().trim();
+        }
 
         if (eventTimeField != null) eventTimeDraft = Math.max(0, parseNumber(eventTimeField, eventTimeDraft));
         if (eventValue1Field != null) eventValue1Draft = eventValue1Field.getValue();
         if (eventValue2Field != null) eventValue2Draft = eventValue2Field.getValue().trim();
+        if (eventValue3Field != null) eventValue3Draft = eventValue3Field.getValue().trim();
+        if (eventValue4Field != null) eventValue4Draft = eventValue4Field.getValue().trim();
+        if (eventValue5Field != null) eventValue5Draft = eventValue5Field.getValue().trim();
         if (selectedEvent != null && eventDraftInitialized) {
             selectedEvent.timeMs = eventTimeDraft;
             selectedEvent.name = eventTypeDraft;
             selectedEvent.value1 = eventValue1Draft;
             selectedEvent.value2 = eventValue2Draft;
+            selectedEvent.value3 = eventValue3Draft;
+            selectedEvent.value4 = eventValue4Draft;
+            selectedEvent.value5 = eventValue5Draft;
+            selectedEvent.value6 = eventValue6Draft;
             selectedEvent.beforeSong = eventBeforeSongDraft;
             chart.sortEvents();
         }
 
         if (saveIdField != null && !saveIdField.getValue().isBlank()) saveId = sanitizeId(saveIdField.getValue());
+        if (importModNameField != null && !importModNameField.getValue().isBlank()) {
+            importModName = sanitizeModFolder(importModNameField.getValue());
+        }
         chart.rebuildBpmMap();
         conductor = new Conductor(chart);
     }
@@ -761,24 +960,64 @@ public final class ChartEditorScreen extends Screen {
         return null;
     }
 
-    private List<SongChart.Note> noteSnapshot() {
-        List<SongChart.Note> snapshot = new ArrayList<>(chart.notes.size());
-        for (SongChart.Note note : chart.notes) snapshot.add(note.copy());
-        return snapshot;
+    /**
+     * Re-aligns notes to the current Beat Snap. Notes keep their millisecond time
+     * when the BPM changes, so after an edit they land off-grid; this rounds each
+     * note (and its hold end) to the nearest snap step on the current timing map.
+     */
+    private void snapNotesToGrid() {
+        commitVisibleFields();
+        boolean onlySelected = !selectedNotes.isEmpty();
+        List<SongChart.Note> targets = onlySelected
+                ? new ArrayList<>(selectedNotes) : chart.notes;
+        if (targets.isEmpty()) {
+            setStatus("No notes to snap");
+            return;
+        }
+        recordNoteChange();
+        double step = snapStepBeats();
+        int moved = 0;
+        for (SongChart.Note note : targets) {
+            double headBeat = conductor.beatAt(note.timeMs);
+            double snappedHead = Math.max(0, Math.round(headBeat / step) * step);
+            double newHead = conductor.timeOfBeat(snappedHead);
+            if (note.sustainMs > 0) {
+                double endBeat = conductor.beatAt(note.timeMs + note.sustainMs);
+                double snappedEnd = Math.max(snappedHead, Math.round(endBeat / step) * step);
+                note.sustainMs = Math.max(0, conductor.timeOfBeat(snappedEnd) - newHead);
+            }
+            if (Math.abs(newHead - note.timeMs) > 0.01) moved++;
+            note.timeMs = newHead;
+        }
+        chart.sortNotes();
+        setStatus("Snapped " + moved + (onlySelected ? " selected" : "") + " note(s) to grid");
+        rebuildUi();
     }
 
+    private EditorState snapshot() {
+        List<SongChart.Note> notes = new ArrayList<>(chart.notes.size());
+        for (SongChart.Note note : chart.notes) notes.add(note.copy());
+        List<SongChart.Event> events = new ArrayList<>(chart.events.size());
+        for (SongChart.Event event : chart.events) events.add(event.copy());
+        return new EditorState(notes, events);
+    }
+
+    /** Records a restore point covering both notes and events before an edit. */
     private void recordNoteChange() {
-        undoHistory.push(noteSnapshot());
+        undoHistory.push(snapshot());
         while (undoHistory.size() > 100) undoHistory.removeLast();
         redoHistory.clear();
     }
 
-    private void restoreNotes(List<SongChart.Note> snapshot) {
+    private void restoreState(EditorState state) {
         chart.notes.clear();
-        for (SongChart.Note note : snapshot) chart.notes.add(note.copy());
+        for (SongChart.Note note : state.notes()) chart.notes.add(note.copy());
         chart.sortNotes();
+        chart.events.clear();
+        for (SongChart.Event event : state.events()) chart.events.add(event.copy());
+        chart.sortEvents();
         clearSelection();
-        if (activeTab == EditorTab.NOTE) rebuildUi();
+        rebuildUi();
     }
 
     private void undoNotes() {
@@ -786,8 +1025,8 @@ public final class ChartEditorScreen extends Screen {
             setStatus("Nothing to undo");
             return;
         }
-        redoHistory.push(noteSnapshot());
-        restoreNotes(undoHistory.pop());
+        redoHistory.push(snapshot());
+        restoreState(undoHistory.pop());
         setStatus("Undo");
     }
 
@@ -796,8 +1035,8 @@ public final class ChartEditorScreen extends Screen {
             setStatus("Nothing to redo");
             return;
         }
-        undoHistory.push(noteSnapshot());
-        restoreNotes(redoHistory.pop());
+        undoHistory.push(snapshot());
+        restoreState(redoHistory.pop());
         setStatus("Redo");
     }
 
@@ -934,30 +1173,44 @@ public final class ChartEditorScreen extends Screen {
 
     private void copySelectedNotes() {
         noteClipboard.clear();
-        if (selectedNotes.isEmpty()) return;
-        List<SongChart.Note> ordered = new ArrayList<>(selectedNotes);
-        ordered.sort(java.util.Comparator.comparingDouble(n -> n.timeMs));
-        double first = ordered.get(0).timeMs;
-        for (SongChart.Note note : ordered) {
+        eventClipboard.clear();
+        if (selectedNotes.isEmpty() && selectedEvents.isEmpty()) return;
+        // Shared time origin so notes and events keep their relative offsets.
+        double first = Double.MAX_VALUE;
+        for (SongChart.Note note : selectedNotes) first = Math.min(first, note.timeMs);
+        for (SongChart.Event event : selectedEvents) first = Math.min(first, event.timeMs);
+
+        List<SongChart.Note> notes = new ArrayList<>(selectedNotes);
+        notes.sort(java.util.Comparator.comparingDouble(n -> n.timeMs));
+        for (SongChart.Note note : notes) {
             SongChart.Note copy = note.copy();
             copy.timeMs -= first;
             noteClipboard.add(copy);
         }
-        setStatus("Copied " + noteClipboard.size() + " selected note(s)");
+        List<SongChart.Event> events = new ArrayList<>(selectedEvents);
+        events.sort(java.util.Comparator.comparingDouble(e -> e.timeMs));
+        for (SongChart.Event event : events) {
+            SongChart.Event copy = event.copy();
+            copy.timeMs -= first;
+            eventClipboard.add(copy);
+        }
+        setStatus("Copied " + noteClipboard.size() + " note(s), " + eventClipboard.size() + " event(s)");
     }
 
     private void deleteSelectedNotes() {
-        if (selectedNotes.isEmpty()) return;
+        if (selectedNotes.isEmpty() && selectedEvents.isEmpty()) return;
         recordNoteChange();
-        int count = selectedNotes.size();
+        int notes = selectedNotes.size();
+        int events = selectedEvents.size();
         chart.notes.removeAll(selectedNotes);
+        chart.events.removeAll(selectedEvents);
         clearSelection();
-        setStatus("Deleted " + count + " note(s)");
-        if (activeTab == EditorTab.NOTE) rebuildUi();
+        setStatus("Deleted " + notes + " note(s), " + events + " event(s)");
+        rebuildUi();
     }
 
     private void pasteSelectedNotes() {
-        if (noteClipboard.isEmpty()) return;
+        if (noteClipboard.isEmpty() && eventClipboard.isEmpty()) return;
         recordNoteChange();
         double beat = conductor.beatAt(Math.max(0, viewPositionMs));
         double anchor = conductor.timeOfBeat(Math.max(0, Math.round(beat / snapStepBeats()) * snapStepBeats()));
@@ -969,9 +1222,18 @@ public final class ChartEditorScreen extends Screen {
             selectedNotes.add(copy);
             selectedNote = copy;
         }
+        for (SongChart.Event stored : eventClipboard) {
+            SongChart.Event copy = stored.copy();
+            copy.timeMs = Math.max(0, copy.timeMs + anchor);
+            chart.events.add(copy);
+            selectedEvents.add(copy);
+            selectedEvent = copy;
+        }
         chart.sortNotes();
-        setStatus("Pasted " + noteClipboard.size() + " note(s)");
-        if (activeTab == EditorTab.NOTE) rebuildUi();
+        chart.sortEvents();
+        if (selectedEvent != null) setEventDraft(selectedEvent);
+        setStatus("Pasted " + noteClipboard.size() + " note(s), " + eventClipboard.size() + " event(s)");
+        rebuildUi();
     }
 
     private void selectSectionNotes() {
@@ -1047,7 +1309,8 @@ public final class ChartEditorScreen extends Screen {
     // --------------------------------------------------------------------- Playback
 
     private boolean isPlaying() {
-        return audio != null && audio.isStarted() && !audio.isPaused();
+        return leadInStartNano >= 0
+                || (audio != null && audio.isStarted() && !audio.isPaused());
     }
 
     private void setPlaybackRate(float rate) {
@@ -1063,40 +1326,128 @@ public final class ChartEditorScreen extends Screen {
             return;
         }
         if (isPlaying()) {
-            viewPositionMs = audio.positionMs();
-            audio.pause();
+            if (leadInStartNano >= 0) {
+                leadInStartNano = -1;
+            } else {
+                viewPositionMs = audioToView(audio.positionMs());
+                audio.pause();
+            }
             if (vortex) snapPlayheadToGrid();
-        } else if (audio.isPaused()) {
-            audio.seekMs(viewPositionMs);
-            audio.resume();
-            resetHitsoundIndex(viewPositionMs);
         } else {
-            audio.start();
-            audio.seekMs(viewPositionMs);
-            resetHitsoundIndex(viewPositionMs);
+            beginPlayback();
         }
     }
 
-    private void launchPlaytest(boolean previewFromCurrentTime) {
+    private void beginPlayback() {
+        resetHitsoundIndex(viewPositionMs);
+        if (viewToAudio(viewPositionMs) < 0) {
+            // Positive offset: the song has not started yet, so play silence and
+            // let the wall clock carry the playhead until the audio catches up.
+            if (audio.isStarted() && !audio.isPaused()) audio.pause();
+            leadInBaseView = viewPositionMs;
+            leadInStartNano = System.nanoTime();
+        } else {
+            startAudioAt(viewToAudio(viewPositionMs));
+        }
+    }
+
+    private void startAudioAt(double audioMs) {
+        if (!audio.isStarted()) audio.start();
+        else if (audio.isPaused()) audio.resume();
+        audio.seekMs(audioMs);
+    }
+
+    /**
+     * Full playtest is only meaningful for a chart opened from a Funkin' Machine.
+     * The machine supplies the stage anchor and facing that place the performers
+     * and the camera; the block is re-checked because it can be broken or replaced
+     * while the editor is open, and a missing one would silently build the stage
+     * facing north around the wrong spot.
+     */
+    private boolean canPlaytest() {
+        if (sourceMachinePos == null || minecraft == null || minecraft.level == null) return false;
+        return minecraft.level.getBlockState(sourceMachinePos)
+                .hasProperty(FunkinMachineBlock.FACING);
+    }
+
+    /** F12: play the chart's notes inside the editor, starting at the playhead. */
+    private void enterPreview() {
+        if (audio == null) {
+            setStatus("No Inst.ogg is available to preview");
+            return;
+        }
         commitVisibleFields();
+        setFocused(null);
+        openMenu = TopMenu.NONE;
+        previewMode = true;
+        previewHitNotes.clear();
+        java.util.Arrays.fill(previewFlashUntil, 0);
+        if (!isPlaying()) beginPlayback();
+    }
+
+    /** Registers a manual hit on the nearest unhit player note in this lane. */
+    private void previewHitLane(int lane) {
+        previewFlashUntil[4 + lane] = System.currentTimeMillis() + 120;
+        double now = viewPositionMs;
+        SongChart.Note best = null;
+        double bestDist = 180; // ms hit window
+        for (SongChart.Note note : chart.notes) {
+            if (!note.playerSide || note.lane != lane || previewHitNotes.contains(note)) continue;
+            double dist = Math.abs(note.timeMs - now);
+            if (dist < bestDist) {
+                bestDist = dist;
+                best = note;
+            }
+        }
+        if (best != null) previewHitNotes.add(best);
+    }
+
+    private void exitPreview() {
+        if (!previewMode) return;
+        previewMode = false;
+        previewHitNotes.clear();
+        if (isPlaying()) {
+            if (leadInStartNano >= 0) {
+                leadInStartNano = -1;
+            } else if (audio != null) {
+                viewPositionMs = audioToView(audio.positionMs());
+                audio.pause();
+            }
+        }
+        rebuildUi();
+    }
+
+    private void launchPlaytest(boolean fromCurrentTime, boolean preview) {
+        commitVisibleFields();
+        if (!canPlaytest()) {
+            setStatus("Playtest needs a Funkin' Machine — use F12 to preview the notes");
+            return;
+        }
         if (entry == null || entry.instFor(loadedDifficulty) == null) {
             setStatus("A valid Inst.ogg is required to playtest");
             return;
         }
+        SongPlayer playtestAudio = new SongPlayer();
         try {
-            SongPlayer playtestAudio = new SongPlayer();
             playtestAudio.load(entry.instFor(loadedDifficulty),
                     chart.needsVoices ? entry.voicesFor(loadedDifficulty) : null,
                     chart.needsVoices ? entry.voicesPlayerFor(loadedDifficulty) : null,
                     chart.needsVoices ? entry.voicesOpponentFor(loadedDifficulty) : null);
-            if (previewFromCurrentTime) playtestAudio.setPlaybackRate(playbackRate);
-            double startMs = previewFromCurrentTime ? viewPositionMs : 0;
-            BlockPos machine = sourceMachinePos != null ? sourceMachinePos
-                    : (minecraft.player == null ? BlockPos.ZERO : minecraft.player.blockPosition());
+            if (fromCurrentTime) playtestAudio.setPlaybackRate(playbackRate);
+            double startMs = fromCurrentTime ? viewPositionMs : 0;
+            // Guarded by canPlaytest above. Falling back to the player's own
+            // position used to put the stage anchor on top of the performer,
+            // which is what broke the camera and the player/opponent placement.
+            BlockPos machine = sourceMachinePos;
+            String resourceSongId = entry.id == null || entry.id.isBlank()
+                    ? (requestedSongId == null ? chart.title : requestedSongId) : entry.id;
+            Path resourceFolder = entry.folder != null ? entry.folder : suppliedSongFolder;
             minecraft.setScreen(GameplayScreen.editorPlaytest(machine, chart, playtestAudio, startMs,
-                    previewFromCurrentTime,
-                    () -> recreateEditor(startMs)));
+                    preview, resourceSongId, resourceFolder, entry,
+                    () -> recreateEditor(startMs), sourcePolicy));
+            playtestAudio = null; // GameplayScreen owns it now.
         } catch (Exception e) {
+            if (playtestAudio != null) playtestAudio.dispose();
             setStatus("Playtest failed: " + e.getMessage());
             FnfMod.LOGGER.warn("Editor playtest failed: {}", e.toString());
         }
@@ -1104,7 +1455,7 @@ public final class ChartEditorScreen extends Screen {
 
     private ChartEditorScreen recreateEditor(double positionMs) {
         ChartEditorScreen editor = new ChartEditorScreen(requestedSongId, loadedDifficulty, chart,
-                suppliedSongFolder, originalDirectory, sourceMachinePos);
+                suppliedSongFolder, originalDirectory, sourceMachinePos, sourcePolicy);
         editor.viewPositionMs = Math.max(0, positionMs);
         editor.snapIndex = snapIndex;
         editor.pixelsPerBeat = pixelsPerBeat;
@@ -1113,9 +1464,23 @@ public final class ChartEditorScreen extends Screen {
         return editor;
     }
 
+    /**
+     * The chart offset shifts the song against the notes, so applying it here lets
+     * the editor hear the alignment it will play with. view = note-grid time;
+     * audio buffer = note-grid time − offset (same relationship as gameplay).
+     */
+    private double audioToView(double audioPositionMs) {
+        return audioPositionMs + chart.offsetMs;
+    }
+
+    private double viewToAudio(double viewMs) {
+        return viewMs - chart.offsetMs;
+    }
+
     private void seek(double timeMs) {
+        leadInStartNano = -1; // scrubbing leaves any silent lead-in
         viewPositionMs = Math.max(0, timeMs);
-        if (audio != null && audio.isStarted()) audio.seekMs(viewPositionMs);
+        if (audio != null && audio.isStarted()) audio.seekMs(viewToAudio(viewPositionMs));
         resetHitsoundIndex(viewPositionMs);
     }
 
@@ -1176,6 +1541,34 @@ public final class ChartEditorScreen extends Screen {
         return hasShiftDown();
     }
 
+    private void importSongFiles() {
+        commitVisibleFields();
+        String id = sanitizeId(saveId == null || saveId.isBlank() ? chart.title : saveId);
+        if (id.isBlank()) id = "unnamed";
+        String pack = sanitizeModFolder(importModName == null || importModName.isBlank()
+                ? id + "-mod" : importModName);
+        if (pack.isBlank()) pack = id + "-mod";
+        Path target = SongLibrary.modsDir().resolve(pack).toAbsolutePath().normalize();
+        SongImportService.Request request = new SongImportService.Request(id, loadedDifficulty,
+                chart, entry, originalDirectory, eventDefinitionRoot, target);
+        if (!SongImportService.canImport(request)) {
+            setStatus("Could not find the song's source mod");
+            return;
+        }
+        try {
+            SongImportService.Result result = SongImportService.importCompleteSong(request);
+            SongLibrary.rescan();
+            entry = SongLibrary.get(id);
+            eventDefinitionRoot = result.targetModDirectory();
+            reloadNoteTextures();
+            setStatus("Imported " + result.copiedFiles() + " basic file(s) into mods/"
+                    + result.targetModDirectory().getFileName());
+        } catch (Exception error) {
+            setStatus("Song import failed: " + error.getMessage());
+            FnfMod.LOGGER.error("Could not import complete song {}", id, error);
+        }
+    }
+
     private boolean altDown() {
         return hasAltDown();
     }
@@ -1186,6 +1579,36 @@ public final class ChartEditorScreen extends Screen {
 
     @Override
     public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
+        if (eventDocumentationVisible) {
+            int step = keyCode == GLFW.GLFW_KEY_PAGE_UP || keyCode == GLFW.GLFW_KEY_PAGE_DOWN ? 8 : 1;
+            if (keyCode == GLFW.GLFW_KEY_ESCAPE || keyCode == GLFW.GLFW_KEY_F1
+                    || keyCode == GLFW.GLFW_KEY_ENTER || keyCode == GLFW.GLFW_KEY_KP_ENTER) {
+                eventDocumentationVisible = false;
+            } else if (keyCode == GLFW.GLFW_KEY_UP || keyCode == GLFW.GLFW_KEY_PAGE_UP) {
+                eventDocumentationScroll = Math.max(0, eventDocumentationScroll - step);
+            } else if (keyCode == GLFW.GLFW_KEY_DOWN || keyCode == GLFW.GLFW_KEY_PAGE_DOWN) {
+                eventDocumentationScroll = Math.min(eventDocumentationMaxScroll(), eventDocumentationScroll + step);
+            }
+            return true;
+        }
+        if (previewMode) {
+            int previewLane = com.fnfmod.client.FnfKeys.laneForKey(keyCode, scanCode);
+            if (previewLane >= 0) {
+                previewHitLane(previewLane);
+                return true;
+            }
+            switch (keyCode) {
+                case GLFW.GLFW_KEY_ESCAPE, GLFW.GLFW_KEY_ENTER, GLFW.GLFW_KEY_KP_ENTER,
+                        GLFW.GLFW_KEY_F12 -> exitPreview();
+                case GLFW.GLFW_KEY_SPACE -> togglePlayback();
+                case GLFW.GLFW_KEY_LEFT_BRACKET ->
+                        setPlaybackRate(altDown() ? 1.0f : playbackRate - 0.1f);
+                case GLFW.GLFW_KEY_RIGHT_BRACKET ->
+                        setPlaybackRate(altDown() ? 1.0f : playbackRate + 0.1f);
+                default -> { }
+            }
+            return true;
+        }
         if (keyCode == GLFW.GLFW_KEY_F1) {
             helpVisible = !helpVisible;
             return true;
@@ -1216,9 +1639,10 @@ public final class ChartEditorScreen extends Screen {
             }
             return true;
         }
-        if (keyCode == GLFW.GLFW_KEY_F12) { launchPlaytest(true); return true; }
+        if (keyCode == GLFW.GLFW_KEY_F12) { enterPreview(); return true; }
         if (keyCode == GLFW.GLFW_KEY_ENTER || keyCode == GLFW.GLFW_KEY_KP_ENTER) {
-            launchPlaytest(false);
+            if (canPlaytest()) launchPlaytest(shiftDown(), false);
+            else setStatus("Playtest needs a Funkin' Machine — use F12 to preview the notes");
             return true;
         }
         if (keyCode == GLFW.GLFW_KEY_LEFT_BRACKET || keyCode == GLFW.GLFW_KEY_RIGHT_BRACKET) {
@@ -1253,7 +1677,7 @@ public final class ChartEditorScreen extends Screen {
                 yield true;
             }
             case GLFW.GLFW_KEY_Z -> {
-                pixelsPerBeat = Math.min(192, pixelsPerBeat * 1.25);
+                pixelsPerBeat = Math.min(300, pixelsPerBeat * 1.25);
                 setStatus("Zoom: " + Math.round(pixelsPerBeat / DEFAULT_PIXELS_PER_BEAT * 100) + "%");
                 yield true;
             }
@@ -1281,6 +1705,11 @@ public final class ChartEditorScreen extends Screen {
 
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
+        if (previewMode) return true;
+        if (eventDocumentationVisible) {
+            if (button == 0) eventDocumentationVisible = false;
+            return true;
+        }
         if (helpVisible) return true;
         if (insideInfo(mouseX, mouseY)) {
             if (button == 0 && mouseY < infoY + 16) {
@@ -1311,7 +1740,8 @@ public final class ChartEditorScreen extends Screen {
             SongChart.Event closest = null;
             double closestPixels = Double.MAX_VALUE;
             for (SongChart.Event event : chart.events) {
-                double pixels = Math.abs(conductor.beatAt(event.timeMs) - clickedBeat) * pixelsPerBeat;
+                double pixels = Math.abs(conductor.beatAt(event.timeMs) - clickedBeat)
+                        * effectivePixelsPerBeat();
                 if (pixels < closestPixels) {
                     closestPixels = pixels;
                     closest = event;
@@ -1320,6 +1750,7 @@ public final class ChartEditorScreen extends Screen {
             boolean hitEvent = closest != null && closestPixels <= Math.max(7, cw / 2.0);
             if (hitEvent) {
                 if (!shiftDown() && !altDown()) {
+                    recordNoteChange();
                     chart.events.remove(closest);
                     selectedEvents.remove(closest);
                     if (selectedEvent == closest) {
@@ -1408,6 +1839,13 @@ public final class ChartEditorScreen extends Screen {
 
     @Override
     public boolean mouseScrolled(double mouseX, double mouseY, double scrollX, double scrollY) {
+        if (previewMode) return true;
+        if (eventDocumentationVisible) {
+            int direction = scrollY > 0 ? -1 : scrollY < 0 ? 1 : 0;
+            eventDocumentationScroll = Mth.clamp(eventDocumentationScroll + direction,
+                    0, eventDocumentationMaxScroll());
+            return true;
+        }
         if (helpVisible) return true;
         if (eventDropdownOpen) {
             int direction = scrollY > 0 ? -1 : scrollY < 0 ? 1 : 0;
@@ -1475,10 +1913,23 @@ public final class ChartEditorScreen extends Screen {
     public void render(GuiGraphics gui, int mouseX, int mouseY, float partialTick) {
         renderBackground(gui, mouseX, mouseY, partialTick);
 
-        if (isPlaying()) {
-            viewPositionMs = audio.positionMs();
+        if (leadInStartNano >= 0) {
+            double elapsed = (System.nanoTime() - leadInStartNano) / 1_000_000.0 * playbackRate;
+            viewPositionMs = Math.max(0, leadInBaseView + elapsed);
+            playCrossedHitsounds(viewPositionMs);
+            if (viewToAudio(viewPositionMs) >= 0) {
+                leadInStartNano = -1;
+                startAudioAt(viewToAudio(viewPositionMs));
+            }
+        } else if (isPlaying()) {
+            viewPositionMs = audioToView(audio.positionMs());
             playCrossedHitsounds(viewPositionMs);
         }
+        if (previewMode) {
+            renderPreview(gui);
+            return;
+        }
+
         int sectionNow = sectionIndexAt(viewPositionMs);
         if (sectionNow != shownSection) rebuildUi();
 
@@ -1486,6 +1937,7 @@ public final class ChartEditorScreen extends Screen {
         renderControlPanel(gui);
         renderTopMenuBackground(gui);
         renderLabels(gui);
+        renderInlineEventDocumentation(gui);
 
         draw(gui, "press F1 for help", 8, height - 12, 0xFFFFFFFF);
         if (System.currentTimeMillis() < statusUntil) draw(gui, status, 8, height - 24, 0xFFFFFF66);
@@ -1493,6 +1945,67 @@ public final class ChartEditorScreen extends Screen {
         for (var renderable : renderables) renderable.render(gui, mouseX, mouseY, partialTick);
         renderInfoWindow(gui);
         if (helpVisible) renderHelpScreen(gui);
+        if (eventDocumentationVisible) renderEventDocumentation(gui);
+    }
+
+    /** Notes-only playback preview: a strumline highway at the current playhead. */
+    private void renderPreview(GuiGraphics gui) {
+        NoteStyle.setDrawAlpha(1f);
+        NoteStyle.setMissed(false);
+        double now = viewPositionMs;
+        // Match gameplay's scroll speed exactly (the inputted Scroll Speed × the
+        // player's multiplier, or constant mode) so the preview reads true.
+        var opts = ClientOptions.get();
+        double effSpeed = opts.constantScrollSpeed ? opts.scrollSpeedMult
+                : Math.max(0.01, chart.speed) * opts.scrollSpeedMult;
+        double px = 0.45 * effSpeed;
+        boolean down = opts.downscroll;
+        float size = Math.min(30f, width / 12f);
+        int gap = (int) (size + 8);
+        int totalW = gap * 8;
+        int baseX = width / 2 - totalW / 2 + gap / 2;
+        int receptorY = down ? height - 90 : 90;
+
+        // divider between opponent (left four) and player (right four)
+        int divX = baseX + 4 * gap - gap / 2 - 4;
+        gui.fill(divX, 0, divX + 1, height, 0x33FFFFFF);
+
+        long nowMs = System.currentTimeMillis();
+        for (int col = 0; col < 8; col++) {
+            int lane = col % 4;
+            float cx = baseX + col * gap;
+            int state = previewFlashUntil[col] > nowMs ? 2 : 0;
+            boolean custom = noteTextures != null && noteTextures.drawReceptor(gui,
+                    editorChartNoteTexture(), lane, state, cx, receptorY, size);
+            if (!custom) NoteStyle.drawReceptor(gui, lane, cx, receptorY, size, state);
+        }
+
+        for (SongChart.Note note : chart.notes) {
+            if (previewHitNotes.contains(note)) continue;
+            double distHead = (note.timeMs - now) * px;
+            double distEnd = (note.timeMs + note.sustainMs - now) * px;
+            float y = (float) (down ? receptorY - distHead : receptorY + distHead);
+            float yEnd = (float) (down ? receptorY - distEnd : receptorY + distEnd);
+            float lo = Math.min(y, yEnd), hi = Math.max(y, yEnd);
+            if (hi < -size || lo > height + size) continue;
+            int col = (note.playerSide ? 4 : 0) + note.lane;
+            float cx = baseX + col * gap;
+            if (note.sustainMs > 0) {
+                boolean customHold = noteTextures != null && noteTextures.drawHold(gui,
+                        editorNoteTexture(note), note.lane, cx, lo, hi, size, yEnd < y);
+                if (!customHold) NoteStyle.drawHoldPiece(gui, note.lane, cx, lo, hi, size, yEnd < y);
+            }
+            if (y > -size && y < height + size) {
+                boolean customNote = noteTextures != null && noteTextures.drawNote(gui,
+                        editorNoteTexture(note), note.lane, cx, y, size);
+                if (!customNote) NoteStyle.drawNote(gui, note.lane, cx, y, size);
+            }
+        }
+
+        drawCentered(gui, "PREVIEW  —  play your lane keys  •  Esc/Enter exit  •  Space pause",
+                width / 2, height - 14, 0xFFFFFF66);
+        drawCentered(gui, String.format(Locale.ROOT, "%.1fx", playbackRate),
+                width / 2, 8, 0xFFAAAAAA);
     }
 
     private void renderGrid(GuiGraphics gui) {
@@ -1563,11 +2076,18 @@ public final class ChartEditorScreen extends Screen {
             int x = gx + column * cw;
             if (note.sustainMs > 0) {
                 int endY = (int) beatToY(conductor.beatAt(note.timeMs + note.sustainMs)) + cw / 2;
-                NoteStyle.drawHoldPiece(gui, note.lane, x + cw / 2f,
+                boolean customHold = noteTextures != null && noteTextures.drawHold(gui,
+                        editorNoteTexture(note), note.lane, x + cw / 2f,
                         Math.min(noteY, endY), Math.max(noteY, endY), noteSize, endY < noteY);
+                if (!customHold) {
+                    NoteStyle.drawHoldPiece(gui, note.lane, x + cw / 2f,
+                            Math.min(noteY, endY), Math.max(noteY, endY), noteSize, endY < noteY);
+                }
             }
             if (noteY + noteSize / 2 >= top && noteY - noteSize / 2 <= bottom) {
-                NoteStyle.drawNote(gui, note.lane, x + cw / 2f, noteY, noteSize);
+                boolean customNote = noteTextures != null && noteTextures.drawNote(gui,
+                        editorNoteTexture(note), note.lane, x + cw / 2f, noteY, noteSize);
+                if (!customNote) NoteStyle.drawNote(gui, note.lane, x + cw / 2f, noteY, noteSize);
                 if (selectedNotes.contains(note)) {
                     int radius = (int) noteSize / 2 + 2;
                     gui.renderOutline(x + cw / 2 - radius, noteY - radius, radius * 2, radius * 2, 0xFFFFFFFF);
@@ -1583,8 +2103,15 @@ public final class ChartEditorScreen extends Screen {
         drawCentered(gui, "EV", eventX + cw / 2, top - cw / 2 - font.lineHeight / 2, 0xFF555555);
         String[] glyphs = {"<", "v", "^", ">"};
         for (int column = 0; column < 8; column++) {
-            drawCentered(gui, glyphs[column % 4], gx + column * cw + cw / 2,
-                    top - cw / 2 - font.lineHeight / 2, 0xFF8A8A8A);
+            int lane = column % 4;
+            float centerX = gx + column * cw + cw / 2f;
+            float centerY = top - cw / 2f;
+            boolean custom = noteTextures != null && noteTextures.drawReceptor(gui,
+                    editorChartNoteTexture(), lane, 0, centerX, centerY, noteSize);
+            if (!custom) {
+                drawCentered(gui, glyphs[lane], (int) centerX,
+                        top - cw / 2 - font.lineHeight / 2, 0xFF8A8A8A);
+            }
         }
 
         int playheadY = centerY();
@@ -1596,7 +2123,10 @@ public final class ChartEditorScreen extends Screen {
             gui.fill(gx, playheadY, gx + gridWidth, playheadY + cw, 0x22FFFFFF);
             for (int column = 0; column < 8; column++) {
                 int centerX = gx + column * cw + cw / 2;
-                NoteStyle.drawNote(gui, column % 4, centerX, previewY, noteSize);
+                int lane = column % 4;
+                boolean custom = noteTextures != null && noteTextures.drawNote(gui,
+                        editorChartNoteTexture(), lane, centerX, previewY, noteSize);
+                if (!custom) NoteStyle.drawNote(gui, lane, centerX, previewY, noteSize);
                 draw(gui, String.valueOf(column + 1), gx + column * cw + 2,
                         previewY + cw / 2 - font.lineHeight, 0xFFFFFFFF);
             }
@@ -1615,7 +2145,7 @@ public final class ChartEditorScreen extends Screen {
 
     private void renderControlPanel(GuiGraphics gui) {
         int x = controlX();
-        int bottom = Math.min(height - 26, 238);
+        int bottom = activeTab == EditorTab.EVENTS ? height - 26 : Math.min(height - 26, 238);
         gui.fill(x, CONTROL_TOP, x + controlWidth(), bottom, 0xE6080808);
     }
 
@@ -1641,6 +2171,109 @@ public final class ChartEditorScreen extends Screen {
             if (label.centered) drawCentered(gui, label.text, label.x, label.y, label.color);
             else draw(gui, label.text, label.x, label.y, label.color);
         }
+    }
+
+    /** Bounded preview below the event controls; never draws beyond the panel. */
+    private void renderInlineEventDocumentation(GuiGraphics gui) {
+        if (activeTab != EditorTab.EVENTS || eventDropdownOpen || eventDocumentationVisible) return;
+        int x = controlX() + 10;
+        int w = controlWidth() - 20;
+        // Camera Follow Pos carries an extra Value 6 row, so its controls end
+        // lower than the other extended events; start the preview below them.
+        int top;
+        if (ChartEventTypes.isCameraFollowPos(eventTypeDraft)) {
+            top = 303;
+        } else if (ChartEventTypes.isCameraRotation3d(eventTypeDraft)
+                || ChartEventTypes.is(eventTypeDraft, ChartEventTypes.ADD_CHARACTER)
+                || ChartEventTypes.is(eventTypeDraft, ChartEventTypes.TWEEN_CHARACTER)) {
+            top = 276;
+        } else if (ChartEventTypes.isCameraZoom(eventTypeDraft)) {
+            // Value 2 duration box + Value 3 easing push the controls lower.
+            top = 249;
+        } else {
+            top = 219;
+        }
+        int bottom = height - 30;
+        int lineStep = font.lineHeight + 2;
+        int available = Math.max(0, (bottom - top) / lineStep);
+        if (available <= 0) return;
+
+        draw(gui, ChartEventTypes.documentationSource(eventTypeDraft), x, top, 0xFFFFFFFF);
+        if (available == 1) return;
+        List<FormattedCharSequence> lines = wrappedEventDocumentation(w);
+        int documentationSlots = available - 1;
+        boolean truncated = lines.size() > documentationSlots;
+        int shown = truncated ? Math.max(0, documentationSlots - 1)
+                : Math.min(lines.size(), documentationSlots);
+        for (int i = 0; i < shown; i++) {
+            gui.drawString(font, lines.get(i), x, top + (i + 1) * lineStep, 0xFFBBBBBB, false);
+        }
+        if (truncated && documentationSlots > 0) {
+            String more = "...open Event Help for the full description";
+            draw(gui, font.plainSubstrByWidth(more, w), x,
+                    top + (shown + 1) * lineStep, 0xFFCCCC77);
+        }
+    }
+
+    private void renderEventDocumentation(GuiGraphics gui) {
+        int left = Math.max(12, width / 8);
+        int right = Math.min(width - 12, width - width / 8);
+        int top = 18;
+        int bottom = height - 18;
+        int bodyTop = top + 38;
+        int bodyBottom = bottom - 18;
+        int bodyWidth = Math.max(40, right - left - 24);
+        int lineStep = font.lineHeight + 3;
+        List<FormattedCharSequence> lines = wrappedEventDocumentation(bodyWidth);
+        int visible = eventDocumentationVisibleLines();
+        eventDocumentationScroll = Mth.clamp(eventDocumentationScroll, 0,
+                Math.max(0, lines.size() - visible));
+
+        gui.fill(0, 0, width, height, 0xE0000000);
+        gui.fill(left, top, right, bottom, 0xFF111118);
+        gui.renderOutline(left, top, right - left, bottom - top, 0xFFEEEEEE);
+        String titleText = eventTypeDraft + " — " + ChartEventTypes.documentationSource(eventTypeDraft);
+        drawCentered(gui, font.plainSubstrByWidth(titleText, right - left - 24),
+                (left + right) / 2, top + 9, 0xFFFFFFFF);
+        drawCentered(gui, "Values documentation", (left + right) / 2, top + 23, 0xFFBBBBBB);
+
+        gui.enableScissor(left + 8, bodyTop, right - 8, Math.max(bodyTop + 1, bodyBottom));
+        for (int row = 0; row < visible; row++) {
+            int index = eventDocumentationScroll + row;
+            if (index >= lines.size()) break;
+            gui.drawString(font, lines.get(index), left + 12, bodyTop + row * lineStep,
+                    0xFFE0E0E0, false);
+        }
+        gui.disableScissor();
+
+        String footer = lines.size() > visible
+                ? "Wheel/arrows scroll • " + (eventDocumentationScroll + 1)
+                + "-" + Math.min(lines.size(), eventDocumentationScroll + visible)
+                + "/" + lines.size() + " • click or Esc closes"
+                : "Click, Enter, F1, or Esc to close";
+        drawCentered(gui, font.plainSubstrByWidth(footer, right - left - 16),
+                (left + right) / 2, bottom - 13, 0xFFAAAAAA);
+    }
+
+    private List<FormattedCharSequence> wrappedEventDocumentation(int maxWidth) {
+        List<FormattedCharSequence> lines = new ArrayList<>();
+        for (String paragraph : ChartEventTypes.help(eventTypeDraft).split("\\R", -1)) {
+            if (paragraph.isBlank()) lines.add(Component.empty().getVisualOrderText());
+            else lines.addAll(font.split(Component.literal(paragraph), Math.max(20, maxWidth)));
+        }
+        return lines;
+    }
+
+    private int eventDocumentationVisibleLines() {
+        return Math.max(1, (height - 92) / (font.lineHeight + 3));
+    }
+
+    private int eventDocumentationMaxScroll() {
+        int left = Math.max(12, width / 8);
+        int right = Math.min(width - 12, width - width / 8);
+        int bodyWidth = Math.max(40, right - left - 24);
+        return Math.max(0, wrappedEventDocumentation(bodyWidth).size()
+                - eventDocumentationVisibleLines());
     }
 
     private void renderInfoWindow(GuiGraphics gui) {
@@ -1710,16 +2343,25 @@ public final class ChartEditorScreen extends Screen {
     private int gridBottom() { return Math.max(gridTop() + 32, height - 26); }
     private int centerY() { return (gridTop() + gridBottom()) / 2; }
 
+    /**
+     * Horizontal room changes with GUI scale because the side panels consume
+     * scaled UI units. Apply that exact same factor vertically so the chart
+     * workspace is uniformly scaled instead of becoming tall and narrow.
+     */
+    private double effectivePixelsPerBeat() {
+        return pixelsPerBeat * cellWidth() / REFERENCE_CELL_WIDTH;
+    }
+
     private double snapStepBeats() { return 4.0 / SNAPS[snapIndex]; }
 
     private float beatToY(double beat) {
         double viewBeat = conductor.beatAt(Math.max(0, viewPositionMs));
-        return (float) (centerY() + (beat - viewBeat) * pixelsPerBeat);
+        return (float) (centerY() + (beat - viewBeat) * effectivePixelsPerBeat());
     }
 
     private double yToBeat(double y) {
         double viewBeat = conductor.beatAt(Math.max(0, viewPositionMs));
-        return viewBeat + (y - centerY()) / pixelsPerBeat;
+        return viewBeat + (y - centerY()) / effectivePixelsPerBeat();
     }
 
     private void saveEventsOnly() {
@@ -1737,6 +2379,15 @@ public final class ChartEditorScreen extends Screen {
             setStatus("Event save failed: " + e.getMessage());
             FnfMod.LOGGER.error("Event save failed", e);
         }
+    }
+
+    private String editorNoteTexture(SongChart.Note note) {
+        return note.texture == null || note.texture.isBlank() ? editorChartNoteTexture() : note.texture;
+    }
+
+    private String editorChartNoteTexture() {
+        return ClientOptions.NOTE_SKIN_DEFAULT.equalsIgnoreCase(ClientOptions.get().noteSkin)
+                ? chart.noteTexture : "";
     }
 
     private void writeOriginalReference(Path directory, String fallbackId) throws Exception {
@@ -1775,6 +2426,7 @@ public final class ChartEditorScreen extends Screen {
 
     private void addEventToPoint() {
         commitVisibleFields();
+        recordNoteChange();
         SongChart.Event added;
         if (selectedEvent != null) {
             added = selectedEvent.copy();
@@ -1782,7 +2434,8 @@ public final class ChartEditorScreen extends Screen {
             String value2 = eventValue2Draft.isBlank()
                     ? defaultEventValue2(eventTypeDraft, eventValue1Draft) : eventValue2Draft;
             added = new SongChart.Event(Math.max(0, eventTimeDraft), eventTypeDraft,
-                    eventValue1Draft, value2, eventBeforeSongDraft);
+                    eventValue1Draft, value2, eventValue3Draft, eventValue4Draft,
+                    eventValue5Draft, eventValue6Draft, eventBeforeSongDraft);
         }
         chart.events.add(added);
         chart.sortEvents();
@@ -1794,6 +2447,7 @@ public final class ChartEditorScreen extends Screen {
     private void removeEventFromPoint() {
         if (selectedEvent == null) return;
         commitVisibleFields();
+        recordNoteChange();
         List<SongChart.Event> group = eventsAtSelectedPoint();
         int index = group.indexOf(selectedEvent);
         SongChart.Event removed = selectedEvent;
@@ -1819,10 +2473,12 @@ public final class ChartEditorScreen extends Screen {
 
     private void addEventAt(double time) {
         commitVisibleFields();
+        recordNoteChange();
         String value2 = eventValue2Draft.isBlank()
                 ? defaultEventValue2(eventTypeDraft, eventValue1Draft) : eventValue2Draft;
         selectedEvent = new SongChart.Event(Math.max(0, time), eventTypeDraft,
-                eventValue1Draft, value2, eventBeforeSongDraft);
+                eventValue1Draft, value2, eventValue3Draft, eventValue4Draft,
+                eventValue5Draft, eventValue6Draft, eventBeforeSongDraft);
         setEventDraft(selectedEvent);
         chart.events.add(selectedEvent);
         chart.sortEvents();
@@ -1832,89 +2488,216 @@ public final class ChartEditorScreen extends Screen {
     }
 
     private void setEventDraft(SongChart.Event event) {
-        eventTypeDraft = event == null || event.name.isBlank() ? MINECRAFT_COMMAND_EVENT : event.name;
+        eventTypeDraft = event == null || event.name.isBlank() ? ChartEventTypes.MINECRAFT_COMMAND : event.name;
         eventValue1Draft = event == null ? "" : event.value1;
-        eventValue2Draft = event == null || event.value2.isBlank()
+        eventValue2Draft = event == null
                 ? defaultEventValue2(eventTypeDraft, eventValue1Draft) : event.value2;
+        eventValue3Draft = event == null ? ChartEventTypes.defaultValue3(eventTypeDraft) : event.value3;
+        eventValue4Draft = event == null ? ChartEventTypes.defaultValue4(eventTypeDraft) : event.value4;
+        eventValue5Draft = event == null ? ChartEventTypes.defaultValue5(eventTypeDraft) : event.value5;
+        eventValue6Draft = event == null ? ChartEventTypes.defaultValue6(eventTypeDraft) : event.value6;
         eventTimeDraft = event == null ? Math.max(0, viewPositionMs) : event.timeMs;
         eventBeforeSongDraft = event != null && event.beforeSong;
         eventDraftInitialized = true;
         eventDropdownOpen = false;
     }
 
-    private static boolean isMinecraftCommandType(String name) {
-        return name != null && (name.equalsIgnoreCase(MINECRAFT_COMMAND_EVENT)
-                || name.equalsIgnoreCase("Run Minecraft Command"));
-    }
-
     private void selectEventType(String type) {
         boolean changed = !type.equals(eventTypeDraft);
         eventTypeDraft = type;
         eventDropdownOpen = false;
-        if (changed && isCameraZoomType(type)) {
-            eventValue1Draft = "0";
-            eventValue2Draft = "smooth";
-        } else if (changed && isCameraFocusType(type)) {
-            eventValue1Draft = "player";
-            eventValue2Draft = "smooth";
-        } else if (changed && isMinecraftCommandType(type)) {
-            eventValue1Draft = "";
-            eventValue2Draft = "player";
+        eventDocumentationScroll = 0;
+        if (changed && ChartEventTypes.definition(type) != null) {
+            eventValue1Draft = ChartEventTypes.defaultValue1(type);
+            eventValue2Draft = ChartEventTypes.defaultValue2(type, eventValue1Draft);
+            eventValue3Draft = ChartEventTypes.defaultValue3(type);
+            eventValue4Draft = ChartEventTypes.defaultValue4(type);
+            eventValue5Draft = ChartEventTypes.defaultValue5(type);
+            eventValue6Draft = ChartEventTypes.defaultValue6(type);
         }
         if (selectedEvent != null) {
             selectedEvent.name = type;
             selectedEvent.value1 = eventValue1Draft;
             selectedEvent.value2 = eventValue2Draft;
+            selectedEvent.value3 = eventValue3Draft;
+            selectedEvent.value4 = eventValue4Draft;
+            selectedEvent.value5 = eventValue5Draft;
+            selectedEvent.value6 = eventValue6Draft;
         }
         rebuildUi();
     }
 
-    private static boolean isCameraZoomType(String name) {
-        return name != null && name.equalsIgnoreCase(CAMERA_ZOOM_EVENT);
-    }
-
-    private static boolean isCameraFocusType(String name) {
-        return name != null && name.equalsIgnoreCase(CAMERA_FOCUS_EVENT);
-    }
-
     private static String defaultEventValue2(String eventType, String value1) {
-        if (isCameraZoomType(eventType)) return "smooth";
-        if (isCameraFocusType(eventType)) return value1 == null || value1.isBlank() ? "" : "smooth";
-        return "player";
+        return ChartEventTypes.defaultValue2(eventType, value1);
     }
 
-    private static String normalizedEase(String value) {
-        if (value != null) {
-            for (String candidate : GameplayCamera.EASES) {
-                if (candidate.equalsIgnoreCase(value.trim())) return candidate;
-            }
-        }
-        return "smooth";
+    private record EaseChoice(String base, String direction, boolean defaultValue) {}
+
+    private void buildEasingControl(int x, int y, int width, int valueIndex,
+                                    boolean allowDefault, boolean active) {
+        label("Value " + valueIndex, x, y, 0xFFDDDDDD, false);
+        EaseChoice choice = easeChoice(eventValue(valueIndex));
+        int directionWidth = Math.min(58, Math.max(40, width / 3));
+        int easingWidth = width - directionWidth - 2;
+        String easingText = choice.defaultValue ? "Easing: Default"
+                : "Easing: " + easeTitle(choice.base);
+        Button easing = button(x, y + 10, easingWidth, easingText,
+                b -> cycleEventEase(valueIndex, allowDefault));
+        Button direction = button(x + easingWidth + 2, y + 10, directionWidth,
+                choice.defaultValue || !directionalEase(choice.base) ? "-" : choice.direction,
+                b -> cycleEventEaseDirection(valueIndex));
+        easing.active = active;
+        direction.active = active && !choice.defaultValue && directionalEase(choice.base);
     }
 
-    private void cycleEventEase() {
+    private void cycleEventEase(int valueIndex, boolean allowDefault) {
         commitVisibleFields();
-        String current = normalizedEase(eventValue2Draft);
+        EaseChoice current = easeChoice(eventValue(valueIndex));
+        if (current.defaultValue) {
+            setEventValue(valueIndex, GameplayCamera.EASES[0]);
+            rebuildUi();
+            return;
+        }
         int index = 0;
         for (int i = 0; i < GameplayCamera.EASES.length; i++) {
-            if (GameplayCamera.EASES[i].equals(current)) {
+            if (GameplayCamera.EASES[i].equalsIgnoreCase(current.base)) {
                 index = i;
                 break;
             }
         }
-        eventValue2Draft = GameplayCamera.EASES[(index + 1) % GameplayCamera.EASES.length];
-        if (selectedEvent != null) selectedEvent.value2 = eventValue2Draft;
+        if (allowDefault && index == GameplayCamera.EASES.length - 1) {
+            setEventValue(valueIndex, "");
+        } else {
+            String next = GameplayCamera.EASES[(index + 1) % GameplayCamera.EASES.length];
+            setEventValue(valueIndex, composeEase(next, current.direction));
+        }
         rebuildUi();
     }
 
-    private void cycleCameraFocusTarget() {
+    private void cycleEventEaseDirection(int valueIndex) {
         commitVisibleFields();
-        String current = eventValue1Draft == null ? "" : eventValue1Draft.trim().toLowerCase(Locale.ROOT);
-        eventValue1Draft = switch (current) {
-            case "player" -> "opponent";
-            case "opponent" -> "";
-            default -> "player";
+        EaseChoice choice = easeChoice(eventValue(valueIndex));
+        if (choice.defaultValue || !directionalEase(choice.base)) return;
+        int index = 0;
+        for (int i = 0; i < Easing.DIRECTIONS.length; i++) {
+            if (Easing.DIRECTIONS[i].equalsIgnoreCase(choice.direction)) index = i;
+        }
+        String next = Easing.DIRECTIONS[(index + 1) % Easing.DIRECTIONS.length];
+        setEventValue(valueIndex, composeEase(choice.base, next));
+        rebuildUi();
+    }
+
+    private static EaseChoice easeChoice(String raw) {
+        if (raw == null || raw.isBlank() || raw.equalsIgnoreCase("default")) {
+            return new EaseChoice("smooth", "inOut", true);
+        }
+        String normalized = Easing.normalize(raw);
+        if (normalized.equals("snap")) normalized = "constant";
+        String direction = normalized.endsWith("inout") ? "inOut"
+                : normalized.endsWith("out") ? "out"
+                : normalized.endsWith("in") ? "in" : "inOut";
+        String base = normalized;
+        if (base.endsWith("inout")) base = base.substring(0, base.length() - 5);
+        else if (base.endsWith("out")) base = base.substring(0, base.length() - 3);
+        else if (base.endsWith("in")) base = base.substring(0, base.length() - 2);
+        boolean known = false;
+        for (String candidate : GameplayCamera.EASES) {
+            if (candidate.equalsIgnoreCase(base)) {
+                base = candidate;
+                known = true;
+                break;
+            }
+        }
+        if (!known) base = "smooth";
+        // Unqualified expo kept its historic camera ease-out behavior.
+        if (normalized.equals("expo")) direction = "out";
+        return new EaseChoice(base, direction, false);
+    }
+
+    private static boolean directionalEase(String base) {
+        return !base.equalsIgnoreCase("smooth") && !base.equalsIgnoreCase("linear")
+                && !base.equalsIgnoreCase("constant");
+    }
+
+    private static String composeEase(String base, String direction) {
+        if (!directionalEase(base)) return base;
+        String suffix = direction.equalsIgnoreCase("inOut") ? "InOut"
+                : direction.equalsIgnoreCase("out") ? "Out" : "In";
+        return base + suffix;
+    }
+
+    private static String easeTitle(String value) {
+        return value == null || value.isBlank() ? "Default"
+                : Character.toUpperCase(value.charAt(0)) + value.substring(1);
+    }
+
+    private String eventValue(int index) {
+        return switch (index) {
+            case 1 -> eventValue1Draft;
+            case 2 -> eventValue2Draft;
+            case 3 -> eventValue3Draft;
+            case 4 -> eventValue4Draft;
+            case 5 -> eventValue5Draft;
+            default -> "";
         };
+    }
+
+    private void setEventValue(int index, String value) {
+        String clean = value == null ? "" : value;
+        switch (index) {
+            case 1 -> eventValue1Draft = clean;
+            case 2 -> eventValue2Draft = clean;
+            case 3 -> eventValue3Draft = clean;
+            case 4 -> eventValue4Draft = clean;
+            case 5 -> eventValue5Draft = clean;
+            case 6 -> eventValue6Draft = clean;
+            default -> { return; }
+        }
+        if (selectedEvent == null) return;
+        switch (index) {
+            case 1 -> selectedEvent.value1 = clean;
+            case 2 -> selectedEvent.value2 = clean;
+            case 3 -> selectedEvent.value3 = clean;
+            case 4 -> selectedEvent.value4 = clean;
+            case 5 -> selectedEvent.value5 = clean;
+            case 6 -> selectedEvent.value6 = clean;
+        }
+    }
+
+    private void cycleCameraMovementOverride() {
+        commitVisibleFields();
+        setEventValue(5, eventValue5Draft.isBlank()
+                || eventValue5Draft.equalsIgnoreCase("default") ? "override" : "");
+        rebuildUi();
+    }
+
+    private void cycleCameraFollowFrame() {
+        commitVisibleFields();
+        // Machine facing is the default; the toggle only sets the camera keyword.
+        setEventValue(6, cameraFollowUsesCameraFrame(eventValue6Draft) ? "" : "camera");
+        rebuildUi();
+    }
+
+    private static boolean cameraFollowUsesCameraFrame(String value6) {
+        String value = value6 == null ? "" : value6.trim().toLowerCase(Locale.ROOT);
+        return value.equals("camera") || value.equals("cam") || value.equals("rotation")
+                || value.equals("rotated") || value.equals("camerarotation")
+                || value.equals("view") || value.equals("screen");
+    }
+
+    private void cycleCameraFocusTarget() {
+        cycleCameraFocusTarget(1);
+    }
+
+    private void cycleCameraFocusTarget(int direction) {
+        commitVisibleFields();
+        String[] order = {"", "player", "opponent", "gf"};
+        String current = eventValue1Draft == null ? "" : eventValue1Draft.trim().toLowerCase(Locale.ROOT);
+        int index = 0;
+        for (int i = 0; i < order.length; i++) {
+            if (order[i].equals(current)) { index = i; break; }
+        }
+        eventValue1Draft = order[Math.floorMod(index + (direction < 0 ? -1 : 1), order.length)];
         if (eventValue1Draft.isBlank()) eventValue2Draft = "";
         else if (eventValue2Draft.isBlank()) eventValue2Draft = "smooth";
         if (selectedEvent != null) {
@@ -1934,6 +2717,7 @@ public final class ChartEditorScreen extends Screen {
 
     private void deleteSelectedEvent() {
         if (selectedEvent == null && selectedEvents.isEmpty()) return;
+        recordNoteChange();
         int removed = selectedEvents.isEmpty() ? 1 : selectedEvents.size();
         if (selectedEvents.isEmpty()) chart.events.remove(selectedEvent);
         else chart.events.removeAll(selectedEvents);
@@ -1958,8 +2742,12 @@ public final class ChartEditorScreen extends Screen {
     }
 
     private void cycleSnap() {
+        cycleSnap(1);
+    }
+
+    private void cycleSnap(int direction) {
         commitVisibleFields();
-        snapIndex = (snapIndex + 1) % SNAPS.length;
+        snapIndex = Math.floorMod(snapIndex + (direction < 0 ? -1 : 1), SNAPS.length);
         if (vortex && !isPlaying()) snapPlayheadToGrid();
         rebuildUi();
     }
@@ -2019,6 +2807,13 @@ public final class ChartEditorScreen extends Screen {
         return value.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9_-]", "-");
     }
 
+    private static String sanitizeModFolder(String value) {
+        if (value == null) return "";
+        String safe = value.trim().replaceAll("[<>:\"/\\\\|?*\\p{Cntrl}]", "-")
+                .replaceAll("[. ]+$", "");
+        return safe.equals(".") || safe.equals("..") ? "" : safe;
+    }
+
     private static String formatTime(double ms) {
         if (ms <= 0) return "0:00.00";
         long total = (long) ms;
@@ -2033,8 +2828,22 @@ public final class ChartEditorScreen extends Screen {
 
     @Override
     public void onClose() {
-        if (audio != null) audio.dispose();
+        disposeAudio();
+        disposeNoteTextures();
         super.onClose();
+    }
+
+    @Override
+    public void removed() {
+        disposeAudio();
+        disposeNoteTextures();
+        super.removed();
+    }
+
+    private void disposeNoteTextures() {
+        if (noteTextures == null) return;
+        noteTextures.close();
+        noteTextures = null;
     }
 
     @Override
