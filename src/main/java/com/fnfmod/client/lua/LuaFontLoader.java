@@ -32,19 +32,18 @@ import java.util.concurrent.atomic.AtomicInteger;
 final class LuaFontLoader implements AutoCloseable {
     private static final AtomicInteger NEXT_ID = new AtomicInteger();
 
-    private record Loaded(Font font, FontSet set, TrueTypeGlyphProvider provider) {}
+    private record Loaded(Font font, FontSet set, TrueTypeGlyphProvider provider, ResourceLocation textureBase) {}
 
-    private final Path songFolder;
-    private final Path modRoot;
+    private final List<Path> assetRoots;
     private final Path globalFonts;
     private final boolean allowSongFonts;
     private final Map<Path, Loaded> loaded = new LinkedHashMap<>();
     private final Set<Path> failed = new LinkedHashSet<>();
     private final Set<String> missing = new LinkedHashSet<>();
 
-    LuaFontLoader(Path songFolder, Path modRoot, Path globalFonts, boolean allowSongFonts) {
-        this.songFolder = normalize(songFolder);
-        this.modRoot = normalize(modRoot);
+    LuaFontLoader(List<Path> assetRoots, Path globalFonts, boolean allowSongFonts) {
+        this.assetRoots = assetRoots == null ? List.of() : assetRoots.stream()
+                .map(LuaFontLoader::normalize).filter(java.util.Objects::nonNull).distinct().toList();
         this.globalFonts = normalize(globalFonts);
         this.allowSongFonts = allowSongFonts;
     }
@@ -72,6 +71,8 @@ final class LuaFontLoader implements AutoCloseable {
     private Loaded load(Path file) {
         FT_Face face = null;
         ByteBuffer memory = null;
+        TrueTypeGlyphProvider provider = null;
+        ResourceLocation textureBase = null;
         try (InputStream input = Files.newInputStream(file)) {
             memory = TextureUtil.readResource(input);
             memory.flip();
@@ -88,32 +89,49 @@ final class LuaFontLoader implements AutoCloseable {
 
             // Minecraft normally rasterizes around 11px. Lua then scales that image
             // to arbitrary FNF sizes, so use an 8x atlas to avoid blocky edges.
-            TrueTypeGlyphProvider provider = new TrueTypeGlyphProvider(memory, face,
+            provider = new TrueTypeGlyphProvider(memory, face,
                     11f, 8f, 0f, 0f, "");
             memory = null;
             face = null;
-            ResourceLocation id = FnfMod.id("lua_font/" + NEXT_ID.incrementAndGet());
-            FontSet set = new FontSet(Minecraft.getInstance().getTextureManager(), id);
+            textureBase = FnfMod.id("lua_font/" + NEXT_ID.incrementAndGet());
+            FontSet set = new FontSet(Minecraft.getInstance().getTextureManager(), textureBase);
             set.reload(List.of(new GlyphProvider.Conditional(provider, FontOption.Filter.ALWAYS_PASS)), Set.of());
             Font font = new Font(ignored -> set, false);
             FnfMod.LOGGER.info("Loaded Lua font {}", file);
-            return new Loaded(font, set, provider);
+            return new Loaded(font, set, provider, textureBase);
         } catch (Throwable error) {
-            if (face != null) {
-                synchronized (FreeTypeUtil.LIBRARY_LOCK) {
-                    FreeType.FT_Done_Face(face);
+            if (textureBase != null) releaseFontTextures(textureBase);
+            if (provider != null) {
+                provider.close();
+            } else {
+                if (face != null) {
+                    synchronized (FreeTypeUtil.LIBRARY_LOCK) {
+                        FreeType.FT_Done_Face(face);
+                    }
                 }
+                MemoryUtil.memFree(memory);
             }
-            MemoryUtil.memFree(memory);
             FnfMod.LOGGER.warn("Could not load Lua font {}: {}", file, error.toString());
             return null;
+        }
+    }
+
+    /** FontSet registers atlas pages as textureBase/0, textureBase/1, ... . */
+    private static void releaseFontTextures(ResourceLocation textureBase) {
+        var textureManager = Minecraft.getInstance().getTextureManager();
+        for (int page = 0; ; page++) {
+            ResourceLocation id = textureBase.withSuffix("/" + page);
+            if (textureManager.getTexture(id, null) == null) break;
+            textureManager.release(id);
         }
     }
 
     private Path resolve(String requested) {
         if (requested == null || requested.isBlank()) return null;
         String name = requested.trim().replace('\\', '/');
-        for (Path root : new Path[]{songFolder, modRoot, globalFonts}) {
+        List<Path> roots = new java.util.ArrayList<>(assetRoots);
+        if (globalFonts != null) roots.add(globalFonts);
+        for (Path root : roots) {
             if (root == null) continue;
             if (!root.equals(globalFonts) && !allowSongFonts) continue;
             Path[] candidates = root.equals(globalFonts)
@@ -136,7 +154,7 @@ final class LuaFontLoader implements AutoCloseable {
     @Override
     public void close() {
         for (Loaded font : loaded.values()) {
-            font.set.close();
+            releaseFontTextures(font.textureBase);
             font.provider.close();
         }
         loaded.clear();

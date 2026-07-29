@@ -12,13 +12,23 @@ public class SongChart {
     public String title = "Unknown";
     public double startBpm = 120.0;
     public double speed = 1.0;
-    /** Extra audio offset in ms (positive = notes later relative to audio). */
+    /**
+     * Song audio offset in ms. Positive delays the song so it sounds later than
+     * the chart (silent lead-in); negative plays it earlier, seeking past the
+     * intro so nothing is heard before the chart starts.
+     */
     public double offsetMs = 0.0;
     public boolean needsVoices = true;
     public String player1 = "bf";
     public String player2 = "dad";
+    /** Psych girlfriend/speakers character id (gfVersion). */
+    public String player3 = "gf";
     /** Psych stage id used to discover stages/<stage>.lua. */
     public String stage = "stage";
+    /** Psych arrowSkin: Sparrow atlas used by receptors, notes, and sustains. */
+    public String noteTexture = "";
+    /** Psych splashSkin: Sparrow atlas used by note splashes. */
+    public String noteSplashTexture = "";
 
     public final List<BpmChange> bpmChanges = new ArrayList<>();
     /** All notes, sorted by time. */
@@ -38,6 +48,40 @@ public class SongChart {
         public String noteType = "";
         public boolean altAnim;
 
+        // Psych Engine runtime note properties. These are intentionally not
+        // serialized into the chart; custom_notetypes scripts/configs rebuild
+        // them whenever the song starts.
+        public String texture = "";
+        public String animSuffix = "";
+        public String hitsound = "hitsound";
+        public String noteSplashTexture = "";
+        public boolean ignoreNote;
+        public boolean hitCausesMiss;
+        public boolean noAnimation;
+        public boolean noMissAnimation;
+        public boolean blockHit;
+        public boolean gfNote;
+        public boolean lowPriority;
+        public boolean visible = true;
+        public boolean ratingDisabled;
+        public boolean hitsoundDisabled;
+        public boolean noteSplashDisabled;
+        public double hitHealth = 0.023;
+        public double missHealth = 0.0475;
+        public double multAlpha = 1.0;
+        public double multSpeed = 1.0;
+        public double alpha = 1.0;
+        public double angle;
+        public double offsetX;
+        public double offsetY;
+        public double offsetAngle;
+        public double scaleX = 1.0;
+        public double scaleY = 1.0;
+        public double earlyHitMult = 1.0;
+        public double lateHitMult = 1.0;
+        public double hitsoundVolume = 1.0;
+        public double noteSplashAlpha = 1.0;
+
         public Note() {}
 
         public Note(double timeMs, int lane, boolean playerSide, double sustainMs, String noteType) {
@@ -51,6 +95,36 @@ public class SongChart {
         public Note copy() {
             Note n = new Note(timeMs, lane, playerSide, sustainMs, noteType);
             n.altAnim = altAnim;
+            n.texture = texture;
+            n.animSuffix = animSuffix;
+            n.hitsound = hitsound;
+            n.noteSplashTexture = noteSplashTexture;
+            n.ignoreNote = ignoreNote;
+            n.hitCausesMiss = hitCausesMiss;
+            n.noAnimation = noAnimation;
+            n.noMissAnimation = noMissAnimation;
+            n.blockHit = blockHit;
+            n.gfNote = gfNote;
+            n.lowPriority = lowPriority;
+            n.visible = visible;
+            n.ratingDisabled = ratingDisabled;
+            n.hitsoundDisabled = hitsoundDisabled;
+            n.noteSplashDisabled = noteSplashDisabled;
+            n.hitHealth = hitHealth;
+            n.missHealth = missHealth;
+            n.multAlpha = multAlpha;
+            n.multSpeed = multSpeed;
+            n.alpha = alpha;
+            n.angle = angle;
+            n.offsetX = offsetX;
+            n.offsetY = offsetY;
+            n.offsetAngle = offsetAngle;
+            n.scaleX = scaleX;
+            n.scaleY = scaleY;
+            n.earlyHitMult = earlyHitMult;
+            n.lateHitMult = lateHitMult;
+            n.hitsoundVolume = hitsoundVolume;
+            n.noteSplashAlpha = noteSplashAlpha;
             return n;
         }
     }
@@ -62,8 +136,6 @@ public class SongChart {
         public double sectionBeats = 4.0;
         public boolean changeBPM = false;
         public double bpm = 0.0;
-        /** Camera easing used when focus changes into this section: smooth/expo/linear/snap. */
-        public String camEase = "smooth";
     }
 
     public static class Event {
@@ -71,6 +143,12 @@ public class SongChart {
         public String name = "";
         public String value1 = "";
         public String value2 = "";
+        /** Blockified extension fields. Psych-compatible events leave these empty. */
+        public String value3 = "";
+        public String value4 = "";
+        public String value5 = "";
+        public String value6 = "";
+        public String value7 = "";
         /** Runs once while the gameplay screen is loaded, before audio starts. */
         public boolean beforeSong;
 
@@ -79,15 +157,37 @@ public class SongChart {
         }
 
         public Event(double timeMs, String name, String value1, String value2, boolean beforeSong) {
+            this(timeMs, name, value1, value2, "", "", "", beforeSong);
+        }
+
+        public Event(double timeMs, String name, String value1, String value2,
+                     String value3, String value4, String value5, boolean beforeSong) {
+            this(timeMs, name, value1, value2, value3, value4, value5, "", beforeSong);
+        }
+
+        public Event(double timeMs, String name, String value1, String value2,
+                     String value3, String value4, String value5, String value6, boolean beforeSong) {
+            this(timeMs, name, value1, value2, value3, value4, value5, value6, "", beforeSong);
+        }
+
+        public Event(double timeMs, String name, String value1, String value2,
+                     String value3, String value4, String value5, String value6, String value7,
+                     boolean beforeSong) {
             this.timeMs = timeMs;
             this.name = name == null ? "" : name;
             this.value1 = value1 == null ? "" : value1;
             this.value2 = value2 == null ? "" : value2;
+            this.value3 = value3 == null ? "" : value3;
+            this.value4 = value4 == null ? "" : value4;
+            this.value5 = value5 == null ? "" : value5;
+            this.value6 = value6 == null ? "" : value6;
+            this.value7 = value7 == null ? "" : value7;
             this.beforeSong = beforeSong;
         }
 
         public Event copy() {
-            return new Event(timeMs, name, value1, value2, beforeSong);
+            return new Event(timeMs, name, value1, value2, value3, value4, value5, value6, value7,
+                    beforeSong);
         }
     }
 

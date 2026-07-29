@@ -27,8 +27,14 @@ public final class PsychChartWriter {
         song.addProperty("needsVoices", chart.needsVoices);
         song.addProperty("player1", chart.player1);
         song.addProperty("player2", chart.player2);
-        song.addProperty("gfVersion", "gf");
+        song.addProperty("gfVersion", chart.player3);
         song.addProperty("stage", chart.stage);
+        if (chart.noteTexture != null && !chart.noteTexture.isBlank()) {
+            song.addProperty("arrowSkin", chart.noteTexture.trim());
+        }
+        if (chart.noteSplashTexture != null && !chart.noteSplashTexture.isBlank()) {
+            song.addProperty("splashSkin", chart.noteSplashTexture.trim());
+        }
         song.addProperty("validScore", true);
         chart.sortEvents();
         song.add("events", eventArray(chart));
@@ -88,7 +94,6 @@ public final class PsychChartWriter {
             if (s.changeBPM && s.bpm > 0) bpm = s.bpm;
             sec.addProperty("bpm", bpm);
             sec.addProperty("typeOfSection", 0);
-            sec.addProperty("fnfmodCamEase", s.camEase == null ? "smooth" : s.camEase);
             sectionsArr.add(sec);
             time += s.sectionBeats * (60000.0 / bpm);
         }
@@ -125,6 +130,15 @@ public final class PsychChartWriter {
             payload.add(event.name);
             payload.add(event.value1);
             payload.add(event.value2);
+            // Extended values are positional, so write every slot up to the last
+            // one actually used, filling earlier blanks so a later value (e.g. a
+            // Camera Follow Pos duration in value7) keeps its index.
+            String[] extended = {event.value3, event.value4, event.value5, event.value6, event.value7};
+            int lastUsed = -1;
+            for (int i = 0; i < extended.length; i++) {
+                if (!extended[i].isBlank()) lastUsed = i;
+            }
+            for (int i = 0; i <= lastUsed; i++) payload.add(extended[i]);
             if (event.beforeSong) payload.add("load");
             payloads.add(payload);
         }

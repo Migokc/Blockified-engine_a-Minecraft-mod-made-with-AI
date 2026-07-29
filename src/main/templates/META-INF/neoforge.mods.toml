@@ -27,8 +27,22 @@ ordering = "NONE"
 side = "BOTH"
 
 [[dependencies.${mod_id}]]
-modId = "playeranimator"
-type = "required"
-versionRange = "[2.0.0,)"
+modId = "connector"
+type = "optional"
+versionRange = "[2.0.0-beta.15,)"
 ordering = "NONE"
-side = "CLIENT"
+side = "BOTH"
+
+[[dependencies.${mod_id}]]
+modId = "fabric_api"
+type = "optional"
+versionRange = "[0.116.7,)"
+ordering = "AFTER"
+side = "BOTH"
+
+[[dependencies.${mod_id}]]
+modId = "bbs"
+type = "optional"
+versionRange = "[2.3.1,)"
+ordering = "AFTER"
+side = "BOTH"
