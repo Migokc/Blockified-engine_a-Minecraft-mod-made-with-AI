@@ -595,6 +595,39 @@ public class FnfSettingsScreen extends Screen {
             ClientOptions.save();
             b.setMessage(toggleLabel("Botplay", ClientOptions.get().botplay));
         }).bounds(x, rowY(6), w, 20).build());
+
+        addRenderableWidget(Button.builder(songWarningsLabel(), b ->
+                cycle(List.of("on", "off", "blockified", "song"),
+                        ClientOptions.get().songWarnings, false, next -> {
+                            ClientOptions.get().songWarnings = next;
+                            ClientOptions.save();
+                            b.setMessage(songWarningsLabel());
+                        })).bounds(x, rowY(7), w, 20).build());
+
+        addRenderableWidget(Button.builder(preciseInputLabel(), b -> {
+            ClientOptions.get().preciseInput = !ClientOptions.get().preciseInput;
+            ClientOptions.save();
+            b.setMessage(preciseInputLabel());
+        }).bounds(x, rowY(8), w, 20).build());
+    }
+
+    private Component preciseInputLabel() {
+        String state = ClientOptions.get().preciseInput ? "On" : "Off";
+        // The high-rate backend is Windows-only; elsewhere the toggle still routes
+        // input through the same path but stays frame-bound, so say so honestly.
+        String suffix = com.fnfmod.client.input.WindowsRawKeyBackend.isSupported()
+                ? "" : " (Windows only)";
+        return Component.literal("Precise Input: " + state + suffix);
+    }
+
+    private Component songWarningsLabel() {
+        String value = switch (ClientOptions.get().songWarnings) {
+            case "off" -> "Off";
+            case "blockified" -> "Blockified only";
+            case "song" -> "Song only";
+            default -> "On";
+        };
+        return Component.literal("Song Warnings: " + value);
     }
 
     private Component scrollSpeedMsg() {

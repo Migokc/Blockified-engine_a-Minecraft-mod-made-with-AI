@@ -1,5 +1,6 @@
 package com.fnfmod.client.audio;
 
+import com.fnfmod.gameplay.GameplayClock;
 import com.fnfmod.FnfMod;
 import net.minecraft.client.Minecraft;
 import net.minecraft.sounds.SoundSource;
@@ -82,7 +83,7 @@ public final class PsychSoundPlayer implements AutoCloseable {
             return;
         }
         setVolume(tag, from);
-        fades.put(tag, new Fade(from, to, System.currentTimeMillis(), durationMs, stopWhenDone));
+        fades.put(tag, new Fade(from, to, GameplayClock.now(), durationMs, stopWhenDone));
     }
 
     /** Psych's soundFadeCancel: leaves the sound at whatever volume it reached. */
@@ -91,7 +92,7 @@ public final class PsychSoundPlayer implements AutoCloseable {
     }
 
     private void updateFades() {
-        long now = System.currentTimeMillis();
+        long now = GameplayClock.now();
         for (var entry : new ArrayList<>(fades.entrySet())) {
             String tag = entry.getKey();
             Fade fade = entry.getValue();

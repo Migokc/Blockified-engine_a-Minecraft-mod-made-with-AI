@@ -51,6 +51,19 @@ public final class SessionManager {
     /** Requested missing files only; large FNF packs commonly exceed 256 MiB. */
     private static final long MAX_TRANSFER_REQUEST_BYTES = 1024L * 1024 * 1024;
 
+    /**
+     * File transfers stream off the server tick thread. Reading and slicing a
+     * large pack on the main thread froze the world for the whole transfer, and
+     * cancelling could not interrupt it. A daemon worker keeps the tick free and
+     * checks the session's cancel flag between chunks so a cancel stops it at once.
+     */
+    private static final java.util.concurrent.ExecutorService TRANSFER_POOL =
+            java.util.concurrent.Executors.newFixedThreadPool(2, runnable -> {
+                Thread thread = new Thread(runnable, "fnfmod-file-transfer");
+                thread.setDaemon(true);
+                return thread;
+            });
+
     private record Key(ResourceKey<Level> dim, BlockPos pos) {}
 
     private enum State { CHOOSING, WAITING_GUEST, PREPARING, PLAYING }
@@ -76,6 +89,8 @@ public final class SessionManager {
         ArmorStand botStand;
         /** invisible command target at the Funkin' Machine/speakers. */
         ArmorStand speakersMarker;
+        /** Set when the session ends so an in-flight background transfer stops. */
+        volatile boolean transferCancelled;
         /** Prevents duet clients or duplicate packets from running a server event twice. */
         final Set<Integer> executedServerEvents = new HashSet<>();
         long luaCommandWindowNanos;
@@ -242,18 +257,39 @@ public final class SessionManager {
             return;
         }
 
+        // Stream the files off the tick thread so the world keeps running, and
+        // stop between chunks if the session is cancelled or the player leaves.
+        String songId = payload.songId();
+        TRANSFER_POOL.execute(() -> streamFiles(session, player, entry, songId, candidates));
+    }
+
+    private static void streamFiles(Session session, ServerPlayer player, SongEntry entry,
+                                    String songId, List<Path> candidates) {
+        byte[] buffer = new byte[CHUNK_SIZE];
         for (Path f : candidates) {
+            if (session.transferCancelled || player.hasDisconnected()) return;
             String name = entry.transferName(f);
+            long size;
             try {
-                byte[] bytes = Files.readAllBytes(f);
-                int chunks = Math.max(1, (bytes.length + CHUNK_SIZE - 1) / CHUNK_SIZE);
+                size = Files.size(f);
+            } catch (IOException e) {
+                FnfMod.LOGGER.error("Failed to stat song file {}", f, e);
+                continue;
+            }
+            int chunks = (int) Math.max(1, (size + CHUNK_SIZE - 1) / CHUNK_SIZE);
+            try (java.io.InputStream in = new java.io.BufferedInputStream(Files.newInputStream(f))) {
                 for (int i = 0; i < chunks; i++) {
-                    int from = i * CHUNK_SIZE;
-                    int to = Math.min(bytes.length, from + CHUNK_SIZE);
-                    byte[] slice = new byte[to - from];
-                    System.arraycopy(bytes, from, slice, 0, slice.length);
+                    if (session.transferCancelled || player.hasDisconnected()) return;
+                    int filled = 0;
+                    while (filled < buffer.length) {
+                        int read = in.read(buffer, filled, buffer.length - filled);
+                        if (read < 0) break;
+                        filled += read;
+                    }
+                    byte[] slice = filled == buffer.length ? buffer.clone()
+                            : java.util.Arrays.copyOf(buffer, filled);
                     PacketDistributor.sendToPlayer(player, new FnfPayloads.FileChunkS2C(
-                            payload.songId(), name, i, chunks, slice));
+                            songId, name, i, chunks, slice));
                 }
             } catch (IOException e) {
                 FnfMod.LOGGER.error("Failed to send song file {}", f, e);
@@ -657,6 +693,7 @@ public final class SessionManager {
 
     private static void cancel(Session session, ServerPlayer leaver, String reason) {
         if (session == null) return;
+        session.transferCancelled = true; // stop any background file transfer at once
         clearSessionActors(session);
         restoreWorld(session);
         SESSIONS.remove(session.key);

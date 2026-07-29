@@ -29,6 +29,9 @@ dependencies {
             prefer '3.0.1'
         }
     }
+    // Frame-rate-independent note input uses org.lwjgl.system.windows.User32
+    // (GetAsyncKeyState) from LWJGL, which Minecraft already ships — no bundled
+    // dependency, so nothing can clash on the module path.
 }
 
 neoForge {

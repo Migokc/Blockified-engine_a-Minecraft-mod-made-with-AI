@@ -187,6 +187,7 @@ public final class LegacyChartParser {
                 String value4 = optString(object, "value4", "");
                 String value5 = optString(object, "value5", "");
                 String value6 = optString(object, "value6", "");
+                String value7 = optString(object, "value7", "");
                 boolean beforeSong = "load".equalsIgnoreCase(optString(object, "trigger", ""));
                 if (object.has("params") && object.get("params").isJsonArray()) {
                     JsonArray params = object.getAsJsonArray("params");
@@ -196,8 +197,9 @@ public final class LegacyChartParser {
                     if (params.size() > 3) value4 = text(params.get(3));
                     if (params.size() > 4) value5 = text(params.get(4));
                     if (params.size() > 5) value6 = text(params.get(5));
+                    if (params.size() > 6) value7 = text(params.get(6));
                 }
-                addEvent(out, time, name, value1, value2, value3, value4, value5, value6, beforeSong);
+                addEvent(out, time, name, value1, value2, value3, value4, value5, value6, value7, beforeSong);
             } else {
                 for (var child : object.entrySet()) parseEventContainer(child.getValue(), out);
             }
@@ -245,7 +247,8 @@ public final class LegacyChartParser {
         String value4 = valuesEnd > nameIndex + 4 ? text(row.get(nameIndex + 4)) : "";
         String value5 = valuesEnd > nameIndex + 5 ? text(row.get(nameIndex + 5)) : "";
         String value6 = valuesEnd > nameIndex + 6 ? text(row.get(nameIndex + 6)) : "";
-        addEvent(out, time, name, value1, value2, value3, value4, value5, value6, beforeSong);
+        String value7 = valuesEnd > nameIndex + 7 ? text(row.get(nameIndex + 7)) : "";
+        addEvent(out, time, name, value1, value2, value3, value4, value5, value6, value7, beforeSong);
     }
 
     private static void addEvent(java.util.List<SongChart.Event> out, double time,
@@ -255,23 +258,30 @@ public final class LegacyChartParser {
 
     private static void addEvent(java.util.List<SongChart.Event> out, double time,
                                  String name, String value1, String value2, boolean beforeSong) {
-        addEvent(out, time, name, value1, value2, "", "", "", "", beforeSong);
+        addEvent(out, time, name, value1, value2, "", "", "", "", "", beforeSong);
     }
 
     private static void addEvent(java.util.List<SongChart.Event> out, double time,
                                  String name, String value1, String value2,
                                  String value3, String value4, String value5,
                                  boolean beforeSong) {
-        addEvent(out, time, name, value1, value2, value3, value4, value5, "", beforeSong);
+        addEvent(out, time, name, value1, value2, value3, value4, value5, "", "", beforeSong);
     }
 
     private static void addEvent(java.util.List<SongChart.Event> out, double time,
                                  String name, String value1, String value2,
                                  String value3, String value4, String value5, String value6,
                                  boolean beforeSong) {
+        addEvent(out, time, name, value1, value2, value3, value4, value5, value6, "", beforeSong);
+    }
+
+    private static void addEvent(java.util.List<SongChart.Event> out, double time,
+                                 String name, String value1, String value2,
+                                 String value3, String value4, String value5, String value6,
+                                 String value7, boolean beforeSong) {
         if (time < 0 || name == null || name.isBlank()) return;
         out.add(new SongChart.Event(time, name, value1, value2,
-                value3, value4, value5, value6, beforeSong));
+                value3, value4, value5, value6, value7, beforeSong));
     }
 
     private static Double number(JsonElement element) {

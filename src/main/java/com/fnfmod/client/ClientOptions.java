@@ -47,6 +47,41 @@ public class ClientOptions {
     public boolean editorHitsoundPlayer = false;
     public boolean editorHitsoundOpponent = false;
 
+    /** Show the world XYZ axis gizmo (bottom-right) while playtesting from the editor. */
+    public boolean editorShowAxisGizmo = false;
+
+    /** Show the free-camera position/rotation readout while playtesting. */
+    public boolean editorShowCameraReadout = true;
+
+    /**
+     * Route note input through the frame-rate-independent sampler. Off keeps the
+     * per-frame GLFW handler. The high-rate backend is added in a later step; until
+     * then this only changes which path GLFW input flows through.
+     */
+    public boolean preciseInput = false;
+
+    /**
+     * Pre-song warning flags: "on" (both sources), "off" (neither),
+     * "blockified" (engine-detected only), "song" (author warnings.txt only).
+     */
+    public String songWarnings = "on";
+
+    /** Legacy boolean form of {@link #songWarnings}, read once to migrate old saves. */
+    @Deprecated
+    public Boolean showSongWarnings;
+
+    /** Engine-detected warnings — render distance and future hardcoded checks. */
+    public boolean warnBlockified() {
+        String mode = songWarnings == null ? "on" : songWarnings;
+        return mode.equals("on") || mode.equals("blockified");
+    }
+
+    /** Author warnings from a song's or pack's warnings.txt. */
+    public boolean warnSong() {
+        String mode = songWarnings == null ? "on" : songWarnings;
+        return mode.equals("on") || mode.equals("song");
+    }
+
     /** Psych-style RGB note colors (applies to skins authored with the red/green/blue template). */
     public boolean noteColorsEnabled = true;
     public int[] noteColorBase = defaultBase();
@@ -78,6 +113,14 @@ public class ClientOptions {
             FnfMod.LOGGER.warn("Could not read options.json: {}", e.toString());
         }
         if (instance == null) instance = new ClientOptions();
+        // Migrate the old on/off boolean to the new four-way mode.
+        if (instance.showSongWarnings != null) {
+            instance.songWarnings = instance.showSongWarnings ? "on" : "off";
+            instance.showSongWarnings = null;
+        }
+        if (instance.songWarnings == null || instance.songWarnings.isBlank()) {
+            instance.songWarnings = "on";
+        }
         if (instance.noteSkin == null || instance.noteSkin.isBlank()) {
             instance.noteSkin = NOTE_SKIN_DEFAULT;
         }

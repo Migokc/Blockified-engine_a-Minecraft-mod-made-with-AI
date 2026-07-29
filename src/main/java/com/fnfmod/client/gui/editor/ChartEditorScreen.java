@@ -1,6 +1,7 @@
 package com.fnfmod.client.gui.editor;
 
 import com.fnfmod.FnfMod;
+import com.fnfmod.chart.CameraShotClipboard;
 import com.fnfmod.chart.Conductor;
 import com.fnfmod.chart.ChartEventTypes;
 import com.fnfmod.chart.PsychChartWriter;
@@ -35,9 +36,11 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.ArrayDeque;
 import java.util.Deque;
+import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -102,6 +105,7 @@ public final class ChartEditorScreen extends Screen {
     private final List<SongChart.Note> sectionClipboard = new ArrayList<>();
     private final List<SongChart.Note> noteClipboard = new ArrayList<>();
     private final List<SongChart.Event> eventClipboard = new ArrayList<>();
+    private boolean seededCameraShot;
     private final Set<SongChart.Note> selectedNotes = new LinkedHashSet<>();
     private final Set<SongChart.Event> selectedEvents = new LinkedHashSet<>();
     private record EditorState(List<SongChart.Note> notes, List<SongChart.Event> events) {}
@@ -112,6 +116,8 @@ public final class ChartEditorScreen extends Screen {
     private Conductor conductor;
     private SongEntry entry;
     private SongPlayer audio;
+    private com.fnfmod.client.input.EditorTickScheduler tickScheduler;
+    private boolean schedulerActive;
     private PsychNoteTextureCache noteTextures;
     private String songId;
     private String saveId;
@@ -148,6 +154,7 @@ public final class ChartEditorScreen extends Screen {
     private String eventValue4Draft = "";
     private String eventValue5Draft = "";
     private String eventValue6Draft = "";
+    private String eventValue7Draft = "";
     private double eventTimeDraft;
     private boolean eventBeforeSongDraft;
     private double pixelsPerBeat = DEFAULT_PIXELS_PER_BEAT;
@@ -155,6 +162,10 @@ public final class ChartEditorScreen extends Screen {
     private boolean helpVisible;
     private boolean eventDocumentationVisible;
     private int eventDocumentationScroll;
+    // Cache of custom-event <name>.txt documentation, keyed by lowercase event
+    // name. Sentinel "" marks a scanned-but-missing file so render loops do not
+    // re-hit the disk every frame. Cleared on reload/import.
+    private final Map<String, String> customEventDocCache = new HashMap<>();
     private boolean selectingBox;
     private double selectionStartX;
     /** Vertical selection bounds are chart beats so scrolling cannot move the anchor. */
@@ -193,6 +204,7 @@ public final class ChartEditorScreen extends Screen {
     private EditBox eventValue3Field;
     private EditBox eventValue4Field;
     private EditBox eventValue5Field;
+    private EditBox eventValue7Field;
     private EditBox noteTextureField;
     private EditBox noteSplashTextureField;
 
@@ -240,6 +252,17 @@ public final class ChartEditorScreen extends Screen {
         if (chart == null) loadChart();
         ensureAudioLoaded();
         clampOrInitializeInfoWindow();
+        // Camera events copied from a playtest's free camera land here so Ctrl+V
+        // pastes them. Consuming the shared clipboard into the normal event
+        // clipboard means a later in-editor copy still overrides them as usual.
+        if (!seededCameraShot && !CameraShotClipboard.isEmpty()) {
+            noteClipboard.clear();
+            eventClipboard.clear();
+            eventClipboard.addAll(CameraShotClipboard.get());
+            CameraShotClipboard.clear();
+            seededCameraShot = true;
+            setStatus("Camera shot ready to paste (Ctrl+V)");
+        }
         rebuildUi();
     }
 
@@ -357,7 +380,7 @@ public final class ChartEditorScreen extends Screen {
         playerField = opponentField = sectionBpmField = sectionBeatsField = null;
         noteTimeField = sustainField = noteTypeField = saveIdField = importModNameField = null;
         eventTimeField = eventValue1Field = eventValue2Field = null;
-        eventValue3Field = eventValue4Field = eventValue5Field = null;
+        eventValue3Field = eventValue4Field = eventValue5Field = eventValue7Field = null;
         noteTextureField = noteSplashTextureField = null;
     }
 
@@ -633,7 +656,9 @@ public final class ChartEditorScreen extends Screen {
                         cameraFollowUsesCameraFrame(eventValue6Draft)
                                 ? "Frame: Camera Rotation" : "Frame: Machine Facing",
                         b -> cycleCameraFollowFrame());
-                actionsY = y + 207;
+                eventValue7Field = eventValueBox("Value 7", x, y + 207, w,
+                        eventValue7Draft, ChartEventTypes.value7Hint(eventTypeDraft));
+                actionsY = y + 234;
             } else if (tweenCharacter) {
                 eventValue5Field = eventValueBox("Value 5", x, y + 153, w,
                         eventValue5Draft, ChartEventTypes.value5Hint(eventTypeDraft));
@@ -693,6 +718,7 @@ public final class ChartEditorScreen extends Screen {
     }
 
     private void discoverEventTypes() {
+        customEventDocCache.clear();
         LinkedHashSet<String> discovered = new LinkedHashSet<>(BUILTIN_EVENT_TYPES);
         if (chart != null) {
             chart.events.stream().map(event -> event.name)
@@ -725,6 +751,50 @@ public final class ChartEditorScreen extends Screen {
         } catch (Exception e) {
             FnfMod.LOGGER.warn("Could not scan custom events in {}: {}", directory, e.toString());
         }
+    }
+
+    /**
+     * Documentation shown for an event type. Custom events ship a
+     * {@code custom_events/<name>.txt} beside their {@code <name>.lua}; when that
+     * file exists its contents are used as the help text. Built-in events and
+     * custom events without a txt fall back to {@link ChartEventTypes#help}.
+     */
+    private String eventHelpText(String type) {
+        String custom = customEventDoc(type);
+        return custom != null ? custom : ChartEventTypes.help(type);
+    }
+
+    /** Returns the cached {@code <name>.txt} for a custom event, or null if none. */
+    private String customEventDoc(String type) {
+        if (type == null || type.isBlank() || ChartEventTypes.definition(type) != null) return null;
+        String key = type.toLowerCase(Locale.ROOT);
+        String cached = customEventDocCache.get(key);
+        if (cached != null) return cached.isEmpty() ? null : cached;
+
+        String text = readCustomEventDoc(type);
+        customEventDocCache.put(key, text == null ? "" : text);
+        return text;
+    }
+
+    /** Reads {@code custom_events/<name>.txt}, mod folder first, then the shared root. */
+    private String readCustomEventDoc(String type) {
+        String text = readCustomEventDocFrom(entry == null ? null : entry.folder, type);
+        if (text == null) text = readCustomEventDocFrom(eventDefinitionRoot, type);
+        return text;
+    }
+
+    private static String readCustomEventDocFrom(Path root, String type) {
+        if (root == null) return null;
+        Path txt = root.resolve("custom_events").resolve(type + ".txt");
+        try {
+            if (Files.isRegularFile(txt)) {
+                String content = Files.readString(txt).strip();
+                if (!content.isBlank()) return content;
+            }
+        } catch (Exception e) {
+            FnfMod.LOGGER.warn("Could not read custom event doc {}: {}", txt, e.toString());
+        }
+        return null;
     }
 
     private void buildOpenMenu() {
@@ -760,6 +830,10 @@ public final class ChartEditorScreen extends Screen {
             snapNotes.setTooltip(Tooltip.create(Component.literal(
                     "Realigns notes (and hold ends) to the current Beat Snap. Snaps the "
                             + "selection if any, otherwise every note. Use after changing the BPM."))); y += 16;
+            Button snapEvents = button(x + 4, y, w - 8, "Snap Events to Grid", b -> snapEventsToGrid());
+            snapEvents.setTooltip(Tooltip.create(Component.literal(
+                    "Realigns events to the current Beat Snap. Snaps the "
+                            + "selection if any, otherwise every event. Use after changing the BPM."))); y += 16;
             button(x + 4, y, w - 8, "Clear All Notes", b -> {
                 if (chart.notes.isEmpty()) return;
                 recordNoteChange();
@@ -789,6 +863,26 @@ public final class ChartEditorScreen extends Screen {
                 if (vortex && !isPlaying()) snapPlayheadToGrid();
                 rebuildUi();
             }); y += 16;
+            ClientOptions options = ClientOptions.get();
+            Button axisGizmo = button(x + 4, y, w - 8,
+                    "Playtest Axis Gizmo: " + onOff(options.editorShowAxisGizmo), b -> {
+                        options.editorShowAxisGizmo = !options.editorShowAxisGizmo;
+                        ClientOptions.save();
+                        rebuildUi();
+                    });
+            axisGizmo.setTooltip(Tooltip.create(Component.literal(
+                    "Shows a world XYZ axis gizmo in the bottom-right while playtesting. "
+                            + "Y points up."))); y += 16;
+            Button camReadout = button(x + 4, y, w - 8,
+                    "Camera Readout: " + onOff(options.editorShowCameraReadout), b -> {
+                        options.editorShowCameraReadout = !options.editorShowCameraReadout;
+                        ClientOptions.save();
+                        rebuildUi();
+                    });
+            camReadout.setTooltip(Tooltip.create(Component.literal(
+                    "While free-cam is active (Ctrl+Shift+Space in a playtest), shows the "
+                            + "camera position and 3D rotation as Camera Follow Pos / Camera "
+                            + "Rotation 3D values. Ctrl+C copies them; paste in the editor."))); y += 16;
             Button waveform = button(x + 4, y, w - 8, "Waveform...", b -> {}); waveform.active = false;
         }
     }
@@ -887,6 +981,7 @@ public final class ChartEditorScreen extends Screen {
         if (eventValue3Field != null) eventValue3Draft = eventValue3Field.getValue().trim();
         if (eventValue4Field != null) eventValue4Draft = eventValue4Field.getValue().trim();
         if (eventValue5Field != null) eventValue5Draft = eventValue5Field.getValue().trim();
+        if (eventValue7Field != null) eventValue7Draft = eventValue7Field.getValue().trim();
         if (selectedEvent != null && eventDraftInitialized) {
             selectedEvent.timeMs = eventTimeDraft;
             selectedEvent.name = eventTypeDraft;
@@ -896,6 +991,7 @@ public final class ChartEditorScreen extends Screen {
             selectedEvent.value4 = eventValue4Draft;
             selectedEvent.value5 = eventValue5Draft;
             selectedEvent.value6 = eventValue6Draft;
+            selectedEvent.value7 = eventValue7Draft;
             selectedEvent.beforeSong = eventBeforeSongDraft;
             chart.sortEvents();
         }
@@ -991,6 +1087,37 @@ public final class ChartEditorScreen extends Screen {
         }
         chart.sortNotes();
         setStatus("Snapped " + moved + (onlySelected ? " selected" : "") + " note(s) to grid");
+        rebuildUi();
+    }
+
+    /**
+     * Re-aligns events to the current Beat Snap. Like {@link #snapNotesToGrid()},
+     * events keep their millisecond time across a BPM change and can drift off the
+     * grid; this rounds each event to the nearest snap step on the current timing
+     * map. Events flagged {@code beforeSong} keep their pre-song placement.
+     */
+    private void snapEventsToGrid() {
+        commitVisibleFields();
+        boolean onlySelected = !selectedEvents.isEmpty();
+        List<SongChart.Event> targets = onlySelected
+                ? new ArrayList<>(selectedEvents) : chart.events;
+        if (targets.isEmpty()) {
+            setStatus("No events to snap");
+            return;
+        }
+        recordNoteChange();
+        double step = snapStepBeats();
+        int moved = 0;
+        for (SongChart.Event event : targets) {
+            if (event.beforeSong) continue;
+            double beat = conductor.beatAt(event.timeMs);
+            double snappedBeat = Math.max(0, Math.round(beat / step) * step);
+            double newTime = conductor.timeOfBeat(snappedBeat);
+            if (Math.abs(newTime - event.timeMs) > 0.01) moved++;
+            event.timeMs = newTime;
+        }
+        chart.sortEvents();
+        setStatus("Snapped " + moved + (onlySelected ? " selected" : "") + " event(s) to grid");
         rebuildUi();
     }
 
@@ -1340,6 +1467,9 @@ public final class ChartEditorScreen extends Screen {
 
     private void beginPlayback() {
         resetHitsoundIndex(viewPositionMs);
+        snapshotSchedulerNotes();
+        tickScheduler().seek(viewPositionMs);
+        schedulerActive = false;
         if (viewToAudio(viewPositionMs) < 0) {
             // Positive offset: the song has not started yet, so play silence and
             // let the wall clock carry the playhead until the audio catches up.
@@ -1480,6 +1610,7 @@ public final class ChartEditorScreen extends Screen {
     private void seek(double timeMs) {
         leadInStartNano = -1; // scrubbing leaves any silent lead-in
         viewPositionMs = Math.max(0, timeMs);
+        if (tickScheduler != null) tickScheduler.seek(viewPositionMs); // don't replay skipped notes
         if (audio != null && audio.isStarted()) audio.seekMs(viewToAudio(viewPositionMs));
         resetHitsoundIndex(viewPositionMs);
     }
@@ -1533,6 +1664,49 @@ public final class ChartEditorScreen extends Screen {
             minecraft.getSoundManager().play(net.minecraft.client.resources.sounds.SimpleSoundInstance.forUI(
                     net.minecraft.sounds.SoundEvents.NOTE_BLOCK_HAT.value(), 1.8f));
         }
+    }
+
+    /**
+     * Precise playback ticks: a background thread plays each note's hitsound the
+     * moment the audio clock reaches it, instead of at the next frame. Used only
+     * with a configured hitsound (its playback is thread-safe); the no-hitsound
+     * NOTE_BLOCK_HAT fallback stays on the frame path since it needs the main-thread
+     * sound engine.
+     */
+    private com.fnfmod.client.input.EditorTickScheduler tickScheduler() {
+        if (tickScheduler == null) {
+            tickScheduler = new com.fnfmod.client.input.EditorTickScheduler(
+                    () -> {
+                        SongPlayer a = audio;
+                        return a == null ? viewPositionMs
+                                : a.positionMsAt(System.nanoTime()) + chart.offsetMs;
+                    },
+                    playerSide -> {
+                        ClientOptions o = ClientOptions.get();
+                        if (playerSide ? o.editorHitsoundPlayer : o.editorHitsoundOpponent) {
+                            com.fnfmod.client.audio.HitsoundPlayer.play();
+                        }
+                    });
+        }
+        return tickScheduler;
+    }
+
+    /** Feeds the scheduler the current notes in chart (time-sorted) order. */
+    private void snapshotSchedulerNotes() {
+        List<SongChart.Note> notes = chart.notes;
+        double[] times = new double[notes.size()];
+        boolean[] sides = new boolean[notes.size()];
+        for (int i = 0; i < notes.size(); i++) {
+            times[i] = notes.get(i).timeMs;
+            sides[i] = notes.get(i).playerSide;
+        }
+        tickScheduler().setNotes(times, sides);
+    }
+
+    /** Pauses the precise scheduler; safe to call when it was never created. */
+    private void deactivateScheduler() {
+        if (schedulerActive && tickScheduler != null) tickScheduler.setActive(false);
+        schedulerActive = false;
     }
 
     // --------------------------------------------------------------------- Input
@@ -1916,17 +2090,43 @@ public final class ChartEditorScreen extends Screen {
         if (leadInStartNano >= 0) {
             double elapsed = (System.nanoTime() - leadInStartNano) / 1_000_000.0 * playbackRate;
             viewPositionMs = Math.max(0, leadInBaseView + elapsed);
-            playCrossedHitsounds(viewPositionMs);
+            deactivateScheduler();
+            playCrossedHitsounds(viewPositionMs); // lead-in stays frame-based
             if (viewToAudio(viewPositionMs) >= 0) {
                 leadInStartNano = -1;
                 startAudioAt(viewToAudio(viewPositionMs));
             }
         } else if (isPlaying()) {
             viewPositionMs = audioToView(audio.positionMs());
-            playCrossedHitsounds(viewPositionMs);
+            // With a hitsound set, the background scheduler owns tick timing so a
+            // tick lands on its note; otherwise use the frame-based fallback.
+            if (!ClientOptions.get().hitsound.isEmpty()) {
+                if (!schedulerActive) tickScheduler().seek(viewPositionMs);
+                tickScheduler().setActive(true);
+                schedulerActive = true;
+            } else {
+                deactivateScheduler();
+                playCrossedHitsounds(viewPositionMs);
+            }
+        } else {
+            deactivateScheduler();
         }
         if (previewMode) {
             renderPreview(gui);
+            return;
+        }
+
+        // Event Help is fully modal: skip the whole chart editor so nothing
+        // shows through behind the documentation. The chart returns when closed.
+        if (eventDocumentationVisible) {
+            renderEventDocumentation(gui);
+            return;
+        }
+
+        // F1 help is modal the same way: hide the chart behind it, game stays
+        // faintly visible via renderBackground, and it returns when closed.
+        if (helpVisible) {
+            renderHelpScreen(gui);
             return;
         }
 
@@ -1944,8 +2144,6 @@ public final class ChartEditorScreen extends Screen {
 
         for (var renderable : renderables) renderable.render(gui, mouseX, mouseY, partialTick);
         renderInfoWindow(gui);
-        if (helpVisible) renderHelpScreen(gui);
-        if (eventDocumentationVisible) renderEventDocumentation(gui);
     }
 
     /** Notes-only playback preview: a strumline highway at the current playhead. */
@@ -2182,7 +2380,7 @@ public final class ChartEditorScreen extends Screen {
         // lower than the other extended events; start the preview below them.
         int top;
         if (ChartEventTypes.isCameraFollowPos(eventTypeDraft)) {
-            top = 303;
+            top = 330; // extra Value 7 (duration) field pushes the preview down
         } else if (ChartEventTypes.isCameraRotation3d(eventTypeDraft)
                 || ChartEventTypes.is(eventTypeDraft, ChartEventTypes.ADD_CHARACTER)
                 || ChartEventTypes.is(eventTypeDraft, ChartEventTypes.TWEEN_CHARACTER)) {
@@ -2229,7 +2427,9 @@ public final class ChartEditorScreen extends Screen {
         eventDocumentationScroll = Mth.clamp(eventDocumentationScroll, 0,
                 Math.max(0, lines.size() - visible));
 
-        gui.fill(0, 0, width, height, 0xE0000000);
+        // renderBackground already drew the editor's dim backdrop, so the game
+        // stays faintly visible behind (same as the chart editor). The chart
+        // itself is skipped this frame, so nothing overlaps the documentation.
         gui.fill(left, top, right, bottom, 0xFF111118);
         gui.renderOutline(left, top, right - left, bottom - top, 0xFFEEEEEE);
         String titleText = eventTypeDraft + " — " + ChartEventTypes.documentationSource(eventTypeDraft);
@@ -2257,7 +2457,7 @@ public final class ChartEditorScreen extends Screen {
 
     private List<FormattedCharSequence> wrappedEventDocumentation(int maxWidth) {
         List<FormattedCharSequence> lines = new ArrayList<>();
-        for (String paragraph : ChartEventTypes.help(eventTypeDraft).split("\\R", -1)) {
+        for (String paragraph : eventHelpText(eventTypeDraft).split("\\R", -1)) {
             if (paragraph.isBlank()) lines.add(Component.empty().getVisualOrderText());
             else lines.addAll(font.split(Component.literal(paragraph), Math.max(20, maxWidth)));
         }
@@ -2298,7 +2498,9 @@ public final class ChartEditorScreen extends Screen {
     }
 
     private void renderHelpScreen(GuiGraphics gui) {
-        gui.fill(0, 0, width, height, 0xEE08080A);
+        // renderBackground already drew the editor's dim backdrop, so the game
+        // stays faintly visible behind (same as the chart editor). The chart is
+        // skipped this frame, so nothing overlaps the help panel.
         int lineHeight = font.lineHeight + 2;
         int panelWidth = Math.min(width - 24, 520);
         int panelHeight = HELP_LINES.length * lineHeight + 38;
@@ -2435,7 +2637,7 @@ public final class ChartEditorScreen extends Screen {
                     ? defaultEventValue2(eventTypeDraft, eventValue1Draft) : eventValue2Draft;
             added = new SongChart.Event(Math.max(0, eventTimeDraft), eventTypeDraft,
                     eventValue1Draft, value2, eventValue3Draft, eventValue4Draft,
-                    eventValue5Draft, eventValue6Draft, eventBeforeSongDraft);
+                    eventValue5Draft, eventValue6Draft, eventValue7Draft, eventBeforeSongDraft);
         }
         chart.events.add(added);
         chart.sortEvents();
@@ -2478,7 +2680,7 @@ public final class ChartEditorScreen extends Screen {
                 ? defaultEventValue2(eventTypeDraft, eventValue1Draft) : eventValue2Draft;
         selectedEvent = new SongChart.Event(Math.max(0, time), eventTypeDraft,
                 eventValue1Draft, value2, eventValue3Draft, eventValue4Draft,
-                eventValue5Draft, eventValue6Draft, eventBeforeSongDraft);
+                eventValue5Draft, eventValue6Draft, eventValue7Draft, eventBeforeSongDraft);
         setEventDraft(selectedEvent);
         chart.events.add(selectedEvent);
         chart.sortEvents();
@@ -2496,6 +2698,7 @@ public final class ChartEditorScreen extends Screen {
         eventValue4Draft = event == null ? ChartEventTypes.defaultValue4(eventTypeDraft) : event.value4;
         eventValue5Draft = event == null ? ChartEventTypes.defaultValue5(eventTypeDraft) : event.value5;
         eventValue6Draft = event == null ? ChartEventTypes.defaultValue6(eventTypeDraft) : event.value6;
+        eventValue7Draft = event == null ? "" : event.value7;
         eventTimeDraft = event == null ? Math.max(0, viewPositionMs) : event.timeMs;
         eventBeforeSongDraft = event != null && event.beforeSong;
         eventDraftInitialized = true;
@@ -2507,13 +2710,17 @@ public final class ChartEditorScreen extends Screen {
         eventTypeDraft = type;
         eventDropdownOpen = false;
         eventDocumentationScroll = 0;
-        if (changed && ChartEventTypes.definition(type) != null) {
+        if (changed) {
+            // Reset drafts to the new type's defaults. Custom events (no built-in
+            // definition) default every value to empty, so switching to one no
+            // longer keeps the previous type's Value 2 such as "player".
             eventValue1Draft = ChartEventTypes.defaultValue1(type);
             eventValue2Draft = ChartEventTypes.defaultValue2(type, eventValue1Draft);
             eventValue3Draft = ChartEventTypes.defaultValue3(type);
             eventValue4Draft = ChartEventTypes.defaultValue4(type);
             eventValue5Draft = ChartEventTypes.defaultValue5(type);
             eventValue6Draft = ChartEventTypes.defaultValue6(type);
+            eventValue7Draft = "";
         }
         if (selectedEvent != null) {
             selectedEvent.name = type;
@@ -2523,6 +2730,7 @@ public final class ChartEditorScreen extends Screen {
             selectedEvent.value4 = eventValue4Draft;
             selectedEvent.value5 = eventValue5Draft;
             selectedEvent.value6 = eventValue6Draft;
+            selectedEvent.value7 = eventValue7Draft;
         }
         rebuildUi();
     }
@@ -2541,40 +2749,47 @@ public final class ChartEditorScreen extends Screen {
         int easingWidth = width - directionWidth - 2;
         String easingText = choice.defaultValue ? "Easing: Default"
                 : "Easing: " + easeTitle(choice.base);
+        // Shift-click reverses, matching the other cycling controls (Beat Snap,
+        // Camera Focus target). The button consumes the click before any grid
+        // logic runs, so holding Shift over it never triggers a grid selection.
         Button easing = button(x, y + 10, easingWidth, easingText,
-                b -> cycleEventEase(valueIndex, allowDefault));
+                b -> cycleEventEase(valueIndex, allowDefault, hasShiftDown() ? -1 : 1));
         Button direction = button(x + easingWidth + 2, y + 10, directionWidth,
                 choice.defaultValue || !directionalEase(choice.base) ? "-" : choice.direction,
-                b -> cycleEventEaseDirection(valueIndex));
+                b -> cycleEventEaseDirection(valueIndex, hasShiftDown() ? -1 : 1));
         easing.active = active;
         direction.active = active && !choice.defaultValue && directionalEase(choice.base);
     }
 
-    private void cycleEventEase(int valueIndex, boolean allowDefault) {
+    private void cycleEventEase(int valueIndex, boolean allowDefault, int direction) {
         commitVisibleFields();
+        int back = direction < 0 ? -1 : 1;
+        int count = GameplayCamera.EASES.length;
         EaseChoice current = easeChoice(eventValue(valueIndex));
         if (current.defaultValue) {
-            setEventValue(valueIndex, GameplayCamera.EASES[0]);
+            // Leaving Default steps into the first ease forward, the last backward.
+            setEventValue(valueIndex, GameplayCamera.EASES[back < 0 ? count - 1 : 0]);
             rebuildUi();
             return;
         }
         int index = 0;
-        for (int i = 0; i < GameplayCamera.EASES.length; i++) {
+        for (int i = 0; i < count; i++) {
             if (GameplayCamera.EASES[i].equalsIgnoreCase(current.base)) {
                 index = i;
                 break;
             }
         }
-        if (allowDefault && index == GameplayCamera.EASES.length - 1) {
+        // With Default in the loop the order is ease0..easeN-1, Default, wrapping.
+        if (allowDefault && (back > 0 ? index == count - 1 : index == 0)) {
             setEventValue(valueIndex, "");
         } else {
-            String next = GameplayCamera.EASES[(index + 1) % GameplayCamera.EASES.length];
+            String next = GameplayCamera.EASES[Math.floorMod(index + back, count)];
             setEventValue(valueIndex, composeEase(next, current.direction));
         }
         rebuildUi();
     }
 
-    private void cycleEventEaseDirection(int valueIndex) {
+    private void cycleEventEaseDirection(int valueIndex, int direction) {
         commitVisibleFields();
         EaseChoice choice = easeChoice(eventValue(valueIndex));
         if (choice.defaultValue || !directionalEase(choice.base)) return;
@@ -2582,7 +2797,8 @@ public final class ChartEditorScreen extends Screen {
         for (int i = 0; i < Easing.DIRECTIONS.length; i++) {
             if (Easing.DIRECTIONS[i].equalsIgnoreCase(choice.direction)) index = i;
         }
-        String next = Easing.DIRECTIONS[(index + 1) % Easing.DIRECTIONS.length];
+        int step = direction < 0 ? -1 : 1;
+        String next = Easing.DIRECTIONS[Math.floorMod(index + step, Easing.DIRECTIONS.length)];
         setEventValue(valueIndex, composeEase(choice.base, next));
         rebuildUi();
     }
@@ -2651,6 +2867,7 @@ public final class ChartEditorScreen extends Screen {
             case 4 -> eventValue4Draft = clean;
             case 5 -> eventValue5Draft = clean;
             case 6 -> eventValue6Draft = clean;
+            case 7 -> eventValue7Draft = clean;
             default -> { return; }
         }
         if (selectedEvent == null) return;
@@ -2661,6 +2878,7 @@ public final class ChartEditorScreen extends Screen {
             case 4 -> selectedEvent.value4 = clean;
             case 5 -> selectedEvent.value5 = clean;
             case 6 -> selectedEvent.value6 = clean;
+            case 7 -> selectedEvent.value7 = clean;
         }
     }
 
@@ -2828,6 +3046,7 @@ public final class ChartEditorScreen extends Screen {
 
     @Override
     public void onClose() {
+        disposeScheduler();
         disposeAudio();
         disposeNoteTextures();
         super.onClose();
@@ -2835,9 +3054,18 @@ public final class ChartEditorScreen extends Screen {
 
     @Override
     public void removed() {
+        disposeScheduler();
         disposeAudio();
         disposeNoteTextures();
         super.removed();
+    }
+
+    private void disposeScheduler() {
+        if (tickScheduler != null) {
+            tickScheduler.stop();
+            tickScheduler = null;
+        }
+        schedulerActive = false;
     }
 
     private void disposeNoteTextures() {

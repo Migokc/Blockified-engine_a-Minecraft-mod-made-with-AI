@@ -63,5 +63,13 @@ public abstract class CameraMixin {
         if (offset == null) return;
         Vec3 pos = getPosition();
         setPosition(pos.x + offset.x, pos.y + offset.y, pos.z + offset.z);
+
+        // On the first free-camera frame the normal follow pose above is the exact
+        // starting point; capture it (using the un-rotated stage basis) so the
+        // free camera takes over without a visible jump.
+        if (GameplayCamera.isFreeCamEngaged() && !GameplayCamera.isFreeCamInitialized()) {
+            GameplayCamera.captureFreeCamStart(getPosition(), getYRot(), getXRot(), getRoll(),
+                    stageLeft, stageUp, stageLook);
+        }
     }
 }

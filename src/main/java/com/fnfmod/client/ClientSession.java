@@ -7,8 +7,10 @@ import com.fnfmod.gameplay.PlaybackMode;
 import com.fnfmod.chart.SongChart;
 import com.fnfmod.client.anim.CharacterAnimations;
 import com.fnfmod.client.audio.SongPlayer;
+import com.fnfmod.client.gameplay.SongWarnings;
 import com.fnfmod.client.gui.GameplayScreen;
 import com.fnfmod.client.gui.WaitingScreen;
+import com.fnfmod.client.render.WarningFlag;
 import com.fnfmod.net.FnfPayloads;
 import com.fnfmod.session.SessionManager;
 import com.fnfmod.song.SongEntry;
@@ -324,6 +326,18 @@ public final class ClientSession {
                 default -> GameplayScreen.PlayMode.PLAYER;
             };
         }
+        // Pre-song advisories (heavy render distance, ...) do not block the song.
+        // They are queued now and the gameplay screen slides them up as a flag.
+        ClientOptions options = ClientOptions.get();
+        if (options.warnBlockified() || options.warnSong()) {
+            SongEntry entry = songId == null || songId.isBlank() ? null : SongLibrary.get(songId);
+            for (SongWarnings.Warning warning : SongWarnings.collect(
+                    new SongWarnings.Context(songId, resolvedFolder, entry),
+                    options.warnBlockified(), options.warnSong())) {
+                WarningFlag.show(warning.text(), warning.accentColor());
+            }
+        }
+
         Minecraft.getInstance().setScreen(new GameplayScreen(
                 payload.pos(), chart, player, mode,
                 partner, payload.partnerName(), payload.partnerAnimSet(), payload.botEntityId(), startAt));

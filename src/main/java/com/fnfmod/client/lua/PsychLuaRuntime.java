@@ -12,7 +12,9 @@ import com.fnfmod.client.camera.CameraOverlay;
 import com.fnfmod.client.camera.GameplayCamera;
 import com.fnfmod.client.audio.PsychSoundPlayer;
 import com.fnfmod.client.gameplay.PsychAssetResolver;
+import com.fnfmod.client.gameplay.RenderDistanceControl;
 import com.fnfmod.client.gui.GameplayScreen;
+import com.fnfmod.gameplay.GameplayClock;
 import com.fnfmod.gameplay.PlaybackMode;
 import com.fnfmod.gameplay.PlaybackPolicy;
 import com.fnfmod.client.render.LuaWorldObject;
@@ -158,6 +160,12 @@ public final class PsychLuaRuntime implements AutoCloseable {
     private final PsychAssetResolver assets;
     private final PsychSoundPlayer soundPlayer;
     private final List<Script> scripts = new ArrayList<>();
+    /**
+     * Stable snapshot of {@link #scripts}, rebuilt only when a script is added or
+     * removed. {@link #call} runs every frame (onUpdate/onUpdatePost and note
+     * hits); copying the list each time it fired was needless per-frame garbage.
+     */
+    private Script[] scriptSnapshot;
     private final Map<String, LuaObject> objects = new LinkedHashMap<>();
     private final Map<String, LuaValue> sharedVars = new HashMap<>();
     /** Sheets kept warm by precacheImage; closed with the runtime. */
@@ -401,6 +409,7 @@ public final class PsychLuaRuntime implements AutoCloseable {
             globals.load(Files.readString(file), file.toString()).call();
             Script script = new Script(file, globals);
             scripts.add(script);
+            scriptSnapshot = null;
             return script;
         } catch (Throwable error) {
             report(file.getFileName() + ": " + compactError(error));
@@ -433,7 +442,11 @@ public final class PsychLuaRuntime implements AutoCloseable {
 
     private boolean removeDynamicScript(String raw) {
         Script script = findScript(raw);
-        return script != null && scripts.remove(script);
+        if (script != null && scripts.remove(script)) {
+            scriptSnapshot = null;
+            return true;
+        }
+        return false;
     }
 
     private static void sandbox(Globals globals) {
@@ -561,7 +574,18 @@ public final class PsychLuaRuntime implements AutoCloseable {
 
     private void installCallbacks(Globals g) {
         fn(g, "debugPrint", args -> { report(args.optjstring(1, "")); return LuaValue.NIL; });
+        // Render distance for the length of the song; restored when it ends. The
+        // value is clamped to Minecraft's own 2..32 range.
+        fn(g, "setRenderDistance", args -> {
+            RenderDistanceControl.apply(args.checkint(1));
+            return LuaValue.NIL;
+        });
+        fn(g, "getRenderDistance", args -> LuaValue.valueOf(RenderDistanceControl.current()));
         fn(g, "getSongPosition", args -> LuaValue.valueOf(host.psychLuaSongPosition()));
+        // Base player FOV (Minecraft's 30-110 slider). Camera Zoom multiplies it,
+        // so raising the base FOV widens the zoom range. Restored when the song ends.
+        fn(g, "setFOV", args -> { host.psychLuaSetFov(args.optdouble(1, 70)); return LuaValue.NIL; });
+        fn(g, "getFOV", args -> LuaValue.valueOf(host.psychLuaGetFov()));
         fn(g, "getHealth", args -> LuaValue.valueOf(host.psychLuaHealth()));
         fn(g, "setHealth", args -> { host.psychLuaSetHealth(args.optdouble(1, 1)); return LuaValue.NIL; });
         fn(g, "addHealth", args -> { host.psychLuaSetHealth(host.psychLuaHealth() + args.optdouble(1, 0)); return LuaValue.NIL; });
@@ -610,7 +634,8 @@ public final class PsychLuaRuntime implements AutoCloseable {
         fn(g, "getVar", args -> sharedVars.getOrDefault(args.checkjstring(1), LuaValue.NIL));
         fn(g, "triggerEvent", args -> { host.psychLuaTriggerEvent(args.optjstring(1, ""),
                 args.optjstring(2, ""), args.optjstring(3, ""), args.optjstring(4, ""),
-                args.optjstring(5, ""), args.optjstring(6, ""), args.optjstring(7, "")); return LuaValue.NIL; });
+                args.optjstring(5, ""), args.optjstring(6, ""), args.optjstring(7, ""),
+                args.optjstring(8, "")); return LuaValue.NIL; });
         fn(g, "runMinecraftCommand", args -> LuaValue.valueOf(host.psychLuaRunMinecraftCommand(
                 args.optjstring(1, ""), args.optjstring(2, "player"))));
         // Short Blockified alias; explicit name remains preferred in shared Psych scripts.
@@ -923,6 +948,10 @@ public final class PsychLuaRuntime implements AutoCloseable {
             host.psychLuaSetAllCharacterCollisions(luaBoolean(args, 1, true));
             return LuaValue.NIL;
         });
+        // Drops a performer's stage offset and returns it to its resting spot, so
+        // it stops being pinned there after a cancelled tween.
+        fn(g, "resetCharacterPosition", args -> LuaValue.valueOf(
+                host.psychLuaResetCharacterPosition(args.checkjstring(1))));
         // Vanilla blob shadow under a character. Shadows stay on unless a script
         // turns them off, so existing songs look the same.
         fn(g, "setCharacterShadow", args -> LuaValue.valueOf(
@@ -1098,8 +1127,14 @@ public final class PsychLuaRuntime implements AutoCloseable {
             object.image = args.optjstring(2, "");
             object.x = args.optdouble(3, 0);
             object.y = args.optdouble(4, 0);
-            if (animated) loadObjectAtlas(object, object.image, args.optjstring(5, "auto"));
-            else loadObjectImage(object, object.image);
+            if (animated) {
+                loadObjectAtlas(object, object.image, args.optjstring(5, "auto"));
+            } else {
+                // Psych uses four arguments. Blockified Engine accepts an optional
+                // fifth Z coordinate for sprites assigned to the world camera.
+                object.z = args.optdouble(5, 0);
+                loadObjectImage(object, object.image);
+            }
         }
     }
 
@@ -1793,8 +1828,16 @@ public final class PsychLuaRuntime implements AutoCloseable {
 
     private void tweenFn(Globals g, String name, String property) {
         fn(g, name, args -> { String tag = args.checkjstring(1); String target = args.checkjstring(2);
-            double from = number(getProperty(target + "." + property), 0); double to = args.optdouble(3, from);
-            startTween(tag, target + "." + property, from, to, args.optdouble(4, 1), args.optjstring(5, "linear"));
+            String path = target + "." + property;
+            // A tween aimed at something that does not exist used to run silently
+            // for its whole duration and change nothing, which reads exactly like
+            // a broken tween. Say so instead.
+            if (getProperty(path) == null) {
+                warnOnce(name + ": nothing named '" + target + "' has a '" + property
+                        + "' property, so this tween will not move anything");
+            }
+            double from = number(getProperty(path), 0); double to = args.optdouble(3, from);
+            startTween(tag, path, from, to, args.optdouble(4, 1), args.optjstring(5, "linear"));
             return LuaValue.NIL; });
     }
 
@@ -1808,7 +1851,7 @@ public final class PsychLuaRuntime implements AutoCloseable {
 
     private void startTween(String tag, String path, double from, double to, double seconds, String ease) {
         tweens.put(tag, new Tween(tag, List.of(new TweenTarget(path, from, to)),
-                System.currentTimeMillis(), Math.max(1, (long) (seconds * 1000)),
+                GameplayClock.now(), Math.max(1, (long) (seconds * 1000)),
                 ease == null ? "linear" : ease, null, 0, 0, 0));
     }
 
@@ -1821,7 +1864,7 @@ public final class PsychLuaRuntime implements AutoCloseable {
         String path = target + ".color";
         int from = (int) number(getProperty(path), 0xFFFFFF);
         int to = color(colorText);
-        tweens.put(tag, new Tween(tag, List.of(), System.currentTimeMillis(),
+        tweens.put(tag, new Tween(tag, List.of(), GameplayClock.now(),
                 Math.max(1, (long) (seconds * 1000)), ease == null ? "linear" : ease,
                 path, from, to, 0));
     }
@@ -1871,7 +1914,7 @@ public final class PsychLuaRuntime implements AutoCloseable {
             warnOnce("startTween: '" + target + "' had no tweenable properties");
             return;
         }
-        tweens.put(tag, new Tween(tag, List.copyOf(targets), System.currentTimeMillis(),
+        tweens.put(tag, new Tween(tag, List.copyOf(targets), GameplayClock.now(),
                 Math.max(1, (long) (seconds * 1000)), ease, colorPath, colorFrom, colorTo,
                 Math.max(0, (long) (startDelay * 1000))));
     }
@@ -1909,7 +1952,7 @@ public final class PsychLuaRuntime implements AutoCloseable {
 
     private void runTimer(String tag, double seconds, int loops) {
         long interval = Math.max(1, (long) (seconds * 1000));
-        timers.put(tag, new Timer(tag, interval, Math.max(1, loops), System.currentTimeMillis() + interval, 0));
+        timers.put(tag, new Timer(tag, interval, Math.max(1, loops), GameplayClock.now() + interval, 0));
     }
 
     public void update(double elapsedSeconds) {
@@ -1980,7 +2023,7 @@ public final class PsychLuaRuntime implements AutoCloseable {
     }
 
     private void updateTweensAndTimers() {
-        long now = System.currentTimeMillis();
+        long now = GameplayClock.now();
         for (Tween tween : new ArrayList<>(tweens.values())) {
             long elapsed = now - tween.start - tween.startDelayMs;
             if (elapsed < 0) continue; // still inside the tween's start delay
@@ -2085,13 +2128,18 @@ public final class PsychLuaRuntime implements AutoCloseable {
     }
 
     public Object call(String name, Object... args) {
+        Script[] active = activeScripts();
+        if (active.length == 0) return FUNCTION_CONTINUE;
         Object result = FUNCTION_CONTINUE;
-        for (Script script : new ArrayList<>(scripts)) {
+        LuaValue[] values = null; // built once, only if a script actually has the callback
+        for (Script script : active) {
             try {
                 LuaValue function = script.globals.get(name);
                 if (!function.isfunction()) continue;
-                LuaValue[] values = new LuaValue[args.length];
-                for (int i = 0; i < args.length; i++) values[i] = toLua(args[i]);
+                if (values == null) {
+                    values = new LuaValue[args.length];
+                    for (int i = 0; i < args.length; i++) values[i] = toLua(args[i]);
+                }
                 LuaValue value = function.invoke(LuaValue.varargsOf(values)).arg1();
                 if (!value.isnil()) result = fromLua(value);
             } catch (Throwable error) {
@@ -2099,6 +2147,16 @@ public final class PsychLuaRuntime implements AutoCloseable {
             }
         }
         return result;
+    }
+
+    /** Cached script snapshot; rebuilt only after {@link #scripts} changes. */
+    private Script[] activeScripts() {
+        Script[] snapshot = scriptSnapshot;
+        if (snapshot == null) {
+            snapshot = scripts.toArray(new Script[0]);
+            scriptSnapshot = snapshot;
+        }
+        return snapshot;
     }
 
     private void setAll(String name, Object value) {
@@ -2665,6 +2723,6 @@ public final class PsychLuaRuntime implements AutoCloseable {
         precached.clear();
         soundPlayer.close();
         fontLoader.close();
-        scripts.clear(); objects.clear(); timers.clear(); tweens.clear(); sharedVars.clear();
+        scripts.clear(); scriptSnapshot = null; objects.clear(); timers.clear(); tweens.clear(); sharedVars.clear();
     }
 }

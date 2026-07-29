@@ -66,12 +66,31 @@ public final class CommandEventPlaceholders {
 
     /** Expands selectors and camera-relative XYZ/rotation macros. */
     public static String expand(String command, BlockPos machinePos, Direction machineFacing) {
+        return expand(command, machinePos, machineFacing, false);
+    }
+
+    /**
+     * Expands selectors and camera-relative macros.
+     *
+     * <p>The {@code player}/{@code opponent}/{@code speakers} selectors normally
+     * target entities the server tagged when the song session started. An editor
+     * playtest has no session and no tags, so with {@code selfSelectors} they all
+     * resolve to {@code @s}: the one performer present is the person testing, who
+     * runs the command, so every role points at them. Without this a command like
+     * {@code tp <player> ...} fails with "No entity was found" and the chart's
+     * opening teleport never moves the player onto the scene.
+     */
+    public static String expand(String command, BlockPos machinePos, Direction machineFacing,
+                                boolean selfSelectors) {
         if (command == null) return "";
         Direction facing = machineFacing == null ? Direction.NORTH : machineFacing;
+        String player = selfSelectors ? "@s" : selector(machinePos, "player");
+        String opponent = selfSelectors ? "@s" : selector(machinePos, "opponent");
+        String speakers = selfSelectors ? "@s" : selector(machinePos, "speakers");
         String expanded = command
-                .replace(PLAYER, selector(machinePos, "player"))
-                .replace(OPPONENT, selector(machinePos, "opponent"))
-                .replace(SPEAKERS, selector(machinePos, "speakers"))
+                .replace(PLAYER, player)
+                .replace(OPPONENT, opponent)
+                .replace(SPEAKERS, speakers)
                 .replace(CAMERA_ROTATION, trim(facing.getOpposite().toYRot()) + " 0");
 
         Matcher matcher = ANGLE_MACRO.matcher(expanded);

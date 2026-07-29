@@ -148,6 +148,7 @@ public class SongChart {
         public String value4 = "";
         public String value5 = "";
         public String value6 = "";
+        public String value7 = "";
         /** Runs once while the gameplay screen is loaded, before audio starts. */
         public boolean beforeSong;
 
@@ -166,6 +167,12 @@ public class SongChart {
 
         public Event(double timeMs, String name, String value1, String value2,
                      String value3, String value4, String value5, String value6, boolean beforeSong) {
+            this(timeMs, name, value1, value2, value3, value4, value5, value6, "", beforeSong);
+        }
+
+        public Event(double timeMs, String name, String value1, String value2,
+                     String value3, String value4, String value5, String value6, String value7,
+                     boolean beforeSong) {
             this.timeMs = timeMs;
             this.name = name == null ? "" : name;
             this.value1 = value1 == null ? "" : value1;
@@ -174,11 +181,13 @@ public class SongChart {
             this.value4 = value4 == null ? "" : value4;
             this.value5 = value5 == null ? "" : value5;
             this.value6 = value6 == null ? "" : value6;
+            this.value7 = value7 == null ? "" : value7;
             this.beforeSong = beforeSong;
         }
 
         public Event copy() {
-            return new Event(timeMs, name, value1, value2, value3, value4, value5, value6, beforeSong);
+            return new Event(timeMs, name, value1, value2, value3, value4, value5, value6, value7,
+                    beforeSong);
         }
     }
 

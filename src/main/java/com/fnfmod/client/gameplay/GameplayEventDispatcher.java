@@ -84,12 +84,10 @@ public final class GameplayEventDispatcher {
     private boolean runPlayerCommand(String rawCommand) {
         Minecraft minecraft = Minecraft.getInstance();
         if (minecraft.player == null || minecraft.player.connection == null || rawCommand == null) return false;
-        Direction facing = Direction.NORTH;
-        if (minecraft.level != null) {
-            var state = minecraft.level.getBlockState(machinePosition);
-            if (state.hasProperty(FunkinMachineBlock.FACING)) facing = state.getValue(FunkinMachineBlock.FACING);
-        }
-        String command = CommandEventPlaceholders.expand(rawCommand, machinePosition, facing).trim();
+        Direction facing = StageOrientation.facingOr(minecraft.level, machinePosition);
+        // Playtest has no tagged session entities, so role selectors point at the
+        // testing player (@s), who is the one performer on the editor stage.
+        String command = CommandEventPlaceholders.expand(rawCommand, machinePosition, facing, true).trim();
         while (command.startsWith("/")) command = command.substring(1).trim();
         if (command.isEmpty()) return false;
         try {

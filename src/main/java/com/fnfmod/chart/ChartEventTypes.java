@@ -118,7 +118,7 @@ public final class ChartEventTypes {
 
     public static String defaultValue2(String name, String value1) {
         Definition definition = definition(name);
-        if (definition == null) return "player";
+        if (definition == null) return "";
         if (definition.name.equals(CAMERA_FOCUS) && (value1 == null || value1.isBlank())) return "";
         if (definition.name.equals(CAMERA_BEHAVIOR) && (value1 == null || value1.isBlank())) return "";
         return definition.defaultValue2;
@@ -206,7 +206,8 @@ public final class ChartEventTypes {
                     "Value 3: Z in blocks. Supplying any extended value switches Minecraft's world camera to 3D offsets: X = camera-right, Y = up, Z = camera-forward.",
                     "Value 4: Easing. Empty/default uses normal smooth movement.",
                     "Value 5: default keeps normal/Lua character tracking and adds the 3D offset; override/true locks the world camera to the speakers and blocks normal/Lua focus movement.",
-                    "Value 6: Reference frame for the 3D offset. machine (default) aligns X/Y/Z to the Funkin' Machine facing, so Camera Rotation 3D no longer skews the movement. camera aligns them to the current camera rotation instead.");
+                    "Value 6: Reference frame for the 3D offset. machine (default) aligns X/Y/Z to the Funkin' Machine facing, so Camera Rotation 3D no longer skews the movement. camera aligns them to the current camera rotation instead.",
+                    "Value 7: Move duration in seconds. Empty uses the default 0.5s; a larger value makes the camera glide to the position more slowly.");
             case CAMERA_ROTATION_3D -> String.join("\n",
                     "Rotates Minecraft's world camera in three axes.",
                     "Value 1: X rotation (pitch) in degrees.",
@@ -347,5 +348,9 @@ public final class ChartEventTypes {
 
     public static String value6Hint(String name) {
         return isCameraFollowPos(name) ? "machine facing or camera" : "value 6";
+    }
+
+    public static String value7Hint(String name) {
+        return isCameraFollowPos(name) ? "move duration (s); blank = 0.5" : "value 7";
     }
 }

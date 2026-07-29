@@ -1,7 +1,9 @@
 package com.fnfmod.client.anim;
 
+import com.fnfmod.gameplay.GameplayClock;
 import com.fnfmod.client.math.Easing;
 import com.fnfmod.gameplay.PerformerCollisions;
+import com.fnfmod.gameplay.PerformerPin;
 import com.fnfmod.gameplay.PerformerShadows;
 import com.mojang.authlib.GameProfile;
 import net.minecraft.client.Minecraft;
@@ -196,7 +198,7 @@ public final class ExtraCharacterRoster implements AutoCloseable {
         entry.toRotation = rotation == null || !Double.isFinite(rotation) ? entry.rotation : rotation;
         entry.tweenDurationMs = seconds * 1000.0;
         entry.tweenEase = ease == null || ease.isBlank() ? "linear" : ease;
-        entry.tweenStart = System.currentTimeMillis();
+        entry.tweenStart = GameplayClock.now();
         entry.tweening = true;
         return true;
     }
@@ -204,9 +206,15 @@ public final class ExtraCharacterRoster implements AutoCloseable {
     /** Advances active tweens; call once per client frame while a song plays. */
     public void update() {
         if (entries.isEmpty()) return;
-        long now = System.currentTimeMillis();
+        long now = GameplayClock.now();
         for (Entry entry : entries.values()) {
-            if (!entry.tweening) continue;
+            if (!entry.tweening) {
+                // A performer that is not moving still has to be held in place.
+                // These are real client entities, so gravity would otherwise pull
+                // them off their mark once their tween stops.
+                updateTransform(entry);
+                continue;
+            }
             double t = entry.tweenDurationMs <= 0 ? 1
                     : Math.min(1.0, (now - entry.tweenStart) / entry.tweenDurationMs);
             double f = Easing.apply(entry.tweenEase, t);
@@ -332,18 +340,16 @@ public final class ExtraCharacterRoster implements AutoCloseable {
         Minecraft minecraft = Minecraft.getInstance();
         ClientLevel current = minecraft.level;
         if (current == null) return;
-        Direction facing = Direction.NORTH;
-        var state = current.getBlockState(machinePosition);
-        if (state.hasProperty(com.fnfmod.block.FunkinMachineBlock.FACING)) {
-            facing = state.getValue(com.fnfmod.block.FunkinMachineBlock.FACING);
-        }
+        // Cached stage facing: re-reading the block would rotate an extra
+        // character's axes if a tween carried it past the machine's view distance.
+        Direction facing = com.fnfmod.client.gameplay.StageOrientation.facingOr(current, machinePosition);
         Direction right = facing.getCounterClockWise();
         double centerX = machinePosition.getX() + 0.5 + facing.getStepX() * 2.0;
         double centerZ = machinePosition.getZ() + 0.5 + facing.getStepZ() * 2.0;
         double worldX = centerX + right.getStepX() * entry.x + facing.getStepX() * entry.z;
         double worldY = machinePosition.getY() + entry.y;
         double worldZ = centerZ + right.getStepZ() * entry.x + facing.getStepZ() * entry.z;
-        entry.entity.setPos(worldX, worldY, worldZ);
+        PerformerPin.pin(entry.entity, worldX, worldY, worldZ);
         float yaw = facing.toYRot()
                 + CharacterAnimations.rotation(entry.definition, entry.role) + entry.rotation;
         entry.entity.setYRot(yaw);

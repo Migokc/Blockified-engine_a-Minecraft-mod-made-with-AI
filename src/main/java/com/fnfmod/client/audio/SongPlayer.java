@@ -47,6 +47,11 @@ public class SongPlayer {
     private double lastRawMs = -1;
     private long lastRawNano;
     private double smoothedMs;
+    // Reference point (position at a known nanoTime) for judging inputs that
+    // arrived between frames. Volatile so a future high-rate input path can read
+    // them without tearing; the values are only written from positionMs().
+    private volatile double refMs;
+    private volatile long refNano;
 
     public void load(Path instFile, Path voices, Path voicesPlayer, Path voicesOpponent) throws IOException {
         if (disposed) throw new IOException("Song player is already disposed");
@@ -211,7 +216,25 @@ public class SongPlayer {
             double extrapolated = raw + (now - lastRawNano) / 1_000_000.0 * playbackRate;
             if (extrapolated > smoothedMs) smoothedMs = extrapolated;
         }
+        refMs = smoothedMs;
+        refNano = now;
         return smoothedMs;
+    }
+
+    /**
+     * Song position at a specific {@link System#nanoTime()} instant, using the
+     * same extrapolation {@link #positionMs()} does. Judging a key press against
+     * the position at the moment it was pressed — rather than at the next frame —
+     * is what makes input timing independent of the frame rate. A past instant
+     * (the press arrived a few ms ago) yields a slightly earlier position; a
+     * future one yields a later position.
+     */
+    public double positionMsAt(long eventNano) {
+        if (disposed || inst == null || !started || paused) return smoothedMs;
+        long ref = refNano;
+        if (ref == 0) return positionMs(); // no reference established yet
+        double extrapolated = refMs + (eventNano - ref) / 1_000_000.0 * playbackRate;
+        return Math.max(0, extrapolated);
     }
 
     /** Periodically pull drifting vocal tracks back in line with the inst. */

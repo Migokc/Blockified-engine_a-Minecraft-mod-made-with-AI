@@ -1,6 +1,8 @@
 package com.fnfmod.client.gui;
 
 import com.fnfmod.chart.Conductor;
+import com.fnfmod.chart.CameraShotClipboard;
+import com.fnfmod.chart.ChartEventTypes;
 import com.fnfmod.chart.SongChart;
 import com.fnfmod.client.ClientOptions;
 import com.fnfmod.client.ClientSession;
@@ -19,7 +21,13 @@ import com.fnfmod.client.gameplay.PsychBuiltinEventHandler;
 import com.fnfmod.client.gameplay.PsychAssetResolver;
 import com.fnfmod.gameplay.PlaybackMode;
 import com.fnfmod.gameplay.PlaybackPolicy;
+import com.fnfmod.client.gameplay.FieldOfViewControl;
+import com.fnfmod.client.gameplay.RenderDistanceControl;
+import com.fnfmod.client.gameplay.StageChunkLoader;
+import com.fnfmod.client.gameplay.StageOrientation;
+import com.fnfmod.gameplay.GameplayClock;
 import com.fnfmod.gameplay.PerformerCollisions;
+import com.fnfmod.gameplay.PerformerPin;
 import com.fnfmod.gameplay.PerformerShadows;
 import com.fnfmod.gameplay.PsychRating;
 import com.fnfmod.client.camera.CameraOverlay;
@@ -27,12 +35,15 @@ import com.fnfmod.client.lua.PsychLuaRuntime;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.Camera;
 import com.mojang.blaze3d.vertex.PoseStack;
+import com.mojang.math.Axis;
 import net.minecraft.core.Direction;
 import net.minecraft.world.phys.Vec3;
+import org.joml.Vector3f;
 
 import java.util.function.Supplier;
 import com.fnfmod.client.render.NoteStyle;
 import com.fnfmod.client.render.HudLayerOrder;
+import com.fnfmod.client.render.WarningFlag;
 import com.fnfmod.client.render.PsychCanvas;
 import com.fnfmod.client.render.PsychHudState;
 import com.fnfmod.client.render.PsychNoteTextureCache;
@@ -116,6 +127,9 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         final SongChart.Note data;
         /** Set once the note enters the scroll window and onSpawnNote has fired. */
         boolean spawnAnnounced;
+        /** Resolved custom hitsound path, computed once (null = default/none). */
+        Path cachedHitsound;
+        boolean hitsoundResolved;
         boolean hit, missed, holdDropped;
         boolean holdComplete;
         /** ms when the hold was released (>=0 = in the re-tap grace window), -1 = held. */
@@ -171,6 +185,16 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
 
     // input / strums
     private final boolean[] laneHeld = new boolean[4];
+    /** Timestamped note-input queue, drained each frame when precise input is on. */
+    private final com.fnfmod.client.input.NoteInput noteInput = new com.fnfmod.client.input.NoteInput();
+    /** GLFW-side held state, so key auto-repeat does not enqueue duplicate presses. */
+    private final boolean[] glfwLaneHeld = new boolean[4];
+    /** High-rate raw key backend, created on demand when precise input is on. */
+    private com.fnfmod.client.input.WindowsRawKeyBackend rawInput;
+    private boolean rawInputUnavailable;
+    /** Hittable notes published each frame so the backend can sound a hit sub-frame. */
+    private final com.fnfmod.client.input.HitsoundSnapshot hitsoundSnapshot =
+            new com.fnfmod.client.input.HitsoundSnapshot();
     @SuppressWarnings("unchecked")
     private final List<GameNote>[] activeHolds = new List[4];
     private final double[] myStrumFlash = new double[4];   // >0 confirm remaining ms
@@ -220,6 +244,16 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     private boolean editorPlaytest;
     private boolean editorPreview;
     private double editorStartMs;
+    // Free-camera playtest state (Ctrl+Shift+Space). freeCamMove toggles the
+    // spectator move/look with a captured mouse; freeCamSpeed is scroll-adjusted.
+    private boolean freeCam;
+    private boolean freeCamMove;
+    private double freeCamSpeed = 6.0;
+    private double freeCamLastCursorX, freeCamLastCursorY;
+    private long freeCamPausedAtMs;
+    private long freeCamLastMoveNano;
+    private String freeCamMessage = "";
+    private long freeCamMessageUntil;
     // Where the player stood before an editor playtest teleported them to the
     // machine stage, restored when the playtest returns to the editor.
     private Vec3 editorReturnPos;
@@ -343,6 +377,8 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         beginCamera();
         applyPsychCameraDefaults();
         lastFrameNano = System.nanoTime();
+        // Fresh song (or restart): drop any paused time carried over from before.
+        GameplayClock.reset();
     }
 
     /** Standalone chart-editor playtest. It never creates or leaves a server song session. */
@@ -402,6 +438,28 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         return screen;
     }
 
+    /**
+     * Teleports the playtesting player through a server command, the way a real
+     * song load positions the player. A plain client-side setPos desyncs from the
+     * server, which then corrects the client back, so the stage placement and the
+     * return both need this. Requires the world to allow commands (cheats); with
+     * commands off the player simply cannot be moved onto the editor stage.
+     */
+    private void editorServerTeleport(double x, double y, double z, float yaw) {
+        // Uses Minecraft.getInstance(), not the screen's minecraft field: this runs
+        // from beginCamera during the playtest factory, before the screen is shown,
+        // so that field is still null there.
+        var player = Minecraft.getInstance().player;
+        if (player == null || player.connection == null) return;
+        String command = String.format(java.util.Locale.ROOT,
+                "tp @s %.4f %.4f %.4f %.2f 0", x, y, z, yaw);
+        try {
+            player.connection.sendCommand(command);
+        } catch (Exception ignored) {
+            // No command permission: the client-side setPos is the best we can do.
+        }
+    }
+
     private void prepareEditorStart() {
         if (!editorPlaytest || editorStartMs <= 0) return;
         double cutoff = editorStartMs - SHIT;
@@ -428,12 +486,21 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         Minecraft mc = Minecraft.getInstance();
         if (mc.player == null || mc.level == null) return;
 
-        // stage layout is derived from the machine block's facing (same math as the server teleport)
+        // Hold the stage region loaded and ticking for the song so the camera,
+        // bot and performers never fall into an unloaded chunk. Radius follows
+        // the render distance (capped) so everything visible stays valid.
+        StageChunkLoader.load(machinePos, Math.max(3, Math.min(12, RenderDistanceControl.current())));
+
+        // stage layout is derived from the machine block's facing (same math as
+        // the server teleport). Capture it now, while the machine chunk is loaded,
+        // and reuse it all song: a performer tweened past the machine's view
+        // distance unloads its chunk, and re-reading would snap the axes to north.
         Direction facing = Direction.NORTH;
         var state = mc.level.getBlockState(machinePos);
         if (state.hasProperty(FunkinMachineBlock.FACING)) {
             facing = state.getValue(FunkinMachineBlock.FACING);
         }
+        StageOrientation.set(facing);
         Direction right = facing.getCounterClockWise();
         double cx = machinePos.getX() + 0.5 + facing.getStepX() * 2.0;
         double cz = machinePos.getZ() + 0.5 + facing.getStepZ() * 2.0;
@@ -461,6 +528,11 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             mc.player.setYRot(yaw);
             mc.player.setYHeadRot(yaw);
             mc.player.setYBodyRot(yaw);
+            // A real song load teleports the player through the server. The editor
+            // has no session, so the client-side setPos above would be corrected
+            // straight back off the stage; a server tp moves the authoritative
+            // entity, which is what actually keeps the player on the stage.
+            editorServerTeleport(playerSpot.x, playerSpot.y, playerSpot.z, yaw);
             Supplier<Vec3> opponentFocus = () -> opponentSpot.add(0, 1.0, 0);
             float[] opponentBase = CharacterAnimations.baseCameraOffset(
                     CharacterAnimations.DEFAULT_SET, "opponent");
@@ -614,6 +686,20 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         lastFrameNano = now;
         if (dtMs > 100) dtMs = 100;
 
+        // Freeze the animation clock whenever the song is not advancing, so tweens,
+        // timers and camera moves hold their progress across a pause instead of
+        // finishing while the game is frozen. Runs before the early returns below.
+        boolean songRunning = (phase == Phase.PLAYING || phase == Phase.COUNTDOWN)
+                && !freeCam
+                && !(luaRuntime != null && luaRuntime.substatePausesGame());
+        GameplayClock.setRunning(songRunning);
+
+        // Free camera freezes the song like a pause; only the camera updates.
+        if (freeCam) {
+            updateFreeCam();
+            return;
+        }
+
         if (luaRuntime == null && width > 0 && height > 0) {
             luaRuntime = PsychLuaRuntime.load(this, chart, runtimeSongId, runtimeSongFolder,
                     runtimeSongEntry, playbackPolicy);
@@ -658,6 +744,25 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         // While a pausing substate is open the chart does not advance, so notes,
         // events and holds are all left exactly where they were.
         if (luaRuntime != null && luaRuntime.substatePausesGame()) return;
+
+        // Judge queued precise-input presses before misses are swept, so a late
+        // press can still hit a note about to scroll past — same order the direct
+        // GLFW handler had (it ran during the input poll, before this update).
+        if (ClientOptions.get().preciseInput) {
+            publishHitsoundSnapshot();
+            updateRawInput();
+            noteInput.drain(e -> {
+                if (e.press()) processLanePress(e.lane(), e.nano());
+                else processLaneRelease(e.lane(), e.nano());
+            });
+        } else if (rawInput != null) {
+            // Turned off mid-song: stop the backend and drop its queue, or it would
+            // keep filling a queue nothing drains.
+            rawInput.stop();
+            rawInput = null;
+            noteInput.clear();
+            java.util.Arrays.fill(glfwLaneHeld, false);
+        }
 
         songPlayer.resync();
         if (phase == Phase.PLAYING) processEvents();
@@ -935,12 +1040,14 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
 
     @Override
     public void eventCameraFollow(Double x, Double y, Double z, String easing,
-                                  boolean overrideMovement, boolean cameraRelative, boolean extended) {
+                                  boolean overrideMovement, boolean cameraRelative, boolean extended,
+                                  Double durationSeconds) {
         if (psychScene != null) {
             if (!extended || x == null && y == null && z == null) psychScene.forceCamera(x, y);
             else psychScene.forceCameraExtended(x, y, overrideMovement, easing);
         }
-        GameplayCamera.forceFramePosition(x, y, z, easing, overrideMovement, cameraRelative, extended);
+        GameplayCamera.forceFramePosition(x, y, z, easing, overrideMovement, cameraRelative, extended,
+                durationSeconds);
     }
 
     @Override
@@ -981,6 +1088,16 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         GameplayCamera.setBaseOffset(target.equals("boyfriend"),
                 CharacterAnimations.baseCameraOffset(activeSet,
                         target.equals("dad") ? "opponent" : "player"));
+
+        // Apply the new form now. The beat loop skips playIdle for a loopIdle
+        // definition, so without this a change to one would never swap the form —
+        // it worked for other characters only because their idle re-applied it.
+        if (target.equals("boyfriend") || target.equals("dad")) {
+            boolean boyfriendSide = target.equals("boyfriend");
+            if (performerEntity(boyfriendSide) instanceof Player performer) {
+                CharacterAnimations.prepare(performer, activeSet, boyfriendSide ? "player" : "opponent");
+            }
+        }
     }
 
     @Override
@@ -1261,6 +1378,8 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         double homeX, homeY, homeZ;
         float homeYaw;
         boolean homeKnown;
+        private double appliedX, appliedY, appliedZ;
+        private boolean appliedKnown;
 
         void begin(Double tx, Double ty, Double tz, Double rot, double seconds, String easing) {
             fromX = x; fromY = y; fromZ = z; fromRotation = rotation;
@@ -1277,7 +1396,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             }
             durationMs = seconds * 1000.0;
             ease = easing == null || easing.isBlank() ? "linear" : easing;
-            start = System.currentTimeMillis();
+            start = GameplayClock.now();
             active = true;
         }
 
@@ -1295,6 +1414,25 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         void captureHome(double hx, double hy, double hz, float yaw) {
             homeX = hx; homeY = hy; homeZ = hz; homeYaw = yaw;
             homeKnown = true;
+        }
+
+        /**
+         * Where this tween last placed the entity. Comparing it against the
+         * entity's actual position is how an outside teleport is noticed: a
+         * command or a server correction moves the performer, and without this
+         * the next frame would drag it straight back, flickering between the two.
+         */
+        void markApplied(double ax, double ay, double az) {
+            appliedX = ax; appliedY = ay; appliedZ = az;
+            appliedKnown = true;
+        }
+
+        void clearApplied() { appliedKnown = false; }
+
+        boolean movedExternally(double cx, double cy, double cz, double threshold) {
+            return appliedKnown && (Math.abs(cx - appliedX) > threshold
+                    || Math.abs(cy - appliedY) > threshold
+                    || Math.abs(cz - appliedZ) > threshold);
         }
 
         // Direct offset control for Lua setProperty / doTween, which drive the
@@ -1317,6 +1455,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             x = y = z = rotation = 0;
             tweenRotation = false;
             homeKnown = false;
+            appliedKnown = false;
         }
 
         private static double finite(double value) {
@@ -1324,11 +1463,18 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         }
     }
 
+    /**
+     * How far a performer must jump in one frame to count as an outside teleport
+     * rather than ordinary physics drift between frames. Well above a falling
+     * performer's per-frame movement, well below any useful /tp distance.
+     */
+    private static final double EXTERNAL_TELEPORT_BLOCKS = 2.0;
+
     /** Moves the main performers each frame while a stage-offset tween is engaged. */
     private void applyPerformerTweens() {
         if (playbackPolicy == null || playbackPolicy.usesPsychCamera()) return;
         if (phase != Phase.PLAYING && phase != Phase.COUNTDOWN) return;
-        long now = System.currentTimeMillis();
+        long now = GameplayClock.now();
         playerPerformerTween.update(now);
         opponentPerformerTween.update(now);
         applyPerformer(true, playerPerformerTween);
@@ -1345,23 +1491,34 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         // resolves to, and it also holds a moving performer's return target fixed.
         if (!tween.engaged()) {
             tween.captureHome(entity.getX(), entity.getY(), entity.getZ(), entity.getYRot());
+            tween.clearApplied();
             return;
         }
         if (!tween.homeKnown) {
             tween.captureHome(entity.getX(), entity.getY(), entity.getZ(), entity.getYRot());
         }
 
-        Direction facing = Direction.NORTH;
-        var state = minecraft.level.getBlockState(machinePos);
-        if (state.hasProperty(FunkinMachineBlock.FACING)) {
-            facing = state.getValue(FunkinMachineBlock.FACING);
+        // Something outside this tween moved the performer - a /tp from a command
+        // event or Lua, or a server position correction. Re-pinning it every frame
+        // would flicker between the two positions, so the teleport wins: drop the
+        // stage offset and treat the new spot as the performer's resting place.
+        if (tween.movedExternally(entity.getX(), entity.getY(), entity.getZ(),
+                EXTERNAL_TELEPORT_BLOCKS)) {
+            tween.reset();
+            tween.captureHome(entity.getX(), entity.getY(), entity.getZ(), entity.getYRot());
+            return;
         }
+
+        // Cached facing: re-reading the block would rotate the axes if the tween
+        // carried the performer past the machine's view distance (chunk unloaded).
+        Direction facing = StageOrientation.facing();
         // Offsets are stage-local: X camera-right, Y up, Z camera-forward.
         Direction right = facing.getCounterClockWise();
         double worldX = tween.homeX + right.getStepX() * tween.x + facing.getStepX() * tween.z;
         double worldY = tween.homeY + tween.y;
         double worldZ = tween.homeZ + right.getStepZ() * tween.x + facing.getStepZ() * tween.z;
-        entity.setPos(worldX, worldY, worldZ);
+        PerformerPin.pin(entity, worldX, worldY, worldZ);
+        tween.markApplied(worldX, worldY, worldZ);
 
         // Rotate only performers the local client does not steer, so a moving
         // opponent/bot can turn without fighting the local player's own look.
@@ -1380,7 +1537,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         if (tween.homeKnown && tween.engaged() && minecraft.level != null) {
             Entity entity = performerEntity(playerSide);
             if (entity != null && !entity.isRemoved()) {
-                entity.setPos(tween.homeX, tween.homeY, tween.homeZ);
+                PerformerPin.pin(entity, tween.homeX, tween.homeY, tween.homeZ);
                 entity.setYRot(tween.homeYaw);
                 if (entity instanceof Player performer) {
                     performer.setYHeadRot(tween.homeYaw);
@@ -1430,6 +1587,23 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         if (extraCharacters.exists(tag)) return extraCharacters.collision(tag);
         Entity performer = performerEntityForTag(tag);
         return performer != null && PerformerCollisions.enabled(performer.getId());
+    }
+
+    /**
+     * Releases a performer from stage-offset control and puts it back on its
+     * resting spot. Use this after cancelling a tween when the performer should
+     * stop being held in place, for example before teleporting it somewhere else.
+     */
+    public boolean psychLuaResetCharacterPosition(String tag) {
+        if (extraCharacters.exists(tag)) {
+            return extraCharacters.setPosition(tag, 0, 0, 0);
+        }
+        PerformerTween tween = performerTweenFor(tag);
+        if (tween == null) return false;
+        // performerTweenFor already resolved the side; reuse that decision so the
+        // entity looked up here is the same one the tween was driving.
+        resetPerformer(tween == playerPerformerTween, tween);
+        return true;
     }
 
     /**
@@ -1497,6 +1671,35 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                 : minecraft.level.getEntity(botEntityId);
     }
 
+    private static boolean isWorldPixelProperty(String property) {
+        return switch (property) {
+            case "worldX", "worldY", "worldZ", "world.x", "world.y", "world.z" -> true;
+            default -> false;
+        };
+    }
+
+    /**
+     * A performer's live world position expressed in Lua world-sprite pixels
+     * relative to the Funkin' Machine, matching {@link com.fnfmod.client.render.LuaWorldObjectRenderer}
+     * (64 px per block; X stage-right, Y down, Z stage-forward). Returns null
+     * when the performer or level is unavailable.
+     */
+    private Double performerWorldPixel(Entity performer, String property) {
+        if (performer == null || minecraft.level == null) return null;
+        Direction facing = StageOrientation.facing();
+        Direction right = facing.getCounterClockWise();
+        double dx = performer.getX() - (machinePos.getX() + 0.5);
+        double dy = performer.getY() - (machinePos.getY() + 0.5);
+        double dz = performer.getZ() - (machinePos.getZ() + 0.5);
+        double scale = 64.0; // com.fnfmod.client.render.LuaWorldObjectRenderer.PIXEL_SCALE is 1/64
+        return switch (property) {
+            case "worldX", "world.x" -> (dx * right.getStepX() + dz * right.getStepZ()) * scale;
+            case "worldY", "world.y" -> -dy * scale;
+            case "worldZ", "world.z" -> (dx * facing.getStepX() + dz * facing.getStepZ()) * scale;
+            default -> null;
+        };
+    }
+
     private String myRole() {
         return myChartSideIsPlayer ? "player" : "opponent";
     }
@@ -1515,6 +1718,18 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     private double liveSongPos() {
         if (songPlayer.isStarted() && !songPlayer.isPaused()) {
             return songPlayer.positionMs() + chart.offsetMs + ClientOptions.get().offsetMs;
+        }
+        return songPos;
+    }
+
+    /**
+     * Song position for an input captured at a specific {@link System#nanoTime()}.
+     * Judging against the press instant instead of the current frame removes the
+     * up-to-one-frame timing error, which is what a high-rate input path needs.
+     */
+    private double liveSongPosAt(long eventNano) {
+        if (songPlayer.isStarted() && !songPlayer.isPaused()) {
+            return songPlayer.positionMsAt(eventNano) + chart.offsetMs + ClientOptions.get().offsetMs;
         }
         return songPos;
     }
@@ -1574,8 +1789,135 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         }
     }
 
+    /**
+     * The full effect of a lane key going down, at the given press timestamp.
+     * Shared by the direct GLFW handler and the drained precise-input queue, so
+     * both judge presses identically — only the timestamp source differs.
+     */
+    private void processLanePress(int lane, long nano) {
+        if (laneHeld[lane]) return; // already down
+        // Psych's pre pass can swallow the press entirely before anything reacts.
+        if (luaRuntime != null && !luaRuntime.onKeyPressPre(lane)) return;
+        laneHeld[lane] = true;
+        // Judge input during the countdown too: notes at the very start of a chart
+        // otherwise only get the half of their hit window after the song begins
+        // (the earlier half falls during the countdown), which is an unfair miss.
+        if (phase == Phase.PLAYING || phase == Phase.COUNTDOWN) {
+            // a released hold in its grace window resumes on this press...
+            boolean resumed = false;
+            for (GameNote h : activeHolds[lane]) {
+                if (h.releasedMs >= 0 && songPos - h.releasedMs <= HOLD_RELEASE_GRACE_MS) {
+                    h.releasedMs = -1;
+                    resumed = true;
+                }
+            }
+            // ...and the same press can still hit an overlapping note. During the
+            // countdown, empty presses don't ghost-miss so warm-up taps before the
+            // song starts aren't punished.
+            hitAttempt(lane, phase == Phase.PLAYING && !resumed, liveSongPosAt(nano));
+            if (phase == Phase.COUNTDOWN) myStrumFlash[lane] = Math.max(myStrumFlash[lane], 40);
+        }
+        if (luaRuntime != null) luaRuntime.onKeyPress(lane);
+    }
+
+    /**
+     * Lazily starts the Windows raw-key backend and keeps its active state in sync
+     * with focus and phase. It samples only while the window is focused and a song
+     * is running; the lanes it maps are handled solely by it, the rest by GLFW.
+     */
+    private void updateRawInput() {
+        if (rawInput == null && !rawInputUnavailable
+                && com.fnfmod.client.input.WindowsRawKeyBackend.isSupported()) {
+            // The press hook runs on the backend thread: it sounds the hit the moment
+            // the press is seen. positionMsAt and the snapshot are both thread-safe.
+            var backend = new com.fnfmod.client.input.WindowsRawKeyBackend(noteInput,
+                    (lane, nano) -> hitsoundSnapshot.claim(lane, liveSongPosAt(nano)));
+            backend.setKeys(FnfKeys.currentKeyCodes());
+            if (backend.start()) rawInput = backend;
+            else rawInputUnavailable = true; // load failed; stay on GLFW input
+        }
+        if (rawInput != null) {
+            // Botplay ignores player input; the raw backend reads hardware directly,
+            // so it must be silenced too or physical presses would sound extra hits.
+            boolean active = (phase == Phase.PLAYING || phase == Phase.COUNTDOWN)
+                    && !ClientOptions.get().botplay
+                    && minecraft != null && minecraft.isWindowActive();
+            rawInput.setActive(active);
+        }
+    }
+
+    /** The full effect of a lane key going up, at the given release timestamp. */
+    private void processLaneRelease(int lane, long nano) {
+        if (luaRuntime != null && !luaRuntime.onKeyReleasePre(lane)) return;
+        laneHeld[lane] = false;
+        // Precise release: mark held sustains at the exact position the key went
+        // up, so the re-press grace measures from that instant rather than the
+        // frame. The drain runs before the hold loop, so this wins over the
+        // frame-based fallback there. Off keeps the original frame timing.
+        if (ClientOptions.get().preciseInput) {
+            double releasePos = liveSongPosAt(nano);
+            for (GameNote hold : activeHolds[lane]) {
+                if (hold.releasedMs < 0) hold.releasedMs = releasePos;
+            }
+        }
+        if (luaRuntime != null) luaRuntime.onKeyRelease(lane);
+    }
+
+    private static final com.fnfmod.client.input.HitsoundSnapshot.Hittable[] NO_HITTABLE =
+            new com.fnfmod.client.input.HitsoundSnapshot.Hittable[0];
+
+    /**
+     * Publishes this frame's hittable notes so the input backend can sound a hit
+     * the instant it detects the press. Only the notes near the current position
+     * are listed, each with its exact hitsound recipe, so the backend and the game
+     * thread always play the same sound for a given note.
+     */
+    private void publishHitsoundSnapshot() {
+        hitsoundSnapshot.setWindow(SHIT);
+        double lo = songPos - SHIT;
+        double hi = songPos + SHIT;
+        for (int lane = 0; lane < 4; lane++) {
+            List<GameNote> notes = myLanes[lane];
+            List<com.fnfmod.client.input.HitsoundSnapshot.Hittable> hittable = null;
+            for (int i = myLaneIndex[lane]; i < notes.size(); i++) {
+                GameNote n = notes.get(i);
+                if (n.data.timeMs > hi) break; // lanes stay time-sorted
+                if (n.hit || n.missed || n.data.blockHit || n.data.timeMs < lo) continue;
+                if (hittable == null) hittable = new ArrayList<>(4);
+                hittable.add(hittableFor(n));
+            }
+            hitsoundSnapshot.publish(lane, hittable == null ? NO_HITTABLE
+                    : hittable.toArray(new com.fnfmod.client.input.HitsoundSnapshot.Hittable[0]));
+        }
+        hitsoundSnapshot.prune(lo);
+    }
+
+    /** The hitsound recipe for a note, mirroring the credit-time logic exactly. */
+    private com.fnfmod.client.input.HitsoundSnapshot.Hittable hittableFor(GameNote n) {
+        if (n.data.hitsoundDisabled || n.data.hitsoundVolume <= 0) {
+            return new com.fnfmod.client.input.HitsoundSnapshot.Hittable(n.data.timeMs, null, false, 0);
+        }
+        if (!n.hitsoundResolved) {
+            n.cachedHitsound = customNoteTextures.resolveSound(n.data.hitsound);
+            n.hitsoundResolved = true;
+        }
+        boolean playDefault = n.cachedHitsound == null && (n.data.hitsound == null
+                || n.data.hitsound.isBlank() || n.data.hitsound.equalsIgnoreCase("hitsound"));
+        float volume = (float) (ClientOptions.get().hitsoundVolume * n.data.hitsoundVolume);
+        return new com.fnfmod.client.input.HitsoundSnapshot.Hittable(
+                n.data.timeMs, n.cachedHitsound, playDefault, volume);
+    }
+
     private void hitAttempt(int lane, boolean allowGhostMiss) {
-        double inputPos = liveSongPos();
+        hitAttempt(lane, allowGhostMiss, liveSongPos());
+    }
+
+    /**
+     * Judges a lane press against an explicit song position, so a caller that
+     * captured the press timestamp can supply the position at that instant. The
+     * plain overload above uses the current frame position, as before.
+     */
+    private void hitAttempt(int lane, boolean allowGhostMiss, double inputPos) {
         GameNote best = findClosest(myLanes[lane], myLaneIndex[lane], inputPos);
 
         if (best == null) {
@@ -1601,15 +1943,13 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         else if (bestDist <= BAD) judgement = 2;
         else judgement = 3;
 
-        if (!best.data.hitsoundDisabled && best.data.hitsoundVolume > 0) {
-            Path customSound = customNoteTextures.resolveSound(best.data.hitsound);
-            if (customSound != null) {
-                com.fnfmod.client.audio.HitsoundPlayer.play(customSound,
-                        (float) (ClientOptions.get().hitsoundVolume * best.data.hitsoundVolume));
-            } else if (best.data.hitsound == null || best.data.hitsound.isBlank()
-                    || best.data.hitsound.equalsIgnoreCase("hitsound")) {
-                com.fnfmod.client.audio.HitsoundPlayer.play();
-            }
+        // The precise-input backend may have already sounded this note sub-frame;
+        // if so, skip here (and clear the claim) so it never plays twice. Otherwise
+        // play it now through the same recipe, so both paths sound identically.
+        if (hitsoundSnapshot.wasClaimed(lane, best.data.timeMs)) {
+            hitsoundSnapshot.release(lane, best.data.timeMs);
+        } else {
+            com.fnfmod.client.input.HitsoundSnapshot.play(hittableFor(best));
         }
 
         creditHit(best, judgement);
@@ -1945,6 +2285,23 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             forceExit();
             return true;
         }
+        // Ctrl+Shift+Space toggles the free camera during an editor playtest.
+        if (editorPlaytest && keyCode == GLFW.GLFW_KEY_SPACE
+                && (modifiers & GLFW.GLFW_MOD_CONTROL) != 0
+                && (modifiers & GLFW.GLFW_MOD_SHIFT) != 0) {
+            toggleFreeCam();
+            return true;
+        }
+        if (freeCam) {
+            if (keyCode == GLFW.GLFW_KEY_ESCAPE) { exitFreeCam(); return true; }
+            // Copy the shot only while movement (and the grabbed cursor) is off.
+            if (keyCode == GLFW.GLFW_KEY_C && !freeCamMove
+                    && (modifiers & GLFW.GLFW_MOD_CONTROL) != 0) {
+                copyFreeCamShot();
+                return true;
+            }
+            return true; // movement uses polled keys; swallow the rest
+        }
         if (editorPreview && (keyCode == GLFW.GLFW_KEY_F12 || keyCode == GLFW.GLFW_KEY_ESCAPE)) {
             exit();
             return true;
@@ -1988,30 +2345,25 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         // Botplay owns the strumline; swallow lane keys so manual taps can't
         // interfere, while leaving pause, restart and force-exit keys alone.
         if (lane >= 0 && ClientOptions.get().botplay) return true;
-        if (lane >= 0 && !laneHeld[lane]) {
-            // Psych's pre pass can swallow the press entirely before anything reacts.
-            if (luaRuntime != null && !luaRuntime.onKeyPressPre(lane)) return true;
-            laneHeld[lane] = true;
-            // Judge input during the countdown too: notes at the very start of a chart
-            // otherwise only get the half of their hit window after the song begins
-            // (the earlier half falls during the countdown), which is an unfair miss.
-            if (phase == Phase.PLAYING || phase == Phase.COUNTDOWN) {
-                // a released hold in its grace window resumes on this press...
-                boolean resumed = false;
-                for (GameNote h : activeHolds[lane]) {
-                    if (h.releasedMs >= 0 && songPos - h.releasedMs <= HOLD_RELEASE_GRACE_MS) {
-                        h.releasedMs = -1;
-                        resumed = true;
-                    }
+        if (lane >= 0) {
+            // Timestamp the press as early as possible. GLFW still dispatches this
+            // once per frame, so it only matches "now"; a high-rate input path
+            // (later part) supplies an earlier, more accurate nanoTime the same way.
+            if (ClientOptions.get().preciseInput) {
+                // The raw backend owns any lane it can poll; only the others fall
+                // back to GLFW so a mapped key is never counted twice.
+                if (rawInput != null && rawInput.handlesLane(lane)) return true;
+                if (!glfwLaneHeld[lane]) { // ignore key auto-repeat
+                    glfwLaneHeld[lane] = true;
+                    noteInput.push(lane, true, System.nanoTime());
                 }
-                // ...and the same press can still hit an overlapping note. During the
-                // countdown, empty presses don't ghost-miss so warm-up taps before the
-                // song starts aren't punished.
-                hitAttempt(lane, phase == Phase.PLAYING && !resumed);
-                if (phase == Phase.COUNTDOWN) myStrumFlash[lane] = Math.max(myStrumFlash[lane], 40);
+                return true;
             }
-            if (luaRuntime != null) luaRuntime.onKeyPress(lane);
-            return true;
+            if (!laneHeld[lane]) {
+                processLanePress(lane, System.nanoTime());
+                return true;
+            }
+            return super.keyPressed(keyCode, scanCode, modifiers);
         }
         return super.keyPressed(keyCode, scanCode, modifiers);
     }
@@ -2024,9 +2376,13 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         int lane = FnfKeys.laneForKey(keyCode, scanCode);
         if (lane >= 0 && ClientOptions.get().botplay) return true;
         if (lane >= 0) {
-            if (luaRuntime != null && !luaRuntime.onKeyReleasePre(lane)) return true;
-            laneHeld[lane] = false;
-            if (luaRuntime != null) luaRuntime.onKeyRelease(lane);
+            if (ClientOptions.get().preciseInput) {
+                if (rawInput != null && rawInput.handlesLane(lane)) return true;
+                glfwLaneHeld[lane] = false;
+                noteInput.push(lane, false, System.nanoTime());
+            } else {
+                processLaneRelease(lane, System.nanoTime());
+            }
             return true;
         }
         return super.keyReleased(keyCode, scanCode, modifiers);
@@ -2046,12 +2402,176 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         }
     }
 
+    // ---------------------------------------------------------- free camera
+
+    private void toggleFreeCam() {
+        if (freeCam) exitFreeCam();
+        else enterFreeCam();
+    }
+
+    private void enterFreeCam() {
+        if (!editorPlaytest || freeCam) return;
+        if (phase != Phase.PLAYING && phase != Phase.COUNTDOWN) return;
+        freeCam = true;
+        freeCamPausedAtMs = System.currentTimeMillis();
+        songPlayer.pause();
+        noteInput.clear();
+        hitsoundSnapshot.reset();
+        java.util.Arrays.fill(glfwLaneHeld, false);
+        freeCamLastMoveNano = System.nanoTime();
+        GameplayCamera.beginFreeCam();
+        setFreeCamMove(false);
+    }
+
+    private void exitFreeCam() {
+        if (!freeCam) return;
+        setFreeCamMove(false);
+        freeCam = false;
+        GameplayCamera.endFreeCam();
+        // Resume audio/countdown exactly like leaving the pause menu.
+        if (songPlayer.isStarted()) {
+            songPlayer.resume();
+        } else {
+            startAtEpochMs += System.currentTimeMillis() - freeCamPausedAtMs;
+        }
+        lastFrameNano = System.nanoTime();
+        noteInput.clear();
+    }
+
+    /** Grabs/releases the cursor for spectator look while keeping this screen open. */
+    private void setFreeCamMove(boolean move) {
+        if (move == freeCamMove) {
+            if (!move) return;
+        }
+        freeCamMove = move;
+        long window = minecraft.getWindow().getWindow();
+        if (move) {
+            double[] cx = new double[1];
+            double[] cy = new double[1];
+            GLFW.glfwGetCursorPos(window, cx, cy);
+            freeCamLastCursorX = cx[0];
+            freeCamLastCursorY = cy[0];
+            GLFW.glfwSetInputMode(window, GLFW.GLFW_CURSOR, GLFW.GLFW_CURSOR_DISABLED);
+        } else {
+            GLFW.glfwSetInputMode(window, GLFW.GLFW_CURSOR, GLFW.GLFW_CURSOR_NORMAL);
+        }
+    }
+
+    /** Per-frame free-camera look (captured mouse) and movement (polled keys). */
+    private void updateFreeCam() {
+        long now = System.nanoTime();
+        double dt = Math.min(0.1, (now - freeCamLastMoveNano) / 1_000_000_000.0);
+        freeCamLastMoveNano = now;
+        if (!freeCamMove) return;
+
+        long window = minecraft.getWindow().getWindow();
+        double[] cx = new double[1];
+        double[] cy = new double[1];
+        GLFW.glfwGetCursorPos(window, cx, cy);
+        double dx = cx[0] - freeCamLastCursorX;
+        double dy = cy[0] - freeCamLastCursorY;
+        freeCamLastCursorX = cx[0];
+        freeCamLastCursorY = cy[0];
+        double sensitivity = 0.15;
+        if (dx != 0 || dy != 0) GameplayCamera.turnFreeCam(dx * sensitivity, dy * sensitivity);
+
+        // Shift = finer, Ctrl = coarser rate for movement, roll and zoom.
+        double rate = freeCamRateMultiplier(window);
+
+        double forward = keyDown(window, GLFW.GLFW_KEY_W) - keyDown(window, GLFW.GLFW_KEY_S);
+        double strafe = keyDown(window, GLFW.GLFW_KEY_D) - keyDown(window, GLFW.GLFW_KEY_A);
+        double vertical = keyDown(window, GLFW.GLFW_KEY_E) - keyDown(window, GLFW.GLFW_KEY_Q);
+
+        // Left/Right arrows roll; Up/Down arrows zoom; R resets roll and zoom.
+        double roll = keyDown(window, GLFW.GLFW_KEY_RIGHT) - keyDown(window, GLFW.GLFW_KEY_LEFT);
+        if (roll != 0) GameplayCamera.rollFreeCam(roll * 60 * dt * rate);
+        double zoom = keyDown(window, GLFW.GLFW_KEY_UP) - keyDown(window, GLFW.GLFW_KEY_DOWN);
+        if (zoom != 0) GameplayCamera.zoomFreeCam(zoom * 0.5 * dt * rate);
+        if (keyDown(window, GLFW.GLFW_KEY_R) == 1) GameplayCamera.resetFreeRollZoom();
+
+        if (forward != 0 || strafe != 0 || vertical != 0) {
+            // Horizontal movement follows the yaw so W goes where the camera looks;
+            // Q/E are world up/down. All expressed in the stage frame the Camera
+            // Follow Pos offset uses (X right, Y up, Z forward).
+            double yaw = Math.toRadians(GameplayCamera.freeYaw());
+            double sin = Math.sin(yaw);
+            double cos = Math.cos(yaw);
+            double step = freeCamSpeed * dt * rate;
+            double moveX = (forward * sin + strafe * cos) * step;
+            double moveZ = (forward * cos - strafe * sin) * step;
+            double moveY = vertical * step;
+            GameplayCamera.moveFreeCam(moveX, moveY, moveZ);
+        }
+
+        // Never let the camera leave loaded chunks: the client only has terrain
+        // out to the render distance around the player, and beyond it the view,
+        // lighting and chunk state break. Leave a one-chunk safety margin.
+        double maxHorizontal = Math.max(16.0, (RenderDistanceControl.current() - 1) * 16.0);
+        int minY = minecraft.level == null ? -64 : minecraft.level.getMinBuildHeight();
+        int maxY = minecraft.level == null ? 320 : minecraft.level.getMaxBuildHeight();
+        double maxVertical = Math.max(64.0, maxY - minY);
+        GameplayCamera.clampFreeCamToLoaded(maxHorizontal, maxVertical);
+    }
+
+    /** Held Shift slows the rate values change at; held Ctrl speeds it up. */
+    private static double freeCamRateMultiplier(long window) {
+        boolean shift = keyDown(window, GLFW.GLFW_KEY_LEFT_SHIFT) == 1
+                || keyDown(window, GLFW.GLFW_KEY_RIGHT_SHIFT) == 1;
+        boolean ctrl = keyDown(window, GLFW.GLFW_KEY_LEFT_CONTROL) == 1
+                || keyDown(window, GLFW.GLFW_KEY_RIGHT_CONTROL) == 1;
+        if (shift && !ctrl) return 0.25;
+        if (ctrl && !shift) return 4.0;
+        return 1.0;
+    }
+
+    private static int keyDown(long window, int key) {
+        return GLFW.glfwGetKey(window, key) == GLFW.GLFW_PRESS ? 1 : 0;
+    }
+
+    private void copyFreeCamShot() {
+        double bx = round2(GameplayCamera.freeX());
+        double by = round2(GameplayCamera.freeY());
+        double bz = round2(GameplayCamera.freeZ());
+        double pitch = round2(GameplayCamera.freePitch());
+        double yaw = round2(GameplayCamera.freeYaw());
+        double roll = round2(GameplayCamera.freeRoll());
+        double zoom = round2(GameplayCamera.freeZoom());
+
+        // Camera Follow Pos: extended 3D override in the machine frame reproduces
+        // the exact camera position (v5 override, v6 machine default).
+        SongChart.Event pos = new SongChart.Event(0, ChartEventTypes.CAMERA_FOLLOW_POS,
+                num(bx), num(by), num(bz), "", "override", "", false);
+        // Camera Rotation 3D: pitch, yaw, roll (v4 = ease, left empty).
+        SongChart.Event rot = new SongChart.Event(0, ChartEventTypes.CAMERA_ROTATION_3D,
+                num(pitch), num(yaw), num(roll), "", "", false);
+        // Camera Zoom: amount (v2 = duration, v3 = ease, left empty).
+        SongChart.Event cameraZoom = new SongChart.Event(0, ChartEventTypes.CAMERA_ZOOM,
+                num(zoom), "", "", "", "", false);
+        CameraShotClipboard.set(java.util.List.of(pos, rot, cameraZoom));
+        freeCamMessage = "Copied camera shot — paste in the chart editor";
+        freeCamMessageUntil = System.currentTimeMillis() + 3000;
+    }
+
+    private static double round2(double value) {
+        return Math.round(value * 100.0) / 100.0;
+    }
+
+    private static String num(double value) {
+        if (value == 0) return "0";
+        String s = String.valueOf(value);
+        return s.endsWith(".0") ? s.substring(0, s.length() - 2) : s;
+    }
+
     private void pauseSong() {
         if (luaRuntime != null && !luaRuntime.onPause()) return;
         phase = Phase.PAUSED;
         pausedAtMs = System.currentTimeMillis();
         pauseSelection = 0;
         songPlayer.pause();
+        // Drop queued presses and any stuck held-state so a pause never leaks input.
+        noteInput.clear();
+        hitsoundSnapshot.reset();
+        java.util.Arrays.fill(glfwLaneHeld, false);
     }
 
     private void resumeFromPause() {
@@ -2063,6 +2583,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         }
         phase = songPlayer.isStarted() ? Phase.PLAYING : Phase.COUNTDOWN;
         lastFrameNano = System.nanoTime();
+        noteInput.clear(); // discard anything queued while paused
         if (luaRuntime != null) luaRuntime.onResume();
     }
 
@@ -2215,6 +2736,10 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                     minecraft.player.setPos(editorReturnPos.x, editorReturnPos.y, editorReturnPos.z);
                     minecraft.player.setYRot(editorReturnYaw);
                     minecraft.player.setXRot(editorReturnPitch);
+                    // Same reason as the stage placement: without a server tp the
+                    // player would be snapped back to the playtest spot on exit.
+                    editorServerTeleport(editorReturnPos.x, editorReturnPos.y, editorReturnPos.z,
+                            editorReturnYaw);
                 }
             }
             minecraft.setScreen(editorReturnFactory == null ? null : editorReturnFactory.get());
@@ -2256,6 +2781,11 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
 
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
+        if (freeCam) {
+            // Right-click toggles spectator move/look, like holding a viewport.
+            if (button == 1) setFreeCamMove(!freeCamMove);
+            return true;
+        }
         if (phase == Phase.PAUSED) {
             int idx = pauseOptionAt(mouseY);
             if (idx >= 0) {
@@ -2269,6 +2799,17 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             return true;
         }
         return super.mouseClicked(mouseX, mouseY, button);
+    }
+
+    @Override
+    public boolean mouseScrolled(double mouseX, double mouseY, double scrollX, double scrollY) {
+        if (freeCam) {
+            // Wheel changes fly speed (blocks/second), clamped to a usable range.
+            double factor = scrollY > 0 ? 1.15 : (scrollY < 0 ? 1 / 1.15 : 1);
+            freeCamSpeed = Math.max(0.5, Math.min(80.0, freeCamSpeed * factor));
+            return true;
+        }
+        return super.mouseScrolled(mouseX, mouseY, scrollX, scrollY);
     }
 
     private int pauseOptionAt(double mouseY) {
@@ -2366,6 +2907,10 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
 
     public int psychLuaScreenWidth() { return PsychLuaRuntime.VIRTUAL_WIDTH; }
     public int psychLuaScreenHeight() { return PsychLuaRuntime.VIRTUAL_HEIGHT; }
+
+    /** Base player FOV (Camera Zoom multiplies this). Clamped to Minecraft's 30-110. */
+    public void psychLuaSetFov(double fov) { FieldOfViewControl.apply((int) Math.round(fov)); }
+    public double psychLuaGetFov() { return FieldOfViewControl.current(); }
     public double psychLuaSongLength() { return songPlayer.durationMs(); }
     public double psychLuaSongPosition() { return songPos; }
     public double psychLuaBeat() { return conductor.beatAt(Math.max(0, songPos)); }
@@ -2700,6 +3245,16 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             Entity performer = performerEntityForTag(path.substring(0, extraDot));
             if (performer != null) return PerformerShadows.enabled(performer.getId());
         }
+        // World-camera pixel coordinates of a performer, relative to the Funkin'
+        // Machine, in the same space Lua world sprites use (64 px = 1 block,
+        // X = stage-right, Y = down, Z = stage-forward). Feed these straight to
+        // makeLuaSprite(tag, image, worldX, worldY, worldZ) with a 'world' camera
+        // to place an image where a performer stands.
+        if (extraDot > 0 && isWorldPixelProperty(path.substring(extraDot + 1))) {
+            Entity performer = performerEntityForTag(path.substring(0, extraDot));
+            Double value = performerWorldPixel(performer, path.substring(extraDot + 1));
+            if (value != null) return value;
+        }
         if (extraDot > 0) {
             PerformerTween performer = luaPerformerTween(path.substring(0, extraDot));
             if (performer != null) {
@@ -2721,6 +3276,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         }
         return switch (path) {
             case "health" -> (double) health;
+            case "fov" -> psychLuaGetFov();
             case "songScore", "score" -> score;
             case "songMisses", "misses" -> misses;
             case "combo" -> combo;
@@ -2821,6 +3377,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         }
         switch (path) {
             case "health" -> psychLuaSetHealth(number);
+            case "fov" -> psychLuaSetFov(number);
             case "songMisses", "misses" -> psychLuaSetMisses((int) number);
             case "combo" -> combo = Math.max(0, (int) number);
             case "playbackRate" -> songPlayer.setPlaybackRate((float) number);
@@ -2847,14 +3404,15 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     }
 
     public void psychLuaTriggerEvent(String name, String value1, String value2) {
-        psychLuaTriggerEvent(name, value1, value2, "", "", "", "");
+        psychLuaTriggerEvent(name, value1, value2, "", "", "", "", "");
     }
 
-    /** Extended trigger so Lua can fire events that use Value 3-6. */
+    /** Extended trigger so Lua can fire events that use Value 3-7. */
     public void psychLuaTriggerEvent(String name, String value1, String value2,
-                                     String value3, String value4, String value5, String value6) {
+                                     String value3, String value4, String value5, String value6,
+                                     String value7) {
         executeEvent(-1, new SongChart.Event(songPos, name, value1, value2,
-                value3, value4, value5, value6, false));
+                value3, value4, value5, value6, value7, false));
     }
 
     public boolean psychLuaRunMinecraftCommand(String command, String runner) {
@@ -2956,12 +3514,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     /** Called from the level render pass so Lua world sprites have real depth and lighting. */
     public void renderLuaWorld(PoseStack poseStack, Camera camera) {
         if (luaRuntime == null || minecraft.level == null) return;
-        Direction facing = Direction.NORTH;
-        var state = minecraft.level.getBlockState(machinePos);
-        if (state.hasProperty(FunkinMachineBlock.FACING)) {
-            facing = state.getValue(FunkinMachineBlock.FACING);
-        }
-        luaRuntime.renderWorld(poseStack, camera, machinePos, facing);
+        luaRuntime.renderWorld(poseStack, camera, machinePos, StageOrientation.facing());
     }
 
     private float noteY(double timeMs, boolean mine, int lane, GameNote note) {
@@ -3147,6 +3700,156 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         drawCameraOverlay(gui, CameraOverlay.Target.OTHER);
         // A Psych custom substate sits above every gameplay and camera layer.
         if (luaRuntime != null) luaRuntime.renderSubstate(gui);
+        // Song-warning flag rides on top of everything, in plain screen space.
+        WarningFlag.render(gui, height);
+
+        // Editor playtest orientation aid: a Blender-style world axis gizmo.
+        if (editorPlaytest && ClientOptions.get().editorShowAxisGizmo) renderAxisGizmo(gui);
+        if (freeCam) renderFreeCamOverlay(gui);
+    }
+
+    /** Free-camera HUD: the current shot values plus the controls, top-left. */
+    private void renderFreeCamOverlay(GuiGraphics gui) {
+        boolean showReadout = ClientOptions.get().editorShowCameraReadout;
+        int x = 8;
+        int y = 8;
+        drawOutlined(gui, "FREE CAMERA — Ctrl+Shift+Space to exit", x, y, 0xFFFFEE66);
+        y += 12;
+        String moveState = freeCamMove ? "ON (right-click to release cursor)"
+                : "OFF (right-click to move/look)";
+        drawOutlined(gui, "Move/Look: " + moveState, x, y, 0xFFBFC7D5);
+        y += 11;
+        drawOutlined(gui, String.format(java.util.Locale.ROOT,
+                "Speed: %.1f (scroll)   WASD move · E up · Q down", freeCamSpeed), x, y, 0xFFBFC7D5);
+        y += 11;
+        drawOutlined(gui, "Arrows: ←→ roll · ↑↓ zoom · R resets roll+zoom",
+                x, y, 0xFFBFC7D5);
+        y += 11;
+        drawOutlined(gui, "Shift = slower · Ctrl = faster value changes", x, y, 0xFFBFC7D5);
+        y += 14;
+
+        if (showReadout) {
+            drawOutlined(gui, "Camera Follow Pos (override, machine frame):",
+                    x, y, 0xFF7ABF4A);
+            y += 11;
+            drawOutlined(gui, String.format(java.util.Locale.ROOT,
+                    "  X %.2f   Y %.2f   Z %.2f  (blocks)",
+                    GameplayCamera.freeX(), GameplayCamera.freeY(), GameplayCamera.freeZ()),
+                    x, y, 0xFFE0E0E0);
+            y += 12;
+            drawOutlined(gui, "Camera Rotation 3D:", x, y, 0xFF4A8FE0);
+            y += 11;
+            drawOutlined(gui, String.format(java.util.Locale.ROOT,
+                    "  Pitch %.2f   Yaw %.2f   Roll %.2f  (degrees)",
+                    GameplayCamera.freePitch(), GameplayCamera.freeYaw(), GameplayCamera.freeRoll()),
+                    x, y, 0xFFE0E0E0);
+            y += 12;
+            drawOutlined(gui, "Camera Zoom:", x, y, 0xFFE0A24A);
+            y += 11;
+            drawOutlined(gui, String.format(java.util.Locale.ROOT,
+                    "  Amount %.2f  (-1 to 0.9)", GameplayCamera.freeZoom()), x, y, 0xFFE0E0E0);
+            y += 12;
+            String copyHint = freeCamMove ? "Release cursor (right-click), then Ctrl+C to copy"
+                    : "Ctrl+C copies all three events — paste in the chart editor";
+            drawOutlined(gui, copyHint, x, y, 0xFFFFEE66);
+            y += 14;
+        }
+        if (System.currentTimeMillis() < freeCamMessageUntil) {
+            drawOutlined(gui, freeCamMessage, x, y, 0xFF66FF88);
+        }
+    }
+
+    /** Draws text with a 1px black outline for readability over the world. */
+    private void drawOutlined(GuiGraphics gui, String text, int x, int y, int color) {
+        int black = 0xFF000000;
+        gui.drawString(font, text, x - 1, y, black, false);
+        gui.drawString(font, text, x + 1, y, black, false);
+        gui.drawString(font, text, x, y - 1, black, false);
+        gui.drawString(font, text, x, y + 1, black, false);
+        gui.drawString(font, text, x, y, color, false);
+    }
+
+    /**
+     * Blender-style axis gizmo in the bottom-right corner, oriented to the live
+     * game camera. The axes are <b>machine-relative</b>, matching the space Lua
+     * world sprites and stage events use: X = stage-right, Y = up, Z = stage-
+     * forward (the machine's facing). Positive axes are solid with a letter;
+     * negative axes are hollow rings. Drawn back-to-front so the nearest sits on
+     * top.
+     */
+    private void renderAxisGizmo(GuiGraphics gui) {
+        Camera camera = minecraft.gameRenderer.getMainCamera();
+        Vector3f left = camera.getLeftVector();
+        Vector3f up = camera.getUpVector();
+        Vector3f look = camera.getLookVector();
+
+        // Machine facing defines the stage basis: Z along facing, X to its right.
+        Direction facing = StageOrientation.facing();
+        Direction right = facing.getCounterClockWise();
+        float[] xDir = {right.getStepX(), 0, right.getStepZ()};
+        float[] yDir = {0, 1, 0};
+        float[] zDir = {facing.getStepX(), 0, facing.getStepZ()};
+
+        int radius = 26;
+        int centerX = width - radius - 16;
+        int centerY = height - radius - 16;
+
+        // Each stage axis becomes a 2D screen vector via the camera basis:
+        // screenX grows right (= -left), screenY grows down (= -up), and depth
+        // along the look direction decides draw order.
+        record Axis2D(float sx, float sy, float depth, int color, String label) {}
+        float[][] axes = {
+                {xDir[0], xDir[1], xDir[2]}, {-xDir[0], -xDir[1], -xDir[2]},
+                {yDir[0], yDir[1], yDir[2]}, {-yDir[0], -yDir[1], -yDir[2]},
+                {zDir[0], zDir[1], zDir[2]}, {-zDir[0], -zDir[1], -zDir[2]},
+        };
+        int[] colors = {0xFFF0506A, 0xFFF0506A, 0xFF7ABF4A, 0xFF7ABF4A, 0xFF4A8FE0, 0xFF4A8FE0};
+        String[] labels = {"X", "", "Y", "", "Z", ""};
+
+        java.util.List<Axis2D> projected = new java.util.ArrayList<>(6);
+        for (int i = 0; i < axes.length; i++) {
+            float dx = axes[i][0], dy = axes[i][1], dz = axes[i][2];
+            float sx = -(dx * left.x() + dy * left.y() + dz * left.z());
+            float sy = -(dx * up.x() + dy * up.y() + dz * up.z());
+            float depth = dx * look.x() + dy * look.y() + dz * look.z();
+            projected.add(new Axis2D(sx, sy, depth, colors[i], labels[i]));
+        }
+        // Larger depth = pointing away from the camera, so draw those first.
+        projected.sort((a, b) -> Float.compare(b.depth(), a.depth()));
+
+        for (Axis2D axis : projected) {
+            float ex = axis.sx() * radius;
+            float ey = axis.sy() * radius;
+            boolean positive = !axis.label().isEmpty();
+            drawGizmoAxis(gui, centerX, centerY, ex, ey, axis.color(), positive, axis.label());
+        }
+    }
+
+    private void drawGizmoAxis(GuiGraphics gui, int centerX, int centerY,
+                               float ex, float ey, int color, boolean positive, String label) {
+        double length = Math.sqrt(ex * ex + ey * ey);
+        if (positive && length > 0.5) {
+            float angle = (float) Math.atan2(ey, ex);
+            gui.pose().pushPose();
+            gui.pose().translate(centerX, centerY, 0);
+            gui.pose().mulPose(Axis.ZP.rotation(angle));
+            gui.fill(0, -1, (int) Math.round(length), 1, color);
+            gui.pose().popPose();
+        }
+
+        int ballX = centerX + Math.round(ex);
+        int ballY = centerY + Math.round(ey);
+        int r = 5;
+        if (positive) {
+            gui.fill(ballX - r, ballY - r, ballX + r, ballY + r, color);
+            int textColor = 0xFF10131A;
+            gui.drawString(font, label, ballX - font.width(label) / 2 + 1,
+                    ballY - font.lineHeight / 2 + 1, textColor, false);
+        } else {
+            // Hollow ring for negative axes: filled square with a darker cutout.
+            gui.fill(ballX - r, ballY - r, ballX + r, ballY + r, color);
+            gui.fill(ballX - r + 2, ballY - r + 2, ballX + r - 2, ballY + r - 2, 0xFF10131A);
+        }
     }
 
     /** Fills the screen with a camera's active flash or fade colour, if any. */
@@ -3611,7 +4314,14 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
 
     @Override
     public boolean isPauseScreen() {
-        return false;
+        // Gameplay must not pause the world — command events, TNT and mobs keep
+        // ticking through a song. Only Blockified's own pause menu freezes it, and
+        // Minecraft already limits that to true singleplayer (an unpublished
+        // integrated server), which is exactly where a pause should stop the game.
+        // The free camera also freezes the world: without this the player entity
+        // keeps running physics (and chunks keep churning) while it is unpinned,
+        // which desynced its position and the camera when flying near chunk edges.
+        return phase == Phase.PAUSED || freeCam;
     }
 
     @Override
@@ -3645,10 +4355,19 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         restorePerformerGravity();
         PerformerCollisions.clear();
         PerformerShadows.clear();
+        RenderDistanceControl.restore();
+        FieldOfViewControl.restore();
+        StageChunkLoader.unload();
+        StageOrientation.clear();
+        WarningFlag.clear();
+        if (rawInput != null) { rawInput.stop(); rawInput = null; }
         if (luaRuntime != null) luaRuntime.close();
         extraCharacters.close();
         customNoteTextures.close();
         if (psychScene != null) psychScene.close();
+        if (freeCamMove) setFreeCamMove(false);
+        freeCam = false;
+        GameplayCamera.endFreeCam();
         GameplayCamera.end();
         if (disposeAudio) songPlayer.dispose();
         restoreVanillaMusic();

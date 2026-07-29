@@ -130,13 +130,15 @@ public final class PsychChartWriter {
             payload.add(event.name);
             payload.add(event.value1);
             payload.add(event.value2);
-            if (!event.value3.isBlank() || !event.value4.isBlank() || !event.value5.isBlank()
-                    || !event.value6.isBlank()) {
-                payload.add(event.value3);
-                payload.add(event.value4);
-                payload.add(event.value5);
-                if (!event.value6.isBlank()) payload.add(event.value6);
+            // Extended values are positional, so write every slot up to the last
+            // one actually used, filling earlier blanks so a later value (e.g. a
+            // Camera Follow Pos duration in value7) keeps its index.
+            String[] extended = {event.value3, event.value4, event.value5, event.value6, event.value7};
+            int lastUsed = -1;
+            for (int i = 0; i < extended.length; i++) {
+                if (!extended[i].isBlank()) lastUsed = i;
             }
+            for (int i = 0; i <= lastUsed; i++) payload.add(extended[i]);
             if (event.beforeSong) payload.add("load");
             payloads.add(payload);
         }

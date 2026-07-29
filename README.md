@@ -2,7 +2,20 @@
 
 A feature-full Friday Night Funkin' engine inside of Minecraft — **NeoForge 1.21.1**.
 
-Current release: **2.0.2bbs**.
+Current release: **2.0.5bbs**.
+
+### 2.0.5bbs highlights
+
+- Frame-rate-independent Windows note input, timestamped hit judging, sub-frame
+  hitsounds, and audio-clock editor ticks, with safe fallbacks on other systems.
+- Chart-editor free camera with pose readouts, axis gizmo, camera-shot
+  copy/paste, adjustable shot duration, and playtest camera controls.
+- Song-controlled field of view, render distance, stage chunk loading, stage
+  orientation, and performer pinning, all restored or released after play.
+- Configurable pre-song warnings for expensive render-distance changes and
+  author-provided warning files.
+- Background, cancellable server song-file streaming to avoid freezing the
+  world tick while transferring large packs.
 
 ### 2.0.2bbs highlights
 
@@ -735,6 +748,24 @@ notes on both strumlines), Downscroll, Ghost Tapping. More in
 Player and opponent icon choices apply globally to every song. **Default (song)**
 uses each chart character's health icon; **None** hides that side's icon.
 
+### Precise Input
+
+*Settings → Gameplay → Precise Input* decouples note timing from the frame rate.
+Normally a key press is only noticed when Minecraft polls input, once per rendered
+frame, so hit timing rounds to the frame (about 16 ms at 60 fps). With Precise
+Input on, a background thread reads the keyboard at roughly a kilohertz, stamps
+each press with the moment it happened, and the hit is judged against the song
+position at that instant — so timing reflects the actual key press, independent
+of frame rate.
+
+The high-rate reader is **Windows only** (`GetAsyncKeyState`); the toggle shows
+"(Windows only)" on other systems, where input stays frame-bound. It reads the
+keyboard only while the game window is focused and a song is playing, honours the
+rebindable note keys, and falls back to the normal per-frame path for any key it
+cannot map or if the reader fails to load. The song-position clock it judges
+against is already sub-frame accurate (it interpolates the audio position with a
+nanosecond timer), so the two halves line up.
+
 ## Building
 
 ```
@@ -777,6 +808,12 @@ The source keeps reusable behavior outside GUI screens where possible:
 - `client/camera/CameraOverlay.java` owns per-camera flash and fade state.
 - `client/lua/LuaSaveData.java` owns Lua save slots and achievement persistence
   under `config/fnfmod/saves/`.
+- `client/input/NoteInput.java` is the timestamped note-input queue; a source
+  pushes press/release events and gameplay drains them each frame.
+  `client/input/WindowsRawKeyBackend.java` is the high-rate (kHz) source that
+  makes hit timing frame-rate-independent. `SongPlayer.positionMsAt(nano)` maps an
+  input timestamp to a song position, and `gameplay/GameplayClock.java` freezes
+  animation time while paused.
 
 These classes are intended as stable starting points for contributors. Keep file
 I/O, parsing, and rendering out of screens when adding comparable features.
