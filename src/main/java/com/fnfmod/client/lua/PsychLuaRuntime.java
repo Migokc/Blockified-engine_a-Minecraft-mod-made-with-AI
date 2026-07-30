@@ -166,6 +166,12 @@ public final class PsychLuaRuntime implements AutoCloseable {
      * hits); copying the list each time it fired was needless per-frame garbage.
      */
     private Script[] scriptSnapshot;
+    /** Psych-style debugPrint trace lines shown top-left, newest at the bottom, fading out. */
+    private record DebugLine(String text, int color, long bornMs) {}
+    private final List<DebugLine> debugLines = new ArrayList<>();
+    private static final long DEBUG_LINE_LIFETIME_MS = 6000;
+    private static final long DEBUG_LINE_FADE_MS = 1000;
+    private static final int DEBUG_LINE_MAX = 20;
     private final Map<String, LuaObject> objects = new LinkedHashMap<>();
     private final Map<String, LuaValue> sharedVars = new HashMap<>();
     /** Sheets kept warm by precacheImage; closed with the runtime. */
@@ -573,7 +579,7 @@ public final class PsychLuaRuntime implements AutoCloseable {
     }
 
     private void installCallbacks(Globals g) {
-        fn(g, "debugPrint", args -> { report(args.optjstring(1, "")); return LuaValue.NIL; });
+        fn(g, "debugPrint", args -> { debugPrint(args); return LuaValue.NIL; });
         // Render distance for the length of the song; restored when it ends. The
         // value is clamped to Minecraft's own 2..32 range.
         fn(g, "setRenderDistance", args -> {
@@ -2701,6 +2707,46 @@ public final class PsychLuaRuntime implements AutoCloseable {
         FnfMod.LOGGER.warn(text);
         if (Minecraft.getInstance().player != null) {
             Minecraft.getInstance().player.displayClientMessage(Component.literal(text), false);
+        }
+    }
+
+    /**
+     * Psych's {@code debugPrint(text, color)}: shows a fading trace line in the
+     * top-left overlay (not chat). The optional second argument is an FlxColor
+     * (int) or a colour name/hex; alpha defaults to opaque when none is given.
+     */
+    private void debugPrint(Varargs args) {
+        String text = args.optjstring(1, "");
+        int color = 0xFFFFFFFF;
+        LuaValue c = args.arg(2);
+        if (c.isnumber()) {
+            color = (int) (long) c.todouble();
+        } else if (c.isstring()) {
+            color = PsychColor.parse(c.tojstring());
+        }
+        if ((color & 0xFF000000) == 0) color |= 0xFF000000; // opaque unless alpha was supplied
+        debugLines.add(new DebugLine(text, color, System.currentTimeMillis()));
+        while (debugLines.size() > DEBUG_LINE_MAX) debugLines.remove(0);
+        FnfMod.LOGGER.info("[Psych Lua] {}", text);
+    }
+
+    /** Draws the debugPrint trace lines top-left, in screen space, above the HUD. */
+    public void renderDebugOverlay(GuiGraphics gui) {
+        if (debugLines.isEmpty()) return;
+        long now = System.currentTimeMillis();
+        debugLines.removeIf(line -> now - line.bornMs > DEBUG_LINE_LIFETIME_MS);
+        Font font = Minecraft.getInstance().font;
+        int x = 10;
+        int y = 10;
+        int step = font.lineHeight + 2;
+        for (DebugLine line : debugLines) {
+            long age = now - line.bornMs;
+            float fade = age > DEBUG_LINE_LIFETIME_MS - DEBUG_LINE_FADE_MS
+                    ? Math.max(0f, (DEBUG_LINE_LIFETIME_MS - age) / (float) DEBUG_LINE_FADE_MS) : 1f;
+            int alpha = Math.max(4, Math.round(fade * 255));
+            int color = (alpha << 24) | (line.color & 0xFFFFFF);
+            gui.drawString(font, line.text, x, y, color, true); // drop shadow for readability
+            y += step;
         }
     }
 

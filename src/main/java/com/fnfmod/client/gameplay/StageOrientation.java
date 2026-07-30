@@ -43,6 +43,11 @@ public final class StageOrientation {
         return facing;
     }
 
+    /** Whether a facing has been captured this song (vs. the north default). */
+    public static boolean isCaptured() {
+        return captured;
+    }
+
     /**
      * The cached facing, capturing it from the block on first use if it has not
      * been set yet and the machine chunk is loaded. Once cached, the block is

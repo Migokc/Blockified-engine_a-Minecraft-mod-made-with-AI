@@ -94,6 +94,18 @@ public final class GameplayCamera {
     private static double freePitch, freeYaw, freeRoll;
     /** Free-camera zoom offset, matching a Camera Zoom event's amount (-1..0.9). */
     private static double freeZoom;
+    // Player position in the same stage frame as the free offset, captured at
+    // free-cam start. Chunks load around the player (which a tween/tp may have
+    // moved far from the machine), so the loaded-chunk clamp is measured from
+    // here, not from the anchor. The world is frozen during free-cam, so this
+    // stays valid for the whole session.
+    private static double playerFreeX, playerFreeY, playerFreeZ;
+    // Stage-camera basis (world unit vectors) captured at free-cam start. Fixed
+    // for the song, this is the exact basis freeX/Y/Z and a machine-frame Camera
+    // Follow Pos use, so the copied event's values are computed against it.
+    private static Vec3 stageRightWorld = new Vec3(1, 0, 0);
+    private static Vec3 stageUpWorld = new Vec3(0, 1, 0);
+    private static Vec3 stageForwardWorld = new Vec3(0, 0, 1);
 
     public static void beginFreeCam() {
         freeCamEngaged = true;
@@ -121,6 +133,16 @@ public final class GameplayCamera {
         freeX = delta.x * rx + delta.y * ry + delta.z * rz;
         freeY = delta.x * ux + delta.y * uy + delta.z * uz;
         freeZ = delta.x * fx + delta.y * fy + delta.z * fz;
+        // The player (chunk-loading anchor) in the same frame, for the clamp.
+        Vec3 player = cameraEntityPos == null ? anchor : cameraEntityPos.get();
+        if (player == null) player = anchor;
+        Vec3 pd = player.subtract(anchor);
+        playerFreeX = pd.x * rx + pd.y * ry + pd.z * rz;
+        playerFreeY = pd.x * ux + pd.y * uy + pd.z * uz;
+        playerFreeZ = pd.x * fx + pd.y * fy + pd.z * fz;
+        stageRightWorld = new Vec3(rx, ry, rz);
+        stageUpWorld = new Vec3(ux, uy, uz);
+        stageForwardWorld = new Vec3(fx, fy, fz);
         // Rotation is applied additively (Camera Rotation 3D semantics), so start
         // from the active rotation-event offset, not the absolute camera angles.
         updateRotationEvent(GameplayClock.now());
@@ -138,6 +160,55 @@ public final class GameplayCamera {
         freeX += dx; freeY += dy; freeZ += dz;
     }
 
+    /** The free camera's current world position, reconstructed from its offset. */
+    public static Vec3 freeCamWorldPos() {
+        return anchor.add(stageRightWorld.scale(freeX))
+                .add(stageUpWorld.scale(freeY))
+                .add(stageForwardWorld.scale(freeZ));
+    }
+
+    /** The character the section focus is currently on (for an attached Follow Pos). */
+    public static Vec3 focusWorldPos() {
+        Supplier<Vec3> supplier = focusPlayer ? playerSidePos : opponentSidePos;
+        Vec3 pos = supplier == null ? null : supplier.get();
+        return pos == null ? anchor : pos;
+    }
+
+    /**
+     * Camera Follow Pos X/Y/Z that reproduce the free camera's current position
+     * under the chosen Movement (override = fixed at the anchor, attached = offset
+     * from the focused character) and Frame (machine = the fixed stage basis,
+     * camera = the live camera basis). The camera never moves; only the value
+     * representation changes, so switching options is jump-free on playback.
+     */
+    public static double[] followPosValues(boolean override, boolean cameraFrame,
+                                           Vector3f camLeft, Vector3f camUp, Vector3f camLook) {
+        Vec3 cam = freeCamWorldPos();
+        Vec3 origin = override ? anchor : focusWorldPos();
+        if (!override && camLeft != null) {
+            // Default Follow Pos sits at focus + the stage's base camera framing,
+            // then adds the event offset. Fold the framing into the origin so the
+            // decomposed offset reproduces the free-cam spot exactly on playback.
+            double frameX = focusPlayer ? playerBaseX + pNudgeX : oppBaseX + oNudgeX;
+            double frameY = focusPlayer ? playerBaseY + pNudgeY : oppBaseY + oNudgeY;
+            Vec3 screenRight = new Vec3(-camLeft.x(), -camLeft.y(), -camLeft.z());
+            Vec3 screenUp = new Vec3(camUp.x(), camUp.y(), camUp.z());
+            origin = origin.add(screenRight.scale(frameX)).add(screenUp.scale(frameY));
+        }
+        Vec3 d = cam.subtract(origin);
+        Vec3 right, up, forward;
+        if (cameraFrame && camLeft != null) {
+            right = new Vec3(-camLeft.x(), -camLeft.y(), -camLeft.z());
+            up = new Vec3(camUp.x(), camUp.y(), camUp.z());
+            forward = new Vec3(camLook.x(), camLook.y(), camLook.z());
+        } else {
+            right = stageRightWorld;
+            up = stageUpWorld;
+            forward = stageForwardWorld;
+        }
+        return new double[]{ d.dot(right), d.dot(up), d.dot(forward) };
+    }
+
     /**
      * Keeps the free camera inside loaded terrain. The offset is measured from
      * the anchor (near the player, around which chunks load), so limiting the
@@ -146,13 +217,17 @@ public final class GameplayCamera {
      */
     public static void clampFreeCamToLoaded(double maxHorizontal, double maxVertical) {
         if (!freeCamEngaged) return;
-        double horizontal = Math.sqrt(freeX * freeX + freeZ * freeZ);
+        // Measure from the player (around whom chunks load), not the anchor: a
+        // tween/tp can leave the machine far from the loaded region.
+        double dx = freeX - playerFreeX;
+        double dz = freeZ - playerFreeZ;
+        double horizontal = Math.sqrt(dx * dx + dz * dz);
         if (horizontal > maxHorizontal && horizontal > 0) {
             double scale = maxHorizontal / horizontal;
-            freeX *= scale;
-            freeZ *= scale;
+            freeX = playerFreeX + dx * scale;
+            freeZ = playerFreeZ + dz * scale;
         }
-        freeY = Math.max(-maxVertical, Math.min(maxVertical, freeY));
+        freeY = Math.max(playerFreeY - maxVertical, Math.min(playerFreeY + maxVertical, freeY));
     }
 
     /** Adds to the free camera's look; pitch clamps to avoid gimbal flips. */

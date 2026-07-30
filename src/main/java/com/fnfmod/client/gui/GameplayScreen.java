@@ -45,6 +45,7 @@ import com.fnfmod.client.render.NoteStyle;
 import com.fnfmod.client.render.HudLayerOrder;
 import com.fnfmod.client.render.WarningFlag;
 import com.fnfmod.client.render.PsychCanvas;
+import com.fnfmod.client.render.NonFnfHudState;
 import com.fnfmod.client.render.PsychHudState;
 import com.fnfmod.client.render.PsychNoteTextureCache;
 import com.fnfmod.net.FnfPayloads;
@@ -182,6 +183,8 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     private int accuracyCount;
     private float health = 1.0f;
     private final PsychHudState fnfHud;
+    /** Lua-controllable state for the non-FNF HUD styles (bar + score/miss text). */
+    private final NonFnfHudState textHud = new NonFnfHudState();
 
     // input / strums
     private final boolean[] laneHeld = new boolean[4];
@@ -254,6 +257,10 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     private long freeCamLastMoveNano;
     private String freeCamMessage = "";
     private long freeCamMessageUntil;
+    // Camera Follow Pos options for the copied shot. Override = fixed at the
+    // anchor; otherwise attached to the focused character. Machine vs camera frame.
+    private boolean freeCamOverride = true;
+    private boolean freeCamCameraFrame;
     // Where the player stood before an editor playtest teleported them to the
     // machine stage, restored when the playtest returns to the editor.
     private Vec3 editorReturnPos;
@@ -310,9 +317,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         this.partnerName = partnerName == null ? "" : partnerName;
         this.partnerAnimSet = partnerAnimSet == null || partnerAnimSet.isEmpty()
                 ? CharacterAnimations.DEFAULT_SET : partnerAnimSet;
-        this.myAnimSet = ClientOptions.get().animationSet;
         this.initialPartnerAnimSet = this.partnerAnimSet;
-        this.initialMyAnimSet = this.myAnimSet;
         this.duet = partnerId != null;
         this.startAtEpochMs = startAtEpochMs;
         this.conductor = new Conductor(chart);
@@ -325,6 +330,19 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         this.playbackPolicy = new PlaybackPolicy(ClientSession.playbackMode, ClientSession.songAssets);
         CharacterAnimations.useSongFolder(playbackPolicy.songAssets() && runtimeSongEntry != null
                 ? runtimeSongEntry.animationRoot() : null, chart.player1, chart.player2);
+        // A full mod pack defines its performers through the chart's player IDs,
+        // not the shared global animation-set option (which stays "none" unless the
+        // player picked a config/fnfmod/animations character). Use the chart
+        // character so the mod's own bundled character — and its sing states and
+        // Change Character events — actually resolve instead of "none".
+        String resolvedAnimSet = ClientOptions.get().animationSet;
+        String localCharacter = myChartSideIsPlayer ? chart.player1 : chart.player2;
+        if (playbackPolicy.songAssets() && runtimeSongEntry != null
+                && localCharacter != null && !localCharacter.isBlank()) {
+            resolvedAnimSet = CharacterAnimations.modSet(localCharacter);
+        }
+        this.myAnimSet = resolvedAnimSet;
+        this.initialMyAnimSet = resolvedAnimSet;
         this.assetResolver = new PsychAssetResolver(runtimeSongFolder, runtimeSongEntry, playbackPolicy, chart.stage);
         this.customNoteTextures = new PsychNoteTextureCache(
                 assetResolver.customNoteRoots(),
@@ -492,15 +510,10 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         StageChunkLoader.load(machinePos, Math.max(3, Math.min(12, RenderDistanceControl.current())));
 
         // stage layout is derived from the machine block's facing (same math as
-        // the server teleport). Capture it now, while the machine chunk is loaded,
-        // and reuse it all song: a performer tweened past the machine's view
-        // distance unloads its chunk, and re-reading would snap the axes to north.
-        Direction facing = Direction.NORTH;
-        var state = mc.level.getBlockState(machinePos);
-        if (state.hasProperty(FunkinMachineBlock.FACING)) {
-            facing = state.getValue(FunkinMachineBlock.FACING);
-        }
-        StageOrientation.set(facing);
+        // the server teleport). Reuse the cached facing when it is already known
+        // (e.g. a restart, where the player may currently be far and the machine
+        // chunk unloaded), otherwise read it now while the chunk is loaded.
+        Direction facing = StageOrientation.facingOr(mc.level, machinePos);
         Direction right = facing.getCounterClockWise();
         double cx = machinePos.getX() + 0.5 + facing.getStepX() * 2.0;
         double cz = machinePos.getZ() + 0.5 + facing.getStepZ() * 2.0;
@@ -523,6 +536,14 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                 editorReturnPos = mc.player.position();
                 editorReturnYaw = mc.player.getYRot();
                 editorReturnPitch = mc.player.getXRot();
+            } else {
+                // Restart: return to the pre-song spot first (a known-loaded place
+                // near the machine), exactly like starting the song again, then the
+                // stage teleport below immediately moves onto the mark. This keeps a
+                // song the player wandered far from restarting on the correct spot.
+                mc.player.setPos(editorReturnPos.x, editorReturnPos.y, editorReturnPos.z);
+                editorServerTeleport(editorReturnPos.x, editorReturnPos.y, editorReturnPos.z,
+                        editorReturnYaw);
             }
             mc.player.setPos(playerSpot.x, playerSpot.y, playerSpot.z);
             mc.player.setYRot(yaw);
@@ -2300,6 +2321,9 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                 copyFreeCamShot();
                 return true;
             }
+            // M cycles Follow Pos Movement (override/attached); F cycles the Frame.
+            if (keyCode == GLFW.GLFW_KEY_M) { freeCamOverride = !freeCamOverride; return true; }
+            if (keyCode == GLFW.GLFW_KEY_F) { freeCamCameraFrame = !freeCamCameraFrame; return true; }
             return true; // movement uses polled keys; swallow the rest
         }
         if (editorPreview && (keyCode == GLFW.GLFW_KEY_F12 || keyCode == GLFW.GLFW_KEY_ESCAPE)) {
@@ -2529,18 +2553,22 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     }
 
     private void copyFreeCamShot() {
-        double bx = round2(GameplayCamera.freeX());
-        double by = round2(GameplayCamera.freeY());
-        double bz = round2(GameplayCamera.freeZ());
+        double[] follow = freeCamFollowValues();
+        double bx = round2(follow[0]);
+        double by = round2(follow[1]);
+        double bz = round2(follow[2]);
         double pitch = round2(GameplayCamera.freePitch());
         double yaw = round2(GameplayCamera.freeYaw());
         double roll = round2(GameplayCamera.freeRoll());
         double zoom = round2(GameplayCamera.freeZoom());
 
-        // Camera Follow Pos: extended 3D override in the machine frame reproduces
-        // the exact camera position (v5 override, v6 machine default).
+        // Camera Follow Pos: extended 3D in the chosen Movement/Frame. v5 override
+        // fixes it at the anchor; empty attaches it to the focused character. v6
+        // camera aligns to the camera rotation; empty uses the machine facing.
+        String movement = freeCamOverride ? "override" : "";
+        String frame = freeCamCameraFrame ? "camera" : "";
         SongChart.Event pos = new SongChart.Event(0, ChartEventTypes.CAMERA_FOLLOW_POS,
-                num(bx), num(by), num(bz), "", "override", "", false);
+                num(bx), num(by), num(bz), "", movement, frame, false);
         // Camera Rotation 3D: pitch, yaw, roll (v4 = ease, left empty).
         SongChart.Event rot = new SongChart.Event(0, ChartEventTypes.CAMERA_ROTATION_3D,
                 num(pitch), num(yaw), num(roll), "", "", false);
@@ -2550,6 +2578,13 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         CameraShotClipboard.set(java.util.List.of(pos, rot, cameraZoom));
         freeCamMessage = "Copied camera shot — paste in the chart editor";
         freeCamMessageUntil = System.currentTimeMillis() + 3000;
+    }
+
+    /** Camera Follow Pos X/Y/Z for the current Movement/Frame options. */
+    private double[] freeCamFollowValues() {
+        Camera cam = minecraft.gameRenderer.getMainCamera();
+        return GameplayCamera.followPosValues(freeCamOverride, freeCamCameraFrame,
+                cam.getLeftVector(), cam.getUpVector(), cam.getLookVector());
     }
 
     private static double round2(double value) {
@@ -2660,10 +2695,16 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
      * carried over into the next attempt. Rebuilding cannot miss anything.
      */
     private void restart() {
+        // The machine cannot rotate between runs, so keep the captured facing
+        // across the teardown: the new screen's stage teleport then uses it even
+        // if the player wandered far and the machine chunk is currently unloaded.
+        Direction restartFacing = StageOrientation.facing();
+        boolean facingKnown = StageOrientation.isCaptured();
         // Drop every per-run resource. The audio player is kept because the new
         // screen reuses this instance, and marking the run disposed here stops
         // removed() from tearing the replacement's camera down behind it.
         disposeResources(false);
+        if (facingKnown) StageOrientation.set(restartFacing);
         // Performer tweens move the real entities, and the new screen cannot know
         // where they started. Put them back on their marks before it takes over.
         resetPerformer(true, playerPerformerTween);
@@ -3267,11 +3308,17 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                 };
             }
         }
-        if ("fnf".equals(effectiveHudStyle())) {
+        String hudStyle = effectiveHudStyle();
+        if ("fnf".equals(hudStyle)) {
             if (path.equals("healthBar.leftBar.color")) return fnfOpponentBarColor();
             if (path.equals("healthBar.rightBar.color")) return fnfPlayerBarColor();
             Object hudValue = fnfHud.property(path,
                     Math.max(0, Math.min(100, health * 50.0)), fnfScoreText());
+            if (hudValue != null) return hudValue;
+        } else {
+            Object hudValue = textHud.property(path, defaultHudBarX(), defaultHudBarY(),
+                    defaultHudScoreX(), defaultHudScoreY(), TEXT_HUD_DEFAULT_COLOR,
+                    generatedHudText(hudStyle));
             if (hudValue != null) return hudValue;
         }
         return switch (path) {
@@ -3374,6 +3421,8 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                 return true;
             }
             if (fnfHud.setProperty(path, value)) return true;
+        } else if (textHud.setProperty(path, value)) {
+            return true;
         }
         switch (path) {
             case "health" -> psychLuaSetHealth(number);
@@ -3706,6 +3755,8 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         // Editor playtest orientation aid: a Blender-style world axis gizmo.
         if (editorPlaytest && ClientOptions.get().editorShowAxisGizmo) renderAxisGizmo(gui);
         if (freeCam) renderFreeCamOverlay(gui);
+        // Psych debugPrint trace lines ride on top of everything, top-left.
+        if (luaRuntime != null) luaRuntime.renderDebugOverlay(gui);
     }
 
     /** Free-camera HUD: the current shot values plus the controls, top-left. */
@@ -3726,15 +3777,20 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                 x, y, 0xFFBFC7D5);
         y += 11;
         drawOutlined(gui, "Shift = slower · Ctrl = faster value changes", x, y, 0xFFBFC7D5);
+        y += 11;
+        drawOutlined(gui, "M = movement (override/attached) · F = frame (machine/camera)",
+                x, y, 0xFFBFC7D5);
         y += 14;
 
         if (showReadout) {
-            drawOutlined(gui, "Camera Follow Pos (override, machine frame):",
+            String movement = freeCamOverride ? "override" : "attached to focus";
+            String frame = freeCamCameraFrame ? "camera" : "machine";
+            double[] follow = freeCamFollowValues();
+            drawOutlined(gui, "Camera Follow Pos (" + movement + ", " + frame + " frame):",
                     x, y, 0xFF7ABF4A);
             y += 11;
             drawOutlined(gui, String.format(java.util.Locale.ROOT,
-                    "  X %.2f   Y %.2f   Z %.2f  (blocks)",
-                    GameplayCamera.freeX(), GameplayCamera.freeY(), GameplayCamera.freeZ()),
+                    "  X %.2f   Y %.2f   Z %.2f  (blocks)", follow[0], follow[1], follow[2]),
                     x, y, 0xFFE0E0E0);
             y += 12;
             drawOutlined(gui, "Camera Rotation 3D:", x, y, 0xFF4A8FE0);
@@ -4002,36 +4058,84 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
 
     private void outlinedCentered(GuiGraphics gui, String line, int cx, int y, int color) {
         int tx = cx - font.width(line) / 2;
-        gui.drawString(font, line, tx + 1, y, 0, false);
-        gui.drawString(font, line, tx - 1, y, 0, false);
-        gui.drawString(font, line, tx, y + 1, 0, false);
-        gui.drawString(font, line, tx, y - 1, 0, false);
+        // Black outline that carries the text's alpha. Using a bare 0 makes the
+        // font force it fully opaque, so a faded score used to sit on a solid
+        // black outline and read as black. When no alpha byte is given (opaque
+        // callers), this stays 0 and the font keeps the outline opaque as before.
+        int outline = color & 0xFF000000;
+        gui.drawString(font, line, tx + 1, y, outline, false);
+        gui.drawString(font, line, tx - 1, y, outline, false);
+        gui.drawString(font, line, tx, y + 1, outline, false);
+        gui.drawString(font, line, tx, y - 1, outline, false);
         gui.drawString(font, line, tx, y, color, false);
+    }
+
+    private static final int TEXT_HUD_DEFAULT_COLOR = 0x80FF20;
+
+    // The non-FNF HUD renders in raw screen pixels, but Lua sprites/text use the
+    // shared 1280x720 canvas (PsychCanvas, letterboxed). So healthBar/scoreTxt Lua
+    // coordinates are exposed in that same canvas space and converted to screen
+    // only when drawing: a HUD element and a Lua object at the same coordinate
+    // then coincide. The default round-trips to its original screen spot exactly.
+    private double canvasScale() { return Math.min(width / 1280.0, height / 720.0); }
+    private double canvasToScreenX(double cx) { return (width - 1280 * canvasScale()) * 0.5 + cx * canvasScale(); }
+    private double canvasToScreenY(double cy) { return (height - 720 * canvasScale()) * 0.5 + cy * canvasScale(); }
+    private double screenToCanvasX(double sx) { return (sx - (width - 1280 * canvasScale()) * 0.5) / canvasScale(); }
+    private double screenToCanvasY(double sy) { return (sy - (height - 720 * canvasScale()) * 0.5) / canvasScale(); }
+
+    private double defaultHudBarX() { return screenToCanvasX(hudLayoutWidth() / 2.0 - 91); }
+    private double defaultHudBarY() { return screenToCanvasY(xpBarY()); }
+    private double defaultHudScoreX() { return screenToCanvasX(hudLayoutWidth() / 2.0); }
+    private double defaultHudScoreY() { return screenToCanvasY(numberY(xpBarY())); }
+
+    /** The generated text for the current non-FNF style (score line, or miss count for vanilla). */
+    private String generatedHudText(String style) {
+        return "vanilla".equals(style) ? String.valueOf(misses) : scoreLine(style);
     }
 
     /** default / abbreviated / numbers: XP-style bar + centered green outlined text. */
     private void renderTextHud(GuiGraphics gui, String style) {
-        com.mojang.blaze3d.systems.RenderSystem.enableBlend();
-        int layoutWidth = hudLayoutWidth();
-        int barX = layoutWidth / 2 - 91;
-        int barY = xpBarY();
-        gui.blitSprite(XP_BAR_BACKGROUND, barX, barY, 182, 5);
-        int fill = (int) (Math.min(1f, health / 2f) * 183.0f);
-        if (fill > 0) gui.blitSprite(XP_BAR_PROGRESS, 182, 5, 0, 0, barX, barY, fill, 5);
-        outlinedCentered(gui, scoreLine(style), layoutWidth / 2, numberY(barY), 0x80FF20);
+        renderXpHud(gui, style, Math.min(1f, health / 2f), generatedHudText(style));
     }
 
     /** Vanilla: Minecraft renders its real hearts/food layers; Blockified supplies the miss XP bar. */
     private void renderVanillaHud(GuiGraphics gui) {
+        renderXpHud(gui, "vanilla", (misses % 10) / 10.0f, generatedHudText("vanilla"));
+    }
+
+    /**
+     * Shared XP-style bar + outlined text for the non-FNF HUD styles, honouring
+     * the Lua-controlled {@link #textHud} state (position, visibility, alpha, scale,
+     * colour and text override).
+     */
+    private void renderXpHud(GuiGraphics gui, String style, float fillFraction, String generated) {
         com.mojang.blaze3d.systems.RenderSystem.enableBlend();
-        int layoutWidth = hudLayoutWidth();
-        // XP bar (misses) with the miss count as the level number
-        int barX = layoutWidth / 2 - 91;
-        int barY = xpBarY();
-        gui.blitSprite(XP_BAR_BACKGROUND, barX, barY, 182, 5);
-        int fill = (int) ((misses % 10) / 10.0f * 183.0f);
-        if (fill > 0) gui.blitSprite(XP_BAR_PROGRESS, 182, 5, 0, 0, barX, barY, fill, 5);
-        outlinedCentered(gui, String.valueOf(misses), layoutWidth / 2, numberY(barY), 0x80FF20);
+
+        if (textHud.barVisible && textHud.barAlpha > 0) {
+            double barX = canvasToScreenX(textHud.barX(defaultHudBarX()));
+            double barY = canvasToScreenY(textHud.barY(defaultHudBarY()));
+            gui.pose().pushPose();
+            gui.pose().translate(barX, barY, 0);
+            gui.pose().scale((float) textHud.barScale, (float) textHud.barScale, 1);
+            gui.setColor(1f, 1f, 1f, (float) textHud.barAlpha);
+            gui.blitSprite(XP_BAR_BACKGROUND, 0, 0, 182, 5);
+            int fill = (int) (Math.max(0f, Math.min(1f, fillFraction)) * 183.0f);
+            if (fill > 0) gui.blitSprite(XP_BAR_PROGRESS, 182, 5, 0, 0, 0, 0, fill, 5);
+            gui.setColor(1f, 1f, 1f, 1f);
+            gui.pose().popPose();
+        }
+
+        if (textHud.scoreVisible && textHud.scoreAlpha > 0) {
+            double scoreX = canvasToScreenX(textHud.scoreX(defaultHudScoreX()));
+            double scoreY = canvasToScreenY(textHud.scoreY(defaultHudScoreY()));
+            int alpha = (int) Math.round(Math.max(0, Math.min(1, textHud.scoreAlpha)) * 255);
+            int color = (alpha << 24) | (textHud.scoreColor(TEXT_HUD_DEFAULT_COLOR) & 0xFFFFFF);
+            gui.pose().pushPose();
+            gui.pose().translate(scoreX, scoreY, 0);
+            gui.pose().scale((float) textHud.scoreScale, (float) textHud.scoreScale, 1);
+            outlinedCentered(gui, textHud.scoreText(generated), 0, 0, color);
+            gui.pose().popPose();
+        }
     }
 
     /** fnf: Psych-style health bar with icons + score text (all vanilla GUI hidden). */

@@ -2,6 +2,7 @@ package com.fnfmod.client.render;
 
 import com.mojang.blaze3d.vertex.PoseStack;
 import net.minecraft.client.gui.Font;
+import net.minecraft.client.renderer.LightTexture;
 import net.minecraft.client.renderer.MultiBufferSource;
 import net.minecraft.network.chat.Component;
 import net.minecraft.util.FormattedCharSequence;
@@ -25,11 +26,16 @@ final class LuaWorldTextRenderer {
 
         int alpha = Math.max(0, Math.min(255, (int) Math.round(text.alpha() * 255)));
         int color = text.color() & 0x00FFFFFF | alpha << 24;
+        // Text labels stay readable regardless of the world light at their spot
+        // (a dark/underwater position would otherwise render the glyphs black and
+        // make the text look like it never appeared). NORMAL beats POLYGON_OFFSET
+        // here: the offset mode can push thin glyph quads behind nearby geometry.
+        int drawLight = LightTexture.FULL_BRIGHT;
         float y = -lines.size() * LINE_HEIGHT * 0.5f;
         for (FormattedCharSequence line : lines) {
             float x = -font.width(line) * 0.5f;
             font.drawInBatch(line, x, y, color, false, poseStack.last().pose(), buffers,
-                    Font.DisplayMode.POLYGON_OFFSET, 0, light);
+                    Font.DisplayMode.NORMAL, 0, drawLight);
             y += LINE_HEIGHT;
         }
     }

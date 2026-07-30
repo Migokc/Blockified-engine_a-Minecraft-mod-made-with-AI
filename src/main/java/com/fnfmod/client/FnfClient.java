@@ -60,6 +60,19 @@ public final class FnfClient {
             ClientSession.reset();
         }
 
+        /** Add a "Mod Worlds" button to the singleplayer world-selection screen. */
+        @SubscribeEvent
+        public static void onScreenInit(net.neoforged.neoforge.client.event.ScreenEvent.Init.Post event) {
+            if (!(event.getScreen() instanceof net.minecraft.client.gui.screens.worldselection.SelectWorldScreen select)) {
+                return;
+            }
+            event.addListener(net.minecraft.client.gui.components.Button.builder(
+                            Component.literal("Mod Worlds"),
+                            b -> Minecraft.getInstance().setScreen(
+                                    new com.fnfmod.client.gui.ModWorldSelectScreen(select)))
+                    .bounds(6, 6, 90, 20).build());
+        }
+
         /** FNF-style beat zoom: pinch the FOV while the gameplay camera is active. */
         @SubscribeEvent
         public static void onComputeFov(ViewportEvent.ComputeFov event) {

@@ -70,8 +70,12 @@ final class BbsFsAnimationBridge {
     private static Field linkPathField;
     private static Method getModels;
     private static Method modelManagerGetModel;
+    private static Method modelManagerLoadModel;
+    private static Field modelManagerModelsField;
     private static final java.util.Set<String> REGISTERED_PACKS = new java.util.HashSet<>();
     private static final Map<String, Object> BUNDLED_FORMS = new HashMap<>();
+    /** Model ids referenced by each bundled form, so a cache hit can still ensure they are loaded. */
+    private static final Map<String, java.util.List<String>> BUNDLED_MODEL_IDS = new HashMap<>();
     private static boolean bundlingAvailable;
 
     private BbsFsAnimationBridge() {}
@@ -367,9 +371,16 @@ final class BbsFsAnimationBridge {
                 Class<?> modelManagerClass = Class.forName("mchorse.bbs_mod.cubic.model.ModelManager");
                 getModels = findMethod(bbsClientClass, "getModels", true, 0);
                 modelManagerGetModel = modelManagerClass.getMethod("getModel", String.class);
+                // loadModel is synchronous; getModel only queues an async load on a
+                // background thread whose queue is unsynchronized and races its own
+                // shutdown, so a model queued as the thread exits is never loaded.
+                modelManagerLoadModel = modelManagerClass.getMethod("loadModel", String.class);
+                modelManagerModelsField = modelManagerClass.getField("models");
             } catch (Throwable ignored) {
                 getModels = null;
                 modelManagerGetModel = null;
+                modelManagerLoadModel = null;
+                modelManagerModelsField = null;
             }
             bundlingAvailable = true;
         } catch (Throwable error) {
@@ -403,14 +414,21 @@ final class BbsFsAnimationBridge {
 
     static synchronized void clearBundledForms() {
         BUNDLED_FORMS.clear();
+        BUNDLED_MODEL_IDS.clear();
     }
 
     private static Object loadBundledForm(java.nio.file.Path formJson) {
         if (!bundlingAvailable || formJson == null) return null;
         String key = bundledKey(formJson);
-        if (BUNDLED_FORMS.containsKey(key)) return BUNDLED_FORMS.get(key);
+        if (BUNDLED_FORMS.containsKey(key)) {
+            // Cache hit (e.g. a Change Character re-applying a form): still make
+            // sure its models are loaded, since BBS may have dropped them since.
+            ensureModelsLoaded(BUNDLED_MODEL_IDS.get(key));
+            return BUNDLED_FORMS.get(key);
+        }
 
         Object form = null;
+        java.util.List<String> modelIds = java.util.List.of();
         try {
             if (java.nio.file.Files.isRegularFile(formJson)) {
                 registerAssetPack(formJson.getParent());
@@ -418,31 +436,52 @@ final class BbsFsAnimationBridge {
                 Object data = dataFromString.invoke(null, json);
                 if (data != null) {
                     form = formFromData.invoke(null, data);
-                    preloadModels(json);
+                    modelIds = modelIds(json);
+                    ensureModelsLoaded(modelIds);
                 }
             }
         } catch (Throwable error) {
             warnOnce("Failed to load a bundled BBS form", error);
         }
         BUNDLED_FORMS.put(key, form);
+        BUNDLED_MODEL_IDS.put(key, modelIds);
         return form;
     }
 
-    /** Warms BBS's model cache so the bundled model renders immediately once morphed. */
-    private static void preloadModels(String json) {
-        if (getModels == null || modelManagerGetModel == null) return;
+    /** Model ids referenced by a form's JSON. */
+    private static java.util.List<String> modelIds(String json) {
+        java.util.LinkedHashSet<String> ids = new java.util.LinkedHashSet<>();
+        java.util.regex.Matcher matcher = java.util.regex.Pattern
+                .compile("\"model\"\\s*:\\s*\"([A-Za-z0-9_./\\-]+)\"").matcher(json);
+        while (matcher.find()) ids.add(matcher.group(1));
+        return new java.util.ArrayList<>(ids);
+    }
+
+    /**
+     * Loads the given bundled models up front and synchronously, so the character
+     * shows its real model the instant it is morphed. BBS's own {@code getModel}
+     * defers to a background loader that can drop a model (unsynchronized queue
+     * racing its thread shutdown), which is why bundled models loaded only some of
+     * the time; {@code loadModel} does it here on the spot instead. Safe to call on
+     * every apply — already-loaded models are skipped.
+     */
+    private static void ensureModelsLoaded(java.util.List<String> modelIds) {
+        if (getModels == null || modelManagerLoadModel == null || modelIds == null || modelIds.isEmpty()) {
+            return;
+        }
         try {
-            Object models = getModels.invoke(null);
-            if (models == null) return;
-            java.util.regex.Matcher matcher = java.util.regex.Pattern
-                    .compile("\"model\"\\s*:\\s*\"([A-Za-z0-9_./\\-]+)\"").matcher(json);
-            java.util.Set<String> seen = new java.util.HashSet<>();
-            while (matcher.find()) {
-                String id = matcher.group(1);
-                if (seen.add(id)) modelManagerGetModel.invoke(models, id);
+            Object manager = getModels.invoke(null);
+            if (manager == null) return;
+            Map<?, ?> loaded = modelManagerModelsField == null ? null
+                    : (Map<?, ?>) modelManagerModelsField.get(manager);
+            for (String id : modelIds) {
+                // Skip only when a real model is already cached; a cached null means
+                // a previous async attempt was dropped, so force the load again.
+                if (loaded != null && loaded.get(id) != null) continue;
+                modelManagerLoadModel.invoke(manager, id);
             }
         } catch (Throwable ignored) {
-            // Preloading is best-effort; normal lazy loading still applies.
+            // Best-effort; normal lazy loading still applies.
         }
     }
 

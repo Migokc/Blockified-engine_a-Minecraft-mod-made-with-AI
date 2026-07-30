@@ -23,7 +23,8 @@ public final class ModTemplateService {
             "sounds",
             "stages",
             "videos",
-            "weeks"
+            "weeks",
+            "worlds"               // Blockified bundled Minecraft worlds (one save folder each)
     );
 
     private ModTemplateService() {}

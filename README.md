@@ -2,7 +2,19 @@
 
 A feature-full Friday Night Funkin' engine inside of Minecraft — **NeoForge 1.21.1**.
 
-Current release: **2.0.5bbs**.
+Current release: **2.0.7bbs**.
+
+### 2.0.7bbs highlights
+
+- Bundled Minecraft worlds under each mod's `worlds/` folder, selectable through
+  a new **Mod Worlds** button and played in place so progress stays with the pack.
+- Reliable synchronous loading for bundled BBS models, including cached forms
+  and character changes.
+- Corrected editor free-camera shot coordinates, loaded-area limits, restart
+  positioning, and selectable attached/override plus machine/camera frames.
+- Psych Lua control for non-FNF health bars and score text, plus fading
+  `debugPrint` overlays.
+- Full-bright Lua world text and improved bundled-mod character selection.
 
 ### 2.0.5bbs highlights
 
