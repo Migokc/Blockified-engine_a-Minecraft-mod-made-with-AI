@@ -11,6 +11,9 @@ import net.minecraft.client.renderer.texture.DynamicTexture;
 import net.minecraft.resources.ResourceLocation;
 
 import java.nio.file.Path;
+import java.util.Collections;
+import java.util.IdentityHashMap;
+import java.util.Set;
 
 /**
  * Renders notes/receptors/holds. If config/fnfmod/skins/default/NOTE_assets.png
@@ -71,15 +74,7 @@ public final class NoteStyle {
     private static boolean holdsFromStrumAtlas;
     /** the note skin folder ships its own noteSplashes files */
     private static boolean skinOwnSplash;
-    /** per-skin size multipliers from skin.json */
-    private static float noteScale = 1f, receptorScale = 1f, holdWidthScale = 1f,
-            splashScale = 1f, holdCoverScale = 1f;
-    /** per-skin opacity multipliers from skin.json (default fully opaque) */
-    private static float noteAlpha = 1f, sustainAlpha = 1f, receptorAlpha = 1f,
-            splashAlpha = 1f, holdCoverAlpha = 1f;
-    /** per-part source-art-pixel offsets from skin.json, scaled with each sprite */
-    private static float noteX, noteY, receptorX, receptorY, sustainX, sustainY,
-            splashX, splashY, holdCoverX, holdCoverY;
+    private static NoteSkinConfig skinConfig = NoteSkinConfig.DEFAULT;
     /** external alpha multiplier for everything drawn (middlescroll opponent fade) */
     private static float extAlpha = 1f;
     private static float drawAlpha = 1f;
@@ -94,6 +89,11 @@ public final class NoteStyle {
     private static void applyAlpha(float skinAlpha) {
         drawAlpha = skinAlpha * extAlpha * missedFactor;
         SparrowAtlas.globalAlpha = drawAlpha;
+    }
+
+    /** Applies lane/script alpha and missed-note tint before an external Psych note atlas draw. */
+    public static void prepareCustomNoteDraw() {
+        applyAlpha(1f);
     }
 
     /** Gray + 30% translucent styling for a totally-missed long note. */
@@ -117,15 +117,38 @@ public final class NoteStyle {
     private NoteStyle() {}
 
     public static void reload() {
+        closeLoadedResources();
         loaded = false;
-        noteAtlas = null;
-        strumAtlas = null;
-        splashAtlas = null;
-        noteRGB = null;
-        strumRGB = null;
-        splashRGB = null;
-        holdRGB = null;
+        load();
+    }
+
+    private static void closeLoadedResources() {
+        Set<RGBSet> rgbSets = Collections.newSetFromMap(new IdentityHashMap<>());
+        Collections.addAll(rgbSets, noteRGB, strumRGB, splashRGB, holdRGB);
+        rgbSets.remove(null);
+        var textureManager = Minecraft.getInstance().getTextureManager();
+        for (RGBSet set : rgbSets) {
+            for (int lane = 0; lane < 4; lane++) {
+                if (set.id[lane] != null) textureManager.release(set.id[lane]);
+                else if (set.dyn[lane] != null) set.dyn[lane].close();
+                set.id[lane] = null;
+                set.dyn[lane] = null;
+                set.pixels[lane] = null;
+            }
+        }
+        noteRGB = strumRGB = splashRGB = holdRGB = null;
+
+        if (holdSheetTextureId != null) textureManager.release(holdSheetTextureId);
+        holdSheetTextureId = null;
         holdSheetImage = null;
+
+        Set<SparrowAtlas> atlases = Collections.newSetFromMap(new IdentityHashMap<>());
+        Collections.addAll(atlases, noteAtlas, strumAtlas, splashAtlas);
+        Collections.addAll(atlases, coverAtlases);
+        atlases.remove(null);
+        for (SparrowAtlas atlas : atlases) atlas.close();
+        noteAtlas = strumAtlas = splashAtlas = null;
+
         for (int i = 0; i < 4; i++) {
             holdPieces[i] = null;
             holdEnds[i] = null;
@@ -133,13 +156,13 @@ public final class NoteStyle {
             coverAnims[i] = null;
             coverEndAnims[i] = null;
         }
-        load();
     }
 
     /** Selectable skin folders (subfolders of config/fnfmod/skins containing NOTE_assets.png). */
     public static java.util.List<String> listSkins() {
         java.util.List<String> out = new java.util.ArrayList<>();
-        out.add("default");
+        out.add(com.fnfmod.client.ClientOptions.NOTE_SKIN_DEFAULT);
+        out.add(com.fnfmod.client.ClientOptions.NOTE_SKIN_NONE);
         try (var dirs = java.nio.file.Files.list(SongLibrary.skinsDir())) {
             dirs.filter(java.nio.file.Files::isDirectory)
                     .filter(d -> java.nio.file.Files.isRegularFile(d.resolve("NOTE_assets.png"))
@@ -148,7 +171,9 @@ public final class NoteStyle {
                     .map(d -> d.getFileName().toString())
                     .sorted()
                     .forEach(name -> {
-                        if (!out.contains(name)) out.add(name);
+                        if (!name.equalsIgnoreCase(com.fnfmod.client.ClientOptions.NOTE_SKIN_DEFAULT)
+                                && !name.equalsIgnoreCase(com.fnfmod.client.ClientOptions.NOTE_SKIN_NONE)
+                                && !out.contains(name)) out.add(name);
                     });
         } catch (Exception ignored) {}
         return out;
@@ -161,47 +186,26 @@ public final class NoteStyle {
             arrowTexture = registerGenerated("gen/arrow", makeArrow(false));
             arrowOutlineTexture = registerGenerated("gen/arrow_outline", makeArrow(true));
         }
-        Path skinDir = SongLibrary.skinsDir().resolve(com.fnfmod.client.ClientOptions.get().noteSkin);
-
-        // optional per-skin size/opacity/position values: skins/<name>/skin.json
-        noteScale = receptorScale = holdWidthScale = splashScale = holdCoverScale = 1f;
-        noteAlpha = sustainAlpha = receptorAlpha = splashAlpha = holdCoverAlpha = 1f;
-        noteX = noteY = receptorX = receptorY = sustainX = sustainY = 0f;
-        splashX = splashY = holdCoverX = holdCoverY = 0f;
-        Path skinCfg = skinDir.resolve("skin.json");
-        if (java.nio.file.Files.isRegularFile(skinCfg)) {
-            try {
-                var o = com.google.gson.JsonParser.parseString(java.nio.file.Files.readString(skinCfg)).getAsJsonObject();
-                noteScale = optF(o, "noteScale");
-                receptorScale = optF(o, "receptorScale");
-                holdWidthScale = optF(o, "holdWidthScale");
-                splashScale = optF(o, "splashScale");
-                holdCoverScale = optF(o, "holdCoverScale");
-                noteAlpha = optA(o, "noteAlpha");
-                sustainAlpha = optA(o, "sustainAlpha");
-                receptorAlpha = optA(o, "receptorAlpha");
-                splashAlpha = optA(o, "splashAlpha");
-                holdCoverAlpha = optA(o, "holdCoverAlpha");
-                noteX = optP(o, "noteX");
-                noteY = optP(o, "noteY");
-                receptorX = optP(o, "receptorX");
-                receptorY = optP(o, "receptorY");
-                sustainX = optP(o, "sustainX");
-                sustainY = optP(o, "sustainY");
-                splashX = optP(o, "splashX");
-                splashY = optP(o, "splashY");
-                holdCoverX = optP(o, "holdCoverX");
-                holdCoverY = optP(o, "holdCoverY");
-            } catch (Exception e) {
-                FnfMod.LOGGER.warn("Bad skin.json in {}: {}", skinDir, e.toString());
-            }
+        String selected = com.fnfmod.client.ClientOptions.get().noteSkin;
+        if (selected == null || selected.isBlank()) {
+            selected = com.fnfmod.client.ClientOptions.NOTE_SKIN_DEFAULT;
         }
+        if (selected.equalsIgnoreCase(com.fnfmod.client.ClientOptions.NOTE_SKIN_DEFAULT)
+                || selected.equalsIgnoreCase(com.fnfmod.client.ClientOptions.NOTE_SKIN_NONE)) {
+            loadProceduralSplashFallback();
+            return; // chart assets are handled per song; note art is intentionally procedural
+        }
+        Path skinDir = SongLibrary.skinsDir().resolve(selected);
+
+        skinConfig = NoteSkinConfig.load(skinDir);
 
         // classic single atlas (base game / Psych)
         SparrowAtlas classic = SparrowAtlas.load(skinDir.resolve("NOTE_assets.png"), skinDir.resolve("NOTE_assets.xml"));
         // V-Slice split atlases
-        SparrowAtlas vsNotes = SparrowAtlas.load(skinDir.resolve("notes.png"), skinDir.resolve("notes.xml"));
-        SparrowAtlas vsStrums = SparrowAtlas.load(skinDir.resolve("noteStrumline.png"), skinDir.resolve("noteStrumline.xml"));
+        SparrowAtlas vsNotes = classic == null
+                ? SparrowAtlas.load(skinDir.resolve("notes.png"), skinDir.resolve("notes.xml")) : null;
+        SparrowAtlas vsStrums = classic == null
+                ? SparrowAtlas.load(skinDir.resolve("noteStrumline.png"), skinDir.resolve("noteStrumline.xml")) : null;
         noteAtlas = classic != null ? classic : vsNotes;
         strumAtlas = classic != null ? classic : vsStrums;
         if (noteAtlas == null && strumAtlas == null) return;
@@ -311,6 +315,34 @@ public final class NoteStyle {
                 noteRGB != null && noteRGB.template ? ", RGB colorable" : "");
     }
 
+    /** Procedural note modes may still use the separately selected global splash atlas. */
+    @SuppressWarnings("unchecked")
+    private static void loadProceduralSplashFallback() {
+        String selected = com.fnfmod.client.ClientOptions.get().splashSkin;
+        if (selected == null || selected.isBlank()) return;
+        Path directory = SongLibrary.splashesDir();
+        splashAtlas = SparrowAtlas.load(directory.resolve(selected + ".png"),
+                directory.resolve(selected + ".xml"));
+        if (splashAtlas == null) return;
+        skinOwnSplash = false;
+        splashAnims = new java.util.List[4];
+        String[] colors = {"purple", "blue", "green", "red"};
+        String[] directions = {"left", "down", "up", "right"};
+        for (int lane = 0; lane < 4; lane++) {
+            java.util.List<String> variants = new java.util.ArrayList<>();
+            for (String animation : splashAtlas.animationNames()) {
+                String lower = animation.toLowerCase(java.util.Locale.ROOT);
+                if ((lower.contains("impact") || lower.contains("splash"))
+                        && (lower.contains(colors[lane]) || lower.contains(directions[lane]))) {
+                    variants.add(animation);
+                }
+            }
+            java.util.Collections.sort(variants);
+            splashAnims[lane] = variants;
+        }
+        splashRGB = makeRGBSet("splash", splashAtlas.image(), detectSplashTemplate(splashAtlas.image()));
+    }
+
     // ------------------------------------------------------------------ RGB note colors
 
     private static RGBSet makeRGBSet(String name, NativeImage src, Boolean templateOverride) {
@@ -386,7 +418,6 @@ public final class NoteStyle {
         if (dst == null || dst.getWidth() != set.src.getWidth() || dst.getHeight() != set.src.getHeight()) {
             dst = new NativeImage(set.src.getWidth(), set.src.getHeight(), true);
             set.pixels[lane] = dst;
-            if (set.dyn[lane] != null) set.dyn[lane].close();
             set.dyn[lane] = new net.minecraft.client.renderer.texture.DynamicTexture(dst);
             Minecraft.getInstance().getTextureManager().register(set.id[lane], set.dyn[lane]);
             Textures.smooth(set.dyn[lane]); // antialias recolored (RGB template) skin notes
@@ -459,35 +490,6 @@ public final class NoteStyle {
         return fallback;
     }
 
-    private static float optF(com.google.gson.JsonObject o, String key) {
-        try {
-            if (o.has(key) && o.get(key).isJsonPrimitive()) {
-                float v = o.get(key).getAsFloat();
-                if (v > 0.05f && v < 20f) return v;
-            }
-        } catch (Exception ignored) {}
-        return 1f;
-    }
-
-    private static float optA(com.google.gson.JsonObject o, String key) {
-        try {
-            if (o.has(key) && o.get(key).isJsonPrimitive()) {
-                return Math.max(0f, Math.min(1f, o.get(key).getAsFloat()));
-            }
-        } catch (Exception ignored) {}
-        return 1f;
-    }
-
-    private static float optP(com.google.gson.JsonObject o, String key) {
-        try {
-            if (o.has(key) && o.get(key).isJsonPrimitive()) {
-                float value = o.get(key).getAsFloat();
-                if (Float.isFinite(value)) return Math.max(-4096f, Math.min(4096f, value));
-            }
-        } catch (Exception ignored) {}
-        return 0f;
-    }
-
     private static HoldSprite toSprite(SparrowAtlas atlas, String anim) {
         if (atlas == null || anim == null) return null;
         SparrowAtlas.Frame f = atlas.frame(anim, 0);
@@ -497,13 +499,15 @@ public final class NoteStyle {
 
     /** source pixels of the V-Slice hold sheet, kept for RGB recoloring */
     private static NativeImage holdSheetImage;
+    private static ResourceLocation holdSheetTextureId;
 
     private static void loadVSliceHoldAssets(Path png) {
         holdSheetImage = null;
         try (java.io.InputStream in = java.nio.file.Files.newInputStream(png)) {
             NativeImage img = NativeImage.read(in);
-            holdSheetImage = img;
             ResourceLocation id = registerGenerated("gen/hold/" + System.nanoTime(), img, true);
+            holdSheetImage = img;
+            holdSheetTextureId = id;
             int colW = img.getWidth() / 8;
             if (colW <= 0) return;
             // layout is interleaved per color: [piece, end, piece, end, ...]
@@ -574,12 +578,13 @@ public final class NoteStyle {
      */
     private static void drawCoverFrame(GuiGraphics gui, int lane, SparrowAtlas.Frame f,
                                        float receptorX, float receptorY, float receptorSize) {
-        applyAlpha(holdCoverAlpha);
+        NoteSkinConfig.Part config = skinConfig.holdCover();
+        applyAlpha(config.alpha());
         float g = receptorSize / 104f;
-        float pixelScale = 0.7f * g * holdCoverScale;
+        float pixelScale = 0.7f * g * config.scale();
         coverAtlases[lane].drawScaled(gui, f,
-                receptorX - 12f * g + holdCoverX * pixelScale,
-                receptorY + 15.4f * g + holdCoverY * pixelScale, pixelScale);
+                receptorX - 12f * g + config.x() * pixelScale,
+                receptorY + 15.4f * g + config.y() * pixelScale, pixelScale);
     }
 
     /** Number of splash animation variants for a lane (0 = no splashes available). */
@@ -599,11 +604,12 @@ public final class NoteStyle {
         String anim = splashAnims[lane].get(variant % splashAnims[lane].size());
         var frames = splashAtlas.frames(anim);
         if (frameIndex < 0 || frameIndex >= frames.size()) return;
-        applyAlpha(splashAlpha);
+        NoteSkinConfig.Part config = skinConfig.splash();
+        applyAlpha(config.alpha());
         SparrowAtlas.Frame f = frames.get(frameIndex);
-        float pixelScale = size * splashScale / Math.max(1, Math.max(f.frameW, f.frameH));
+        float pixelScale = size * config.scale() / Math.max(1, Math.max(f.frameW, f.frameH));
         splashAtlas.drawScaled(gui, f,
-                centerX + splashX * pixelScale, centerY + splashY * pixelScale,
+                centerX + config.x() * pixelScale, centerY + config.y() * pixelScale,
                 pixelScale, laneTex(splashRGB, lane));
     }
 
@@ -613,10 +619,20 @@ public final class NoteStyle {
 
     private static ResourceLocation registerGenerated(String path, NativeImage image, boolean smooth) {
         ResourceLocation id = FnfMod.id(path);
-        DynamicTexture tex = new DynamicTexture(image);
-        Minecraft.getInstance().getTextureManager().register(id, tex);
-        if (smooth) Textures.smooth(tex); // custom skin art (hold sheet) — arrows stay crisp
-        return id;
+        DynamicTexture tex = null;
+        boolean registered = false;
+        try {
+            tex = new DynamicTexture(image);
+            Minecraft.getInstance().getTextureManager().register(id, tex);
+            registered = true;
+            if (smooth) Textures.smooth(tex); // custom skin art (hold sheet) — arrows stay crisp
+            return id;
+        } catch (RuntimeException error) {
+            if (registered) Minecraft.getInstance().getTextureManager().release(id);
+            else if (tex != null) tex.close();
+            else image.close();
+            throw error;
+        }
     }
 
     /** 32x32 white arrow pointing up. outline=true draws only the border (receptor look). */
@@ -657,24 +673,27 @@ public final class NoteStyle {
 
     public static void drawNote(GuiGraphics gui, int lane, float centerX, float centerY, float size) {
         load();
-        applyAlpha(noteAlpha);
+        NoteSkinConfig.Part config = skinConfig.note();
+        applyAlpha(config.alpha());
         if (noteAtlas != null && noteAnims[lane] != null) {
-            float pixelScale = size * noteScale / noteRefPx;
+            float pixelScale = size * config.scale() / noteRefPx;
             noteAtlas.drawScaled(gui, noteAtlas.frame(noteAnims[lane], 0),
-                    centerX + noteX * pixelScale, centerY + noteY * pixelScale,
+                    centerX + config.x() * pixelScale, centerY + config.y() * pixelScale,
                     pixelScale, laneTex(noteRGB, lane));
             return;
         }
-        float pixelScale = size * noteScale / 32f;
+        float pixelScale = size * config.scale() / 32f;
         drawArrow(gui, arrowTexture, lane,
-                centerX + noteX * pixelScale, centerY + noteY * pixelScale, size * noteScale,
+                centerX + config.x() * pixelScale, centerY + config.y() * pixelScale,
+                size * config.scale(),
                 missedTint ? 0xFF808080 : LANE_COLORS[lane]);
     }
 
     /** state: 0 = static, 1 = pressed (no note), 2 = confirm (hit) */
     public static void drawReceptor(GuiGraphics gui, int lane, float centerX, float centerY, float size, int state) {
         load();
-        applyAlpha(receptorAlpha);
+        NoteSkinConfig.Part config = skinConfig.receptor();
+        applyAlpha(config.alpha());
         if (strumAtlas != null) {
             String anim = switch (state) {
                 case 1 -> pressAnims[lane] != null ? pressAnims[lane] : receptorAnims[lane];
@@ -684,9 +703,9 @@ public final class NoteStyle {
             if (anim != null) {
                 // Psych applies the RGB palette to press/confirm but leaves the static frame raw
                 ResourceLocation rgb = state == 0 ? null : laneTex(strumRGB, lane);
-                float pixelScale = size * receptorScale / strumRefPx;
+                float pixelScale = size * config.scale() / strumRefPx;
                 strumAtlas.drawScaled(gui, strumAtlas.frame(anim, state == 0 ? 0 : 1),
-                        centerX + receptorX * pixelScale, centerY + receptorY * pixelScale,
+                        centerX + config.x() * pixelScale, centerY + config.y() * pixelScale,
                         pixelScale, rgb);
                 return;
             }
@@ -698,7 +717,7 @@ public final class NoteStyle {
         };
         float arrowScale = size * (state == 2 ? 1.1f : 1f) / 32f;
         drawArrow(gui, state == 0 ? arrowOutlineTexture : arrowTexture, lane,
-                centerX + receptorX * arrowScale, centerY + receptorY * arrowScale,
+                centerX + config.x() * arrowScale, centerY + config.y() * arrowScale,
                 size * (state == 2 ? 1.1f : 1f), color);
     }
 
@@ -707,15 +726,16 @@ public final class NoteStyle {
                                      float size, boolean tailAtTop) {
         load();
         if (yBottom <= yTop) return;
-        applyAlpha(sustainAlpha);
+        NoteSkinConfig.Part config = skinConfig.sustain();
+        applyAlpha(config.alpha());
 
         HoldSprite piece = holdPieces[lane];
         if (piece == null) {
-            float w = size * 0.36f * holdWidthScale;
+            float w = size * 0.36f * config.scale();
             float pixelScale = size / Math.max(1f, noteRefPx);
-            centerX += sustainX * pixelScale;
-            yTop += sustainY * pixelScale;
-            yBottom += sustainY * pixelScale;
+            centerX += config.x() * pixelScale;
+            yTop += config.y() * pixelScale;
+            yBottom += config.y() * pixelScale;
             int alpha = (int) (255 * drawAlpha) << 24;
             int baseCol = missedTint ? 0x808080 : LANE_COLORS[lane];
             int color = alpha | (baseCol & 0xFFFFFF);
@@ -726,18 +746,18 @@ public final class NoteStyle {
         }
 
         HoldSprite end = holdEnds[lane];
-        float w = size * 0.34f * holdWidthScale;
+        float w = size * 0.34f * config.scale();
         float pixelScale = w / Math.max(1, piece.w());
-        centerX += sustainX * pixelScale;
-        yTop += sustainY * pixelScale;
-        yBottom += sustainY * pixelScale;
+        centerX += config.x() * pixelScale;
+        yTop += config.y() * pixelScale;
+        yBottom += config.y() * pixelScale;
         float x = centerX - w / 2;
         float endH = end != null ? end.h() * (w / end.w()) : 0;
         float tileH = Math.max(1, piece.h() * (w / piece.w()));
         ResourceLocation rgbTex = laneTex(holdRGB, lane);
 
         RenderSystem.enableBlend();
-        gui.enableScissor((int) x - 1, (int) yTop, (int) (x + w) + 1, (int) yBottom + 1);
+        PoseScissor.enable(gui, x - 1, yTop, x + w + 1, yBottom + 1);
         float bodyTop = tailAtTop ? yTop + endH : yTop;
         float bodyBottom = tailAtTop ? yBottom : yBottom - endH;
         // anchor the tile pattern to the tail end so the texture scrolls with the

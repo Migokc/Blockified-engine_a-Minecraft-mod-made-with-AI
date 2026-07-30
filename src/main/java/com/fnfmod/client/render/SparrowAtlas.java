@@ -24,7 +24,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  * Loads a Friday Night Funkin' style Sparrow atlas: a PNG sprite sheet plus
  * the Adobe Animate XML (&lt;TextureAtlas&gt;&lt;SubTexture .../&gt;) that FNF mods ship.
  */
-public class SparrowAtlas {
+public class SparrowAtlas implements AutoCloseable {
 
     public static class Frame {
         public int x, y, w, h;
@@ -41,9 +41,12 @@ public class SparrowAtlas {
     private final int texHeight;
     /** animation prefix -> ordered frames ("purple0000", "purple0001" -> key "purple") */
     private final Map<String, List<Frame>> animations = new LinkedHashMap<>();
+    /** Every XML frame in source order, used by Psych's prefix/indices APIs. */
+    private final List<Frame> allFrames = new ArrayList<>();
 
     /** kept for CPU recoloring (owned by the DynamicTexture, read-only here) */
     private NativeImage image;
+    private DynamicTexture dynamicTexture;
 
     private SparrowAtlas(ResourceLocation textureId, int w, int h) {
         this.textureId = textureId;
@@ -57,19 +60,24 @@ public class SparrowAtlas {
 
     /** Returns null on any failure (missing files, bad xml). */
     public static SparrowAtlas load(Path png, Path xml) {
+        NativeImage image = null;
+        DynamicTexture texture = null;
+        ResourceLocation id = null;
+        boolean registered = false;
         try {
             if (!Files.isRegularFile(png) || !Files.isRegularFile(xml)) return null;
-            NativeImage image;
             try (InputStream in = Files.newInputStream(png)) {
                 image = NativeImage.read(in);
             }
-            ResourceLocation id = FnfMod.id("atlas/" + NEXT_ID.incrementAndGet());
-            DynamicTexture tex = new DynamicTexture(image);
-            Minecraft.getInstance().getTextureManager().register(id, tex);
-            Textures.smooth(tex); // antialias custom skin art (default skin = procedural arrows, untouched)
+            id = FnfMod.id("atlas/" + NEXT_ID.incrementAndGet());
+            texture = new DynamicTexture(image);
+            Minecraft.getInstance().getTextureManager().register(id, texture);
+            registered = true;
+            Textures.smooth(texture); // antialias custom skin art (default skin = procedural arrows, untouched)
 
             SparrowAtlas atlas = new SparrowAtlas(id, image.getWidth(), image.getHeight());
             atlas.image = image;
+            atlas.dynamicTexture = texture;
 
             DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
             factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
@@ -92,10 +100,18 @@ public class SparrowAtlas {
                 f.frameW = el.hasAttribute("frameWidth") ? intAttr(el, "frameWidth") : f.w;
                 f.frameH = el.hasAttribute("frameHeight") ? intAttr(el, "frameHeight") : f.h;
                 String prefix = stripFrameNumber(f.name);
+                atlas.allFrames.add(f);
                 atlas.animations.computeIfAbsent(prefix, k -> new ArrayList<>()).add(f);
             }
             return atlas;
         } catch (Exception e) {
+            if (registered && id != null) {
+                Minecraft.getInstance().getTextureManager().release(id);
+            } else if (texture != null) {
+                texture.close();
+            } else if (image != null) {
+                image.close();
+            }
             FnfMod.LOGGER.warn("Failed to load sparrow atlas {} / {}: {}", png, xml, e.toString());
             return null;
         }
@@ -141,6 +157,16 @@ public class SparrowAtlas {
         return texHeight;
     }
 
+    /** Applies Psych's per-sprite antialiasing flag to this atlas. */
+    public void setAntialiasing(boolean enabled) {
+        if (dynamicTexture == null) return;
+        try {
+            dynamicTexture.setFilter(enabled, false);
+        } catch (Throwable ignored) {
+            // Filtering must never make a character fail to load.
+        }
+    }
+
     public boolean hasAnimation(String prefix) {
         return animations.containsKey(prefix);
     }
@@ -157,10 +183,29 @@ public class SparrowAtlas {
         return animations.getOrDefault(prefix, List.of());
     }
 
+    /** Psych/Flixel addByPrefix matches the complete XML frame name, not only our normalized key. */
+    public List<Frame> framesByPrefix(String prefix) {
+        if (prefix == null) return List.of();
+        return allFrames.stream().filter(frame -> frame.name.startsWith(prefix)).toList();
+    }
+
+    public List<Frame> allFrames() {
+        return List.copyOf(allFrames);
+    }
+
     public Frame frame(String prefix, int index) {
         List<Frame> list = animations.get(prefix);
         if (list == null || list.isEmpty()) return null;
         return list.get(Math.floorMod(index, list.size()));
+    }
+
+    @Override
+    public void close() {
+        if (dynamicTexture != null) {
+            Minecraft.getInstance().getTextureManager().release(textureId);
+            dynamicTexture = null;
+        }
+        image = null;
     }
 
     /**
@@ -202,7 +247,13 @@ public class SparrowAtlas {
         com.mojang.blaze3d.systems.RenderSystem.enableBlend();
         com.mojang.blaze3d.systems.RenderSystem.defaultBlendFunc();
         boolean tinted = globalAlpha < 1f || tintR < 1f || tintG < 1f || tintB < 1f;
-        if (tinted) gui.setColor(tintR, tintG, tintB, globalAlpha);
+        if (tinted) {
+            // setColor is shader state, while blit may be buffered. Flush on both
+            // sides so a later reset cannot turn a fractional character alpha
+            // back into fully opaque rendering before its vertices are drawn.
+            gui.flush();
+            gui.setColor(tintR, tintG, tintB, globalAlpha);
+        }
         gui.pose().pushPose();
         gui.pose().translate(drawX, drawY, 0);
         gui.pose().scale(scale, scale, 1);
@@ -214,6 +265,9 @@ public class SparrowAtlas {
         gui.blit(textureOverride != null ? textureOverride : textureId,
                 0, 0, f.x, f.y, f.w, f.h, texWidth, texHeight);
         gui.pose().popPose();
-        if (tinted) gui.setColor(1f, 1f, 1f, 1f);
+        if (tinted) {
+            gui.flush();
+            gui.setColor(1f, 1f, 1f, 1f);
+        }
     }
 }

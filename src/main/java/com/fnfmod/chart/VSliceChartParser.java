@@ -56,6 +56,7 @@ public final class VSliceChartParser {
                         JsonObject ch = pd.getAsJsonObject("characters");
                         chart.player1 = LegacyChartParser.optString(ch, "player", "bf");
                         chart.player2 = LegacyChartParser.optString(ch, "opponent", "dad");
+                        chart.player3 = LegacyChartParser.optString(ch, "girlfriend", "gf");
                     }
                 }
                 if (meta.has("offsets") && meta.get("offsets").isJsonObject()) {

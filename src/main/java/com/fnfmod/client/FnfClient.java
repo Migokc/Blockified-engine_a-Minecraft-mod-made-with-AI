@@ -20,6 +20,8 @@ import net.neoforged.fml.event.lifecycle.FMLClientSetupEvent;
 import net.neoforged.neoforge.client.event.RegisterClientCommandsEvent;
 import net.neoforged.neoforge.client.event.RegisterKeyMappingsEvent;
 import net.neoforged.neoforge.client.event.RenderGuiLayerEvent;
+import net.neoforged.neoforge.client.event.RenderLevelStageEvent;
+import net.neoforged.neoforge.client.event.ClientPlayerNetworkEvent;
 import net.neoforged.neoforge.client.event.ViewportEvent;
 import net.neoforged.neoforge.client.gui.VanillaGuiLayers;
 import net.neoforged.neoforge.network.PacketDistributor;
@@ -53,6 +55,24 @@ public final class FnfClient {
 
     @EventBusSubscriber(modid = FnfMod.MODID, value = Dist.CLIENT)
     public static final class GameBus {
+        @SubscribeEvent
+        public static void onClientLogout(ClientPlayerNetworkEvent.LoggingOut event) {
+            ClientSession.reset();
+        }
+
+        /** Add a "Mod Worlds" button to the singleplayer world-selection screen. */
+        @SubscribeEvent
+        public static void onScreenInit(net.neoforged.neoforge.client.event.ScreenEvent.Init.Post event) {
+            if (!(event.getScreen() instanceof net.minecraft.client.gui.screens.worldselection.SelectWorldScreen select)) {
+                return;
+            }
+            event.addListener(net.minecraft.client.gui.components.Button.builder(
+                            Component.literal("Mod Worlds"),
+                            b -> Minecraft.getInstance().setScreen(
+                                    new com.fnfmod.client.gui.ModWorldSelectScreen(select)))
+                    .bounds(6, 6, 90, 20).build());
+        }
+
         /** FNF-style beat zoom: pinch the FOV while the gameplay camera is active. */
         @SubscribeEvent
         public static void onComputeFov(ViewportEvent.ComputeFov event) {
@@ -62,33 +82,47 @@ public final class FnfClient {
             }
         }
 
-        private static boolean hotbarTranslated = false;
+        private static net.minecraft.resources.ResourceLocation translatedLayer;
 
-        /** Hide vanilla HUD during gameplay; only the hotbar stays (except FNF). */
+        /** Hide unrelated vanilla HUD layers; vanilla style keeps Minecraft's real hearts and food. */
         @SubscribeEvent
         public static void onRenderGuiLayer(RenderGuiLayerEvent.Pre event) {
-            if (!(Minecraft.getInstance().screen instanceof com.fnfmod.client.gui.GameplayScreen)) return;
+            if (!(Minecraft.getInstance().screen instanceof GameplayScreen gameplay)) return;
             var name = event.getName();
-            String style = ClientOptions.effectiveHudStyle();
+            String style = gameplay.effectiveHudStyle();
             boolean keepHotbar = !"fnf".equals(style) && VanillaGuiLayers.HOTBAR.equals(name);
-            if (!keepHotbar) {
+            boolean keepVanillaStatus = "vanilla".equals(style)
+                    && (VanillaGuiLayers.PLAYER_HEALTH.equals(name)
+                    || VanillaGuiLayers.FOOD_LEVEL.equals(name));
+            if (!keepHotbar && !keepVanillaStatus) {
                 event.setCanceled(true);
                 return;
             }
-            // downscroll: move the hotbar flush against the top of the screen
+            // Downscroll mirrors the native cluster to the top while retaining
+            // Minecraft's own rendering and GUI-scale behavior.
             if (ClientOptions.get().downscroll) {
                 var gui = event.getGuiGraphics();
                 gui.pose().pushPose();
-                gui.pose().translate(0, -(gui.guiHeight() - 22), 0);
-                hotbarTranslated = true;
+                double offset = keepHotbar ? -(gui.guiHeight() - 22) : 63 - gui.guiHeight();
+                gui.pose().translate(0, offset, 0);
+                translatedLayer = name;
             }
         }
 
         @SubscribeEvent
         public static void onRenderGuiLayerPost(RenderGuiLayerEvent.Post event) {
-            if (hotbarTranslated && VanillaGuiLayers.HOTBAR.equals(event.getName())) {
+            if (translatedLayer != null && translatedLayer.equals(event.getName())) {
                 event.getGuiGraphics().pose().popPose();
-                hotbarTranslated = false;
+                translatedLayer = null;
+            }
+        }
+
+        /** Draw Lua objects assigned to the world camera into the level itself. */
+        @SubscribeEvent
+        public static void onRenderLevelStage(RenderLevelStageEvent event) {
+            if (event.getStage() != RenderLevelStageEvent.Stage.AFTER_PARTICLES) return;
+            if (Minecraft.getInstance().screen instanceof GameplayScreen gameplay) {
+                gameplay.renderLuaWorld(event.getPoseStack(), event.getCamera());
             }
         }
 
