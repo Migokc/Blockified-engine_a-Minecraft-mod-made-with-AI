@@ -1,5 +1,9 @@
 package com.fnfmod.song;
 
+import com.fnfmod.chart.SongChart;
+import com.fnfmod.gameplay.PlaybackMode;
+import com.fnfmod.gameplay.PlaybackPolicy;
+
 import java.nio.file.Path;
 import java.nio.file.Files;
 import java.util.ArrayList;
@@ -27,6 +31,8 @@ public class SongEntry {
     public Path opponentIconFile;
     /** Folder to resolve this song's icons/characters from (its default variation's mod). */
     public transient Path modRoot;
+    /** True when modRoot is a complete fnfmod/mods or external engine-style pack. */
+    public transient boolean fullModLayout;
     /** Original pack used only for inherited difficulties/audio after an editor save. */
     public transient Path chartOriginRoot;
     /** Optional origin used only to resolve character definitions and health icons. */
@@ -91,10 +97,38 @@ public class SongEntry {
         return externalContent == null || externalContent.contains(content);
     }
 
+    /** Rich resources belong to a complete mod, never a lightweight songs/&lt;song&gt; folder. */
+    public Path runtimeRoot() {
+        return fullModLayout ? modRoot : null;
+    }
+
+    /**
+     * Root used to resolve character animations. A chart-only override saved under
+     * songs/ has no mod layout of its own, so it inherits the animations folder of
+     * the pack named by its original_directory.txt.
+     */
+    public Path animationRoot() {
+        Path root = runtimeRoot();
+        return root != null ? root : chartOriginRoot;
+    }
+
+    /** A chart saved under songs/ that links back to its exact original pack. */
+    public boolean isLocalEditedOverride() {
+        if (chartOriginRoot == null || folder == null) return false;
+        Path songs = SongLibrary.songsDir().toAbsolutePath().normalize();
+        return folder.toAbsolutePath().normalize().startsWith(songs);
+    }
+
     public VSliceVariation variationFor(String difficulty) {
-        VSliceVariation v = vsliceVariations.get(difficulty);
-        if (v == null && !vsliceVariations.isEmpty()) v = vsliceVariations.values().iterator().next();
-        return v;
+        return difficultyValue(vsliceVariations, difficulty);
+    }
+
+    public Path legacyChartFor(String difficulty) {
+        return difficultyValue(legacyChartFiles, difficulty);
+    }
+
+    public Path chartOverrideFor(String difficulty) {
+        return difficultyValue(chartOverrides, difficulty);
     }
 
     public Path instFor(String difficulty) {
@@ -131,8 +165,13 @@ public class SongEntry {
 
     /** Files a client needs to play one specific difficulty. */
     public List<Path> transferFiles(String difficulty) {
+        return transferFiles(difficulty, PlaybackPolicy.resolve(PlaybackMode.LEGACY, this));
+    }
+
+    /** Files allowed by the selected presentation/resource policy. */
+    public List<Path> transferFiles(String difficulty, PlaybackPolicy policy) {
         List<Path> out = new ArrayList<>();
-        Path override = chartOverrides.get(difficulty);
+        Path override = chartOverrideFor(difficulty);
         if (isVslice()) {
             VSliceVariation v = variationFor(difficulty);
             if (v != null) {
@@ -144,8 +183,7 @@ public class SongEntry {
                 addIf(out, v.voicesOpponentFile);
             }
         } else {
-            Path chart = override != null ? override : legacyChartFiles.get(difficulty);
-            if (chart == null && !legacyChartFiles.isEmpty()) chart = legacyChartFiles.values().iterator().next();
+            Path chart = override != null ? override : legacyChartFor(difficulty);
             addIf(out, chart);
             addIf(out, metaFile); // Codename: needed to load the chart (null for legacy/Psych)
             addIf(out, instFile);
@@ -153,22 +191,107 @@ public class SongEntry {
             addIf(out, voicesPlayerFile);
             addIf(out, voicesOpponentFile);
         }
-        if (allows(SongLibrary.ExternalContent.EVENTS)) addIf(out, eventsFile);
-        if (allows(SongLibrary.ExternalContent.LUA)) {
+        if (policy.allows(this, SongLibrary.ExternalContent.EVENTS)) addIf(out, eventsFile);
+        if (policy.allows(this, SongLibrary.ExternalContent.LUA)) {
             for (Path lua : luaFiles) addIf(out, lua);
         }
-        if (allows(SongLibrary.ExternalContent.FONTS)) {
+        if (fullModLayout && policy.allows(this, SongLibrary.ExternalContent.FONTS)) {
             addFonts(out, modRoot);
             if (folder != null && !folder.equals(modRoot)) addFonts(out, folder);
+        }
+        Path runtimeRoot = runtimeRoot();
+        if (runtimeRoot != null) {
+            if (policy.allows(this, SongLibrary.ExternalContent.IMAGES)) {
+                addChartNoteTextureFiles(out, difficulty, runtimeRoot);
+            }
+            boolean packageRuntimeAssets = isInstalledModRoot(runtimeRoot)
+                    || isLocalEditedOverride() || policy.mode() == PlaybackMode.FNF;
+            if (policy.allows(this, SongLibrary.ExternalContent.LUA)) {
+                if (policy.songAssets() && packageRuntimeAssets) {
+                    addTree(out, runtimeRoot.resolve("custom_notetypes"));
+                    addTree(out, runtimeRoot.resolve("scripts"));
+                    addTree(out, runtimeRoot.resolve("custom_events"));
+                    addScriptTree(out, runtimeRoot.resolve("stages"));
+                    addLuaTree(out, folder);
+                    addLuaTree(out, runtimeRoot.resolve("data").resolve(id));
+                } else {
+                    addScriptTree(out, runtimeRoot.resolve("custom_notetypes"));
+                    addScriptTree(out, runtimeRoot.resolve("scripts"));
+                    addScriptTree(out, runtimeRoot.resolve("custom_events"));
+                    addScriptTree(out, runtimeRoot.resolve("stages"));
+                    addLuaTree(out, folder);
+                    addLuaTree(out, runtimeRoot.resolve("data").resolve(id));
+                }
+            }
+            if (policy.songAssets() && packageRuntimeAssets) {
+                addTree(out, runtimeRoot.resolve("sounds"));
+                addTree(out, runtimeRoot.resolve("music"));
+                if (policy.allows(this, SongLibrary.ExternalContent.IMAGES)) {
+                    addTree(out, runtimeRoot.resolve("images"));
+                }
+                if (policy.allows(this, SongLibrary.ExternalContent.CHARACTERS)) {
+                    addTree(out, runtimeRoot.resolve("characters"));
+                    addTree(out, runtimeRoot.resolve("animations"));
+                }
+            }
         }
         return out;
     }
 
+    /** Transfers chart-selected note atlases even when the whole image tree is not packaged. */
+    private void addChartNoteTextureFiles(List<Path> out, String difficulty, Path runtimeRoot) {
+        try {
+            SongChart chart = SongLibrary.loadChart(this, difficulty);
+            addTexturePair(out, runtimeRoot, chart.noteTexture);
+            addTexturePair(out, runtimeRoot, chart.noteSplashTexture);
+        } catch (Exception ignored) {}
+    }
+
+    private static void addTexturePair(List<Path> out, Path root, String rawTexture) {
+        if (root == null || rawTexture == null || rawTexture.isBlank()) return;
+        String texture = rawTexture.trim().replace('\\', '/');
+        String lower = texture.toLowerCase(java.util.Locale.ROOT);
+        if (lower.endsWith(".png") || lower.endsWith(".xml")) {
+            texture = texture.substring(0, texture.length() - 4);
+        }
+        Path normalizedRoot = root.toAbsolutePath().normalize();
+        for (String extension : new String[]{".png", ".xml"}) {
+            for (String prefix : new String[]{"images", "assets/images", ""}) {
+                Path base = prefix.isBlank() ? normalizedRoot : normalizedRoot.resolve(prefix);
+                Path candidate = base.resolve(texture + extension).normalize();
+                if (candidate.startsWith(normalizedRoot) && Files.isRegularFile(candidate)) {
+                    addIf(out, candidate);
+                    break;
+                }
+            }
+        }
+    }
+
+    /** Stable transfer path: local imported resources keep their folder hierarchy. */
+    public String transferName(Path file) {
+        Path runtimeRoot = runtimeRoot();
+        if (runtimeRoot != null && file != null) {
+            Path root = runtimeRoot.toAbsolutePath().normalize();
+            Path normalized = file.toAbsolutePath().normalize();
+            if (normalized.startsWith(root)) {
+                Path relative = root.relativize(normalized);
+                if (isStructuredRuntimeResource(relative)) {
+                    return relative.toString().replace('\\', '/');
+                }
+            }
+        }
+        return file == null ? "" : file.getFileName().toString();
+    }
+
     /** All files across every difficulty (used when a whole song must be transferred). */
     public List<Path> allTransferFiles() {
+        return allTransferFiles(PlaybackPolicy.resolve(PlaybackMode.LEGACY, this));
+    }
+
+    public List<Path> allTransferFiles(PlaybackPolicy policy) {
         List<Path> out = new ArrayList<>();
         for (String d : difficulties) {
-            for (Path p : transferFiles(d)) {
+            for (Path p : transferFiles(d, policy)) {
                 if (!out.contains(p)) out.add(p);
             }
         }
@@ -177,6 +300,26 @@ public class SongEntry {
 
     private static void addIf(List<Path> list, Path p) {
         if (p != null && !list.contains(p)) list.add(p);
+    }
+
+    /** Never choose an arbitrary chart when several difficulties are present. */
+    private static <T> T difficultyValue(Map<String, T> values, String requested) {
+        if (values == null || values.isEmpty()) return null;
+        T exact = values.get(requested);
+        if (exact != null) return exact;
+        String normalized = normalizeDifficulty(requested);
+        for (var entry : values.entrySet()) {
+            if (entry.getKey().equalsIgnoreCase(requested == null ? "" : requested)
+                    || normalizeDifficulty(entry.getKey()).equals(normalized)) {
+                return entry.getValue();
+            }
+        }
+        return values.size() == 1 ? values.values().iterator().next() : null;
+    }
+
+    private static String normalizeDifficulty(String value) {
+        return value == null ? "" : value.toLowerCase(java.util.Locale.ROOT)
+                .replaceAll("[^a-z0-9_-]", "-");
     }
 
     private static void addFonts(List<Path> list, Path root) {
@@ -188,6 +331,52 @@ public class SongEntry {
                 String name = path.getFileName().toString().toLowerCase(java.util.Locale.ROOT);
                 return name.endsWith(".ttf") || name.endsWith(".otf");
             }).sorted().forEach(path -> addIf(list, path));
+        } catch (Exception ignored) {}
+    }
+
+    private static boolean isInstalledModRoot(Path root) {
+        if (root == null) return false;
+        Path mods = SongLibrary.modsDir().toAbsolutePath().normalize();
+        return root.toAbsolutePath().normalize().startsWith(mods);
+    }
+
+    private static boolean isStructuredRuntimeResource(Path relative) {
+        if (relative == null || relative.getNameCount() < 2) return false;
+        String first = relative.getName(0).toString().toLowerCase(java.util.Locale.ROOT);
+        return first.equals("custom_notetypes") || first.equals("custom_events")
+                || first.equals("scripts") || first.equals("images") || first.equals("fonts")
+                || first.equals("sounds") || first.equals("music")
+                || first.equals("characters") || first.equals("stages")
+                || first.equals("animations")
+                || (first.equals("data") || first.equals("songs")) && relative.getFileName().toString()
+                .toLowerCase(java.util.Locale.ROOT).endsWith(".lua");
+    }
+
+    private static void addTree(List<Path> list, Path root) {
+        if (!Files.isDirectory(root)) return;
+        try (var files = Files.walk(root)) {
+            files.filter(Files::isRegularFile).sorted().forEach(path -> addIf(list, path));
+        } catch (Exception ignored) {}
+    }
+
+    /** Lua/config files only; texture/audio siblings remain unavailable in restricted Minecraft mode. */
+    private static void addScriptTree(List<Path> list, Path root) {
+        if (!Files.isDirectory(root)) return;
+        try (var files = Files.walk(root)) {
+            files.filter(Files::isRegularFile).filter(path -> {
+                String name = path.getFileName().toString().toLowerCase(java.util.Locale.ROOT);
+                return name.endsWith(".lua") || name.endsWith(".txt") || name.endsWith(".json");
+            }).sorted().forEach(path -> addIf(list, path));
+        } catch (Exception ignored) {}
+    }
+
+    private static void addLuaTree(List<Path> list, Path root) {
+        if (!Files.isDirectory(root)) return;
+        try (var files = Files.walk(root)) {
+            files.filter(Files::isRegularFile)
+                    .filter(path -> path.getFileName().toString().toLowerCase(java.util.Locale.ROOT)
+                            .endsWith(".lua"))
+                    .sorted().forEach(path -> addIf(list, path));
         } catch (Exception ignored) {}
     }
 }

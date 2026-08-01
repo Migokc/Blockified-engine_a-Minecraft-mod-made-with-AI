@@ -3,6 +3,9 @@
   "package": "com.fnfmod.mixin",
   "compatibilityLevel": "JAVA_21",
   "minVersion": "0.8",
+  "mixins": [
+    "LevelMutationMixin"
+  ],
   "client": [
     "CameraMixin"
   ],

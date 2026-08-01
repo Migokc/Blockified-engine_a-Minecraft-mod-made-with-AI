@@ -38,7 +38,11 @@ public final class LegacyChartParser {
         chart.needsVoices = optBool(song, "needsVoices", true);
         chart.player1 = optString(song, "player1", "bf");
         chart.player2 = optString(song, "player2", "dad");
+        chart.player3 = optString(song, "gfVersion", optString(song, "player3", "gf"));
         chart.stage = optString(song, "stage", "stage");
+        chart.noteTexture = optString(song, "arrowSkin", optString(song, "noteTexture", ""));
+        chart.noteSplashTexture = optString(song, "splashSkin",
+                optString(song, "noteSplashTexture", ""));
 
         // Psych Engine 1.0+ ("psych_v1", "psych_v1_convert") stores lanes absolutely:
         // 0-3 = player, 4-7 = opponent. Older charts are mustHitSection-relative.
@@ -66,7 +70,6 @@ public final class LegacyChartParser {
                 section.sectionBeats = optDouble(sec, "lengthInSteps", 16) / 4.0;
             }
             if (section.sectionBeats <= 0) section.sectionBeats = 4;
-            section.camEase = optString(sec, "fnfmodCamEase", "smooth");
             chart.sections.add(section);
 
             if (section.changeBPM && section.bpm > 0) {
@@ -109,7 +112,11 @@ public final class LegacyChartParser {
                     int lane = data % 4;
                     boolean playerSide = absoluteLanes ? data < 4 : (data < 4) == section.mustHit;
                     SongChart.Note note = new SongChart.Note(time, lane, playerSide, sustain, type);
-                    note.altAnim = section.altAnim || "Alt Animation".equals(type);
+                    // Psych section alt animations affect opponent-side notes only.
+                    note.altAnim = (section.altAnim && !playerSide) || "Alt Animation".equals(type);
+                    note.animSuffix = note.altAnim ? "-alt" : "";
+                    // gfSection redirects notes belonging to the section's focused side.
+                    note.gfNote = section.gfSection && playerSide == section.mustHit;
                     chart.notes.add(note);
                 }
             }
@@ -176,13 +183,21 @@ public final class LegacyChartParser {
                 String name = optString(object, "name", optString(object, "event", optString(object, "type", "")));
                 String value1 = optString(object, "value1", "");
                 String value2 = optString(object, "value2", "");
+                String value3 = optString(object, "value3", "");
+                String value4 = optString(object, "value4", "");
+                String value5 = optString(object, "value5", "");
+                String value6 = optString(object, "value6", "");
                 boolean beforeSong = "load".equalsIgnoreCase(optString(object, "trigger", ""));
                 if (object.has("params") && object.get("params").isJsonArray()) {
                     JsonArray params = object.getAsJsonArray("params");
                     if (!params.isEmpty()) value1 = text(params.get(0));
                     if (params.size() > 1) value2 = text(params.get(1));
+                    if (params.size() > 2) value3 = text(params.get(2));
+                    if (params.size() > 3) value4 = text(params.get(3));
+                    if (params.size() > 4) value5 = text(params.get(4));
+                    if (params.size() > 5) value6 = text(params.get(5));
                 }
-                addEvent(out, time, name, value1, value2, beforeSong);
+                addEvent(out, time, name, value1, value2, value3, value4, value5, value6, beforeSong);
             } else {
                 for (var child : object.entrySet()) parseEventContainer(child.getValue(), out);
             }
@@ -223,9 +238,14 @@ public final class LegacyChartParser {
         String name = row.size() > nameIndex ? text(row.get(nameIndex)) : "";
         String value1 = row.size() > nameIndex + 1 ? text(row.get(nameIndex + 1)) : "";
         String value2 = row.size() > nameIndex + 2 ? text(row.get(nameIndex + 2)) : "";
-        boolean beforeSong = row.size() > nameIndex + 3
-                && "load".equalsIgnoreCase(text(row.get(nameIndex + 3)));
-        addEvent(out, time, name, value1, value2, beforeSong);
+        int last = row.size() - 1;
+        boolean beforeSong = last > nameIndex + 2 && "load".equalsIgnoreCase(text(row.get(last)));
+        int valuesEnd = beforeSong ? last : row.size();
+        String value3 = valuesEnd > nameIndex + 3 ? text(row.get(nameIndex + 3)) : "";
+        String value4 = valuesEnd > nameIndex + 4 ? text(row.get(nameIndex + 4)) : "";
+        String value5 = valuesEnd > nameIndex + 5 ? text(row.get(nameIndex + 5)) : "";
+        String value6 = valuesEnd > nameIndex + 6 ? text(row.get(nameIndex + 6)) : "";
+        addEvent(out, time, name, value1, value2, value3, value4, value5, value6, beforeSong);
     }
 
     private static void addEvent(java.util.List<SongChart.Event> out, double time,
@@ -235,8 +255,23 @@ public final class LegacyChartParser {
 
     private static void addEvent(java.util.List<SongChart.Event> out, double time,
                                  String name, String value1, String value2, boolean beforeSong) {
+        addEvent(out, time, name, value1, value2, "", "", "", "", beforeSong);
+    }
+
+    private static void addEvent(java.util.List<SongChart.Event> out, double time,
+                                 String name, String value1, String value2,
+                                 String value3, String value4, String value5,
+                                 boolean beforeSong) {
+        addEvent(out, time, name, value1, value2, value3, value4, value5, "", beforeSong);
+    }
+
+    private static void addEvent(java.util.List<SongChart.Event> out, double time,
+                                 String name, String value1, String value2,
+                                 String value3, String value4, String value5, String value6,
+                                 boolean beforeSong) {
         if (time < 0 || name == null || name.isBlank()) return;
-        out.add(new SongChart.Event(time, name, value1, value2, beforeSong));
+        out.add(new SongChart.Event(time, name, value1, value2,
+                value3, value4, value5, value6, beforeSong));
     }
 
     private static Double number(JsonElement element) {

@@ -4,6 +4,7 @@ import com.fnfmod.client.ClientOptions;
 import com.fnfmod.client.ClientSession;
 import com.fnfmod.client.ScoreStore;
 import com.fnfmod.client.render.IconLibrary;
+import com.fnfmod.gameplay.PlaybackMode;
 import com.fnfmod.net.FnfPayloads;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;
@@ -23,6 +24,8 @@ public class SongDetailScreen extends Screen {
     private int difficultyIndex;
     private Button difficultyButton;
     private boolean showDiffList = false;
+    private PlaybackMode playbackMode = PlaybackMode.MINECRAFT;
+    private Button playbackModeButton;
 
     private static final int LAYER = 0x88000000;
     private static final int ROW_H = 13;
@@ -61,6 +64,11 @@ public class SongDetailScreen extends Screen {
         addRenderableWidget(Button.builder(Component.literal("Play VS (2P)"), b -> startSong(true))
                 .bounds(cx + 5, y + 24, 95, 20).build());
 
+        playbackModeButton = addRenderableWidget(Button.builder(playbackModeLabel(), b -> {
+            playbackMode = playbackMode.next(hasShiftDown());
+            b.setMessage(playbackModeLabel());
+        }).bounds(cx - 100, y + 48, 200, 20).build());
+
         addRenderableWidget(Button.builder(Component.literal("Back"), b -> onClose())
                 .bounds(cx - 60, height - 30, 120, 20).build());
     }
@@ -74,10 +82,16 @@ public class SongDetailScreen extends Screen {
         return Component.literal("Play as: " + names[ClientOptions.get().playAs % 3]);
     }
 
+    private Component playbackModeLabel() {
+        return Component.literal("Look: " + playbackMode.displayName());
+    }
+
     private void startSong(boolean duet) {
         byte playSide = duet ? 0 : (byte) (ClientOptions.get().playAs % 3);
         ClientSession.pendingPlaySide = playSide;
-        PacketDistributor.sendToServer(new FnfPayloads.SelectSongC2S(pos, song.id(), difficulty(), duet, playSide));
+        ClientSession.pendingPlaybackMode = playbackMode;
+        PacketDistributor.sendToServer(new FnfPayloads.SelectSongC2S(pos, song.id(), difficulty(), duet,
+                playSide, playbackMode.networkId()));
         minecraft.setScreen(new WaitingScreen(Component.literal(duet ? "Waiting for player 2..." : "Loading...")));
     }
 
@@ -124,6 +138,11 @@ public class SongDetailScreen extends Screen {
         }
 
         if (showDiffList) renderDiffList(gui, mouseX, mouseY);
+
+        if (playbackModeButton != null) {
+            gui.drawCenteredString(font, playbackMode.description(), cx,
+                    playbackModeButton.getY() + 23, 0xFFAAAAAA);
+        }
     }
 
     // ------------------------------------------------------------------ difficulty dropdown
