@@ -1,9 +1,10 @@
 # Blockified Engine documentation
 
-Static, dependency-free GitHub Pages site for Blockified-specific behavior.
+Static, dependency-free GitHub Pages documentation, creation guides, and wiki
+for Blockified-specific behavior.
 
 - Open `index.html` through a local HTTP server for preview.
-- Edit reference content in `content.js`.
+- Edit navigation, guides, reference documentation, and wiki content in `content.js`.
 - Edit navigation/search behavior in `app.js`.
 - Edit presentation in `styles.css`.
 

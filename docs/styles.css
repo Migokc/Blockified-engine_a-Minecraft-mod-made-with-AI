@@ -110,6 +110,20 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 32px 0; }
 .doc-card span { display: block; margin-bottom: 8px; color: var(--orange); font-size: 10px; font-weight: 900; letter-spacing: .1em; text-transform: uppercase; }
 .doc-card strong { display: block; font-size: 16px; }
 .doc-card p { margin: 6px 0 0; color: var(--muted); font-size: 12px; line-height: 1.55; }
+.category-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.category-card { min-height: 168px; border-top-width: 3px; }
+.category-card h3 { margin-top: 12px; font-size: 21px; }
+.guide-card { border-top-color: var(--orange); }
+.docs-card { border-top-color: var(--purple); }
+.wiki-card { border-top-color: var(--cyan); }
+.checklist { list-style: none; padding-left: 0; }
+.checklist li { position: relative; padding-left: 26px; }
+.checklist li::before { content: "✓"; position: absolute; left: 0; color: var(--green); font-weight: 900; }
+.concept-flow { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; margin: 20px 0; }
+.concept-flow > div { min-width: 0; padding: 14px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface); }
+.concept-flow span { display: grid; width: 24px; height: 24px; margin-bottom: 12px; place-items: center; color: #160b04; background: var(--orange); border-radius: 50%; font-size: 10px; font-weight: 900; }
+.concept-flow strong { display: block; font-size: 13px; }
+.concept-flow p { margin: 6px 0 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
 
 .callout { margin: 20px 0; padding: 15px 17px; border: 1px solid var(--line); border-left: 3px solid var(--cyan); border-radius: 6px; background: rgba(99,217,230,.05); color: #c9c1ce; }
 .callout.warning { border-left-color: var(--orange); background: rgba(255,138,61,.06); }
@@ -156,6 +170,7 @@ td:first-child { color: #f1eaf4; font-weight: 700; }
 .search-result { display: block; padding: 12px; color: var(--text); border-radius: 6px; }
 .search-result:hover, .search-result.selected { color: var(--text); background: var(--surface-2); }
 .search-result strong { display: block; font-size: 13px; }
+.search-result small { display: block; margin: 3px 0; color: var(--orange); font-size: 8px; font-weight: 900; letter-spacing: .08em; text-transform: uppercase; }
 .search-result span { color: var(--muted); font-size: 11px; }
 .search-empty { padding: 38px 20px; color: var(--muted); text-align: center; }
 .search-hint { margin: 0; padding: 10px 15px; color: var(--dim); border-top: 1px solid var(--line); font-size: 10px; }
@@ -185,6 +200,7 @@ td:first-child { color: #f1eaf4; font-weight: 700; }
   h1 { font-size: 40px; }
   .page-lead { font-size: 16px; }
   .card-grid { grid-template-columns: 1fr; }
+  .category-grid, .concept-flow { grid-template-columns: 1fr; }
   .page-footer { flex-direction: column; }
 }
 

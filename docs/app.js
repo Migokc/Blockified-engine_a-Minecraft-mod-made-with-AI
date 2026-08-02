@@ -184,7 +184,7 @@
     }
     searchResults.innerHTML = matches.map(({ slug, page }) =>
       '<a class="search-result" href="#/' + slug + '"><strong>' + escapeHtml(page.title) +
-      '</strong><span>' + escapeHtml(page.description) + '</span></a>'
+      '</strong><small>' + escapeHtml(page.eyebrow) + '</small><span>' + escapeHtml(page.description) + '</span></a>'
     ).join("");
     searchResults.querySelectorAll("a").forEach((link) => link.addEventListener("click", closeSearch));
   }
