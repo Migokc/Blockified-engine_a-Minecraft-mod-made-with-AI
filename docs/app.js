@@ -46,9 +46,13 @@
   function renderPage() {
     const slug = route();
     const page = docs.pages[slug];
+    const pageTitle = page.titleLogo
+      ? '<h1 class="page-title-logo-wrap"><img class="page-title-logo" src="' + escapeHtml(page.titleLogo) +
+        '" alt="' + escapeHtml(page.title) + '" width="1024" height="284"></h1>'
+      : '<h1>' + escapeHtml(page.title) + '</h1>';
     document.title = page.title + " | Blockified Engine Docs";
     content.innerHTML = '<header class="page-header"><div class="eyebrow">' + escapeHtml(page.eyebrow) +
-      '</div><h1>' + escapeHtml(page.title) + '</h1><p class="page-lead">' + escapeHtml(page.description) +
+      '</div>' + pageTitle + '<p class="page-lead">' + escapeHtml(page.description) +
       '</p><div class="page-meta">' + page.tags.map((tag) => '<span class="meta-tag">' + escapeHtml(tag) +
       '</span>').join("") + '</div></header>' + page.body;
 

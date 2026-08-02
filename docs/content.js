@@ -32,6 +32,7 @@
     </tbody></table></div>`),
     section("boundaries", "Important boundaries", `<ul><li>Rich pack assets activate only in that pack's bundled world.</li><li>Custom machine editing and Lua menus target singleplayer and LAN, not dedicated servers.</li><li>Unchanged Psych APIs are not duplicated here.</li></ul>`)
   );
+  pages.home.titleLogo = "./assets/blockified-engine-logo.png";
 
   pages.install = page("Install and run", "Getting started", "Requirements, optional animation support, and first launch.", ["NeoForge", "Minecraft 1.21.1"],
     section("requirements", "Requirements", `<ul><li>Minecraft Java Edition 1.21.1.</li><li>NeoForge for 1.21.1.</li><li>The Blockified Engine JAR in the instance <code>mods</code> folder.</li></ul>`),
