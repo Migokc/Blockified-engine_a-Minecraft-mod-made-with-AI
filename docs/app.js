@@ -32,8 +32,14 @@
   function renderNav() {
     nav.innerHTML = docs.groups.map((group) =>
       '<section class="nav-group"><div class="nav-group-title">' + escapeHtml(group.title) + '</div>' +
-      group.pages.map((slug) => '<a class="nav-link" data-page="' + slug + '" href="#/' + slug + '">' +
-        escapeHtml(docs.pages[slug].title) + '</a>').join("") + '</section>'
+      group.pages.map((slug) => {
+        const homeLogo = slug === "home";
+        const label = homeLogo
+          ? '<img class="nav-home-logo" src="./assets/blockified-engine-logo.png" alt="Blockified Engine" width="1024" height="284">'
+          : escapeHtml(docs.pages[slug].title);
+        return '<a class="nav-link' + (homeLogo ? ' home-logo-link' : '') + '" data-page="' + slug +
+          '" href="#/' + slug + '">' + label + '</a>';
+      }).join("") + '</section>'
     ).join("");
   }
 

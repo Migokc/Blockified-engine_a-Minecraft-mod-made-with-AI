@@ -39,7 +39,7 @@ code, pre, kbd { font-family: "Cascadia Code", "JetBrains Mono", Consolas, monos
 .topbar { position: sticky; top: 0; z-index: 30; grid-column: 1 / -1; height: var(--topbar); display: flex; align-items: center; border-bottom: 1px solid var(--line); background: rgba(13, 12, 16, .94); backdrop-filter: blur(16px); }
 .brand { width: var(--sidebar); height: 100%; display: flex; align-items: center; padding: 4px 18px; color: var(--text); border-right: 1px solid var(--line); }
 .brand:hover { color: var(--text); }
-.brand-logo { display: block; width: auto; height: 54px; max-width: 100%; object-fit: contain; object-position: left center; filter: drop-shadow(0 3px 8px rgba(216, 0, 255, .22)); }
+.brand-logo { display: block; width: auto; height: 54px; max-width: 48px; object-fit: contain; object-position: left center; filter: drop-shadow(0 3px 8px rgba(216, 0, 255, .22)); }
 .topbar-actions { flex: 1; display: flex; justify-content: flex-end; align-items: center; gap: 10px; padding: 0 20px; }
 .search-trigger { min-width: 250px; height: 36px; padding: 0 10px 0 13px; display: flex; align-items: center; justify-content: space-between; gap: 20px; color: var(--muted); border: 1px solid var(--line-strong); border-radius: 7px; background: var(--surface); cursor: pointer; }
 .search-trigger:hover { color: var(--text); border-color: #62566f; }
@@ -57,6 +57,9 @@ kbd { padding: 2px 6px; color: var(--dim); background: var(--surface-2); border:
 .nav-link:hover { color: var(--text); background: var(--surface); }
 .nav-link.active { color: #fff; background: linear-gradient(90deg, rgba(255,138,61,.18), rgba(255,138,61,.04)); }
 .nav-link.active::before { border-color: var(--orange); background: var(--orange); box-shadow: 0 0 10px rgba(255,138,61,.45); }
+.nav-link.home-logo-link { justify-content: center; min-height: 68px; padding: 7px 12px; }
+.nav-link.home-logo-link::before { display: none; }
+.nav-home-logo { display: block; width: min(100%, 190px); height: auto; filter: drop-shadow(0 6px 14px rgba(216, 0, 255, .18)); }
 .sidebar-note { margin: 12px 8px 0; padding: 13px; border: 1px solid #3d3446; border-left: 2px solid var(--purple); border-radius: 6px; background: rgba(172,117,255,.06); }
 .sidebar-note span { color: #cfafff; font-size: 10px; font-weight: 900; letter-spacing: .1em; text-transform: uppercase; }
 .sidebar-note p { margin: 6px 0 0; color: #93899a; font-size: 11px; line-height: 1.5; }
@@ -160,7 +163,7 @@ td:first-child { color: #f1eaf4; font-weight: 700; }
   .app-shell { display: block; padding-top: var(--topbar); }
   .topbar { position: fixed; inset: 0 0 auto 0; }
   .brand { width: auto; flex: 1; border-right: 0; padding-left: 10px; }
-  .brand-logo { height: 50px; max-width: min(190px, 100%); }
+  .brand-logo { height: 50px; max-width: 42px; }
   .mobile-menu { display: grid; }
   .search-trigger { min-width: 36px; width: 36px; padding: 0; justify-content: center; }
   .search-trigger span { font-size: 0; }
@@ -179,7 +182,7 @@ td:first-child { color: #f1eaf4; font-weight: 700; }
 @media (max-width: 480px) {
   .topbar-actions { gap: 6px; padding-right: 10px; }
   .github-link { display: none; }
-  .brand-logo { height: 44px; max-width: min(160px, 100%); }
+  .brand-logo { height: 44px; max-width: 38px; }
   .main-column { padding-inline: 15px; }
   .hero-panel { padding: 22px; }
   .hero-panel h2 { font-size: 30px; }
