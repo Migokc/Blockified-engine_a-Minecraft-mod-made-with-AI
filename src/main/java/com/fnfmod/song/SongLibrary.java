@@ -136,17 +136,20 @@ public class SongLibrary {
         ensureFolders();
         Map<String, SongEntry> found = new LinkedHashMap<>();
         Map<String, Path> icons = new LinkedHashMap<>();
-        try (Stream<Path> dirs = Files.list(songsDir())) {
-            dirs.filter(Files::isDirectory).sorted().forEach(dir -> {
-                SongEntry entry = scanSong(dir);
-                if (entry != null) found.put(entry.id, entry);
-            });
-        } catch (IOException e) {
-            FnfMod.LOGGER.error("Failed to scan songs folder", e);
+        // A bundled mod world is intentionally isolated to its owning pack.
+        // Ordinary worlds retain the complete lightweight/global library.
+        if (!ModContentScope.isModWorld()) {
+            try (Stream<Path> dirs = Files.list(songsDir())) {
+                dirs.filter(Files::isDirectory).sorted().forEach(dir -> {
+                    SongEntry entry = scanSong(dir);
+                    if (entry != null) found.put(entry.id, entry);
+                });
+            } catch (IOException e) {
+                FnfMod.LOGGER.error("Failed to scan songs folder", e);
+            }
         }
-        // Installed packs are world-scoped. A bundled world sees only its owner;
-        // ordinary singleplayer/LAN worlds see none. Dedicated servers retain the
-        // pre-scoping global library for backwards compatibility.
+        // A bundled world sees only its owner. Every other world sees all installed
+        // packs and configured external directories.
         if (ModContentScope.mode() == ModContentScope.Mode.MOD_WORLD) {
             ModContentScope.activeMod().ifPresent(active -> scanPsychRoot(active.root(), found, icons));
         } else if (ModContentScope.mode() == ModContentScope.Mode.ALL) {

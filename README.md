@@ -2,11 +2,11 @@
 
 A feature-full Friday Night Funkin' engine inside of Minecraft — **NeoForge 1.21.1**.
 
-Current release: **2.1.0bbs**.
+Current release: **2.1.1bbs**.
 
 Documentation: **[Blockified Engine Docs](https://migokc.github.io/Blockified-engine_a-Minecraft-mod-made-with-AI/)**.
 
-### 2.1.0bbs highlights
+### 2.1.1bbs highlights
 
 - Custom machines now support mod-owned Lua menus, direct song launching,
   settings/editor navigation, static sprites, and animated Sparrow XML atlases.
@@ -24,8 +24,8 @@ Documentation: **[Blockified Engine Docs](https://migokc.github.io/Blockified-en
 
 ### 2.0.7bbs highlights
 
-- World-scoped mod content: bundled world activates only owning mod; ordinary
-  worlds cannot see installed-mod assets.
+- World-aware mod content: a bundled world activates only its owning mod, while
+  ordinary worlds retain all installed packs and configured external directories.
 - Mod-contained Funkin' Machine profiles with per-face textures, persistent
   placed-machine selection, and Lua-built menus.
 - **Funkin' Designer** item: live preview, Save/Save As/Reload, profile copy/apply.
@@ -140,11 +140,11 @@ The host's choice is authoritative in multiplayer and is sent with the song mani
 Downloaded cache entries are isolated by exact song id, difficulty, presentation mode,
 and asset policy, so files left by another chart or mode cannot affect chart selection.
 
-Psych resource lookup uses active song/mod first. Installed packs and external
-**Directories** are exposed only while owning bundled mod world is active;
-ordinary singleplayer/LAN worlds expose none of those mod assets. Dedicated servers
-retain previous global song-library behavior for compatibility, but custom machine
-editing and Lua menus are disabled there.
+Psych resource lookup uses active song/mod first. A bundled mod world exposes only
+its owning pack. Ordinary singleplayer/LAN worlds and dedicated servers expose the
+full lightweight-song library, every installed pack, and configured external
+**Directories**. Custom machine editing and Lua menus remain disabled on dedicated
+servers.
 
 ## Lightweight song folder format
 
@@ -215,11 +215,11 @@ My-Mod/
   worlds/<world>/level.dat
 ```
 
-The `mods` folder is created automatically. Complete pack becomes active only
-inside one of its own bundled worlds. Rich resources, including Lua, machines,
-custom events/notes, stages, images, sounds, fonts, characters, and animations,
-then resolve from that pack only. Built-in Blockified assets and lightweight
-`config/fnfmod/songs/` remain available. `/fnf reload songs` rescans current scope.
+The `mods` folder is created automatically. Inside a bundled mod world, only its
+owning pack is exposed: other installed packs, external directories, and lightweight
+`config/fnfmod/songs/` entries are excluded. In an ordinary world, all lightweight
+songs, installed packs, and configured external directories are available together.
+`/fnf reload songs` rescans the current scope.
 
 ### Custom Funkin' Machines
 

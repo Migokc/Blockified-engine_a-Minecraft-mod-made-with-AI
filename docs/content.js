@@ -18,7 +18,7 @@
 
   const pages = {};
 
-  pages.home = page("Blockified Engine", "Official documentation", "Build Friday Night Funkin' songs, stages, machines, and world scenes inside Minecraft.", ["2.1.0bbs", "NeoForge 1.21.1", "Singleplayer + LAN"],
+  pages.home = page("Blockified Engine", "Official documentation", "Build Friday Night Funkin' songs, stages, machines, and world scenes inside Minecraft.", ["2.1.1bbs", "NeoForge 1.21.1", "Singleplayer + LAN"],
     `<div class="hero-panel"><span>DOCUMENTATION SCOPE</span><h2>Blockified additions, in one place.</h2><p>This reference covers features created or changed by Blockified. Compatible Psych Engine behavior is linked, not copied.</p><div class="hero-actions"><a class="button-link" href="#/install">Install</a><a class="button-link secondary" href="#/lua-overview">Lua API</a></div></div>`,
     section("choose", "Choose a path", `<div class="card-grid">
       <a class="doc-card" href="#/songs"><span>CONTENT</span><h3>Add a song</h3><p>Use a lightweight song folder or complete pack.</p></a>
@@ -30,7 +30,7 @@
       <tr><td>Lightweight song</td><td><code>config/fnfmod/songs/&lt;song&gt;/</code></td><td>Charts, audio, metadata, events</td></tr>
       <tr><td>Complete mod pack</td><td><code>config/fnfmod/mods/&lt;mod&gt;/</code></td><td>Lua, art, machines, fonts, worlds</td></tr>
     </tbody></table></div>`),
-    section("boundaries", "Important boundaries", `<ul><li>Rich pack assets activate only in that pack's bundled world.</li><li>Custom machine editing and Lua menus target singleplayer and LAN, not dedicated servers.</li><li>Unchanged Psych APIs are not duplicated here.</li></ul>`)
+    section("boundaries", "Important boundaries", `<ul><li>A bundled mod world exposes only its owning pack; ordinary worlds expose all configured content.</li><li>Custom machine editing and Lua menus target singleplayer and LAN, not dedicated servers.</li><li>Unchanged Psych APIs are not duplicated here.</li></ul>`)
   );
   pages.home.titleLogo = "./assets/blockified-engine-logo.png";
 
@@ -70,14 +70,14 @@
   machines/          fonts/             weeks/
   worlds/`)),
     section("metadata", "Pack metadata", `<p><code>pack.json</code> identifies the pack. Keep paths relative and case-exact for portability.</p>`),
-    section("activation", "World-scoped activation", `<p>A pack's rich assets are available while the player is inside a world bundled by that pack. Unrelated worlds do not inherit them.</p>`),
-    section("library", "Song-library compatibility", `<p>Compatible chart/audio content can remain globally discoverable. World machines, menu Lua, and authoring stay within supported singleplayer/LAN sessions.</p>`)
+    section("activation", "World-aware activation", `<p>Inside a bundled mod world, only its owning pack is exposed. In an ordinary world, every installed pack and configured external directory is available.</p>`),
+    section("library", "Song-library behavior", `<p>Ordinary worlds combine lightweight songs, installed packs, and external directories. Bundled worlds isolate the library to the owning pack.</p>`)
   );
 
   pages["mod-worlds"] = page("Bundled worlds", "Content", "Tie a Minecraft world to one complete Blockified pack.", ["World-scoped assets"],
     section("location", "Location", `<p>Place worlds under <code>config/fnfmod/mods/My-Mod/worlds/</code>. Blockified resolves the owning pack from the active world.</p>`),
-    section("scope", "Asset scope", `<div class="table-wrap"><table><thead><tr><th>Location</th><th>Pack assets</th></tr></thead><tbody><tr><td>Pack's bundled world</td><td>Available</td></tr><tr><td>Another local world</td><td>Unavailable</td></tr><tr><td>Dedicated server</td><td>Machine authoring/menu Lua disabled</td></tr></tbody></table></div>`),
-    section("reason", "Why", `<p>World scoping prevents unrelated saves from inheriting machines, textures, scripts, and menus only because a pack exists in the same instance.</p>`)
+    section("scope", "Asset scope", `<div class="table-wrap"><table><thead><tr><th>Location</th><th>Available content</th></tr></thead><tbody><tr><td>Pack's bundled world</td><td>Only the owning pack</td></tr><tr><td>Ordinary local/LAN world</td><td>All lightweight songs, installed packs, and external directories</td></tr><tr><td>Dedicated server</td><td>Global song library; machine authoring/menu Lua disabled</td></tr></tbody></table></div>`),
+    section("reason", "Why", `<p>Bundled worlds stay self-contained and deterministic, while ordinary worlds preserve Blockified's full global library.</p>`)
   );
 
   pages.machines = page("Custom machines", "World content", "Reskin the Funkin' machine and replace its selector with a Lua menu.", ["Singleplayer", "LAN", "Lua UI"],

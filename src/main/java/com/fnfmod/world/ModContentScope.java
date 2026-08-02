@@ -10,17 +10,15 @@ import java.util.Optional;
 import java.util.stream.Stream;
 
 /**
- * Selects which installed mod pack may expose content in the current world.
- * Bundled worlds own exactly one pack: config/fnfmod/mods/&lt;mod&gt;/worlds/&lt;world&gt;.
+ * Selects which installed content may be exposed in the current world.
+ * Bundled worlds own exactly one pack; ordinary worlds expose all configured content.
  */
 public final class ModContentScope {
 
     public enum Mode {
-        /** Main menu or an ordinary singleplayer/LAN world: installed packs stay hidden. */
-        NONE,
         /** A bundled world may use content from its owning pack only. */
         MOD_WORLD,
-        /** Compatibility mode for existing dedicated-server song libraries. */
+        /** Main menu or an ordinary world: all installed packs/directories are available. */
         ALL
     }
 
@@ -28,7 +26,7 @@ public final class ModContentScope {
 
     private record State(Mode mode, ActiveMod activeMod) {}
 
-    private static volatile State state = new State(Mode.NONE, null);
+    private static volatile State state = new State(Mode.ALL, null);
 
     private ModContentScope() {}
 
@@ -50,7 +48,7 @@ public final class ModContentScope {
     }
 
     /** Bind content visibility before the server scans its song library. */
-    public static synchronized void bindWorld(Path worldRoot, boolean dedicatedServer) {
+    public static synchronized void bindWorld(Path worldRoot) {
         Optional<ActiveMod> detected = detect(worldRoot);
         if (detected.isPresent()) {
             ActiveMod active = detected.get();
@@ -58,13 +56,12 @@ public final class ModContentScope {
             FnfMod.LOGGER.info("World {} uses FNF mod content from {}", active.worldId(), active.id());
             return;
         }
-        state = new State(dedicatedServer ? Mode.ALL : Mode.NONE, null);
-        FnfMod.LOGGER.info("World has no bundled FNF mod owner; installed mod content is {}",
-                dedicatedServer ? "available for dedicated-server compatibility" : "hidden");
+        state = new State(Mode.ALL, null);
+        FnfMod.LOGGER.info("World has no bundled FNF mod owner; all configured FNF content is available");
     }
 
     public static synchronized void clear() {
-        state = new State(Mode.NONE, null);
+        state = new State(Mode.ALL, null);
     }
 
     /** LAN client binding. Server supplies an ID; only an exact direct child of mods/ is accepted. */

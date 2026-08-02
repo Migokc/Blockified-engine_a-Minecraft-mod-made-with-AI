@@ -132,8 +132,7 @@ public final class SessionManager {
 
     @SubscribeEvent
     public static void onServerStarting(ServerStartingEvent event) {
-        ModContentScope.bindWorld(event.getServer().getWorldPath(LevelResource.ROOT),
-                event.getServer().isDedicatedServer());
+        ModContentScope.bindWorld(event.getServer().getWorldPath(LevelResource.ROOT));
         SongLibrary.rescan();
         MachineLibrary.rescan();
     }
