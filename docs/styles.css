@@ -37,14 +37,9 @@ code, pre, kbd { font-family: "Cascadia Code", "JetBrains Mono", Consolas, monos
 
 .app-shell { min-height: 100vh; display: grid; grid-template-columns: var(--sidebar) minmax(0, 1fr) var(--toc); grid-template-rows: var(--topbar) 1fr; }
 .topbar { position: sticky; top: 0; z-index: 30; grid-column: 1 / -1; height: var(--topbar); display: flex; align-items: center; border-bottom: 1px solid var(--line); background: rgba(13, 12, 16, .94); backdrop-filter: blur(16px); }
-.brand { width: var(--sidebar); height: 100%; display: flex; align-items: center; gap: 12px; padding: 0 22px; color: var(--text); border-right: 1px solid var(--line); }
+.brand { width: var(--sidebar); height: 100%; display: flex; align-items: center; padding: 4px 18px; color: var(--text); border-right: 1px solid var(--line); }
 .brand:hover { color: var(--text); }
-.brand strong { display: block; font-size: 15px; line-height: 1; letter-spacing: .12em; }
-.brand small { display: block; margin-top: 5px; color: var(--muted); font-size: 9px; font-weight: 800; letter-spacing: .24em; }
-.brand-mark { width: 28px; height: 28px; position: relative; display: grid; grid-template-columns: repeat(2, 12px); grid-template-rows: repeat(2, 12px); gap: 3px; transform: rotate(-4deg); }
-.brand-mark i { display: block; background: var(--orange); box-shadow: inset -3px -3px 0 rgba(0,0,0,.22); }
-.brand-mark i:nth-child(2) { background: var(--purple); }
-.brand-mark i:nth-child(3) { grid-column: 1 / -1; width: 18px; background: var(--cyan); }
+.brand-logo { display: block; width: auto; height: 54px; max-width: 100%; object-fit: contain; object-position: left center; filter: drop-shadow(0 3px 8px rgba(216, 0, 255, .22)); }
 .topbar-actions { flex: 1; display: flex; justify-content: flex-end; align-items: center; gap: 10px; padding: 0 20px; }
 .search-trigger { min-width: 250px; height: 36px; padding: 0 10px 0 13px; display: flex; align-items: center; justify-content: space-between; gap: 20px; color: var(--muted); border: 1px solid var(--line-strong); border-radius: 7px; background: var(--surface); cursor: pointer; }
 .search-trigger:hover { color: var(--text); border-color: #62566f; }
@@ -165,8 +160,7 @@ td:first-child { color: #f1eaf4; font-weight: 700; }
   .app-shell { display: block; padding-top: var(--topbar); }
   .topbar { position: fixed; inset: 0 0 auto 0; }
   .brand { width: auto; flex: 1; border-right: 0; padding-left: 10px; }
-  .brand-mark { width: 24px; transform: scale(.86) rotate(-4deg); }
-  .brand small { display: none; }
+  .brand-logo { height: 50px; max-width: min(190px, 100%); }
   .mobile-menu { display: grid; }
   .search-trigger { min-width: 36px; width: 36px; padding: 0; justify-content: center; }
   .search-trigger span { font-size: 0; }
@@ -185,7 +179,7 @@ td:first-child { color: #f1eaf4; font-weight: 700; }
 @media (max-width: 480px) {
   .topbar-actions { gap: 6px; padding-right: 10px; }
   .github-link { display: none; }
-  .brand strong { font-size: 13px; }
+  .brand-logo { height: 44px; max-width: min(160px, 100%); }
   .main-column { padding-inline: 15px; }
   .hero-panel { padding: 22px; }
   .hero-panel h2 { font-size: 30px; }
