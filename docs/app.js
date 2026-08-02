@@ -13,6 +13,9 @@
   const searchClose = document.getElementById("search-close");
   const searchInput = document.getElementById("search-input");
   const searchResults = document.getElementById("search-results");
+  const releasesUrl = "https://github.com/Migokc/Blockified-engine_a-Minecraft-mod-made-with-AI/releases";
+  const latestReleaseApi = "https://api.github.com/repos/Migokc/Blockified-engine_a-Minecraft-mod-made-with-AI/releases/latest";
+  let latestReleasePromise;
 
   const escapeHtml = (value) => String(value)
     .replaceAll("&", "&amp;").replaceAll("<", "&lt;")
@@ -23,6 +26,60 @@
     node.innerHTML = html;
     return node.textContent || "";
   };
+
+  function loadLatestRelease() {
+    if (!latestReleasePromise) {
+      latestReleasePromise = fetch(latestReleaseApi, {
+        headers: { Accept: "application/vnd.github+json" }
+      }).then((response) => {
+        if (!response.ok) throw new Error("No published release");
+        return response.json();
+      });
+    }
+    return latestReleasePromise;
+  }
+
+  function releaseVersion(release) {
+    const assetNames = Array.isArray(release.assets)
+      ? release.assets.map((asset) => asset.name || "").join(" ")
+      : "";
+    const match = (release.name + " " + assetNames + " " + release.tag_name)
+      .match(/\b\d+\.\d+\.\d+bbs\b/i);
+    return match ? match[0] : release.tag_name;
+  }
+
+  function hydrateLatestRelease() {
+    const title = document.getElementById("latest-release-title");
+    if (!title) return;
+    const status = document.getElementById("latest-release-status");
+    const jarLink = document.getElementById("latest-release-jar");
+    const pageLink = document.getElementById("latest-release-page");
+
+    loadLatestRelease().then((release) => {
+      const assets = Array.isArray(release.assets) ? release.assets : [];
+      const jars = assets.filter((asset) => String(asset.name || "").toLowerCase().endsWith(".jar"));
+      const jar = jars.find((asset) => !/(sources|dev|javadoc)/i.test(asset.name)) || jars[0];
+      const published = release.published_at
+        ? new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(new Date(release.published_at))
+        : "published on GitHub";
+      title.textContent = release.name || release.tag_name || "Latest release";
+      status.textContent = jar
+        ? jar.name + " · " + published
+        : "Published " + published + ". This release has no JAR asset; check its notes.";
+      pageLink.href = release.html_url || releasesUrl;
+      jarLink.href = jar ? jar.browser_download_url : (release.html_url || releasesUrl);
+      jarLink.textContent = jar ? "Download JAR" : "Open latest release";
+      document.querySelectorAll(".version-chip").forEach((chip) => {
+        chip.textContent = releaseVersion(release) || chip.textContent;
+      });
+    }).catch(() => {
+      title.textContent = "Published releases";
+      status.textContent = "Latest release could not be checked. Open GitHub Releases to choose the newest JAR.";
+      jarLink.href = releasesUrl;
+      jarLink.textContent = "View releases";
+      pageLink.href = releasesUrl;
+    });
+  }
 
   function route() {
     const slug = location.hash.replace(/^#\/?/, "").split("?")[0];
@@ -79,6 +136,8 @@
       pre.appendChild(button);
     });
 
+    hydrateLatestRelease();
+
     const headings = Array.from(content.querySelectorAll(".doc-section > h2"));
     toc.innerHTML = headings.map((heading) => '<a href="#' + heading.parentElement.id + '">' +
       escapeHtml(heading.textContent) + '</a>').join("");
@@ -132,6 +191,11 @@
 
   renderNav();
   renderPage();
+  loadLatestRelease().then((release) => {
+    document.querySelectorAll(".version-chip").forEach((chip) => {
+      chip.textContent = releaseVersion(release) || chip.textContent;
+    });
+  }).catch(() => {});
   window.addEventListener("hashchange", renderPage);
   mobileMenu.addEventListener("click", () => sidebar.classList.contains("open") ? closeSidebar() : openSidebar());
   scrim.addEventListener("click", closeSidebar);

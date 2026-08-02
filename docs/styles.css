@@ -97,6 +97,13 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 32px 0; }
 .button-link.secondary { color: var(--text); background: var(--surface-3); border: 1px solid var(--line-strong); }
 .button-link.secondary:hover { color: #fff; border-color: #6b5e78; }
 
+.release-panel { position: relative; overflow: hidden; padding: 24px; border: 1px solid #51425e; border-radius: 9px; background: linear-gradient(135deg, rgba(172,117,255,.12), rgba(255,138,61,.06)); }
+.release-panel::after { content: ""; position: absolute; width: 110px; height: 110px; right: -45px; top: -55px; background: var(--purple); opacity: .13; transform: rotate(35deg); }
+.release-kicker { color: var(--orange); font-size: 10px; font-weight: 900; letter-spacing: .13em; }
+.release-panel h3 { position: relative; margin: 8px 0 7px; font-size: 24px; }
+.release-panel p { position: relative; margin-bottom: 0; color: var(--muted); }
+.release-panel .hero-actions { margin-top: 18px; }
+
 .card-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 20px 0; }
 .doc-card { min-height: 120px; padding: 18px; color: var(--text); border: 1px solid var(--line); border-radius: 8px; background: var(--surface); transition: transform .15s ease, border-color .15s ease; }
 .doc-card:hover { color: var(--text); transform: translateY(-2px); border-color: #5b4e67; }

@@ -10,7 +10,7 @@
 
   const groups = [
     { title: "Start", pages: ["home", "install", "scope"] },
-    { title: "Content", pages: ["songs", "mod-packs", "mod-worlds", "machines", "machine-hitboxes"] },
+    { title: "Content", pages: ["songs", "mod-packs", "mod-worlds", "animations", "machines", "machine-hitboxes"] },
     { title: "Gameplay", pages: ["note-skins", "custom-notes", "events", "camera", "rollback", "multiplayer"] },
     { title: "Lua", pages: ["lua-overview", "lua-blockified", "lua-world", "lua-callbacks", "machine-lua", "lua-compatibility"] },
     { title: "Tools", pages: ["chart-editor", "free-camera", "commands", "formats"] }
@@ -19,7 +19,7 @@
   const pages = {};
 
   pages.home = page("Blockified Engine", "Official documentation", "Build Friday Night Funkin' songs, stages, machines, and world scenes inside Minecraft.", ["2.1.1bbs", "NeoForge 1.21.1", "Singleplayer + LAN"],
-    `<div class="hero-panel"><span>DOCUMENTATION SCOPE</span><h2>Blockified additions, in one place.</h2><p>This reference covers features created or changed by Blockified. Compatible Psych Engine behavior is linked, not copied.</p><div class="hero-actions"><a class="button-link" href="#/install">Install</a><a class="button-link secondary" href="#/lua-overview">Lua API</a></div></div>`,
+    `<div class="hero-panel"><span>DOCUMENTATION · GUIDES · WIKI</span><h2>Build with Blockified.</h2><p>Learn installation, content creation, animation, Lua, world tools, and every feature Blockified adds or changes. Compatible Psych Engine behavior is linked, not copied.</p><div class="hero-actions"><a class="button-link" href="#/install">Install</a><a class="button-link secondary" href="#/animations">Make animations</a><a class="button-link secondary" href="#/lua-overview">Lua API</a></div></div>`,
     section("choose", "Choose a path", `<div class="card-grid">
       <a class="doc-card" href="#/songs"><span>CONTENT</span><h3>Add a song</h3><p>Use a lightweight song folder or complete pack.</p></a>
       <a class="doc-card" href="#/machines"><span>WORLDS</span><h3>Build a machine</h3><p>Texture it, define hitboxes, and script its menu.</p></a>
@@ -34,10 +34,10 @@
   );
   pages.home.titleLogo = "./assets/blockified-engine-logo.png";
 
-  pages.install = page("Install and run", "Getting started", "Requirements, optional animation support, and first launch.", ["NeoForge", "Minecraft 1.21.1"],
-    section("requirements", "Requirements", `<ul><li>Minecraft Java Edition 1.21.1.</li><li>NeoForge for 1.21.1.</li><li>The Blockified Engine JAR in the instance <code>mods</code> folder.</li></ul>`),
-    section("bbs", "Optional BBS animation stack", `<p>BBS character animation can use BBS FS 2.3.1+, Sinytra Connector 2.0.0-beta.15+, and Forgified Fabric API 0.116.7+.</p>${callout("Optional", "Standard Blockified song playback does not require the BBS stack.")}`),
-    section("launch", "First launch", `<ol><li>Start once so <code>config/fnfmod</code> is created.</li><li>Add songs under <code>songs</code>, or complete packs under <code>mods</code>.</li><li>Use <code>/fnf reload all</code> after live content edits.</li></ol>`),
+  pages.install = page("Install and run", "Getting started", "Download the latest release and install the complete required mod stack.", ["NeoForge", "Minecraft 1.21.1", "4 required JARs"],
+    section("download", "Download Blockified", `<div class="release-panel" id="latest-release" aria-live="polite"><span class="release-kicker">LATEST GITHUB RELEASE</span><h3 id="latest-release-title">Checking latest release…</h3><p id="latest-release-status">Looking for a published Blockified JAR.</p><div class="hero-actions"><a class="button-link" id="latest-release-jar" href="https://github.com/Migokc/Blockified-engine_a-Minecraft-mod-made-with-AI/releases" target="_blank" rel="noreferrer">View releases</a><a class="button-link secondary" id="latest-release-page" href="https://github.com/Migokc/Blockified-engine_a-Minecraft-mod-made-with-AI/releases" target="_blank" rel="noreferrer">Release notes</a></div></div>${callout("No build step needed", "Normal players install the published JAR. Building from source is only for development when no suitable release exists.")}`),
+    section("requirements", "Required mods", `<p>Blockified requires all four JARs in the same NeoForge instance:</p><div class="table-wrap"><table><thead><tr><th>Mod</th><th>Minimum version</th><th>Purpose</th></tr></thead><tbody><tr><td>Blockified Engine</td><td>Latest release</td><td>FNF engine and Minecraft integration</td></tr><tr><td><a href="https://modrinth.com/mod/bbs-mod/" target="_blank" rel="noreferrer">BBS FS</a></td><td>2.3.1+</td><td>Character forms and animation states</td></tr><tr><td><a href="https://github.com/Sinytra/Connector" target="_blank" rel="noreferrer">Sinytra Connector</a></td><td>2.0.0-beta.15+</td><td>Runs the Fabric BBS JAR on NeoForge</td></tr><tr><td><a href="https://github.com/Sinytra/ForgifiedFabricAPI" target="_blank" rel="noreferrer">Forgified Fabric API</a></td><td>0.116.7+</td><td>Fabric API compatibility required by the stack</td></tr></tbody></table></div>${callout("Required stack", "BBS FS, Sinytra Connector, and Forgified Fabric API are requirements, not optional extras. Keep each as a separate JAR beside Blockified Engine.")}`),
+    section("launch", "First launch", `<ol><li>Install NeoForge for Minecraft 1.21.1.</li><li>Put Blockified Engine, BBS FS, Sinytra Connector, and Forgified Fabric API in the instance <code>mods</code> folder.</li><li>Start once so <code>config/fnfmod</code> is created.</li><li>Add songs under <code>songs</code>, or complete packs under <code>mods</code>.</li><li>Use <code>/fnf reload all</code> after live content edits.</li></ol>`),
     section("presentation", "Presentation modes", `<p>Minecraft, FNF, and Legacy modes change stage/camera presentation without requiring a different chart format.</p>`)
   );
 
@@ -109,6 +109,38 @@
     section("chart", "Chart selection", `<p>Use chart <code>arrowSkin</code> and <code>splashSkin</code>. Global splash atlases may live at <code>config/fnfmod/splashes/&lt;name&gt;.png/.xml</code>.</p>`),
     section("hold", "Long-note animation", `<p>While an animated arrow skin is held on a sustain, Blockified advances the arrow animation every two atlas frames. Only the arrow skin is affected.</p>`),
     section("reload", "Reload", api("/fnf reload skins", "Reloads note skin definitions and atlases.", "Command"))
+  );
+
+  pages.animations = page("Animations", "Creation guide", "Create BBS character mappings and Sparrow XML sprite animations.", ["BBS states", "Sparrow XML", "JSON", "Lua"],
+    section("choose", "Choose an animation type", `<div class="table-wrap"><table><thead><tr><th>What moves</th><th>Format</th><th>Where it lives</th></tr></thead><tbody><tr><td>Minecraft/BBS character</td><td>BBS form states mapped by JSON</td><td><code>animations/&lt;character&gt;.json</code></td></tr><tr><td>FNF character or world sprite</td><td>PNG + Sparrow XML atlas</td><td>Complete pack <code>images/</code> and character JSON/Lua</td></tr><tr><td>Machine-menu sprite</td><td>PNG + Sparrow XML atlas</td><td>Machine assets loaded by menu Lua</td></tr><tr><td>Notes, receptors, sustains, splashes</td><td>PNG + Sparrow XML atlas</td><td><code>config/fnfmod/skins/&lt;skin&gt;/</code></td></tr></tbody></table></div>`),
+    section("bbs-prepare", "1. Prepare BBS states", `<p>Create or import a BBS FS form, then give it named states such as <code>idle</code>, <code>singLEFT</code>, <code>singDOWN</code>, <code>singUP</code>, and <code>singRIGHT</code>. Blockified does not create the movement itself; it tells BBS which state to play.</p>`),
+    section("bbs-map", "2. Map a BBS character", `<p>Create <code>animations/my-character.json</code> in a complete pack. Add <code>my-character-opp.json</code> only when the opponent needs a different form or mapping.</p>${code("json", `{
+  "bbsForm": "My BF form",
+  "cameraOffset": [0.0, 0.5],
+  "animations": {
+    "idle": "idle",
+    "left": { "state": "singLEFT", "cameraOffset": [-1.0, 0.0] },
+    "down": "singDOWN",
+    "up": "singUP",
+    "right": { "state": "singRIGHT", "cameraOffset": [1.0, 0.0] },
+    "attack": "sword-swing"
+  }
+}`)}<p>Keys are Blockified animation names used by gameplay, events, and Lua. Values are BBS state IDs. <code>cameraOffset</code> uses blocks: X is screen-right, Y is screen-up.</p>`),
+    section("bbs-use", "3. Use and test it", `<ol><li>Select <code>my-character</code> in the Character Editor or character definition.</li><li>Preview each mapping in the Character Editor.</li><li>Use <strong>Play Animation</strong> with <code>attack</code>, or call <code>characterPlayAnim(tag, 'attack')</code>.</li><li>Run <code>/fnf reload animations</code> after editing files externally.</li></ol>${callout("Names are open-ended", "Idle and sing directions drive normal gameplay, but custom names are supported. The JSON key is the name used by events and Lua.")}`),
+    section("sparrow", "Make a Sparrow XML animation", `<ol><li>Export one PNG spritesheet plus Adobe Animate/Sparrow XML from a compatible atlas tool.</li><li>Keep PNG and XML together; usually use the same base filename.</li><li>Give related frames a shared prefix, such as <code>idle0000</code>, <code>idle0001</code>, and <code>idle0002</code>.</li><li>Register that prefix in character JSON or Lua, then play the registered animation name.</li></ol>${code("lua", `makeAnimatedLuaSprite('dancer', 'images/dancer', 0, 0)
+addAnimationByPrefix('dancer', 'idle', 'idle', 24, true)
+addAnimationByPrefix('dancer', 'cheer', 'cheer', 24, false)
+addLuaSprite('dancer')
+playAnim('dancer', 'idle', true)`)}`),
+    section("machine", "Animate a machine menu sprite", code("lua", `local dancer = ui.animatedSprite(
+  'dancer',
+  'images/dancer.png',
+  'images/dancer.xml',
+  0.5, 0.25
+)
+dancer:addAnimationByPrefix('idle', 'idle', 24, true)
+dancer:playAnimation('idle')`)),
+    section("troubleshoot", "Troubleshooting", `<ul><li><strong>Nothing plays:</strong> verify the requested prefix exactly matches XML frame names.</li><li><strong>Wrong BBS motion:</strong> verify the mapped <code>state</code> exists on the selected form.</li><li><strong>Opponent is wrong:</strong> create the optional <code>-opp.json</code> override.</li><li><strong>Atlas not found:</strong> keep path case exact and place rich assets in a complete pack.</li><li><strong>Frames wobble:</strong> export stable registration points; Blockified applies Sparrow trim offsets but cannot repair inconsistent source pivots.</li></ul>`)
   );
 
   pages["custom-notes"] = page("Custom note types", "Gameplay", "Attach Lua behavior and declared properties to chart notes.", ["Complete packs", "Lua"],
