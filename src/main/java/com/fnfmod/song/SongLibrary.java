@@ -5,6 +5,7 @@ import com.fnfmod.chart.CodenameChartParser;
 import com.fnfmod.chart.LegacyChartParser;
 import com.fnfmod.chart.SongChart;
 import com.fnfmod.chart.VSliceChartParser;
+import com.fnfmod.world.ModContentScope;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
@@ -143,14 +144,20 @@ public class SongLibrary {
         } catch (IOException e) {
             FnfMod.LOGGER.error("Failed to scan songs folder", e);
         }
-        // Complete engine-style packs. Direct songs above retain highest priority.
-        scanPsychRoot(modsDir(), found, icons);
-        for (String folder : getExternalFolders()) {
-            try {
-                EnumSet<ExternalContent> content = getExternalFolderContent(folder);
-                scanPsychRoot(Path.of(folder), found, icons, content);
-            } catch (Exception e) {
-                FnfMod.LOGGER.warn("Failed to scan external folder {}: {}", folder, e.toString());
+        // Installed packs are world-scoped. A bundled world sees only its owner;
+        // ordinary singleplayer/LAN worlds see none. Dedicated servers retain the
+        // pre-scoping global library for backwards compatibility.
+        if (ModContentScope.mode() == ModContentScope.Mode.MOD_WORLD) {
+            ModContentScope.activeMod().ifPresent(active -> scanPsychRoot(active.root(), found, icons));
+        } else if (ModContentScope.mode() == ModContentScope.Mode.ALL) {
+            scanPsychRoot(modsDir(), found, icons);
+            for (String folder : getExternalFolders()) {
+                try {
+                    EnumSet<ExternalContent> content = getExternalFolderContent(folder);
+                    scanPsychRoot(Path.of(folder), found, icons, content);
+                } catch (Exception e) {
+                    FnfMod.LOGGER.warn("Failed to scan external folder {}: {}", folder, e.toString());
+                }
             }
         }
         // assign difficulty keys now that every folder's variations are gathered
@@ -294,6 +301,7 @@ public class SongLibrary {
      * unrelated packs lower in the song-search list.
      */
     public static Path primaryExternalAssetRoot(ExternalContent content) {
+        if (ModContentScope.mode() != ModContentScope.Mode.ALL) return null;
         List<String> folders = getExternalFolders();
         if (folders.isEmpty()) return null;
         String first = folders.get(0);
@@ -784,6 +792,11 @@ public class SongLibrary {
             if (!source.isAbsolute()) source = localDir.resolve(source);
             source = source.toAbsolutePath().normalize();
             if (source.equals(localDir.toAbsolutePath().normalize()) || !Files.isDirectory(source)) return null;
+            if (!ModContentScope.allowsContentPath(source)) {
+                FnfMod.LOGGER.warn("Chart override {} cannot access out-of-scope source {}",
+                        override.id, source);
+                return null;
+            }
 
             Map<String, SongEntry> sourceSongs = new LinkedHashMap<>();
             scanPsychRoot(source, sourceSongs, new LinkedHashMap<>());

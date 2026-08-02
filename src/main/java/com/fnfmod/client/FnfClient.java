@@ -8,7 +8,9 @@ import com.fnfmod.client.gui.editor.ChartEditorScreen;
 import com.fnfmod.client.render.IconLibrary;
 import com.fnfmod.client.render.NoteStyle;
 import com.fnfmod.net.FnfPayloads;
+import com.fnfmod.machine.MachineLibrary;
 import com.fnfmod.song.SongLibrary;
+import com.fnfmod.world.ModContentScope;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import net.minecraft.client.Minecraft;
 import net.minecraft.commands.CommandSourceStack;
@@ -19,6 +21,7 @@ import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.fml.event.lifecycle.FMLClientSetupEvent;
 import net.neoforged.neoforge.client.event.RegisterClientCommandsEvent;
 import net.neoforged.neoforge.client.event.RegisterKeyMappingsEvent;
+import net.neoforged.neoforge.client.event.EntityRenderersEvent;
 import net.neoforged.neoforge.client.event.RenderGuiLayerEvent;
 import net.neoforged.neoforge.client.event.RenderLevelStageEvent;
 import net.neoforged.neoforge.client.event.ClientPlayerNetworkEvent;
@@ -43,13 +46,25 @@ public final class FnfClient {
         @SubscribeEvent
         public static void onClientSetup(FMLClientSetupEvent event) {
             event.enqueueWork(() -> {
+                ModContentScope.clear();
                 SongLibrary.ensureFolders();
                 SongLibrary.pruneCache(30); // drop server downloads unused for a month
                 SongLibrary.rescan();
+                MachineLibrary.rescan();
                 com.fnfmod.client.render.IconLibrary.rescan();
                 ClientOptions.load();
                 CharacterAnimations.init();
             });
+        }
+
+        @SubscribeEvent
+        public static void onRegisterRenderers(EntityRenderersEvent.RegisterRenderers event) {
+            event.registerBlockEntityRenderer(FnfMod.FUNKIN_MACHINE_BLOCK_ENTITY.get(),
+                    com.fnfmod.client.render.FunkinMachineRenderer::new);
+            event.registerBlockEntityRenderer(FnfMod.MACHINE_ANCHOR_BLOCK_ENTITY.get(),
+                    com.fnfmod.client.render.MachineAnchorRenderer::new);
+            event.registerEntityRenderer(FnfMod.MACHINE_HITBOX_ENTITY.get(),
+                    com.fnfmod.client.render.MachineHitboxEntityRenderer::new);
         }
     }
 
@@ -58,6 +73,13 @@ public final class FnfClient {
         @SubscribeEvent
         public static void onClientLogout(ClientPlayerNetworkEvent.LoggingOut event) {
             ClientSession.reset();
+            com.fnfmod.client.render.MachineHitboxPreview.clear();
+            com.fnfmod.client.render.MachineAtlasCache.clear();
+            com.fnfmod.client.render.MachineTextureCache.clear();
+            ModContentScope.clear();
+            SongLibrary.rescan();
+            MachineLibrary.rescan();
+            IconLibrary.rescan();
         }
 
         /** Add a "Mod Worlds" button to the singleplayer world-selection screen. */
@@ -121,6 +143,7 @@ public final class FnfClient {
         @SubscribeEvent
         public static void onRenderLevelStage(RenderLevelStageEvent event) {
             if (event.getStage() != RenderLevelStageEvent.Stage.AFTER_PARTICLES) return;
+            com.fnfmod.client.render.MachineHitboxPreview.render(event.getPoseStack(), event.getCamera());
             if (Minecraft.getInstance().screen instanceof GameplayScreen gameplay) {
                 gameplay.renderLuaWorld(event.getPoseStack(), event.getCamera());
             }
@@ -184,6 +207,7 @@ public final class FnfClient {
         private static int reloadAll(CommandSourceStack source) {
             ClientOptions.load();
             SongLibrary.rescan();
+            MachineLibrary.rescan();
             IconLibrary.rescan();
             CharacterAnimations.reload();
             NoteStyle.reload();
@@ -200,6 +224,7 @@ public final class FnfClient {
 
         private static int reloadSongs(CommandSourceStack source) {
             SongLibrary.rescan();
+            MachineLibrary.rescan();
             // Song/mod folders can also provide icons.
             IconLibrary.rescan();
             feedback(source, "Reloaded songs. " + SongLibrary.getSongs().size() + " song(s) found.");

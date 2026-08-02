@@ -3,10 +3,18 @@ package com.fnfmod.client;
 import com.fnfmod.client.gui.GameplayScreen;
 import com.fnfmod.client.gui.SongSelectScreen;
 import com.fnfmod.client.gui.WaitingScreen;
+import com.fnfmod.client.gui.machine.MachineEditorScreen;
+import com.fnfmod.client.gui.machine.MachineMenuScreen;
+import com.fnfmod.client.gui.machine.HitboxBuilderScreen;
 import com.fnfmod.net.FnfPayloads;
+import com.fnfmod.machine.MachineLibrary;
+import com.fnfmod.song.SongLibrary;
+import com.fnfmod.world.ModContentScope;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.screens.ConfirmScreen;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
+import net.neoforged.neoforge.network.PacketDistributor;
 
 /** Dispatches client-bound payloads. Only ever class-loaded on the client. */
 public final class ClientNetHandler {
@@ -58,6 +66,69 @@ public final class ClientNetHandler {
             }
         } else if (payload instanceof FnfPayloads.SessionCancelS2C p) {
             ClientSession.onCancel(p);
+        } else if (payload instanceof FnfPayloads.OpenMachineEditorS2C p) {
+            mc.setScreen(new MachineEditorScreen(p.pos(), p.profileId()));
+        } else if (payload instanceof FnfPayloads.MachineEditorResultS2C p) {
+            if (mc.screen instanceof MachineEditorScreen editor) {
+                editor.onServerResult(p.success(), p.message(), p.profileId(), p.refresh());
+            } else if (mc.player != null) {
+                mc.player.displayClientMessage(Component.literal(p.message()), true);
+            }
+        } else if (payload instanceof FnfPayloads.OpenMachineMenuS2C p) {
+            ClientSession.reset();
+            ClientSession.activePos = p.pos();
+            String compatibilityError = null;
+            String activeId = ModContentScope.activeMod().map(ModContentScope.ActiveMod::id).orElse("");
+            if (!activeId.equals(p.modId())) {
+                ModContentScope.clear();
+                if (ModContentScope.bindClientMod(p.modId())) {
+                    SongLibrary.rescan();
+                    MachineLibrary.rescan();
+                    com.fnfmod.client.render.IconLibrary.rescan();
+                } else {
+                    compatibilityError = "Missing required mod: " + p.modId();
+                }
+            }
+            if (compatibilityError == null && !MachineLibrary.packVersion().equals(p.packVersion())) {
+                compatibilityError = "Mod version/content mismatch. Server: " + p.packVersion()
+                        + ", client: " + MachineLibrary.packVersion();
+            }
+            mc.setScreen(new MachineMenuScreen(p.pos(), p.profileId(), p.machineData(),
+                    compatibilityError, p.songs()));
+        } else if (payload instanceof FnfPayloads.ModScopeS2C p) {
+            if (p.modId().isBlank()) {
+                ModContentScope.clear();
+            } else {
+                String activeId = ModContentScope.activeMod().map(ModContentScope.ActiveMod::id).orElse("");
+                if (!activeId.equals(p.modId())) {
+                    ModContentScope.clear();
+                    if (!ModContentScope.bindClientMod(p.modId()) && mc.player != null) {
+                        mc.player.displayClientMessage(Component.literal(
+                                "Missing bundled-world mod assets: " + p.modId()), false);
+                    }
+                }
+            }
+            SongLibrary.rescan();
+            MachineLibrary.rescan();
+            com.fnfmod.client.render.IconLibrary.rescan();
+            if (!p.modId().isBlank() && !MachineLibrary.packVersion().equals(p.packVersion())
+                    && mc.player != null) {
+                mc.player.displayClientMessage(Component.literal(
+                        "Machine mod mismatch. Custom menus use fallback until versions match."), false);
+            }
+        } else if (payload instanceof FnfPayloads.OpenHitboxBuilderS2C p) {
+            mc.setScreen(new HitboxBuilderScreen(p.profileId()));
+        } else if (payload instanceof FnfPayloads.HitboxSelectionStateS2C p) {
+            com.fnfmod.client.render.MachineHitboxPreview.apply(p);
+        } else if (payload instanceof FnfPayloads.ConfirmHitboxRemovalS2C p) {
+            mc.setScreen(new ConfirmScreen(confirmed -> {
+                if (confirmed) {
+                    PacketDistributor.sendToServer(new FnfPayloads.ConfirmHitboxRemovalC2S(
+                            p.anchorPos(), p.groupId()));
+                }
+                mc.setScreen(null);
+            }, Component.literal("Remove virtual Funkin' Machine?"),
+                    Component.literal("This removes its hitbox and anchor. Any active song session will stop.")));
         }
     }
 }

@@ -1,0 +1,8 @@
+{
+  "variants": {
+    "facing=north": { "model": "fnfmod:block/machine_anchor" },
+    "facing=south": { "model": "fnfmod:block/machine_anchor" },
+    "facing=west": { "model": "fnfmod:block/machine_anchor" },
+    "facing=east": { "model": "fnfmod:block/machine_anchor" }
+  }
+}

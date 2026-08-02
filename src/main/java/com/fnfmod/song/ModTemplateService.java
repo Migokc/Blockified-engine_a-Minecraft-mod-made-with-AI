@@ -16,6 +16,7 @@ public final class ModTemplateService {
             "fonts",
             "images",
             "images/icons",
+            "machines",            // world-scoped Funkin' Machine profiles and Lua menus
             "music",
             "scripts",
             "shaders",

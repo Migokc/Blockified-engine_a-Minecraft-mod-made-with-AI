@@ -19,6 +19,7 @@ import com.fnfmod.gameplay.PlaybackMode;
 import com.fnfmod.gameplay.PlaybackPolicy;
 import com.fnfmod.client.render.LuaWorldObject;
 import com.fnfmod.client.render.LuaWorldObjectRenderer;
+import com.fnfmod.client.render.WorldTextTextures;
 import com.fnfmod.client.render.HudLayerOrder;
 import com.fnfmod.client.render.SparrowAtlas;
 import com.fnfmod.client.render.PsychCanvas;
@@ -33,6 +34,7 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.client.renderer.texture.DynamicTexture;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.world.phys.Vec3;
 import net.minecraft.resources.ResourceLocation;
 import org.luaj.vm2.Globals;
 import org.luaj.vm2.LuaError;
@@ -104,6 +106,13 @@ public final class PsychLuaRuntime implements AutoCloseable {
         boolean antialiasing = true;
         /** World-camera behavior. Billboard matches vanilla name tags; lighting matches world entities. */
         boolean worldBillboard = true, worldLighting = true;
+        /** World-camera see-through: when true the object ignores depth and draws over geometry. */
+        boolean worldSeeThrough;
+        /** Cached bake of world text into a texture (drawn as a sprite), invalidated on change. */
+        String bakedKey;
+        ResourceLocation bakedTexture;
+        net.minecraft.client.renderer.texture.DynamicTexture bakedDynamic;
+        int bakedWidth, bakedHeight;
         int order = HudLayerOrder.LUA_DEFAULT;
         boolean orderExplicit;
         ResourceLocation texture;
@@ -133,6 +142,18 @@ public final class PsychLuaRuntime implements AutoCloseable {
         double animationElapsed;
         boolean animationReverse, animationFinished;
     }
+
+    /** Immutable world-object snapshot exposed specifically to the free-cam editor. */
+    public record EditableWorldObject(
+            String tag, String kind, String image, String text,
+            double x, double y, double z, double width, double height,
+            double scaleX, double scaleY, double alpha,
+            double rotationX, double rotationY, double rotationZ,
+            int color, int textSize,
+            boolean visible, boolean billboard, boolean lighting, boolean seeThrough, boolean antialiasing,
+            double borderSize, int borderColor, String borderStyle,
+            String alignment, boolean italic,
+            String animation, List<String> animations, int fps, boolean loop) {}
 
     private record Timer(String tag, long intervalMs, int totalLoops, long nextAt, int completed) {
         Timer advance(long next) { return new Timer(tag, intervalMs, totalLoops, next, completed + 1); }
@@ -731,6 +752,9 @@ public final class PsychLuaRuntime implements AutoCloseable {
         fn(g, "setTextColor", args -> { object(args.checkjstring(1)).color = color(args.optjstring(2, "FFFFFF")); return LuaValue.NIL; });
         fn(g, "setObjectCamera", args -> { object(args.checkjstring(1)).camera = args.optjstring(2, "game"); return LuaValue.NIL; });
         fn(g, "setWorldSpriteBillboard", args -> { object(args.checkjstring(1)).worldBillboard = args.optboolean(2, true); return LuaValue.NIL; });
+        // World-camera see-through for any Lua object (text or sprite): draw over
+        // geometry instead of being occluded. Off by default (respects depth).
+        fn(g, "setObjectSeeThrough", args -> { object(args.checkjstring(1)).worldSeeThrough = args.optboolean(2, true); return LuaValue.NIL; });
         fn(g, "setWorldSpriteLighting", args -> { object(args.checkjstring(1)).worldLighting = args.optboolean(2, true); return LuaValue.NIL; });
         fn(g, "setWorldSpriteShadows", args -> { object(args.checkjstring(1)).worldLighting = args.optboolean(2, true); return LuaValue.NIL; });
         fn(g, "setObjectRotation", args -> { LuaObject o = object(args.checkjstring(1));
@@ -1477,6 +1501,12 @@ public final class PsychLuaRuntime implements AutoCloseable {
     }
 
     private void disposeGraphic(LuaObject object) {
+        if (object.bakedTexture != null || object.bakedDynamic != null) {
+            WorldTextTextures.release(object.bakedTexture, object.bakedDynamic);
+            object.bakedTexture = null;
+            object.bakedDynamic = null;
+            object.bakedKey = null;
+        }
         if (object.dynamicTexture != null) {
             if (object.texture != null) {
                 Minecraft.getInstance().getTextureManager().release(object.texture);
@@ -1763,6 +1793,7 @@ public final class PsychLuaRuntime implements AutoCloseable {
             case "scrollFactor.x" -> o.scrollFactorX; case "scrollFactor.y" -> o.scrollFactorY;
             case "billboard", "worldBillboard", "alwaysFaceCamera" -> o.worldBillboard;
             case "lighting", "worldLighting", "shadows", "worldShadows", "affectedByLighting" -> o.worldLighting;
+            case "seeThrough", "seethrough", "worldSeeThrough", "throughWalls", "noDepth" -> o.worldSeeThrough;
             case "animation.curAnim.name" -> animation == null ? null : animation.name;
             case "animation.curAnim.curFrame" -> o.animationFrame;
             case "animation.curAnim.finished" -> o.animationFinished;
@@ -1791,6 +1822,7 @@ public final class PsychLuaRuntime implements AutoCloseable {
             case "scrollFactor.y" -> o.scrollFactorY = number(value, o.scrollFactorY);
             case "billboard", "worldBillboard", "alwaysFaceCamera" -> o.worldBillboard = bool(value);
             case "lighting", "worldLighting", "shadows", "worldShadows", "affectedByLighting" -> o.worldLighting = bool(value);
+            case "seeThrough", "seethrough", "worldSeeThrough", "throughWalls", "noDepth" -> o.worldSeeThrough = bool(value);
             case "offset.x" -> currentAnimationOffsetForWrite(o)[0] = number(value, currentAnimationOffset(o)[0]);
             case "offset.y" -> currentAnimationOffsetForWrite(o)[1] = number(value, currentAnimationOffset(o)[1]);
             case "animation.curAnim.curFrame" -> {
@@ -2237,6 +2269,94 @@ public final class PsychLuaRuntime implements AutoCloseable {
         };
     }
 
+    /**
+     * Returns song-owned objects that occupy the 3D stage. Invisible objects are
+     * included so the editor list can recover and modify them even when they cannot be clicked.
+     */
+    public List<EditableWorldObject> editableWorldObjects() {
+        if (closed || objects.isEmpty()) return List.of();
+        List<EditableWorldObject> result = new ArrayList<>();
+        for (LuaObject o : objects.values()) {
+            if (!o.added || !"world".equalsIgnoreCase(o.camera)) continue;
+            LuaAnimation animation = currentAnimation(o);
+            String kind = o.textObject ? "text"
+                    : o.atlas != null ? "spritesheet"
+                    : o.texture == null ? "graph" : "sprite";
+            result.add(new EditableWorldObject(
+                    o.tag, kind, o.image, o.text,
+                    o.x, o.y, o.z, o.width, o.height,
+                    o.scaleX, o.scaleY, o.alpha,
+                    o.rotationX, o.rotationY, o.angle,
+                    o.color & 0xFFFFFF, o.textSize,
+                    o.visible, o.worldBillboard, o.worldLighting, o.worldSeeThrough, o.antialiasing,
+                    o.borderSize, o.borderColor & 0xFFFFFF, o.borderStyle,
+                    o.alignment, o.italic,
+                    o.currentAnimation == null ? "" : o.currentAnimation,
+                    List.copyOf(o.animations.keySet()),
+                    animation == null ? 24 : (int) Math.round(animation.frameRate),
+                    animation == null || animation.looped));
+        }
+        return List.copyOf(result);
+    }
+
+    /** Applies an editor snapshot to the same Lua object; its tag and ownership stay intact. */
+    public boolean applyWorldObjectEdit(EditableWorldObject edit) {
+        if (closed || edit == null) return false;
+        LuaObject o = objects.get(edit.tag());
+        if (o == null || !o.added || !"world".equalsIgnoreCase(o.camera)) return false;
+
+        String nextImage = edit.image() == null ? "" : edit.image();
+        boolean imageChanged = !java.util.Objects.equals(o.image, nextImage);
+        if (imageChanged && !edit.kind().equals("text") && !edit.kind().equals("graph")) {
+            o.image = nextImage;
+            if (edit.kind().equals("spritesheet")) loadObjectAtlas(o, nextImage, "auto");
+            else loadObjectImage(o, nextImage);
+        }
+
+        o.x = editorFinite(edit.x(), o.x);
+        o.y = editorFinite(edit.y(), o.y);
+        o.z = editorFinite(edit.z(), o.z);
+        o.width = Math.max(0, editorFinite(edit.width(), o.width));
+        o.height = Math.max(0, editorFinite(edit.height(), o.height));
+        o.sizeExplicit = true;
+        o.scaleX = editorFinite(edit.scaleX(), o.scaleX);
+        o.scaleY = editorFinite(edit.scaleY(), o.scaleY);
+        o.alpha = Math.max(0, Math.min(1, editorFinite(edit.alpha(), o.alpha)));
+        o.rotationX = editorFinite(edit.rotationX(), o.rotationX);
+        o.rotationY = editorFinite(edit.rotationY(), o.rotationY);
+        o.angle = editorFinite(edit.rotationZ(), o.angle);
+        o.color = edit.color() & 0xFFFFFF;
+        o.visible = edit.visible();
+        o.text = edit.text() == null ? "" : edit.text();
+        o.textSize = Math.max(1, Math.min(512, edit.textSize()));
+        o.worldBillboard = edit.billboard();
+        o.worldLighting = edit.lighting();
+        o.worldSeeThrough = edit.seeThrough();
+        o.borderSize = Math.max(0, editorFinite(edit.borderSize(), o.borderSize));
+        o.borderColor = edit.borderColor() & 0xFFFFFF;
+        o.borderStyle = edit.borderStyle() == null ? "none" : edit.borderStyle();
+        o.alignment = edit.alignment() == null ? "left" : edit.alignment();
+        o.italic = edit.italic();
+        setAntialiasing(o, edit.antialiasing());
+
+        if (edit.animation() != null && !edit.animation().isBlank()
+                && o.animations.containsKey(edit.animation())) {
+            if (!edit.animation().equals(o.currentAnimation)) {
+                startAnimation(o, edit.animation(), true, false, 0);
+            }
+            LuaAnimation animation = currentAnimation(o);
+            if (animation != null) {
+                animation.frameRate = Math.max(1, Math.min(240, edit.fps()));
+                animation.looped = edit.loop();
+            }
+        }
+        return true;
+    }
+
+    private static double editorFinite(double value, double fallback) {
+        return Double.isFinite(value) ? value : fallback;
+    }
+
     public void renderWorld(PoseStack poseStack, Camera camera, BlockPos speakers, Direction facing) {
         if (closed || objects.isEmpty()) return;
         List<LuaObject> visible = objects.values().stream()
@@ -2246,12 +2366,18 @@ public final class PsychLuaRuntime implements AutoCloseable {
         List<LuaWorldObject> worldObjects = new ArrayList<>(visible.size());
         for (LuaObject o : visible) {
             if (o.textObject) {
+                // BBS FS draws its 3D label form with the vanilla Font into its own
+                // vertex-consumer provider, flushed on the spot. Mirroring that in
+                // LuaWorldTextRenderer paints during the level pass, where drawing
+                // into Minecraft's shared buffer source did not.
                 Font selected = o.fontName.isBlank() ? null : fontLoader.get(o.fontName);
                 Font font = selected == null ? Minecraft.getInstance().font : selected;
                 worldObjects.add(new LuaWorldObject.Text(
-                        font, o.text, o.x, o.y, o.z, o.width, o.textSize,
-                        o.scaleX, o.scaleY, o.alpha, o.angle, o.rotationX, o.rotationY, o.color,
-                        o.worldBillboard, o.worldLighting));
+                        font, o.text == null ? "" : o.text,
+                        o.x, o.y, o.z, o.width, o.textSize,
+                        o.scaleX, o.scaleY, o.alpha, o.angle, o.rotationX, o.rotationY,
+                        o.color, o.worldBillboard, o.worldLighting, o.worldSeeThrough,
+                        o.borderSize, o.borderColor, o.borderStyle, o.alignment, o.italic));
             } else {
                     SparrowAtlas.Frame frame = o.texture == null ? null : currentFrame(o);
                     LuaWorldObject.Frame renderFrame = frame == null ? null
@@ -2263,7 +2389,7 @@ public final class PsychLuaRuntime implements AutoCloseable {
                             renderFrame, offset[0], offset[1],
                             o.x, o.y, o.z, o.width, o.height, o.graphicWidth, o.graphicHeight,
                             o.scaleX, o.scaleY, o.alpha, o.angle, o.rotationX, o.rotationY, o.color,
-                            o.worldBillboard, o.worldLighting));
+                            o.worldBillboard, o.worldLighting, o.worldSeeThrough));
             }
         }
         LuaWorldObjectRenderer.render(poseStack, camera, speakers, facing, worldObjects);

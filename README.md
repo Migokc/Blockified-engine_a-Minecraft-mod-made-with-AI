@@ -2,10 +2,35 @@
 
 A feature-full Friday Night Funkin' engine inside of Minecraft — **NeoForge 1.21.1**.
 
-Current release: **2.0.7bbs**.
+Current release: **2.1.0bbs**.
+
+Documentation: **[Blockified Engine Docs](https://migokc.github.io/Blockified-engine_a-Minecraft-mod-made-with-AI/)**.
+
+### 2.1.0bbs highlights
+
+- Custom machines now support mod-owned Lua menus, direct song launching,
+  settings/editor navigation, static sprites, and animated Sparrow XML atlases.
+- Virtual machine interaction volumes are non-colliding entities, support
+  fractional selection, show tool-only previews, and require confirmation for
+  deletion.
+- Temporary machine anchors are inventory-safe: they disappear after placement
+  and invalidate when dropped or moved into storage.
+- Free camera editing now includes Blender-style orbit/pan/dolly, exact numeric
+  transforms, axis/plane constraints, transform resets, origin framing, Lua
+  object copy/paste, and editable existing world objects.
+- Long-note arrow-skin animations advance every two atlas frames while held.
+- New searchable, responsive GitHub Pages documentation covers Blockified-only
+  songs, packs, machines, events, note skins, Lua, multiplayer, and tools.
 
 ### 2.0.7bbs highlights
 
+- World-scoped mod content: bundled world activates only owning mod; ordinary
+  worlds cannot see installed-mod assets.
+- Mod-contained Funkin' Machine profiles with per-face textures, persistent
+  placed-machine selection, and Lua-built menus.
+- **Funkin' Designer** item: live preview, Save/Save As/Reload, profile copy/apply.
+- Designer-built invisible menu hitboxes with full-block or precise selection,
+  separate virtual stage origin/facing, and light-block-style tool visualization.
 - Bundled Minecraft worlds under each mod's `worlds/` folder, selectable through
   a new **Mod Worlds** button and played in place so progress stays with the pack.
 - Reliable synchronous loading for bundled BBS models, including cached forms
@@ -72,6 +97,10 @@ control is disabled until the complete stack is installed.
 ## What it does
 
 - **Funkin' Machine block** (Functional Blocks creative tab). Right-click it to open the song menu.
+- **Funkin' Designer item** (Functional Blocks creative tab). Right-click a
+  machine to edit. Shift-right-click copies a profile, then shift-right-click
+  another machine to apply it. Right-click air opens virtual hitbox builder.
+  Shift-use in air clears copied profile and unfinished hitbox selection.
 - **Lightweight songs or complete mods**: use `config/fnfmod/songs/<song-name>/`
   for basic chart/audio entries, or `config/fnfmod/mods/<mod>/` for full creations.
 - **Play as Both** merges both chart sides into the existing centered four-lane
@@ -111,10 +140,11 @@ The host's choice is authoritative in multiplayer and is sent with the song mani
 Downloaded cache entries are isolated by exact song id, difficulty, presentation mode,
 and asset policy, so files left by another chart or mode cannot affect chart selection.
 
-Psych resource lookup uses the active song/mod first. If a character, image, stage,
-font, icon, or auxiliary sound is missing, the first path in **Directories** is used
-as the one shared-engine fallback. Lower paths are never searched for fallback assets,
-preventing unrelated mods from supplying a same-named file accidentally.
+Psych resource lookup uses active song/mod first. Installed packs and external
+**Directories** are exposed only while owning bundled mod world is active;
+ordinary singleplayer/LAN worlds expose none of those mod assets. Dedicated servers
+retain previous global song-library behavior for compatibility, but custom machine
+editing and Lua menus are disabled there.
 
 ## Lightweight song folder format
 
@@ -179,17 +209,191 @@ My-Mod/
   images/
   sounds/
   music/
+  machines/
   fonts/
   weeks/
+  worlds/<world>/level.dat
 ```
 
-The `mods` folder is created automatically. Rich resources—including Lua, custom
-events and notes, stages, images, sounds, fonts, characters, and animations—are
-loaded only from complete packs (plus explicitly global config folders). Songs in
-`config/fnfmod/songs/` have priority over installed packs with the same song id;
-installed packs have priority
-over later paths in the Settings **Directories** list. `/fnf reload songs` rescans
-both standalone songs and complete packs.
+The `mods` folder is created automatically. Complete pack becomes active only
+inside one of its own bundled worlds. Rich resources, including Lua, machines,
+custom events/notes, stages, images, sounds, fonts, characters, and animations,
+then resolve from that pack only. Built-in Blockified assets and lightweight
+`config/fnfmod/songs/` remain available. `/fnf reload songs` rescans current scope.
+
+### Custom Funkin' Machines
+
+Machine profiles live inside owning mod, never global config:
+
+```
+config/fnfmod/mods/My-Mod/
+  pack.json
+  machines/neon/
+    machine.json
+    menu.lua
+    textures/machine.png
+```
+
+`machine.json`:
+
+```json
+{
+  "id": "neon",
+  "displayName": "Neon Machine",
+  "menu": "menu.lua",
+  "texture": "textures/machine.png",
+  "textures": {
+    "front": "textures/front.png",
+    "top": "textures/top.png"
+  },
+  "behavior": {}
+}
+```
+
+Runtime ID becomes `my-mod:neon` (folder/ID characters normalize lowercase).
+`texture` applies every face. Optional `textures` keys: `all`, `side`, `front`,
+`back`, `left`, `right`, `top`, `bottom`. Paths must stay inside profile/active
+mod. Absolute paths, `..` traversal, symlink escape rejected.
+
+Use **Funkin' Designer** inside mod world. Selecting profile previews texture live.
+**Save** persists profile on placed block. **Save As** creates starter
+`machine.json`, `menu.lua`, `textures/`. **Reload** hot-reloads files/errors.
+
+`menu.lua` runs sandboxed: no filesystem, OS, Java, package loading, dynamic code
+loading. Each callback has execution budget; excessive loops fail to built-in
+song-menu fallback instead of freezing game.
+
+```lua
+local background = ui.panel('background', '', 0.5, 0.5, 320, 190)
+local title = ui.label('title', 'Neon Machine', 0.5, 0.25)
+local logo = ui.image('logo', 'textures/logo.png', 0.5, 0.36, 96, 48)
+local play = ui.button('play', 'Choose Song', 0.5, 0.55, 180, 24)
+local hard = ui.toggle('hard', 'Hard Mode', 0.5, 0.64, 180, 24)
+local volume = ui.slider('volume', 'Volume', 0.5, 0.72, 180, 18)
+
+volume.min = 0
+volume.max = 1
+volume.value = machineData.volume or 0.8
+
+function volume:onChange(value)
+  machineData.volume = value
+end
+
+function play:onClick()
+  machineData.opens = (machineData.opens or 0) + 1
+  machine.openSongSelect()
+end
+```
+
+Normal Lua variables, tables, functions work. Widgets expose mutable `text`, `x`,
+`y`, `width`, `height`, `visible`, `color`, `alpha`, plus type fields.
+`ui.get(id)`, `ui.remove(id)`, `ui.clear()`, `onOpen()`, `onUpdate(dt)`, `onClose()`
+supported. `machineData` persists per placed machine/world save.
+
+Static sprites and FNF/Psych Sparrow XML animations are supported inside machine
+menus. Files must stay inside active machine profile/mod:
+
+```lua
+local logo = ui.sprite('logo', 'textures/logo.png', 0.25, 0.3, 96, 48)
+logo.angle = -5
+
+local dancer = ui.animatedSprite('dancer',
+  'textures/dancer.png', 'textures/dancer.xml', 0.72, 0.45, 150, 150)
+
+dancer:addAnimation('idle', 'BF idle dance', 24, true)
+dancer:addAnimation('hey', 'BF HEY', 24, false)
+dancer:play('idle')
+
+function dancer:onComplete(animation)
+  if animation == 'hey' then self:play('idle') end
+end
+```
+
+`addAnimation()` / `addAnimationByPrefix()` use XML frame-name prefixes.
+`play()` / `playAnimation()`, `pause()`, `resume()`, `stop()`, `setFrame()` and
+`getAnimations()` available. Runtime state: `animation`, `frame`, `playing`,
+`finished`; `fps` and `loop` can change during playback. Sprite fields: `angle`, `flipX`, `flipY`,
+`antialiasing`, plus normal position/size/color/alpha/visibility fields. Without
+explicit `play()`, first XML animation starts automatically. Atlases are cached
+per PNG/XML pair and released/rescanned with machine content.
+
+Custom Lua can fully replace built-in song selector. Song list is authoritative
+from server; array indices start at 1:
+
+```lua
+for _, song in ipairs(machine.getSongs()) do
+  -- song.id, song.name, song.opponentIcon, song.difficulties
+end
+
+local song = machine.getSong('earrings') -- nil when unavailable
+if machine.hasSong('earrings') then
+  machine.playSong('earrings', 'normal', {
+    duet = false,
+    playAs = 'player', -- player, opponent, both
+    look = 'minecraft' -- minecraft, fnf, legacy
+  })
+end
+```
+
+`machine.playSong(id, difficulty)` also works with solo/player/Minecraft defaults.
+Positional form is `machine.playSong(id, difficulty, duet, playAs, look)`.
+Invalid songs/difficulties stay in menu and show error. Server revalidates every
+launch. `machine.openSongDetails(id)` opens built-in options for one song.
+
+Navigation/API calls:
+
+- `machine.openSongSelect()` — existing complete selector.
+- `machine.openSettings()` / `machine.openOptions()` — settings; Back returns to Lua menu.
+- `machine.openCharacterEditor()` — character editor; Back returns to Lua menu.
+- `machine.openChartEditor([songId], [difficulty])` — chart editor.
+- `machine.join()` — join waiting LAN session; alias of selector/session interaction.
+- `machine.saveData()` — persist `machineData` immediately.
+- `machine.close()` — close menu and release machine session.
+
+Existing APIs remain compatible. Escape also releases chooser ownership. Lua menu
+owns normal machine session rules: one host, optional LAN guest, busy-state checks.
+
+Custom machines: singleplayer/LAN only. LAN host edits; guests use menus. Guest
+must have same mod folder/machine content. Put `"version"` in `pack.json`;
+Blockified also fingerprints machine files, rejects mismatch, offers built-in
+song-menu fallback. Assets are not streamed.
+
+#### Virtual machine hitboxes
+
+Funkin' Designer can create clickable menu regions without visible Funkin'
+Machine block:
+
+1. Right-click air using Designer.
+2. Choose machine profile.
+3. Choose **Full Blocks** or **Precise**, then **Start Selection**.
+4. Right-click two opposite corners using Designer.
+5. Game gives temporary **Machine Anchor** item.
+6. Place anchor outside selected region where song stage origin should be.
+   Anchor faces player at placement time; that direction controls stage/camera.
+
+Hitbox is one persistent, non-colliding entity, not world blocks. It can overlap
+slabs, stairs, fences, models, solid blocks, fluids, and other non-full geometry
+without replacing any world state. **Full Blocks** snaps entity bounds to block
+grid. **Precise** keeps exact clicked points. Maximum is 64 blocks per axis.
+
+Hitbox region opens selected machine profile/menu for every player. Invisible
+anchor supplies same position/facing expected from real machine, so gameplay,
+commands, camera, and Lua use it normally. Anchor and hitbox survive world saves.
+
+Selection preview is yellow while choosing corners and green after completion
+while temporary anchor is held. Hold Funkin' Designer after placement to reveal
+virtual machine: orange box/line is anchor/facing; cyan wireframe is exact entity
+hitbox. Right-click cyan hitbox using Designer to edit profile; shift-right-click
+copies/applies profile, matching physical machine controls. Left-click cyan hitbox,
+or right-click orange anchor, opens removal confirmation. Confirming removes whole
+virtual machine and cancels active song session. Without Designer, anchor cannot be
+targeted or broken. Recreating it requires new selection and anchor placement.
+
+Only singleplayer/LAN host can create or remove virtual machines. LAN guests can
+use hitbox menus. Temporary anchor disappears immediately after placement. Dropping
+it, moving it into any chest/vessel/container, losing it from player inventory,
+disconnecting, changing dimension, cancelling, or restarting server deletes token
+and invalidates selection. Stale/copied anchor items are automatically removed.
 
 ### Blockified BBS character animations
 

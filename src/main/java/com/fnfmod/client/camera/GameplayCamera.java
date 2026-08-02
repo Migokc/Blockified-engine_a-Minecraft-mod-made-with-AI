@@ -160,11 +160,45 @@ public final class GameplayCamera {
         freeX += dx; freeY += dy; freeZ += dz;
     }
 
+    /** Sets the free camera's stage-frame offset directly (used by the focus tween). */
+    public static void setFreeCamOffset(double x, double y, double z) {
+        if (!freeCamEngaged) return;
+        freeX = x; freeY = y; freeZ = z;
+    }
+
+    /** Decomposes a world position into the free camera's stage-frame offset. */
+    public static double[] worldToFreeOffset(Vec3 world) {
+        Vec3 d = world.subtract(anchor);
+        return new double[]{d.dot(stageRightWorld), d.dot(stageUpWorld), d.dot(stageForwardWorld)};
+    }
+
     /** The free camera's current world position, reconstructed from its offset. */
     public static Vec3 freeCamWorldPos() {
         return anchor.add(stageRightWorld.scale(freeX))
                 .add(stageUpWorld.scale(freeY))
                 .add(stageForwardWorld.scale(freeZ));
+    }
+
+    /** Turns the free camera so its screen centre lands exactly on a world point. */
+    public static void aimFreeCamAt(Vec3 target, float currentCameraYaw, float currentCameraPitch) {
+        if (!freeCamEngaged || target == null) return;
+        Vec3 direction = target.subtract(freeCamWorldPos());
+        if (direction.lengthSqr() < 1.0e-12) return;
+        direction = direction.normalize();
+
+        double desiredYaw = Math.toDegrees(Math.atan2(-direction.x, direction.z));
+        double desiredPitch = Math.toDegrees(-Math.asin(Math.max(-1.0, Math.min(1.0, direction.y))));
+        double baseYaw = currentCameraYaw - freeYaw;
+        double basePitch = currentCameraPitch - freePitch;
+        freeYaw = wrapDegrees(desiredYaw - baseYaw);
+        freePitch = Math.max(-89.9, Math.min(89.9, desiredPitch - basePitch));
+    }
+
+    private static double wrapDegrees(double angle) {
+        angle %= 360.0;
+        if (angle >= 180.0) angle -= 360.0;
+        if (angle < -180.0) angle += 360.0;
+        return angle;
     }
 
     /** The character the section focus is currently on (for an attached Follow Pos). */

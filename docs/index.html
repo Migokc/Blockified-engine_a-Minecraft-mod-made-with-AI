@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#111015">
+  <meta name="description" content="Official Blockified Engine documentation: songs, mods, noteskins, events, Lua, machines, editors, and Minecraft-specific extensions.">
+  <meta property="og:title" content="Blockified Engine Docs">
+  <meta property="og:description" content="Blockified-specific reference for building FNF experiences inside Minecraft.">
+  <meta property="og:type" content="website">
+  <title>Blockified Engine Docs</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#doc-content">Skip to documentation</a>
+  <div class="app-shell">
+    <header class="topbar">
+      <button class="icon-button mobile-menu" id="mobile-menu" aria-label="Open navigation" aria-expanded="false">&#9776;</button>
+      <a class="brand" href="#/home" aria-label="Blockified Docs home">
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+        <span><strong>BLOCKIFIED</strong><small>ENGINE DOCS</small></span>
+      </a>
+      <div class="topbar-actions">
+        <button class="search-trigger" id="search-trigger" aria-label="Search documentation">
+          <span>Search docs</span><kbd>Ctrl K</kbd>
+        </button>
+        <span class="version-chip">2.1.0bbs</span>
+        <a class="icon-button github-link" href="https://github.com/Migokc/Blockified-engine_a-Minecraft-mod-made-with-AI" target="_blank" rel="noreferrer" aria-label="Open GitHub repository">GH</a>
+      </div>
+    </header>
+
+    <aside class="sidebar" id="sidebar" aria-label="Documentation navigation">
+      <nav id="nav"></nav>
+      <div class="sidebar-note">
+        <span>Scope rule</span>
+        <p>Only Blockified features and Blockified changes to compatible formats are documented here.</p>
+      </div>
+    </aside>
+
+    <main class="main-column">
+      <article id="doc-content" tabindex="-1"></article>
+      <footer class="page-footer">
+        <span>Blockified Engine &middot; NeoForge 1.21.1</span>
+        <a href="https://github.com/Migokc/Blockified-engine_a-Minecraft-mod-made-with-AI/issues" target="_blank" rel="noreferrer">Report documentation issue</a>
+      </footer>
+    </main>
+
+    <aside class="toc" aria-label="On this page">
+      <div class="toc-title">ON THIS PAGE</div>
+      <nav id="toc"></nav>
+    </aside>
+  </div>
+
+  <div class="search-overlay" id="search-overlay" hidden>
+    <div class="search-dialog" role="dialog" aria-modal="true" aria-labelledby="search-title">
+      <div class="search-box">
+        <span aria-hidden="true">&#8981;</span>
+        <input id="search-input" type="search" autocomplete="off" placeholder="Search Blockified features..." aria-labelledby="search-title">
+        <button id="search-close" aria-label="Close search">Esc</button>
+      </div>
+      <h2 id="search-title" class="visually-hidden">Search documentation</h2>
+      <div id="search-results" class="search-results"></div>
+      <p class="search-hint">Search covers page titles, APIs, events, formats, and examples.</p>
+    </div>
+  </div>
+
+  <div class="sidebar-scrim" id="sidebar-scrim" hidden></div>
+  <script src="./content.js"></script>
+  <script src="./app.js"></script>
+</body>
+</html>

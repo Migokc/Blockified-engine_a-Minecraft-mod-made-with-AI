@@ -24,6 +24,8 @@ import com.fnfmod.gameplay.PlaybackPolicy;
 import com.fnfmod.client.gameplay.FieldOfViewControl;
 import com.fnfmod.client.gameplay.RenderDistanceControl;
 import com.fnfmod.client.gameplay.StageChunkLoader;
+import com.fnfmod.client.gameplay.FreeCamObjects;
+import com.fnfmod.client.gameplay.NativeFilePicker;
 import com.fnfmod.client.gameplay.StageOrientation;
 import com.fnfmod.gameplay.GameplayClock;
 import com.fnfmod.gameplay.PerformerCollisions;
@@ -37,6 +39,8 @@ import net.minecraft.client.Camera;
 import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.math.Axis;
 import net.minecraft.core.Direction;
+import net.minecraft.world.level.ClipContext;
+import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.Vec3;
 import org.joml.Vector3f;
 
@@ -48,6 +52,7 @@ import com.fnfmod.client.render.PsychCanvas;
 import com.fnfmod.client.render.NonFnfHudState;
 import com.fnfmod.client.render.PsychHudState;
 import com.fnfmod.client.render.PsychNoteTextureCache;
+import com.fnfmod.client.render.FreeCamCameraMarker;
 import com.fnfmod.net.FnfPayloads;
 import com.fnfmod.song.SongEntry;
 import com.fnfmod.song.SongLibrary;
@@ -126,6 +131,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
 
     private static class GameNote {
         final SongChart.Note data;
+        final int chartIndex;
         /** Set once the note enters the scroll window and onSpawnNote has fired. */
         boolean spawnAnnounced;
         /** Resolved custom hitsound path, computed once (null = default/none). */
@@ -135,9 +141,12 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         boolean holdComplete;
         /** ms when the hold was released (>=0 = in the re-tap grace window), -1 = held. */
         double releasedMs = -1;
+        /** Next song-time sustain callback; NaN for taps/inactive holds. */
+        double nextSustainCallbackMs = Double.NaN;
 
-        GameNote(SongChart.Note data) {
+        GameNote(SongChart.Note data, int chartIndex) {
             this.data = data;
+            this.chartIndex = chartIndex;
         }
 
         double endMs() {
@@ -202,6 +211,11 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     private final List<GameNote>[] activeHolds = new List[4];
     private final double[] myStrumFlash = new double[4];   // >0 confirm remaining ms
     private final double[] otherStrumFlash = new double[4];
+    /** Custom sustain-arrow playback: one XML/spritesheet frame per two rendered frames. */
+    private final GameNote[] mySustainArrowNote = new GameNote[4];
+    private final GameNote[] otherSustainArrowNote = new GameNote[4];
+    private final long[] mySustainArrowRenderFrames = new long[4];
+    private final long[] otherSustainArrowRenderFrames = new long[4];
     private double voicesMutedUntil = -1;
 
     // partner
@@ -253,6 +267,9 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     private boolean freeCamMove;
     private double freeCamSpeed = 6.0;
     private double freeCamLastCursorX, freeCamLastCursorY;
+    private boolean freeCamViewportDragging;
+    private boolean freeCamViewportIgnoreWarpMotion;
+    private Vec3 freeCamViewportPivot;
     private long freeCamPausedAtMs;
     private long freeCamLastMoveNano;
     private String freeCamMessage = "";
@@ -261,6 +278,52 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     // anchor; otherwise attached to the focused character. Machine vs camera frame.
     private boolean freeCamOverride = true;
     private boolean freeCamCameraFrame;
+    // On-screen free-cam control panel. Clickable when the cursor is released
+    // (move/look off); the M/F/R/Ctrl+C keys still work alongside the buttons.
+    private final java.util.List<FreeCamButton> freeCamButtons = new java.util.ArrayList<>();
+    private boolean freeCamHelp;
+    private boolean freeCamHideGui;
+    private boolean freeCamMenuHidden;
+    private boolean freeCamHudOverrideActive;
+    private boolean savedHideGui;
+    // In-game text entry (rename / fps) and colour picker, drawn as free-cam modals.
+    private boolean freeCamTextEntry;
+    private String freeCamTextTarget = "";
+    private net.minecraft.client.gui.components.EditBox freeCamTextBox;
+    // Numpad-. focus-on-selection camera move (expoOut interpolation).
+    private boolean freeCamFocusing;
+    private double[] freeCamFocusFrom = new double[3];
+    private double[] freeCamFocusTo = new double[3];
+    private long freeCamFocusStart;
+    private long freeCamFocusDur;
+    private Vec3 freeCamFocusPoint;
+    private boolean freeCamColorPicker;
+    private String freeCamColorTarget = "graph";   // "graph" or "border"
+    private float pickHue, pickSat, pickBri;
+    private int pickDrag;   // 0 none, 1 square, 2 hue bar
+    private int colorDoneX, colorDoneY, colorDoneW, colorDoneH;
+    private boolean freeCamAddMenu;
+    private boolean freeCamExistingMenu;
+    private boolean freeCamModMenu;
+    private boolean freeCamAnimMenu;
+    private boolean freeCamShowReadout = true;
+    private boolean freeCamShowEntryCamera = true;
+    private Vec3 freeCamEntryCameraPos;
+    private Vector3f freeCamEntryCameraLeft;
+    private Vector3f freeCamEntryCameraUp;
+    private Vector3f freeCamEntryCameraLook;
+    private float freeCamEntryCameraYaw;
+    private float freeCamEntryCameraPitch;
+    private float freeCamEntryCameraRoll;
+    private int freeCamPanelScroll;
+    private int freeCamPanelMaxScroll;
+    private final com.fnfmod.client.gameplay.FreeCamObjects freeCamObjects =
+            new com.fnfmod.client.gameplay.FreeCamObjects();
+    private record FreeCamButton(int x, int y, int w, int h, Runnable action) {
+        boolean contains(double mx, double my) {
+            return mx >= x && mx < x + w && my >= y && my < y + h;
+        }
+    }
     // Where the player stood before an editor playtest teleported them to the
     // machine stage, restored when the playtest returns to the editor.
     private Vec3 editorReturnPos;
@@ -302,6 +365,9 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         this.chart = chart;
         this.songPlayer = songPlayer;
         this.extraCharacters = new ExtraCharacterRoster(machinePos);
+        // A definition that resolves to a Psych character JSON spawns a real 2D character.
+        this.extraCharacters.setCharacterResolver(
+                def -> assetResolver == null ? null : assetResolver.character(def));
         this.eventDispatcher = new GameplayEventDispatcher(machinePos, () -> editorPlaytest,
                 this::applyCameraFocusEvent, event -> {
                     if (luaRuntime != null) {
@@ -359,8 +425,9 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             otherLanes[i] = new ArrayList<>();
             activeHolds[i] = new ArrayList<>();
         }
-        for (SongChart.Note n : chart.notes) {
-            GameNote gn = new GameNote(n);
+        for (int noteIndex = 0; noteIndex < chart.notes.size(); noteIndex++) {
+            SongChart.Note n = chart.notes.get(noteIndex);
+            GameNote gn = new GameNote(n, noteIndex);
             // BOTH mode merges every note into one centered strumline
             boolean mine = playBoth || n.playerSide == myChartSideIsPlayer;
             if (mine) {
@@ -717,6 +784,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
 
         // Free camera freezes the song like a pause; only the camera updates.
         if (freeCam) {
+            applyExistingFreeCamEdits();
             updateFreeCam();
             return;
         }
@@ -749,7 +817,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         }
         // Extra-character tweens run independently of Lua so Legacy and Minecraft
         // charts can animate performers through the Tween Character event alone.
-        extraCharacters.update();
+        extraCharacters.update(15000.0 / Math.max(1, conductor.bpmAt(Math.max(0, songPos))));
         applyPerformerTweens();
         songPlayer.applyVolumes();
         syncVanillaHud();
@@ -817,6 +885,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                 double end = hold.endMs();
                 if (songPos >= end) {
                     it.remove();
+                    hold.nextSustainCallbackMs = Double.NaN;
                     endPsychHold(hold.data);
                     boolean graceExpiredBeforeEnd = hold.releasedMs >= 0
                             && end - hold.releasedMs > HOLD_RELEASE_GRACE_MS;
@@ -829,6 +898,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                     }
                 } else if (laneHeld[lane]) {
                     hold.releasedMs = -1; // holding (or resumed within grace)
+                    fireSustainGoodNoteHits(hold);
                     health = Math.min(2f, health + (float) (hold.data.hitHealth * dtMs / 1000.0));
                     strumFlashFor(hold)[lane] = Math.max(strumFlashFor(hold)[lane], 40);
                     // loop the sing animation while the note is held
@@ -849,6 +919,9 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                 } else {
                     // Released — 0.3s window to press again and keep the hold
                     if (hold.releasedMs < 0) hold.releasedMs = songPos;
+                    // Sustain callbacks represent successfully held segments. Do not
+                    // replay skipped segments if the key returns during grace.
+                    hold.nextSustainCallbackMs = songPos + sustainCallbackInterval(songPos);
                     if (songPos - hold.releasedMs > HOLD_RELEASE_GRACE_MS) {
                         // grace expired: the remaining trail disappears, counts as a miss
                         hold.holdDropped = true;
@@ -872,8 +945,10 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                                 animatePsychHold(n.data, lane,
                                         n.data.playerSide ? "boyfriend" : "dad");
                             }
+                            fireSustainOpponentNoteHits(n);
                             break;
                         }
+                        n.nextSustainCallbackMs = Double.NaN;
                         endPsychHold(n.data);
                         otherLaneIndex[lane]++;
                         continue;
@@ -881,7 +956,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                     if (songPos >= n.data.timeMs) {
                         if (n.data.blockHit && songPos - n.data.timeMs <= SHIT) break;
                         if (!n.data.ignoreNote && !n.data.blockHit) {
-                            int noteIndex = chart.notes.indexOf(n.data);
+                            int noteIndex = n.chartIndex;
                             boolean runDefault = luaRuntime == null || luaRuntime.onOpponentNoteHitPre(
                                     noteIndex, lane, n.data.noteType, n.data.sustainMs > 30);
                             if (!runDefault) break;
@@ -891,6 +966,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                                     n.data.playerSide ? "boyfriend" : "dad");
                             if (luaRuntime != null) luaRuntime.onOpponentNoteHit(
                                     noteIndex, lane, n.data.noteType, n.data.sustainMs > 30);
+                            startSustainCallbacks(n);
                         } else {
                             n.hit = true;
                         }
@@ -946,6 +1022,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                 // Chart-added performers get the same beat idle. loopIdle ones are
                 // skipped inside danceAll, exactly like the two above.
                 extraCharacters.danceAll();
+                extraCharacters.beat(beat, 1);
             }
         }
 
@@ -966,8 +1043,9 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             otherLaneIndex[lane] = 0;
         }
         totalMyNotes = 0;
-        for (SongChart.Note note : chart.notes) {
-            GameNote gameNote = new GameNote(note);
+        for (int noteIndex = 0; noteIndex < chart.notes.size(); noteIndex++) {
+            SongChart.Note note = chart.notes.get(noteIndex);
+            GameNote gameNote = new GameNote(note, noteIndex);
             boolean mine = playBoth || note.playerSide == myChartSideIsPlayer;
             (mine ? myLanes[note.lane] : otherLanes[note.lane]).add(gameNote);
             if (mine && !note.ratingDisabled) totalMyNotes++;
@@ -1310,6 +1388,47 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     /** All playable notes flash the (single) player strumline. */
     private double[] strumFlashFor(GameNote n) {
         return myStrumFlash;
+    }
+
+    /**
+     * Frame for a custom skin's animated confirm arrow. A negative value means
+     * there is no actively held sustain, so normal static/press rendering is used.
+     */
+    private long customSustainStrumFrame(boolean mine, int lane) {
+        GameNote sustain = null;
+        if (mine) {
+            if (!laneHeld[lane]) return -1;
+            for (GameNote note : activeHolds[lane]) {
+                if (!note.holdComplete && !note.holdDropped && songPos < note.endMs()) {
+                    sustain = note;
+                    break;
+                }
+            }
+        } else {
+            List<GameNote> notes = otherLanes[lane];
+            int from = Math.max(0, otherLaneIndex[lane] - 1);
+            for (int i = from; i < notes.size(); i++) {
+                GameNote note = notes.get(i);
+                if (note.data.timeMs > songPos) break;
+                if (note.hit && note.data.sustainMs > 30 && songPos < note.endMs()) {
+                    sustain = note;
+                    break;
+                }
+            }
+        }
+        GameNote[] activeNotes = mine ? mySustainArrowNote : otherSustainArrowNote;
+        long[] renderFrames = mine ? mySustainArrowRenderFrames : otherSustainArrowRenderFrames;
+        if (sustain == null) {
+            activeNotes[lane] = null;
+            renderFrames[lane] = 0;
+            return -1;
+        }
+        if (activeNotes[lane] != sustain) {
+            activeNotes[lane] = sustain;
+            renderFrames[lane] = 0;
+        }
+        // Hold each atlas frame for exactly two screen renders, then advance.
+        return renderFrames[lane]++ / 2;
     }
 
     private void spawnCoverEnd(int lane) {
@@ -1947,7 +2066,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             }
             return;
         }
-        int bestIndex = chart.notes.indexOf(best.data);
+        int bestIndex = best.chartIndex;
         if (luaRuntime != null && !luaRuntime.onGoodNoteHitPre(
                 bestIndex, best.data.lane, best.data.noteType, best.data.sustainMs > 30)) {
             return;
@@ -1985,7 +2104,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             if (n == best || n.hit || n.missed) continue;
             if (Math.abs(n.data.timeMs - best.data.timeMs) <= stackMs
                     && !n.data.hitCausesMiss && !"Hurt Note".equals(n.data.noteType)) {
-                int noteIndex = chart.notes.indexOf(n.data);
+                int noteIndex = n.chartIndex;
                 if (luaRuntime == null || luaRuntime.onGoodNoteHitPre(
                         noteIndex, n.data.lane, n.data.noteType, n.data.sustainMs > 30)) {
                     creditHit(n, judgement);
@@ -2022,9 +2141,12 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         }
         health = Math.min(2f, health + (float) n.data.hitHealth);
         strumFlashFor(n)[n.data.lane] = 150;
-        if (n.data.sustainMs > 30) activeHolds[n.data.lane].add(n);
+        if (n.data.sustainMs > 30) {
+            activeHolds[n.data.lane].add(n);
+            startSustainCallbacks(n);
+        }
         if (luaRuntime != null) luaRuntime.onGoodNoteHit(
-                chart.notes.indexOf(n.data), n.data.lane, n.data.noteType, n.data.sustainMs > 30);
+                n.chartIndex, n.data.lane, n.data.noteType, n.data.sustainMs > 30);
 
         // FNF splashes only fire on sick hits
         int customSplashVariants = customNoteTextures.splashVariants(n.data.noteSplashTexture, n.data.lane);
@@ -2053,7 +2175,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         if (!n.data.noMissAnimation) sing(lane, true, n.data);
         sendNoteEvent(lane, (byte) 4);
         if (luaRuntime != null) luaRuntime.onNoteMiss(
-                chart.notes.indexOf(n.data), lane, n.data.noteType, n.data.sustainMs > 30);
+                n.chartIndex, lane, n.data.noteType, n.data.sustainMs > 30);
         recalculateRating(true);
         checkDeath();
     }
@@ -2073,6 +2195,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
 
     /** Dropping a sustain early = full miss (score, stats, health, vocals). */
     private void missHold(int lane, GameNote hold) {
+        hold.nextSustainCallbackMs = Double.NaN;
         misses++;
         judgements[4]++;
         accuracyCount++;
@@ -2084,9 +2207,58 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         if (!hold.data.noMissAnimation) sing(lane, true, hold.data);
         sendNoteEvent(lane, (byte) 4);
         if (luaRuntime != null) luaRuntime.onNoteMiss(
-                chart.notes.indexOf(hold.data), lane, hold.data.noteType, true);
+                hold.chartIndex, lane, hold.data.noteType, true);
         recalculateRating(true);
         checkDeath();
+    }
+
+    /** Psych-style sustain segments occur once per musical step, independent of FPS. */
+    private double sustainCallbackInterval(double atMs) {
+        double bpm = conductor.bpmAt(Math.max(0, atMs));
+        if (!Double.isFinite(bpm) || bpm <= 0) bpm = Math.max(1, chart.startBpm);
+        return Mth.clamp(15000.0 / bpm, 10.0, 1000.0);
+    }
+
+    private void startSustainCallbacks(GameNote note) {
+        if (note.data.sustainMs <= 30) {
+            note.nextSustainCallbackMs = Double.NaN;
+            return;
+        }
+        double from = Math.max(songPos, note.data.timeMs);
+        note.nextSustainCallbackMs = from + sustainCallbackInterval(from);
+    }
+
+    private void fireSustainGoodNoteHits(GameNote note) {
+        if (luaRuntime == null || !Double.isFinite(note.nextSustainCallbackMs)) return;
+        int index = note.chartIndex;
+        int guard = 0;
+        while (songPos >= note.nextSustainCallbackMs
+                && note.nextSustainCallbackMs < note.endMs() && guard++ < 64) {
+            double firedAt = note.nextSustainCallbackMs;
+            luaRuntime.onGoodNoteHit(index, note.data.lane, note.data.noteType, true);
+            note.nextSustainCallbackMs = firedAt + sustainCallbackInterval(firedAt);
+        }
+        skipExcessSustainCallbacks(note);
+    }
+
+    private void fireSustainOpponentNoteHits(GameNote note) {
+        if (luaRuntime == null || !Double.isFinite(note.nextSustainCallbackMs)) return;
+        int index = note.chartIndex;
+        int guard = 0;
+        while (songPos >= note.nextSustainCallbackMs
+                && note.nextSustainCallbackMs < note.endMs() && guard++ < 64) {
+            double firedAt = note.nextSustainCallbackMs;
+            luaRuntime.onOpponentNoteHit(index, note.data.lane, note.data.noteType, true);
+            note.nextSustainCallbackMs = firedAt + sustainCallbackInterval(firedAt);
+        }
+        skipExcessSustainCallbacks(note);
+    }
+
+    /** Avoid an unbounded callback burst after a very large clock jump. */
+    private void skipExcessSustainCallbacks(GameNote note) {
+        if (Double.isFinite(note.nextSustainCallbackMs) && songPos >= note.nextSustainCallbackMs) {
+            note.nextSustainCallbackMs = songPos + sustainCallbackInterval(songPos);
+        }
     }
 
     private void creditHarmfulHit(GameNote note) {
@@ -2103,7 +2275,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         addPopup("OUCH", 0xFFFF3333);
         if (!note.data.noMissAnimation) sing(note.data.lane, true, note.data);
         sendNoteEvent(note.data.lane, (byte) 4);
-        int index = chart.notes.indexOf(note.data);
+        int index = note.chartIndex;
         if (luaRuntime != null) {
             luaRuntime.onNoteMiss(index, note.data.lane, note.data.noteType, note.data.sustainMs > 30);
             luaRuntime.onGoodNoteHit(index, note.data.lane, note.data.noteType, note.data.sustainMs > 30);
@@ -2127,7 +2299,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                     if (note.data.timeMs > cutoff) break; // lanes stay time-sorted
                     if (note.spawnAnnounced) continue;
                     note.spawnAnnounced = true;
-                    luaRuntime.onSpawnNote(chart.notes.indexOf(note.data), note.data.lane,
+                    luaRuntime.onSpawnNote(note.chartIndex, note.data.lane,
                             note.data.noteType, note.data.sustainMs > 30, note.data.timeMs);
                 }
             }
@@ -2314,11 +2486,107 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             return true;
         }
         if (freeCam) {
-            if (keyCode == GLFW.GLFW_KEY_ESCAPE) { exitFreeCam(); return true; }
-            // Copy the shot only while movement (and the grabbed cursor) is off.
+            // Modal text entry / colour picker capture keys first.
+            if (freeCamTextEntry) {
+                if (keyCode == GLFW.GLFW_KEY_ENTER || keyCode == GLFW.GLFW_KEY_KP_ENTER) { commitTextEntry(); return true; }
+                if (keyCode == GLFW.GLFW_KEY_ESCAPE) { freeCamTextEntry = false; freeCamTextBox = null; return true; }
+                // EditBox handles word nav, selection, Ctrl+Backspace, clipboard, etc.
+                if (freeCamTextBox != null) freeCamTextBox.keyPressed(keyCode, scanCode, modifiers);
+                return true;
+            }
+            if (freeCamColorPicker) {
+                if (keyCode == GLFW.GLFW_KEY_ESCAPE || keyCode == GLFW.GLFW_KEY_ENTER
+                        || keyCode == GLFW.GLFW_KEY_KP_ENTER) { freeCamColorPicker = false; pickDrag = 0; }
+                return true;
+            }
+            // Toggle Blender-like fly/look navigation and cursor grab.
+            if (keyCode == GLFW.GLFW_KEY_F
+                    && (modifiers & GLFW.GLFW_MOD_SHIFT) != 0
+                    && (modifiers & GLFW.GLFW_MOD_CONTROL) == 0) {
+                setFreeCamMove(!freeCamMove);
+                return true;
+            }
+            // Esc cancels a running transform, then closes help, then leaves free cam.
+            if (keyCode == GLFW.GLFW_KEY_ESCAPE) {
+                if (freeCamObjects.isTransforming()) freeCamObjects.cancelTransform();
+                else if (freeCamHelp) freeCamHelp = false;
+                else exitFreeCam();
+                return true;
+            }
+            // F1 toggles the key/keybind help overlay.
+            if (keyCode == GLFW.GLFW_KEY_F1) {
+                if (!freeCamMenuHidden) freeCamHelp = !freeCamHelp;
+                return true;
+            }
+            // Delete removes the selected editor object.
+            if (keyCode == GLFW.GLFW_KEY_DELETE) { freeCamObjects.deleteSelected(); return true; }
+            if (keyCode == GLFW.GLFW_KEY_BACKSPACE && freeCamObjects.isTransforming()) {
+                freeCamObjects.backspaceNumeric();
+                return true;
+            }
+            // Numpad "." focuses the camera on the selected object (Blender "view selected").
+            if (keyCode == GLFW.GLFW_KEY_KP_DECIMAL) { focusSelectedObject(); return true; }
+            // Only Lua with the editor's predefined object comment can be pasted.
+            if (keyCode == GLFW.GLFW_KEY_V && !freeCamMove
+                    && (modifiers & GLFW.GLFW_MOD_CONTROL) != 0
+                    && !freeCamObjects.isTransforming() && !freeCamObjects.isSnapDragging()) {
+                pasteFreeCamObject();
+                return true;
+            }
+            // Ctrl+Z / Ctrl+Y (Ctrl+Shift+Z) undo/redo, when not mid-transform.
+            if ((modifiers & GLFW.GLFW_MOD_CONTROL) != 0
+                    && !freeCamObjects.isTransforming() && !freeCamObjects.isSnapDragging()) {
+                if (keyCode == GLFW.GLFW_KEY_Z) {
+                    if ((modifiers & GLFW.GLFW_MOD_SHIFT) != 0) freeCamObjects.redo();
+                    else freeCamObjects.undo();
+                    return true;
+                }
+                if (keyCode == GLFW.GLFW_KEY_Y) { freeCamObjects.redo(); return true; }
+            }
+            // Blender-style object transforms (cursor released only). G/R/S start a
+            // move/rotate/scale; X/Y/Z lock an axis (Shift = plane); Enter confirms.
+            if (!freeCamMove) {
+                boolean shift = (modifiers & GLFW.GLFW_MOD_SHIFT) != 0;
+                boolean alt = (modifiers & GLFW.GLFW_MOD_ALT) != 0;
+                double gs = minecraft.getWindow().getGuiScale();
+                double mxg = minecraft.mouseHandler.xpos() / gs;
+                double myg = minecraft.mouseHandler.ypos() / gs;
+                switch (keyCode) {
+                    case GLFW.GLFW_KEY_G -> {
+                        if (alt) resetSelectedTransform("Position", freeCamObjects::resetPosition);
+                        else freeCamObjects.beginTransform(FreeCamObjects.Mode.MOVE, mxg, myg);
+                        return true;
+                    }
+                    case GLFW.GLFW_KEY_R -> {
+                        if (alt) resetSelectedTransform("Rotation", freeCamObjects::resetRotation);
+                        else freeCamObjects.beginTransform(FreeCamObjects.Mode.ROTATE, mxg, myg);
+                        return true;
+                    }
+                    case GLFW.GLFW_KEY_S -> {
+                        if (alt) resetSelectedTransform("Scale", freeCamObjects::resetScale);
+                        else freeCamObjects.beginTransform(FreeCamObjects.Mode.SCALE, mxg, myg);
+                        return true;
+                    }
+                    case GLFW.GLFW_KEY_X -> {
+                        if (freeCamObjects.isTransforming()) { freeCamObjects.setAxis(1, shift); return true; }
+                    }
+                    case GLFW.GLFW_KEY_Y -> {
+                        if (freeCamObjects.isTransforming()) { freeCamObjects.setAxis(2, shift); return true; }
+                    }
+                    case GLFW.GLFW_KEY_Z -> {
+                        if (freeCamObjects.isTransforming()) { freeCamObjects.setAxis(3, shift); return true; }
+                    }
+                    case GLFW.GLFW_KEY_ENTER, GLFW.GLFW_KEY_KP_ENTER -> {
+                        if (freeCamObjects.isTransforming()) { freeCamObjects.confirmTransform(); return true; }
+                    }
+                    default -> { }
+                }
+            }
+            // Ctrl+C copies selected-object Lua; with no selection it copies camera events.
             if (keyCode == GLFW.GLFW_KEY_C && !freeCamMove
                     && (modifiers & GLFW.GLFW_MOD_CONTROL) != 0) {
-                copyFreeCamShot();
+                if (freeCamObjects.hasSelection()) copySelectedLua();
+                else copyFreeCamShot();
                 return true;
             }
             // M cycles Follow Pos Movement (override/attached); F cycles the Frame.
@@ -2436,7 +2704,17 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     private void enterFreeCam() {
         if (!editorPlaytest || freeCam) return;
         if (phase != Phase.PLAYING && phase != Phase.COUNTDOWN) return;
+        // Snapshot final rendered gameplay-camera transform before free-cam takes over.
+        Camera entryCamera = minecraft.gameRenderer.getMainCamera();
+        freeCamEntryCameraPos = entryCamera.getPosition();
+        freeCamEntryCameraLeft = new Vector3f(entryCamera.getLeftVector());
+        freeCamEntryCameraUp = new Vector3f(entryCamera.getUpVector());
+        freeCamEntryCameraLook = new Vector3f(entryCamera.getLookVector());
+        freeCamEntryCameraYaw = entryCamera.getYRot();
+        freeCamEntryCameraPitch = entryCamera.getXRot();
+        freeCamEntryCameraRoll = entryCamera.getRoll();
         freeCam = true;
+        beginFreeCamPresentation();
         freeCamPausedAtMs = System.currentTimeMillis();
         songPlayer.pause();
         noteInput.clear();
@@ -2445,12 +2723,36 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         freeCamLastMoveNano = System.nanoTime();
         GameplayCamera.beginFreeCam();
         setFreeCamMove(false);
+        refreshExistingFreeCamObjects();
     }
 
     private void exitFreeCam() {
         if (!freeCam) return;
+        // Flush a transform or panel edit made during this render before resuming Lua.
+        applyExistingFreeCamEdits();
         setFreeCamMove(false);
         freeCam = false;
+        restoreHideGui();
+        freeCamObjects.despawnPerformers();
+        freeCamEntryCameraPos = null;
+        freeCamEntryCameraLeft = null;
+        freeCamEntryCameraUp = null;
+        freeCamEntryCameraLook = null;
+        freeCamHelp = false;
+        freeCamFocusing = false;
+        freeCamFocusPoint = null;
+        freeCamViewportDragging = false;
+        freeCamViewportIgnoreWarpMotion = false;
+        freeCamViewportPivot = null;
+        freeCamTextEntry = false;
+        freeCamTextBox = null;
+        freeCamColorPicker = false;
+        pickDrag = 0;
+        freeCamAddMenu = false;
+        freeCamExistingMenu = false;
+        freeCamModMenu = false;
+        freeCamAnimMenu = false;
+        freeCamPanelScroll = 0;
         GameplayCamera.endFreeCam();
         // Resume audio/countdown exactly like leaving the pause menu.
         if (songPlayer.isStarted()) {
@@ -2462,12 +2764,117 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         noteInput.clear();
     }
 
+    /** Rebuilds lightweight adapters for objects already owned by Lua/the character roster. */
+    private void refreshExistingFreeCamObjects() {
+        freeCamObjects.clearLinked();
+        if (luaRuntime != null) {
+            for (PsychLuaRuntime.EditableWorldObject edit : luaRuntime.editableWorldObjects()) {
+                FreeCamObjects.Type type = switch (edit.kind()) {
+                    case "spritesheet" -> FreeCamObjects.Type.SPRITESHEET;
+                    case "graph" -> FreeCamObjects.Type.GRAPH;
+                    case "text" -> FreeCamObjects.Type.TEXT;
+                    default -> FreeCamObjects.Type.SPRITE;
+                };
+                FreeCamObjects.Obj o = freeCamObjects.link(type,
+                        FreeCamObjects.Source.LUA_RUNTIME, edit.tag());
+                if (o == null) continue;
+                o.texturePath = edit.image();
+                o.text = edit.text();
+                o.x = edit.x(); o.y = edit.y(); o.z = edit.z();
+                o.width = edit.width(); o.height = edit.height();
+                o.scaleX = edit.scaleX(); o.scaleY = edit.scaleY();
+                o.alpha = edit.alpha(); o.color = edit.color(); o.visible = edit.visible();
+                o.rotX = edit.rotationX(); o.rotY = edit.rotationY(); o.rotZ = edit.rotationZ();
+                o.textSize = edit.textSize();
+                o.billboard = edit.billboard(); o.lighting = edit.lighting();
+                o.seeThrough = edit.seeThrough(); o.antialiasing = edit.antialiasing();
+                o.borderSize = edit.borderSize(); o.borderColor = edit.borderColor();
+                o.borderStyle = edit.borderStyle(); o.textAlign = edit.alignment();
+                o.italic = edit.italic(); o.anim3d = edit.animation();
+                o.availableAnimations = edit.animations();
+                o.fps = edit.fps(); o.loop = edit.loop();
+                freeCamObjects.markLinkedClean(o);
+            }
+        }
+        for (ExtraCharacterRoster.EditableCharacter edit : extraCharacters.editableCharacters()) {
+            FreeCamObjects.Type type = edit.character2D()
+                    ? FreeCamObjects.Type.CHARACTER_2D : FreeCamObjects.Type.CHARACTER_3D;
+            FreeCamObjects.Obj o = freeCamObjects.link(type,
+                    FreeCamObjects.Source.EXTRA_CHARACTER, edit.tag());
+            if (o == null) continue;
+            o.characterDef = edit.definition();
+            o.characterRole = edit.role();
+            if (edit.character2D()) {
+                o.x = edit.x() * 64.0;
+                o.y = -edit.y() * 64.0;
+                o.z = edit.z() * 64.0;
+            } else {
+                // Inverse of FreeCamObjects' 3D performer origin conversion.
+                o.x = edit.x() * 64.0;
+                o.y = (0.5 - edit.y()) * 64.0;
+                o.z = (edit.z() + 2.0) * 64.0;
+            }
+            o.rotX = edit.rotationX();
+            o.rotY = edit.rotationY();
+            o.rotZ = edit.rotationZ();
+            o.width = edit.width(); o.height = edit.height();
+            o.scaleX = edit.scaleX(); o.scaleY = edit.scaleY();
+            o.alpha = edit.alpha(); o.color = edit.color(); o.visible = edit.visible();
+            o.billboard = edit.billboard(); o.lighting = edit.lighting();
+            o.seeThrough = edit.seeThrough(); o.antialiasing = edit.antialiasing();
+            o.anim3d = edit.animation();
+            o.availableAnimations = edit.animations();
+            freeCamObjects.markLinkedClean(o);
+        }
+        freeCamMessage = "Linked " + freeCamObjects.linkedCount() + " existing world object(s)";
+        freeCamMessageUntil = System.currentTimeMillis() + 3000;
+    }
+
+    /** Pushes adapter values back into their original objects. No duplicate is created. */
+    private void applyExistingFreeCamEdits() {
+        freeCamObjects.forEachChangedLinked(o -> {
+            if (o.source == FreeCamObjects.Source.LUA_RUNTIME && luaRuntime != null) {
+                String kind = switch (o.type) {
+                    case SPRITESHEET -> "spritesheet";
+                    case GRAPH -> "graph";
+                    case TEXT -> "text";
+                    default -> "sprite";
+                };
+                luaRuntime.applyWorldObjectEdit(new PsychLuaRuntime.EditableWorldObject(
+                        o.sourceTag, kind, o.texturePath, o.text,
+                        o.x, o.y, o.z, o.width, o.height,
+                        o.scaleX, o.scaleY, o.alpha,
+                        o.rotX, o.rotY, o.rotZ,
+                        o.color, o.textSize, o.visible,
+                        o.billboard, o.lighting, o.seeThrough, o.antialiasing,
+                        o.borderSize, o.borderColor, o.borderStyle, o.textAlign, o.italic,
+                        o.anim3d, o.availableAnimations, o.fps, o.loop));
+            } else if (o.source == FreeCamObjects.Source.EXTRA_CHARACTER) {
+                boolean twoD = o.type == FreeCamObjects.Type.CHARACTER_2D;
+                double x = o.x / 64.0;
+                double y = twoD ? -o.y / 64.0 : 0.5 - o.y / 64.0;
+                double z = twoD ? o.z / 64.0 : o.z / 64.0 - 2.0;
+                extraCharacters.applyCharacterEdit(new ExtraCharacterRoster.EditableCharacter(
+                        o.sourceTag, o.characterDef, o.characterRole, twoD,
+                        x, y, z, o.rotX, o.rotY, o.rotZ, o.visible,
+                        o.width, o.height, o.scaleX, o.scaleY,
+                        o.alpha, o.color, o.billboard, o.lighting,
+                        o.seeThrough, o.antialiasing, o.anim3d, o.availableAnimations));
+            }
+        });
+    }
+
     /** Grabs/releases the cursor for spectator look while keeping this screen open. */
     private void setFreeCamMove(boolean move) {
         if (move == freeCamMove) {
             if (!move) return;
         }
         freeCamMove = move;
+        if (move) {
+            freeCamViewportDragging = false;
+            freeCamViewportIgnoreWarpMotion = false;
+            freeCamViewportPivot = null;
+        }
         long window = minecraft.getWindow().getWindow();
         if (move) {
             double[] cx = new double[1];
@@ -2486,6 +2893,8 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         long now = System.nanoTime();
         double dt = Math.min(0.1, (now - freeCamLastMoveNano) / 1_000_000_000.0);
         freeCamLastMoveNano = now;
+        // The focus tween runs even with the cursor released (object selected).
+        updateFreeCamFocus();
         if (!freeCamMove) return;
 
         long window = minecraft.getWindow().getWindow();
@@ -2497,7 +2906,10 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         freeCamLastCursorX = cx[0];
         freeCamLastCursorY = cy[0];
         double sensitivity = 0.15;
-        if (dx != 0 || dy != 0) GameplayCamera.turnFreeCam(dx * sensitivity, dy * sensitivity);
+        if (dx != 0 || dy != 0) {
+            GameplayCamera.turnFreeCam(dx * sensitivity, dy * sensitivity);
+            freeCamFocusPoint = null;
+        }
 
         // Shift = finer, Ctrl = coarser rate for movement, roll and zoom.
         double rate = freeCamRateMultiplier(window);
@@ -2525,11 +2937,14 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             double moveZ = (forward * cos - strafe * sin) * step;
             double moveY = vertical * step;
             GameplayCamera.moveFreeCam(moveX, moveY, moveZ);
+            freeCamFocusPoint = null;
         }
 
-        // Never let the camera leave loaded chunks: the client only has terrain
-        // out to the render distance around the player, and beyond it the view,
-        // lighting and chunk state break. Leave a one-chunk safety margin.
+        clampFreeCamToLoadedWorld();
+    }
+
+    /** Keep the camera inside the terrain currently loaded around the player. */
+    private void clampFreeCamToLoadedWorld() {
         double maxHorizontal = Math.max(16.0, (RenderDistanceControl.current() - 1) * 16.0);
         int minY = minecraft.level == null ? -64 : minecraft.level.getMinBuildHeight();
         int maxY = minecraft.level == null ? 320 : minecraft.level.getMaxBuildHeight();
@@ -2550,6 +2965,10 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
 
     private static int keyDown(long window, int key) {
         return GLFW.glfwGetKey(window, key) == GLFW.GLFW_PRESS ? 1 : 0;
+    }
+
+    private void adjustFreeCamSpeed(double factor) {
+        freeCamSpeed = Math.max(0.5, Math.min(80.0, freeCamSpeed * factor));
     }
 
     private void copyFreeCamShot() {
@@ -2823,8 +3242,70 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
         if (freeCam) {
-            // Right-click toggles spectator move/look, like holding a viewport.
-            if (button == 1) setFreeCamMove(!freeCamMove);
+            // The help modal swallows the next click to dismiss it.
+            if (freeCamHelp) { freeCamHelp = false; return true; }
+            // Modal text entry / colour picker intercept clicks.
+            if (freeCamTextEntry) {
+                if (freeCamTextBox != null) freeCamTextBox.mouseClicked(mouseX, mouseY, button);
+                return true;
+            }
+            if (freeCamColorPicker) {
+                if (button == 0) {
+                    if (mouseX >= colorDoneX && mouseX < colorDoneX + colorDoneW
+                            && mouseY >= colorDoneY && mouseY < colorDoneY + colorDoneH) {
+                        freeCamColorPicker = false;
+                        return true;
+                    }
+                    if (mouseX >= pickSqX && mouseX < pickSqX + 72
+                            && mouseY >= pickSqY && mouseY < pickSqY + 72) {
+                        pickDrag = 1; updatePicker(mouseX, mouseY); return true;
+                    }
+                    if (mouseX >= pickHueBarX && mouseX < pickHueBarX + pickHueBarW
+                            && mouseY >= pickHueBarY && mouseY < pickHueBarY + 10) {
+                        pickDrag = 2; updatePicker(mouseX, mouseY); return true;
+                    }
+                }
+                return true;
+            }
+            // Blender-style confirm: LMB leaves Shift+F fly/look mode and
+            // releases the cursor. This click never falls through to selection.
+            if (freeCamMove && button == GLFW.GLFW_MOUSE_BUTTON_LEFT) {
+                setFreeCamMove(false);
+                return true;
+            }
+            // While transforming, clicks confirm (left) or cancel (right).
+            if (freeCamObjects.isTransforming()) {
+                if (button == 0) freeCamObjects.confirmTransform();
+                else if (button == 1) freeCamObjects.cancelTransform();
+                return true;
+            }
+            // While face-snap dragging, right-click cancels back to the pre-drag state.
+            if (freeCamObjects.isSnapDragging()) {
+                if (button == 1) freeCamObjects.cancelSnapDrag();
+                return true;
+            }
+            // Left-click a control-panel button when the cursor is released; else
+            // grab the selection's cube to face-snap, or pick another object.
+            if (button == 0 && !freeCamMove) {
+                for (FreeCamButton b : freeCamButtons) {
+                    if (b.contains(mouseX, mouseY)) { b.action().run(); return true; }
+                }
+                Camera cam = minecraft.gameRenderer.getMainCamera();
+                Direction facing = StageOrientation.facing();
+                Vec3 dir = cursorRayDir(mouseX, mouseY);
+                if (freeCamObjects.cursorOverSelection(cam.getPosition(), dir, machinePos, facing)) {
+                    freeCamObjects.beginSnapDrag();
+                    freeCamObjects.snapToFace(raycastFromCursor(mouseX, mouseY), machinePos, facing);
+                } else {
+                    freeCamObjects.pick(cam.getPosition(), dir, machinePos, facing);
+                }
+                return true;
+            }
+            // Blender-style viewport navigation while cursor is available.
+            if (button == GLFW.GLFW_MOUSE_BUTTON_MIDDLE && !freeCamMove) {
+                beginFreeCamViewportDrag();
+                return true;
+            }
             return true;
         }
         if (phase == Phase.PAUSED) {
@@ -2843,11 +3324,106 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     }
 
     @Override
+    public boolean charTyped(char codePoint, int modifiers) {
+        if (freeCam && freeCamTextEntry) {
+            if (freeCamTextBox != null) freeCamTextBox.charTyped(codePoint, modifiers);
+            return true;
+        }
+        if (freeCam && freeCamObjects.inputNumeric(codePoint)) return true;
+        return super.charTyped(codePoint, modifiers);
+    }
+
+    private void updatePicker(double mx, double my) {
+        if (pickDrag == 1) {
+            pickSat = (float) Math.max(0, Math.min(1, (mx - pickSqX) / 71.0));
+            pickBri = 1f - (float) Math.max(0, Math.min(1, (my - pickSqY) / 71.0));
+        } else if (pickDrag == 2) {
+            pickHue = (float) Math.max(0, Math.min(1, (mx - pickHueBarX) / (pickHueBarW - 1.0)));
+        }
+        applyPickedColor();
+    }
+
+    @Override
+    public boolean mouseDragged(double mouseX, double mouseY, int button, double dragX, double dragY) {
+        if (freeCam && freeCamColorPicker && pickDrag != 0) {
+            updatePicker(mouseX, mouseY);
+            return true;
+        }
+        if (freeCam && freeCamTextEntry && freeCamTextBox != null) {
+            freeCamTextBox.mouseDragged(mouseX, mouseY, button, dragX, dragY);
+            return true;
+        }
+        if (freeCam && button == GLFW.GLFW_MOUSE_BUTTON_MIDDLE && freeCamViewportDragging) {
+            // GLFW reports the programmatic edge warp as mouse motion. Discard that
+            // one synthetic delta or the camera would jump by nearly a screen width.
+            if (freeCamViewportIgnoreWarpMotion) {
+                freeCamViewportIgnoreWarpMotion = false;
+                return true;
+            }
+            updateFreeCamViewportDrag(dragX, dragY);
+            wrapFreeCamViewportCursor(mouseX, mouseY);
+            return true;
+        }
+        return super.mouseDragged(mouseX, mouseY, button, dragX, dragY);
+    }
+
+    @Override
+    public boolean mouseReleased(double mouseX, double mouseY, int button) {
+        if (freeCam && pickDrag != 0) { pickDrag = 0; return true; }
+        if (freeCam && button == 0 && freeCamObjects.isSnapDragging()) {
+            freeCamObjects.endSnapDrag();
+            return true;
+        }
+        if (freeCam && button == GLFW.GLFW_MOUSE_BUTTON_MIDDLE && freeCamViewportDragging) {
+            freeCamViewportDragging = false;
+            freeCamViewportIgnoreWarpMotion = false;
+            freeCamViewportPivot = null;
+            return true;
+        }
+        return super.mouseReleased(mouseX, mouseY, button);
+    }
+
+    /** Builds a world-space ray from the cursor using the camera basis and vertical FOV. */
+    private Vec3 cursorRayDir(double mouseX, double mouseY) {
+        Camera cam = minecraft.gameRenderer.getMainCamera();
+        Vec3 fwd = new Vec3(cam.getLookVector());
+        Vec3 up = new Vec3(cam.getUpVector());
+        Vec3 right = new Vec3(cam.getLeftVector()).scale(-1);
+        double fov = Math.toRadians(minecraft.options.fov().get());
+        double aspect = (double) width / Math.max(1, height);
+        double ndcX = (mouseX / width) * 2 - 1;
+        double ndcY = 1 - (mouseY / height) * 2;
+        double t = Math.tan(fov / 2);
+        return fwd.add(right.scale(ndcX * t * aspect)).add(up.scale(ndcY * t)).normalize();
+    }
+
+    /** Clips the cursor ray against blocks for face-snapping. */
+    private BlockHitResult raycastFromCursor(double mouseX, double mouseY) {
+        Camera cam = minecraft.gameRenderer.getMainCamera();
+        Vec3 eye = cam.getPosition();
+        Vec3 end = eye.add(cursorRayDir(mouseX, mouseY).scale(48));
+        return minecraft.level.clip(new ClipContext(eye, end,
+                ClipContext.Block.OUTLINE, ClipContext.Fluid.NONE, minecraft.player));
+    }
+
+    @Override
     public boolean mouseScrolled(double mouseX, double mouseY, double scrollX, double scrollY) {
         if (freeCam) {
-            // Wheel changes fly speed (blocks/second), clamped to a usable range.
-            double factor = scrollY > 0 ? 1.15 : (scrollY < 0 ? 1 / 1.15 : 1);
-            freeCamSpeed = Math.max(0.5, Math.min(80.0, freeCamSpeed * factor));
+            // Fly/look mode follows Blender's fly navigation: wheel adjusts travel speed.
+            if (freeCamMove) {
+                double factor = scrollY > 0 ? Math.pow(1.15, scrollY)
+                        : (scrollY < 0 ? Math.pow(1 / 1.15, -scrollY) : 1);
+                adjustFreeCamSpeed(factor);
+                return true;
+            }
+            // Over the left panel, the wheel scrolls the menu when it overflows the screen.
+            if (mouseX <= 176 && freeCamPanelMaxScroll > 0 && !freeCamObjects.isTransforming()) {
+                freeCamPanelScroll = Math.max(0, Math.min(freeCamPanelMaxScroll,
+                        freeCamPanelScroll - (int) Math.signum(scrollY) * 16));
+                return true;
+            }
+            // Normal viewport wheel is a positional dolly, not a Camera Zoom/FOV change.
+            dollyFreeCam(scrollY);
             return true;
         }
         return super.mouseScrolled(mouseX, mouseY, scrollX, scrollY);
@@ -3271,6 +3847,15 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                 case "grav", "gravity" -> extraCharacters.gravity(tag);
                 case "collision", "collisions", "solid" -> extraCharacters.collision(tag);
                 case "shadow", "shadows" -> extraCharacters.shadow(tag);
+                case "alpha" -> extraCharacters.alpha(tag);
+                case "color" -> extraCharacters.color(tag);
+                case "scale.x", "scaleX" -> extraCharacters.scaleX(tag);
+                case "scale.y", "scaleY" -> extraCharacters.scaleY(tag);
+                case "flipx", "flipX", "flip_x" -> extraCharacters.flipX(tag);
+                case "billboard", "worldBillboard", "alwaysFaceCamera" -> extraCharacters.billboard(tag);
+                case "lighting", "worldLighting", "affectedByLighting" -> extraCharacters.lighting(tag);
+                case "seethrough", "seeThrough", "worldSeeThrough", "throughWalls", "noDepth" -> extraCharacters.seeThrough(tag);
+                case "antialiasing" -> extraCharacters.antialiasing(tag);
                 default -> null;
             };
         }
@@ -3372,6 +3957,19 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                 case "collision", "collisions", "solid" ->
                         extraCharacters.setCollision(tag, noteBool(value, true));
                 case "shadow", "shadows" -> extraCharacters.setShadow(tag, noteBool(value, true));
+                // 2D-character visuals (ignored for 3D performers).
+                case "alpha" -> extraCharacters.setAlpha(tag, noteNumber(value, extraCharacters.alpha(tag)));
+                case "color" -> extraCharacters.setColor(tag, (int) (long) noteNumber(value, 0xFFFFFF));
+                case "scale.x", "scaleX" -> extraCharacters.setScaleX(tag, noteNumber(value, extraCharacters.scaleX(tag)));
+                case "scale.y", "scaleY" -> extraCharacters.setScaleY(tag, noteNumber(value, extraCharacters.scaleY(tag)));
+                case "flipx", "flipX", "flip_x" -> extraCharacters.setFlipX(tag, noteBool(value, false));
+                case "billboard", "worldBillboard", "alwaysFaceCamera" ->
+                        extraCharacters.setBillboard(tag, noteBool(value, true));
+                case "lighting", "worldLighting", "affectedByLighting" ->
+                        extraCharacters.setLighting(tag, noteBool(value, true));
+                case "seethrough", "seeThrough", "worldSeeThrough", "throughWalls", "noDepth" ->
+                        extraCharacters.setSeeThrough(tag, noteBool(value, false));
+                case "antialiasing" -> extraCharacters.setAntialiasing(tag, noteBool(value, true));
                 default -> false;
             };
         }
@@ -3560,10 +4158,29 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         if (luaRuntime != null) luaRuntime.reloadFonts();
     }
 
+    @Override
+    public void tick() {
+        super.tick();
+        // Spawn/move/remove 3D-character preview performers off the render pass.
+        if (freeCam) freeCamObjects.syncPerformers(machinePos);
+    }
+
     /** Called from the level render pass so Lua world sprites have real depth and lighting. */
     public void renderLuaWorld(PoseStack poseStack, Camera camera) {
-        if (luaRuntime == null || minecraft.level == null) return;
-        luaRuntime.renderWorld(poseStack, camera, machinePos, StageOrientation.facing());
+        if (minecraft.level == null) return;
+        if (luaRuntime != null) {
+            luaRuntime.renderWorld(poseStack, camera, machinePos, StageOrientation.facing());
+        }
+        // Runtime 2D characters (addBlockifiedCharacter with a Psych def) render in world space.
+        extraCharacters.render2D(poseStack, camera, machinePos, StageOrientation.facing());
+        // Free-cam editor objects share the same world space and renderer.
+        if (freeCam) {
+            freeCamObjects.render(poseStack, camera, machinePos, StageOrientation.facing());
+            if (freeCamShowEntryCamera && freeCamEntryCameraPos != null) {
+                FreeCamCameraMarker.render(poseStack, camera, freeCamEntryCameraPos,
+                        freeCamEntryCameraLeft, freeCamEntryCameraUp, freeCamEntryCameraLook);
+            }
+        }
     }
 
     private float noteY(double timeMs, boolean mine, int lane, GameNote note) {
@@ -3576,6 +4193,12 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     @Override
     public void render(GuiGraphics gui, int mouseX, int mouseY, float partialTick) {
         logic();
+        // Hide-GUI: draw only the free-cam menu; notes/HUD and the vanilla hotbar (via
+        // hideGui) are gone, while the world and placed objects still render in the level pass.
+        if (freeCam && freeCamHideGui) {
+            renderFreeCamOverlay(gui, mouseX, mouseY);
+            return;
+        }
         // no background dimming — the world stays fully visible during a song
 
         float noteSize = noteSize();
@@ -3616,10 +4239,15 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         // receptors (single centered strumline in BOTH mode)
         for (int lane = 0; lane < 4; lane++) {
             int myState = myStrumFlash[lane] > 0 ? 2 : (laneHeld[lane] ? 1 : 0);
+            float strumX = laneX(true, lane), strumY = laneY(true, lane);
+            long sustainFrame = customSustainStrumFrame(true, lane);
             NoteStyle.setDrawAlpha((float) luaStrumAlpha[(myChartSideIsPlayer || playBoth ? 4 : 0) + lane]);
-            if (!customNoteTextures.drawReceptor(gui, chartDefaultNoteTexture(), lane, myState,
-                    laneX(true, lane), laneY(true, lane), noteSize)) {
-                NoteStyle.drawReceptor(gui, lane, laneX(true, lane), laneY(true, lane), noteSize, myState);
+            boolean custom = sustainFrame >= 0 && customNoteTextures.drawSustainReceptor(
+                    gui, chartDefaultNoteTexture(), lane, sustainFrame, strumX, strumY, noteSize);
+            if (!custom) custom = customNoteTextures.drawReceptor(gui,
+                    chartDefaultNoteTexture(), lane, myState, strumX, strumY, noteSize);
+            if (!custom) {
+                NoteStyle.drawReceptor(gui, lane, strumX, strumY, noteSize, myState);
             }
         }
         NoteStyle.setDrawAlpha(1f);
@@ -3627,11 +4255,16 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             if (fadeOpponent) NoteStyle.setDrawAlpha(0.6f);
             for (int lane = 0; lane < 4; lane++) {
                 int otherState = otherStrumFlash[lane] > 0 ? 2 : 0;
+                float strumX = laneX(false, lane), strumY = laneY(false, lane);
+                long sustainFrame = customSustainStrumFrame(false, lane);
                 int side = myChartSideIsPlayer ? 0 : 4;
                 NoteStyle.setDrawAlpha((float) (luaStrumAlpha[side + lane] * (fadeOpponent ? 0.6 : 1)));
-                if (!customNoteTextures.drawReceptor(gui, chartDefaultNoteTexture(), lane, otherState,
-                        laneX(false, lane), laneY(false, lane), noteSize)) {
-                    NoteStyle.drawReceptor(gui, lane, laneX(false, lane), laneY(false, lane), noteSize, otherState);
+                boolean custom = sustainFrame >= 0 && customNoteTextures.drawSustainReceptor(
+                        gui, chartDefaultNoteTexture(), lane, sustainFrame, strumX, strumY, noteSize);
+                if (!custom) custom = customNoteTextures.drawReceptor(gui,
+                        chartDefaultNoteTexture(), lane, otherState, strumX, strumY, noteSize);
+                if (!custom) {
+                    NoteStyle.drawReceptor(gui, lane, strumX, strumY, noteSize, otherState);
                 }
             }
             if (fadeOpponent) NoteStyle.setDrawAlpha(1f);
@@ -3752,67 +4385,741 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         // Song-warning flag rides on top of everything, in plain screen space.
         WarningFlag.render(gui, height);
 
-        // Editor playtest orientation aid: a Blender-style world axis gizmo.
-        if (editorPlaytest && ClientOptions.get().editorShowAxisGizmo) renderAxisGizmo(gui);
-        if (freeCam) renderFreeCamOverlay(gui);
+        // Outside free cam this remains a playtest aid. While free cam is active,
+        // renderFreeCamOverlay owns it so it follows menu visibility.
+        if (editorPlaytest && !freeCam && ClientOptions.get().editorShowAxisGizmo) renderAxisGizmo(gui);
+        if (freeCam) renderFreeCamOverlay(gui, mouseX, mouseY);
         // Psych debugPrint trace lines ride on top of everything, top-left.
         if (luaRuntime != null) luaRuntime.renderDebugOverlay(gui);
     }
 
-    /** Free-camera HUD: the current shot values plus the controls, top-left. */
-    private void renderFreeCamOverlay(GuiGraphics gui) {
-        boolean showReadout = ClientOptions.get().editorShowCameraReadout;
-        int x = 8;
-        int y = 8;
-        drawOutlined(gui, "FREE CAMERA — Ctrl+Shift+Space to exit", x, y, 0xFFFFEE66);
-        y += 12;
-        String moveState = freeCamMove ? "ON (right-click to release cursor)"
-                : "OFF (right-click to move/look)";
-        drawOutlined(gui, "Move/Look: " + moveState, x, y, 0xFFBFC7D5);
-        y += 11;
-        drawOutlined(gui, String.format(java.util.Locale.ROOT,
-                "Speed: %.1f (scroll)   WASD move · E up · Q down", freeCamSpeed), x, y, 0xFFBFC7D5);
-        y += 11;
-        drawOutlined(gui, "Arrows: ←→ roll · ↑↓ zoom · R resets roll+zoom",
-                x, y, 0xFFBFC7D5);
-        y += 11;
-        drawOutlined(gui, "Shift = slower · Ctrl = faster value changes", x, y, 0xFFBFC7D5);
-        y += 11;
-        drawOutlined(gui, "M = movement (override/attached) · F = frame (machine/camera)",
-                x, y, 0xFFBFC7D5);
-        y += 14;
+    /** Free-camera HUD: control menu on the left, live readout on the right. */
+    private void renderFreeCamOverlay(GuiGraphics gui, int mouseX, int mouseY) {
+        // HUD-visible mode keeps only a faint button for restoring the editor menu.
+        if (freeCamMenuHidden) {
+            renderFreeCamPanel(gui, mouseX, mouseY);
+            return;
+        }
+        // Modal help: cover the world and menu so nothing shows through it.
+        if (freeCamHelp) {
+            gui.fill(0, 0, width, height, 0xF00A0A12);
+            renderFreeCamHelp(gui);
+            return;
+        }
+        // Colour picker / text entry are modal but keep the world visible for live preview.
+        if (freeCamColorPicker) { renderColorPicker(gui); return; }
+        if (freeCamTextEntry) { renderTextEntry(gui, mouseX, mouseY); return; }
 
-        if (showReadout) {
-            String movement = freeCamOverride ? "override" : "attached to focus";
-            String frame = freeCamCameraFrame ? "camera" : "machine";
-            double[] follow = freeCamFollowValues();
-            drawOutlined(gui, "Camera Follow Pos (" + movement + ", " + frame + " frame):",
-                    x, y, 0xFF7ABF4A);
-            y += 11;
-            drawOutlined(gui, String.format(java.util.Locale.ROOT,
-                    "  X %.2f   Y %.2f   Z %.2f  (blocks)", follow[0], follow[1], follow[2]),
-                    x, y, 0xFFE0E0E0);
-            y += 12;
-            drawOutlined(gui, "Camera Rotation 3D:", x, y, 0xFF4A8FE0);
-            y += 11;
-            drawOutlined(gui, String.format(java.util.Locale.ROOT,
-                    "  Pitch %.2f   Yaw %.2f   Roll %.2f  (degrees)",
-                    GameplayCamera.freePitch(), GameplayCamera.freeYaw(), GameplayCamera.freeRoll()),
-                    x, y, 0xFFE0E0E0);
-            y += 12;
-            drawOutlined(gui, "Camera Zoom:", x, y, 0xFFE0A24A);
-            y += 11;
-            drawOutlined(gui, String.format(java.util.Locale.ROOT,
-                    "  Amount %.2f  (-1 to 0.9)", GameplayCamera.freeZoom()), x, y, 0xFFE0E0E0);
-            y += 12;
-            String copyHint = freeCamMove ? "Release cursor (right-click), then Ctrl+C to copy"
-                    : "Ctrl+C copies all three events — paste in the chart editor";
-            drawOutlined(gui, copyHint, x, y, 0xFFFFEE66);
-            y += 14;
+        // Drive a running transform from the live cursor before drawing.
+        if (freeCamObjects.isTransforming()) {
+            freeCamObjects.updateTransform(minecraft.gameRenderer.getMainCamera(),
+                    machinePos, StageOrientation.facing(), mouseX, mouseY,
+                    width / 2.0, height / 2.0, hasShiftDown(), hasControlDown());
+            wrapTransformCursor(mouseX, mouseY);
+            String status = freeCamObjects.transformStatus();
+            drawOutlined(gui, status, (width - font.width(status)) / 2, height / 2 + 16, 0xFFFFEE66);
         }
+        // Face-snap: drag the selection's cube; it snaps to the block face under the cursor.
+        if (freeCamObjects.isSnapDragging()) {
+            freeCamObjects.snapToFace(raycastFromCursor(mouseX, mouseY),
+                    machinePos, StageOrientation.facing());
+        }
+
+        renderFreeCamPanel(gui, mouseX, mouseY);
+        if (freeCamShowReadout) renderFreeCamReadout(gui);
+        if (ClientOptions.get().editorShowAxisGizmo) renderAxisGizmo(gui);
+
+        // Bottom-left help hint and any transient status message above it.
+        drawOutlined(gui, "F1 for help", 8, height - 14, 0xFFFFEE66);
         if (System.currentTimeMillis() < freeCamMessageUntil) {
-            drawOutlined(gui, freeCamMessage, x, y, 0xFF66FF88);
+            drawOutlined(gui, freeCamMessage, 8, height - 28, 0xFF66FF88);
         }
+    }
+
+    /** Live Position / Rotation / Zoom values, right-aligned against the screen edge. */
+    private void renderFreeCamReadout(GuiGraphics gui) {
+        int right = width - 8;
+        int y = 8;
+        double[] follow = freeCamFollowValues();
+        drawRight(gui, "Position", right, y, 0xFF7ABF4A);
+        y += 11;
+        drawRight(gui, String.format(java.util.Locale.ROOT,
+                "X %.2f   Y %.2f   Z %.2f", follow[0], follow[1], follow[2]), right, y, 0xFFE0E0E0);
+        y += 13;
+        drawRight(gui, "Rotation", right, y, 0xFF4A8FE0);
+        y += 11;
+        drawRight(gui, String.format(java.util.Locale.ROOT,
+                "Pitch %.2f   Yaw %.2f   Roll %.2f",
+                GameplayCamera.freePitch(), GameplayCamera.freeYaw(), GameplayCamera.freeRoll()),
+                right, y, 0xFFE0E0E0);
+        y += 13;
+        drawRight(gui, "Zoom", right, y, 0xFFE0A24A);
+        y += 11;
+        drawRight(gui, String.format(java.util.Locale.ROOT, "%.2f", GameplayCamera.freeZoom()),
+                right, y, 0xFFE0E0E0);
+        if (freeCamEntryCameraPos != null) {
+            y += 13;
+            drawRight(gui, "Entry camera (world)", right, y, 0xFFFFC440);
+            y += 11;
+            drawRight(gui, String.format(java.util.Locale.ROOT,
+                    "X %.2f   Y %.2f   Z %.2f", freeCamEntryCameraPos.x,
+                    freeCamEntryCameraPos.y, freeCamEntryCameraPos.z), right, y, 0xFFE0E0E0);
+            y += 11;
+            drawRight(gui, String.format(java.util.Locale.ROOT,
+                    "Pitch %.2f   Yaw %.2f   Roll %.2f", freeCamEntryCameraPitch,
+                    freeCamEntryCameraYaw, freeCamEntryCameraRoll), right, y, 0xFFE0E0E0);
+        }
+    }
+
+    private int pickSqX, pickSqY, pickHueBarX, pickHueBarY, pickHueBarW = 154;
+
+    /** In-game colour picker (HSB square + hue bar + hex), styled like Note Colors. */
+    private void renderColorPicker(GuiGraphics gui) {
+        int boxW = 176, boxH = 134;
+        int x0 = (width - boxW) / 2, y0 = (height - boxH) / 2;
+        gui.fill(x0, y0, x0 + boxW, y0 + boxH, 0xF0101018);
+        gui.renderOutline(x0, y0, boxW, boxH, 0xFFFFEE66);
+        gui.drawString(font, "Graph colour", x0 + 10, y0 + 8, 0xFFFFEE66, false);
+
+        int sx = x0 + 10, sy = y0 + 22;
+        pickSqX = sx; pickSqY = sy;
+        for (int col = 0; col < 72; col++) {
+            int c = java.awt.Color.HSBtoRGB(pickHue, col / 71f, 1f);
+            gui.fill(sx + col, sy, sx + col + 1, sy + 72, 0xFF000000 | (c & 0xFFFFFF));
+        }
+        gui.fillGradient(sx, sy, sx + 72, sy + 72, 0x00000000, 0xFF000000);
+        int cx = sx + (int) (pickSat * 71), cy = sy + (int) ((1 - pickBri) * 71);
+        int cur = java.awt.Color.HSBtoRGB(pickHue, pickSat, pickBri) & 0xFFFFFF;
+        gui.fill(cx - 2, cy - 2, cx + 3, cy + 3, 0xFFFFFFFF);
+        gui.fill(cx - 1, cy - 1, cx + 2, cy + 2, 0xFF000000 | cur);
+
+        // swatch + hex to the right of the square
+        gui.fill(sx + 80, sy, sx + 80 + 66, sy + 40, 0xFF000000 | cur);
+        gui.renderOutline(sx + 80, sy, 66, 40, 0xFF6A7080);
+        gui.drawString(font, String.format("#%06X", cur), sx + 80, sy + 48, 0xFFE0E0E0, false);
+
+        int hy = sy + 80;
+        pickHueBarX = sx; pickHueBarY = hy;
+        for (int col = 0; col < pickHueBarW; col++) {
+            int c = java.awt.Color.HSBtoRGB(col / (pickHueBarW - 1f), 1f, 1f);
+            gui.fill(sx + col, hy, sx + col + 1, hy + 10, 0xFF000000 | (c & 0xFFFFFF));
+        }
+        int hx = sx + (int) (pickHue * (pickHueBarW - 1));
+        gui.fill(hx - 1, hy - 1, hx + 2, hy + 11, 0xFFFFFFFF);
+
+        colorDoneX = x0 + 10; colorDoneY = y0 + boxH - 24; colorDoneW = boxW - 20; colorDoneH = 18;
+        boolean hover = false;
+        gui.fill(colorDoneX, colorDoneY, colorDoneX + colorDoneW, colorDoneY + colorDoneH, 0xE0303442);
+        gui.renderOutline(colorDoneX, colorDoneY, colorDoneW, colorDoneH, 0xFF6A7080);
+        gui.drawCenteredString(font, "Done", colorDoneX + colorDoneW / 2, colorDoneY + 5, 0xFFFFFFFF);
+    }
+
+    /** In-game text field for renaming / fps / text, drawn as a small modal. */
+    private void renderTextEntry(GuiGraphics gui, int mouseX, int mouseY) {
+        int boxW = 220, boxH = 56;
+        int x0 = (width - boxW) / 2, y0 = (height - boxH) / 2;
+        gui.fill(x0, y0, x0 + boxW, y0 + boxH, 0xF0101018);
+        gui.renderOutline(x0, y0, boxW, boxH, 0xFFFFEE66);
+        String label = switch (freeCamTextTarget) {
+            case "name" -> "Object name"; case "fps" -> "Animation FPS";
+            case "text" -> "Text"; default -> "Edit";
+        };
+        gui.drawString(font, label, x0 + 10, y0 + 8, 0xFFFFEE66, false);
+        if (freeCamTextBox != null) {
+            freeCamTextBox.setX(x0 + 10);
+            freeCamTextBox.setY(y0 + 22);
+            freeCamTextBox.render(gui, mouseX, mouseY, 0f);
+        }
+        gui.drawString(font, "Enter = OK   ·   Esc = Cancel", x0 + 10, y0 + boxH - 11, 0xFF9AA4B2, false);
+    }
+
+    /** Right-aligns outlined text so its right edge sits at {@code right}. */
+    private void drawRight(GuiGraphics gui, String text, int right, int y, int color) {
+        drawOutlined(gui, text, right - font.width(text), y, color);
+    }
+
+    /** F1 help overlay: the full key/keybind list in two aligned columns, centered. */
+    private void renderFreeCamHelp(GuiGraphics gui) {
+        String title = "FREE CAMERA — KEYS";
+        String[][] rows = {
+                {"Ctrl+Shift+Space", "Exit free cam"},
+                {"Shift+F", "Toggle fly / look; LMB exits"},
+                {"MMB", "Orbit around viewport pivot"},
+                {"Shift+MMB", "Pan view"},
+                {"Ctrl+MMB", "Dolly in / out"},
+                {"WASD", "Move   ·   E up   ·   Q down"},
+                {"Mouse", "Look around (while fly/look is on)"},
+                {"Left / Right", "Roll"},
+                {"Up / Down", "Camera Zoom event"},
+                {"R", "Reset roll + Camera Zoom"},
+                {"Wheel", "Dolly; fly speed while cursor grabbed"},
+                {"Shift / Ctrl", "Slower / faster"},
+                {"M", "Movement: override / attached"},
+                {"F", "Frame: machine / camera"},
+                {"Ctrl+C", "Copy selected object Lua; otherwise camera shot"},
+                {"", ""},
+                {"Click", "Select object   ·   Del: delete"},
+                {"Numpad .", "Focus camera on the selected object"},
+                {"Drag cube", "Snap object flat onto the block face under the cursor"},
+                {"Ctrl+V", "Parse and duplicate supported object Lua"},
+                {"G / R / S", "Move / Rotate / Scale selected (R twice = trackball)"},
+                {"Type number", "Exact blocks / degrees / scale; Backspace edits"},
+                {"Alt+G / R / S", "Reset position / rotation / scale"},
+                {"X / Y / Z", "Lock axis   ·   Shift+axis: plane (all but that axis)"},
+                {"Shift / Ctrl", "Precise / snap (1 block · 15° · 0.1)"},
+                {"LMB / Enter", "Confirm transform   ·   RMB / Esc: cancel"},
+                {"Ctrl+Z / Y", "Undo / redo (Ctrl+Shift+Z also redoes)"},
+                {"F1", "Close this help"},
+        };
+        int pad = 10;
+        int colGap = 16;
+        int keyCol = 0;
+        int descCol = 0;
+        for (String[] row : rows) {
+            keyCol = Math.max(keyCol, font.width(row[0]));
+            descCol = Math.max(descCol, font.width(row[1]));
+        }
+        int content = Math.max(font.width(title), keyCol + colGap + descCol);
+        int boxW = content + pad * 2;
+        int boxH = (rows.length + 2) * 11 + pad * 2;
+        int x0 = (width - boxW) / 2;
+        int y0 = (height - boxH) / 2;
+        gui.fill(x0, y0, x0 + boxW, y0 + boxH, 0xE0101018);
+        gui.renderOutline(x0, y0, boxW, boxH, 0xFFFFEE66);
+
+        int keyX = x0 + pad;
+        int descX = keyX + keyCol + colGap;
+        int y = y0 + pad;
+        gui.drawString(font, title, keyX, y, 0xFFFFEE66, false);
+        y += 22;
+        for (String[] row : rows) {
+            gui.drawString(font, row[0], keyX, y, 0xFFFFD24A, false);
+            gui.drawString(font, row[1], descX, y, 0xFFE0E0E0, false);
+            y += 11;
+        }
+    }
+
+    /**
+     * On-screen free-cam control menu (left side). Buttons are live only when the
+     * cursor is released (move/look off), since move mode captures the mouse. The
+     * full key list lives behind F1; the remaining actions stay on their keys too.
+     */
+    private void renderFreeCamPanel(GuiGraphics gui, int mouseX, int mouseY) {
+        freeCamButtons.clear();
+        boolean canClick = !freeCamMove;
+        int bw = 154, bh = 16, gap = 4;
+        int bx = 8;
+        if (freeCamMenuHidden) {
+            addFreeCamFadedBtn(gui, bx, 30, bw, bh, "Show Menu",
+                    mouseX, mouseY, !freeCamMove, this::toggleFreeCamMenu);
+            freeCamPanelMaxScroll = 0;
+            return;
+        }
+        int top = 30 - freeCamPanelScroll;
+        int by = top;
+
+        gui.drawString(font, "FREE CAM", bx, by - 12, 0xFFFFEE66, false);
+
+        addFreeCamBtn(gui, bx, by, bw, bh, "Hide Menu",
+                mouseX, mouseY, canClick, this::toggleFreeCamMenu);
+        by += bh + gap;
+
+        // Add-object dropdown.
+        addFreeCamBtn(gui, bx, by, bw, bh, (freeCamAddMenu ? "Add object  ▲" : "Add object  ▼"),
+                mouseX, mouseY, canClick, () -> freeCamAddMenu = !freeCamAddMenu);
+        by += bh + gap;
+        if (freeCamAddMenu) {
+            Direction facing = StageOrientation.facing();
+            for (com.fnfmod.client.gameplay.FreeCamObjects.Type type
+                    : com.fnfmod.client.gameplay.FreeCamObjects.Type.values()) {
+                addFreeCamBtn(gui, bx + 10, by, bw - 10, bh, "  " + type.label,
+                        mouseX, mouseY, canClick, () -> {
+                            freeCamObjects.add(type, minecraft.gameRenderer.getMainCamera(),
+                                    machinePos, facing);
+                            freeCamAddMenu = false;
+                        });
+                by += bh + gap;
+            }
+            by += 2;
+        }
+
+        int linkedCount = freeCamObjects.linkedCount();
+        addFreeCamBtn(gui, bx, by, bw, bh,
+                "Existing objects (" + linkedCount + ") " + (freeCamExistingMenu ? "▲" : "▼"),
+                mouseX, mouseY, canClick, () -> freeCamExistingMenu = !freeCamExistingMenu);
+        by += bh + gap;
+        if (freeCamExistingMenu) {
+            for (FreeCamObjects.Obj linked : freeCamObjects.linkedObjects()) {
+                String sourceKey = linked.sourceKey();
+                String source = linked.source == FreeCamObjects.Source.LUA_RUNTIME ? "Lua" : "Character";
+                addFreeCamBtn(gui, bx + 10, by, bw - 10, bh,
+                        trimTo(linked.tag, 14) + " · " + source,
+                        mouseX, mouseY, canClick, () -> {
+                            freeCamObjects.selectLinked(sourceKey);
+                            freeCamExistingMenu = false;
+                        });
+                by += bh + gap;
+            }
+            addFreeCamBtn(gui, bx + 10, by, bw - 10, bh, "Refresh list",
+                    mouseX, mouseY, canClick, this::refreshExistingFreeCamObjects);
+            by += bh + gap + 2;
+        }
+
+        addFreeCamBtn(gui, bx, by, bw, bh,
+                "Movement: " + (freeCamOverride ? "Override" : "Attached"),
+                mouseX, mouseY, canClick, () -> freeCamOverride = !freeCamOverride);
+        by += bh + gap;
+        addFreeCamBtn(gui, bx, by, bw, bh,
+                "Frame: " + (freeCamCameraFrame ? "Camera" : "Machine"),
+                mouseX, mouseY, canClick, () -> freeCamCameraFrame = !freeCamCameraFrame);
+        by += bh + gap;
+
+        gui.drawString(font, String.format(java.util.Locale.ROOT, "Fly speed %.1f (grabbed wheel)", freeCamSpeed),
+                bx, by + 4, 0xFFBFC7D5, false);
+        by += 20;
+
+        addFreeCamBtn(gui, bx, by, bw, bh, "Readout: " + (freeCamShowReadout ? "On" : "Off"),
+                mouseX, mouseY, true, () -> freeCamShowReadout = !freeCamShowReadout);
+        by += bh + gap;
+        addFreeCamBtn(gui, bx, by, bw, bh,
+                "Entry camera: " + (freeCamShowEntryCamera ? "Visible" : "Hidden"),
+                mouseX, mouseY, true, () -> freeCamShowEntryCamera = !freeCamShowEntryCamera);
+        by += bh + gap;
+
+        // Selected-object row with a Delete button.
+        gui.drawString(font, "Selected: " + freeCamObjects.selectionLabel(), bx, by, 0xFFBFC7D5, false);
+        by += 12;
+        if (freeCamObjects.hasSelection()) {
+            FreeCamObjects.Obj sel = freeCamObjects.selected();
+            String assetLabel = switch (sel.type) {
+                case SPRITE, SPRITESHEET -> "Pick image...";
+                case GRAPH -> "Pick colour...";
+                case CHARACTER_2D, CHARACTER_3D -> "Pick character...";
+                case TEXT -> "Edit text...";
+            };
+            addFreeCamBtn(gui, bx, by, bw, bh, assetLabel, mouseX, mouseY, canClick, this::openAssetPicker);
+            by += bh + gap;
+            String val = switch (sel.type) {
+                case TEXT -> "\"" + sel.text + "\"";
+                case GRAPH -> String.format("#%06X", sel.color & 0xFFFFFF);
+                case CHARACTER_2D, CHARACTER_3D -> sel.characterDef.isBlank() ? "(no character)" : sel.characterDef;
+                default -> sel.texturePath.isBlank() ? "(no image)" : sel.texturePath;
+            };
+            gui.drawString(font, trimTo(val, 26), bx, by, 0xFF9AA4B2, false);
+            by += 12;
+
+            // Runtime tags stay stable so song Lua continues to target the same object.
+            addFreeCamBtn(gui, bx, by, bw, bh,
+                    (sel.linked() ? "Runtime name: " : "Name: ") + trimTo(sel.tag, 17),
+                    mouseX, mouseY, canClick && !sel.linked(), this::renameSelectedObject);
+            by += bh + gap;
+
+            // Text styling: border/outline, alignment, italic.
+            if (sel.type == FreeCamObjects.Type.TEXT) {
+                addFreeCamBtn(gui, bx, by, bw, bh, "Border: " + sel.borderStyle,
+                        mouseX, mouseY, canClick, freeCamObjects::cycleBorderStyle);
+                by += bh + gap;
+                if (!"none".equals(sel.borderStyle)) {
+                    int half = (bw - gap) / 2;
+                    addFreeCamBtn(gui, bx, by, half, bh,
+                            "Size " + String.format(java.util.Locale.ROOT, "%.0f", sel.borderSize),
+                            mouseX, mouseY, canClick,
+                            () -> beginTextEntry("bordersize", String.format(java.util.Locale.ROOT, "%.0f", sel.borderSize)));
+                    addFreeCamBtn(gui, bx + half + gap, by, bw - half - gap, bh, "Colour",
+                            mouseX, mouseY, canClick, () -> beginColorPicker("border", sel.borderColor));
+                    by += bh + gap;
+                }
+                addFreeCamBtn(gui, bx, by, bw, bh, "Align: " + sel.textAlign,
+                        mouseX, mouseY, canClick, freeCamObjects::cycleTextAlign);
+                by += bh + gap;
+                addFreeCamBtn(gui, bx, by, bw, bh, "Italic: " + (sel.italic ? "On" : "Off"),
+                        mouseX, mouseY, canClick, freeCamObjects::toggleItalic);
+                by += bh + gap;
+            }
+
+            // Animated-sprite playback (the addAnimationByPrefix fps + loop).
+            if (sel.type == FreeCamObjects.Type.SPRITESHEET) {
+                addFreeCamBtn(gui, bx, by, bw, bh, "FPS: " + sel.fps,
+                        mouseX, mouseY, canClick, this::editSelectedFps);
+                by += bh + gap;
+                addFreeCamBtn(gui, bx, by, bw, bh, "Loop: " + (sel.loop ? "On" : "Off"),
+                        mouseX, mouseY, canClick, freeCamObjects::toggleLoop);
+                by += bh + gap;
+            }
+
+            // 2D-character animation player (names come from the character JSON).
+            java.util.List<String> animNames = freeCamObjects.characterAnimations();
+            if (!animNames.isEmpty()) {
+                addFreeCamBtn(gui, bx, by, bw, bh,
+                        "Anim: " + trimTo(freeCamObjects.characterCurrentAnim(), 14)
+                                + (freeCamAnimMenu ? "  ▲" : "  ▼"),
+                        mouseX, mouseY, canClick, () -> freeCamAnimMenu = !freeCamAnimMenu);
+                by += bh + gap;
+                if (freeCamAnimMenu) {
+                    for (String an : animNames) {
+                        String name = an;
+                        addFreeCamBtn(gui, bx + 10, by, bw - 10, bh, "  " + trimTo(name, 22),
+                                mouseX, mouseY, canClick, () -> freeCamObjects.playCharacterAnim(name));
+                        by += bh + gap;
+                    }
+                }
+            }
+
+            // Per-object world modifiers.
+            addFreeCamBtn(gui, bx, by, bw, bh, freeCamModMenu ? "Modifiers  ▲" : "Modifiers  ▼",
+                    mouseX, mouseY, canClick, () -> freeCamModMenu = !freeCamModMenu);
+            by += bh + gap;
+            if (freeCamModMenu) {
+                addFreeCamBtn(gui, bx + 10, by, bw - 10, bh, checkLabel("Billboard", sel.billboard),
+                        mouseX, mouseY, canClick, freeCamObjects::toggleBillboard);
+                by += bh + gap;
+                addFreeCamBtn(gui, bx + 10, by, bw - 10, bh, checkLabel("Lighting / shadows", sel.lighting),
+                        mouseX, mouseY, canClick, freeCamObjects::toggleLighting);
+                by += bh + gap;
+                addFreeCamBtn(gui, bx + 10, by, bw - 10, bh, checkLabel("See-through", sel.seeThrough),
+                        mouseX, mouseY, canClick, freeCamObjects::toggleSeeThrough);
+                by += bh + gap;
+                addFreeCamBtn(gui, bx + 10, by, bw - 10, bh, checkLabel("Antialiasing", sel.antialiasing),
+                        mouseX, mouseY, canClick, freeCamObjects::toggleAntialiasing);
+                by += bh + gap;
+            }
+
+            addFreeCamBtn(gui, bx, by, bw, bh,
+                    sel.linked() ? "Stop editing (Del)" : "Delete object (Del)",
+                    mouseX, mouseY, canClick, freeCamObjects::deleteSelected);
+            by += bh + gap;
+
+        }
+
+        // Extra gap separating Exit from the rest.
+        by += 10;
+        addFreeCamBtn(gui, bx, by, bw, bh, "Exit free cam",
+                mouseX, mouseY, true, this::exitFreeCam);
+
+        // General scrolling: if the panel is taller than the screen, let the wheel scroll it.
+        int contentHeight = (by + bh) - top;
+        int visibleHeight = height - 30 - 8;
+        freeCamPanelMaxScroll = Math.max(0, contentHeight - visibleHeight);
+        freeCamPanelScroll = Math.max(0, Math.min(freeCamPanelScroll, freeCamPanelMaxScroll));
+        if (freeCamPanelMaxScroll > 0) {
+            drawOutlined(gui, "scroll ↕", bx + bw - font.width("scroll ↕"), height - 14, 0xFF888F9C);
+        }
+    }
+
+    private static String checkLabel(String name, boolean on) {
+        return (on ? "[x] " : "[ ] ") + name;
+    }
+
+    private static String trimTo(String s, int max) {
+        return s.length() <= max ? s : s.substring(0, max - 1) + "…";
+    }
+
+    /** Starts with editor menu visible and every gameplay HUD layer hidden. */
+    private void beginFreeCamPresentation() {
+        savedHideGui = minecraft.options.hideGui;
+        freeCamHudOverrideActive = true;
+        freeCamMenuHidden = false;
+        freeCamHideGui = true;
+        minecraft.options.hideGui = true;
+    }
+
+    /** Switches exclusively between editor menu/no HUD and HUD/no editor menu. */
+    private void toggleFreeCamMenu() {
+        freeCamMenuHidden = !freeCamMenuHidden;
+        freeCamHideGui = !freeCamMenuHidden;
+        minecraft.options.hideGui = freeCamHideGui;
+        freeCamHelp = false;
+        freeCamPanelScroll = 0;
+    }
+
+    private void restoreHideGui() {
+        if (freeCamHudOverrideActive) {
+            minecraft.options.hideGui = savedHideGui;
+            freeCamHudOverrideActive = false;
+        }
+        freeCamHideGui = false;
+        freeCamMenuHidden = false;
+    }
+
+    private void renameSelectedObject() {
+        FreeCamObjects.Obj o = freeCamObjects.selected();
+        if (o != null) beginTextEntry("name", o.tag);
+    }
+
+    private void editSelectedFps() {
+        FreeCamObjects.Obj o = freeCamObjects.selected();
+        if (o != null) beginTextEntry("fps", String.valueOf(o.fps));
+    }
+
+    private void beginTextEntry(String target, String initial) {
+        freeCamTextEntry = true;
+        freeCamTextTarget = target;
+        int boxW = 220, fw = boxW - 20;
+        int x0 = (width - boxW) / 2, y0 = (height - 56) / 2;
+        // A real EditBox gives all the standard text controls (word nav, selection,
+        // Ctrl+Backspace, clipboard) for free.
+        freeCamTextBox = new net.minecraft.client.gui.components.EditBox(
+                font, x0 + 10, y0 + 22, fw, 16, Component.literal(target));
+        freeCamTextBox.setMaxLength(256);
+        freeCamTextBox.setValue(initial == null ? "" : initial);
+        freeCamTextBox.setFocused(true);
+        int end = freeCamTextBox.getValue().length();
+        freeCamTextBox.setCursorPosition(end);
+        freeCamTextBox.setHighlightPos(end);
+    }
+
+    private void commitTextEntry() {
+        String raw = freeCamTextBox == null ? "" : freeCamTextBox.getValue();
+        if ("name".equals(freeCamTextTarget)) {
+            if (!raw.trim().isEmpty()) freeCamObjects.setObjectName(raw.trim());
+        } else if ("fps".equals(freeCamTextTarget)) {
+            try { freeCamObjects.setFps(Integer.parseInt(raw.trim())); } catch (NumberFormatException ignored) { }
+        } else if ("text".equals(freeCamTextTarget)) {
+            freeCamObjects.setText(raw);
+        } else if ("bordersize".equals(freeCamTextTarget)) {
+            try { freeCamObjects.setBorderSize(Double.parseDouble(raw.trim())); } catch (NumberFormatException ignored) { }
+        }
+        freeCamTextEntry = false;
+        freeCamTextBox = null;
+    }
+
+    /** Blender-style "view selected": move the camera so the object centres in the view. */
+    private void focusSelectedObject() {
+        if (!freeCamObjects.hasSelection()) return;
+        Camera camera = minecraft.gameRenderer.getMainCamera();
+        Vec3 obj = freeCamObjects.selectedWorldOrigin(machinePos, StageOrientation.facing());
+        if (obj == null) return;
+        Vec3 look = new Vec3(camera.getLookVector()).normalize();
+        // Distance so the object fills a comfortable share of the view for its size.
+        double half = freeCamObjects.selectedSizeBlocks() * 0.5;
+        double fov = Math.toRadians(Math.max(30, minecraft.options.fov().get()));
+        double dist = Math.max(2.5, Math.min(40.0, half / Math.tan(fov / 2.0) / 0.6));
+        Vec3 targetCam = obj.subtract(look.scale(dist));   // sit back along the current view
+        freeCamFocusFrom = new double[]{GameplayCamera.freeX(), GameplayCamera.freeY(), GameplayCamera.freeZ()};
+        freeCamFocusTo = GameplayCamera.worldToFreeOffset(targetCam);
+        freeCamFocusStart = System.nanoTime();
+        freeCamFocusDur = 300_000_000L;   // 0.3s
+        freeCamFocusPoint = obj;
+        freeCamFocusing = true;
+    }
+
+    /** Starts Blender-style MMB navigation around the existing focus or view centre. */
+    private void beginFreeCamViewportDrag() {
+        Camera camera = minecraft.gameRenderer.getMainCamera();
+        freeCamFocusing = false;
+        freeCamViewportPivot = viewportPivot(camera);
+        freeCamFocusPoint = freeCamViewportPivot;
+        freeCamViewportIgnoreWarpMotion = false;
+        freeCamViewportDragging = true;
+    }
+
+    /** MMB orbits, Shift+MMB pans, and Ctrl+MMB dollies. */
+    private void updateFreeCamViewportDrag(double dragX, double dragY) {
+        if (freeCamViewportPivot == null) return;
+        long window = minecraft.getWindow().getWindow();
+        boolean shift = keyDown(window, GLFW.GLFW_KEY_LEFT_SHIFT) == 1
+                || keyDown(window, GLFW.GLFW_KEY_RIGHT_SHIFT) == 1;
+        boolean ctrl = keyDown(window, GLFW.GLFW_KEY_LEFT_CONTROL) == 1
+                || keyDown(window, GLFW.GLFW_KEY_RIGHT_CONTROL) == 1;
+        Camera camera = minecraft.gameRenderer.getMainCamera();
+
+        if (shift) {
+            Vec3 right = new Vec3(camera.getLeftVector()).scale(-1).normalize();
+            Vec3 up = new Vec3(camera.getUpVector()).normalize();
+            double distance = Math.max(0.1, camera.getPosition().distanceTo(freeCamViewportPivot));
+            double worldPerPixel = 2.0 * distance
+                    * Math.tan(Math.toRadians(minecraft.options.fov().get()) * 0.5)
+                    / Math.max(1, height);
+            Vec3 delta = right.scale(-dragX * worldPerPixel).add(up.scale(dragY * worldPerPixel));
+            setFreeCamWorldPosition(camera.getPosition().add(delta));
+            freeCamViewportPivot = freeCamViewportPivot.add(delta);
+            freeCamFocusPoint = freeCamViewportPivot;
+        } else if (ctrl) {
+            dollyFreeCamAround(freeCamViewportPivot, -dragY * 0.06);
+        } else {
+            Vec3 offset = camera.getPosition().subtract(freeCamViewportPivot);
+            if (offset.lengthSqr() < 1.0e-8) return;
+            // Blender-style drag direction, at 1.5x the original orbit sensitivity.
+            double yawDegrees = dragX * 0.375;
+            double pitchDegrees = Mth.clamp(camera.getXRot() - (float) (dragY * 0.375), -89.0f, 89.0f)
+                    - camera.getXRot();
+            Vec3 yawed = rotateAroundAxis(offset, new Vec3(0, 1, 0), Math.toRadians(-yawDegrees));
+            Vec3 right = new Vec3(camera.getLeftVector()).scale(-1).normalize();
+            right = rotateAroundAxis(right, new Vec3(0, 1, 0), Math.toRadians(-yawDegrees));
+            Vec3 orbited = rotateAroundAxis(yawed, right, Math.toRadians(pitchDegrees));
+            setFreeCamWorldPosition(freeCamViewportPivot.add(orbited));
+            GameplayCamera.aimFreeCamAt(freeCamViewportPivot, camera.getYRot(), camera.getXRot());
+        }
+        clampFreeCamToLoadedWorld();
+    }
+
+    /** Wheel dolly uses exponential distance, matching Blender viewport zoom feel. */
+    private void dollyFreeCam(double wheelSteps) {
+        if (wheelSteps == 0) return;
+        Camera camera = minecraft.gameRenderer.getMainCamera();
+        Vec3 pivot = viewportPivot(camera);
+        freeCamFocusPoint = pivot;
+        dollyFreeCamAround(pivot, wheelSteps);
+        clampFreeCamToLoadedWorld();
+    }
+
+    private void dollyFreeCamAround(Vec3 pivot, double steps) {
+        Vec3 cameraPos = GameplayCamera.freeCamWorldPos();
+        Vec3 offset = cameraPos.subtract(pivot);
+        double distance = offset.length();
+        if (distance < 1.0e-6) return;
+        double newDistance = Mth.clamp(distance * Math.pow(0.82, steps), 0.10, 512.0);
+        setFreeCamWorldPosition(pivot.add(offset.scale(newDistance / distance)));
+    }
+
+    private Vec3 viewportPivot(Camera camera) {
+        if (freeCamFocusPoint != null) return freeCamFocusPoint;
+        return camera.getPosition().add(new Vec3(camera.getLookVector()).normalize().scale(6.0));
+    }
+
+    private static Vec3 rotateAroundAxis(Vec3 vector, Vec3 axis, double radians) {
+        Vec3 unit = axis.normalize();
+        double cos = Math.cos(radians);
+        double sin = Math.sin(radians);
+        return vector.scale(cos)
+                .add(unit.cross(vector).scale(sin))
+                .add(unit.scale(unit.dot(vector) * (1.0 - cos)));
+    }
+
+    private static void setFreeCamWorldPosition(Vec3 worldPosition) {
+        double[] offset = GameplayCamera.worldToFreeOffset(worldPosition);
+        GameplayCamera.setFreeCamOffset(offset[0], offset[1], offset[2]);
+    }
+
+    /** Edge-wraps an active MMB navigation drag without feeding warp distance into it. */
+    private void wrapFreeCamViewportCursor(double mouseX, double mouseY) {
+        int margin = 2;
+        double nx = mouseX, ny = mouseY;
+        if (mouseX <= margin) nx = width - margin - 2;
+        else if (mouseX >= width - margin) nx = margin + 2;
+        if (mouseY <= margin) ny = height - margin - 2;
+        else if (mouseY >= height - margin) ny = margin + 2;
+        if (nx == mouseX && ny == mouseY) return;
+
+        freeCamViewportIgnoreWarpMotion = true;
+        double guiScale = minecraft.getWindow().getGuiScale();
+        GLFW.glfwSetCursorPos(minecraft.getWindow().getWindow(), nx * guiScale, ny * guiScale);
+    }
+
+    /** Blender-style edge wrap: warp the cursor to the opposite side while transforming,
+     *  shifting the transform origin so the object keeps moving without a jump. */
+    private void wrapTransformCursor(int mouseX, int mouseY) {
+        int margin = 2;
+        double nx = mouseX, ny = mouseY;
+        if (mouseX <= margin) nx = width - margin - 2;
+        else if (mouseX >= width - margin) nx = margin + 2;
+        if (mouseY <= margin) ny = height - margin - 2;
+        else if (mouseY >= height - margin) ny = margin + 2;
+        if (nx == mouseX && ny == mouseY) return;
+        freeCamObjects.shiftTransformStart(nx - mouseX, ny - mouseY);
+        double gs = minecraft.getWindow().getGuiScale();
+        GLFW.glfwSetCursorPos(minecraft.getWindow().getWindow(), nx * gs, ny * gs);
+    }
+
+    private void updateFreeCamFocus() {
+        if (!freeCamFocusing) return;
+        double t = Math.min(1.0, (System.nanoTime() - freeCamFocusStart) / (double) freeCamFocusDur);
+        double f = com.fnfmod.client.math.Easing.apply("expoOut", t);
+        GameplayCamera.setFreeCamOffset(
+                freeCamFocusFrom[0] + (freeCamFocusTo[0] - freeCamFocusFrom[0]) * f,
+                freeCamFocusFrom[1] + (freeCamFocusTo[1] - freeCamFocusFrom[1]) * f,
+                freeCamFocusFrom[2] + (freeCamFocusTo[2] - freeCamFocusFrom[2]) * f);
+        if (t >= 1.0) {
+            // Clamping can move the camera off its original approach line. Aim
+            // again from the final legal position so the origin square stays centred.
+            clampFreeCamToLoadedWorld();
+            Camera camera = minecraft.gameRenderer.getMainCamera();
+            GameplayCamera.aimFreeCamAt(freeCamFocusPoint, camera.getYRot(), camera.getXRot());
+            freeCamFocusing = false;
+        }
+    }
+
+    private void beginColorPicker(String target, int initialColor) {
+        freeCamColorTarget = target;
+        int c = initialColor & 0xFFFFFF;
+        float[] hsb = java.awt.Color.RGBtoHSB((c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF, null);
+        pickHue = hsb[0]; pickSat = hsb[1]; pickBri = hsb[2];
+        freeCamObjects.beginColorEdit();
+        freeCamColorPicker = true;
+    }
+
+    private void applyPickedColor() {
+        int rgb = java.awt.Color.HSBtoRGB(pickHue, pickSat, pickBri) & 0xFFFFFF;
+        if ("border".equals(freeCamColorTarget)) freeCamObjects.setBorderColorLive(rgb);
+        else freeCamObjects.setColorLive(rgb);
+    }
+
+    /** Opens the native OS picker matching the selected object's type. */
+    private void openAssetPicker() {
+        FreeCamObjects.Obj o = freeCamObjects.selected();
+        if (o == null) return;
+        switch (o.type) {
+            case SPRITE, SPRITESHEET -> NativeFilePicker.openFile(
+                    "Pick image", new String[]{"*.png"}, "PNG image")
+                    .ifPresent(freeCamObjects::setSpriteImage);
+            case GRAPH -> beginColorPicker("graph", o.color);
+            case CHARACTER_2D, CHARACTER_3D -> NativeFilePicker.openFile(
+                    "Pick character JSON", new String[]{"*.json"}, "Character definition")
+                    .ifPresent(freeCamObjects::setCharacterDefFile);
+            case TEXT -> beginTextEntry("text", o.text);
+        }
+    }
+
+    /** Copies complete selected-object Lua; all transform data is always included. */
+    private void copySelectedLua() {
+        String lua = freeCamObjects.toLua(true, true, true);
+        if (lua.isBlank()) return;
+        minecraft.keyboardHandler.setClipboard(lua);
+        freeCamMessage = "Copied Lua for " + freeCamObjects.selectionLabel();
+        freeCamMessageUntil = System.currentTimeMillis() + 3000;
+    }
+
+    private void resetSelectedTransform(String label, java.util.function.BooleanSupplier reset) {
+        boolean changed = reset.getAsBoolean();
+        freeCamMessage = changed ? label + " reset" : freeCamObjects.hasSelection()
+                ? label + " already at default" : "No object selected";
+        freeCamMessageUntil = System.currentTimeMillis() + 2000;
+    }
+
+    /** Recreates an editor object from supported Lua, gated by its first-line comment. */
+    private void pasteFreeCamObject() {
+        String clipboard = minecraft.keyboardHandler.getClipboard();
+        boolean marked = FreeCamObjects.hasPasteHeader(clipboard);
+        boolean pasted = freeCamObjects.pasteLua(clipboard,
+                path -> assetResolver == null ? null : assetResolver.image(path),
+                definition -> assetResolver == null ? null : assetResolver.character(definition));
+        freeCamMessage = pasted ? "Pasted " + freeCamObjects.selectionLabel()
+                : marked ? "Invalid or unsupported object Lua"
+                : "Paste ignored: missing world-camera object comment";
+        freeCamMessageUntil = System.currentTimeMillis() + 3000;
+    }
+
+    /** Draws one panel button and, when enabled, registers its click hitbox. */
+    private void addFreeCamBtn(GuiGraphics gui, int x, int y, int w, int h, String label,
+                               int mouseX, int mouseY, boolean enabled, Runnable action) {
+        // Cull buttons scrolled outside the visible area (below the title, above the bottom).
+        if (y + h < 24 || y > height - 2) return;
+        boolean hover = enabled && mouseX >= x && mouseX < x + w && mouseY >= y && mouseY < y + h;
+        int bg = !enabled ? 0x99202024 : hover ? 0xF0505A6E : 0xE0303442;
+        gui.fill(x, y, x + w, y + h, bg);
+        gui.renderOutline(x, y, w, h, hover ? 0xFFFFEE66 : 0xFF6A7080);
+        gui.drawCenteredString(font, label, x + w / 2, y + (h - 8) / 2,
+                enabled ? 0xFFFFFFFF : 0xFF808080);
+        if (enabled) freeCamButtons.add(new FreeCamButton(x, y, w, h, action));
+    }
+
+    /** Persistent menu-restoration button rendered at exactly 30% opacity. */
+    private void addFreeCamFadedBtn(GuiGraphics gui, int x, int y, int w, int h, String label,
+                                    int mouseX, int mouseY, boolean enabled, Runnable action) {
+        gui.fill(x, y, x + w, y + h, 0x4D303442);
+        gui.renderOutline(x, y, w, h, 0x4D6A7080);
+        gui.drawCenteredString(font, label, x + w / 2, y + (h - 8) / 2, 0x4DFFFFFF);
+        if (enabled) freeCamButtons.add(new FreeCamButton(x, y, w, h, action));
     }
 
     /** Draws text with a 1px black outline for readability over the world. */
@@ -4471,6 +5778,8 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         if (psychScene != null) psychScene.close();
         if (freeCamMove) setFreeCamMove(false);
         freeCam = false;
+        restoreHideGui();
+        freeCamObjects.clear();
         GameplayCamera.endFreeCam();
         GameplayCamera.end();
         if (disposeAudio) songPlayer.dispose();

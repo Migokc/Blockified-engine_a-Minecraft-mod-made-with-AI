@@ -8,9 +8,11 @@ import com.fnfmod.chart.ChartEventTypes;
 import com.fnfmod.character.CharacterTransform;
 import com.fnfmod.gameplay.PlaybackMode;
 import com.fnfmod.gameplay.PlaybackPolicy;
+import com.fnfmod.machine.MachineLibrary;
 import com.fnfmod.net.FnfPayloads;
 import com.fnfmod.song.SongEntry;
 import com.fnfmod.song.SongLibrary;
+import com.fnfmod.world.ModContentScope;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.world.entity.decoration.ArmorStand;
@@ -21,12 +23,14 @@ import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.storage.LevelResource;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.neoforge.event.entity.player.PlayerEvent;
 import net.neoforged.neoforge.event.server.ServerStartingEvent;
+import net.neoforged.neoforge.event.server.ServerStoppedEvent;
 import net.neoforged.neoforge.event.tick.ServerTickEvent;
 import net.neoforged.neoforge.network.PacketDistributor;
 
@@ -128,7 +132,16 @@ public final class SessionManager {
 
     @SubscribeEvent
     public static void onServerStarting(ServerStartingEvent event) {
+        ModContentScope.bindWorld(event.getServer().getWorldPath(LevelResource.ROOT),
+                event.getServer().isDedicatedServer());
         SongLibrary.rescan();
+        MachineLibrary.rescan();
+    }
+
+    @SubscribeEvent
+    public static void onServerStopped(ServerStoppedEvent event) {
+        ModContentScope.clear();
+        MachineLibrary.rescan();
     }
 
     @SubscribeEvent
@@ -154,12 +167,33 @@ public final class SessionManager {
                 if (s.host == sp || s.guest == sp) toCancel.add(e.getKey());
             }
             for (Key k : toCancel) cancel(SESSIONS.get(k), sp, "Partner disconnected");
+            com.fnfmod.machine.MachineHitboxService.clearPlayer(sp);
             restorePosition(sp); // covers finishing the song and logging out from the results screen
         }
     }
 
+    @SubscribeEvent
+    public static void onPlayerLoggedIn(PlayerEvent.PlayerLoggedInEvent event) {
+        if (!(event.getEntity() instanceof ServerPlayer player)) return;
+        String modId = "";
+        String packVersion = "built-in";
+        if (player.getServer() != null && !player.getServer().isDedicatedServer()
+                && ModContentScope.isModWorld()) {
+            modId = ModContentScope.activeMod().map(ModContentScope.ActiveMod::id).orElse("");
+            packVersion = MachineLibrary.packVersion();
+        }
+        PacketDistributor.sendToPlayer(player, new FnfPayloads.ModScopeS2C(modId, packVersion));
+    }
+
     private static Key keyOf(ServerPlayer player, BlockPos pos) {
         return new Key(player.level().dimension(), pos);
+    }
+
+    /** Cancels any session whose real/virtual machine origin was removed. */
+    public static void onMachineRemoved(ServerLevel level, BlockPos pos) {
+        if (level == null || pos == null) return;
+        Session session = SESSIONS.get(new Key(level.dimension(), pos));
+        if (session != null) cancel(session, null, "Machine removed");
     }
 
     public static void onInteract(ServerPlayer player, BlockPos pos) {
@@ -173,7 +207,7 @@ public final class SessionManager {
                 session.host = player;
                 SESSIONS.put(key, session);
                 PacketDistributor.sendToPlayer(player, new FnfPayloads.OpenMenuS2C(
-                        pos, (byte) 0, player.getGameProfile().getName(), songList()));
+                        pos, (byte) 0, player.getGameProfile().getName(), availableSongs()));
             }
             return;
         }
@@ -197,6 +231,39 @@ public final class SessionManager {
         // machine is busy
         PacketDistributor.sendToPlayer(player, new FnfPayloads.OpenMenuS2C(
                 pos, (byte) 2, session.host.getGameProfile().getName(), List.of()));
+    }
+
+    /** Reserves chooser ownership for a custom Lua menu without opening the built-in selector. */
+    public static boolean prepareCustomMenu(ServerPlayer player, BlockPos pos) {
+        Key key = keyOf(player, pos);
+        Session session = SESSIONS.get(key);
+        if (session == null) {
+            session = new Session();
+            session.key = key;
+            session.host = player;
+            SESSIONS.put(key, session);
+            return true;
+        }
+        return session.host == player
+                && (session.state == State.CHOOSING || session.state == State.WAITING_GUEST);
+    }
+
+    /** Creates/reuses a host session without opening the built-in selector. */
+    public static boolean onDirectSelectSong(ServerPlayer player, FnfPayloads.MachineDirectPlayC2S payload) {
+        Key key = keyOf(player, payload.pos());
+        Session session = SESSIONS.get(key);
+        if (session == null) {
+            session = new Session();
+            session.key = key;
+            session.host = player;
+            SESSIONS.put(key, session);
+        } else if (session.host != player) {
+            return false;
+        }
+        if (session.state != State.CHOOSING && session.state != State.WAITING_GUEST) return false;
+        onSelectSong(player, new FnfPayloads.SelectSongC2S(payload.pos(), payload.songId(),
+                payload.difficulty(), payload.duet(), payload.playSide(), payload.playbackMode()));
+        return true;
     }
 
     public static void onSelectSong(ServerPlayer player, FnfPayloads.SelectSongC2S payload) {
@@ -595,7 +662,7 @@ public final class SessionManager {
         for (Session s : SESSIONS.values()) {
             if (s.host == player && s.state == State.CHOOSING) {
                 PacketDistributor.sendToPlayer(player, new FnfPayloads.OpenMenuS2C(
-                        s.key.pos(), (byte) 0, player.getGameProfile().getName(), songList()));
+                        s.key.pos(), (byte) 0, player.getGameProfile().getName(), availableSongs()));
                 break;
             }
         }
@@ -753,7 +820,7 @@ public final class SessionManager {
         }
     }
 
-    private static List<FnfPayloads.SongInfo> songList() {
+    public static List<FnfPayloads.SongInfo> availableSongs() {
         List<FnfPayloads.SongInfo> out = new ArrayList<>();
         for (SongEntry e : SongLibrary.getSongs().values()) {
             String iconPath = e.opponentIconFile != null ? e.opponentIconFile.toAbsolutePath().toString() : "";

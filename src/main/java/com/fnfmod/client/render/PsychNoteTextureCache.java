@@ -73,6 +73,13 @@ public final class PsychNoteTextureCache implements AutoCloseable {
             return animation == null ? null : atlas.frame(animation, 0);
         }
 
+        SparrowAtlas.Frame loopedFrame(String animation, long index) {
+            if (animation == null) return null;
+            List<SparrowAtlas.Frame> frames = atlas.frames(animation);
+            if (frames.isEmpty()) return null;
+            return frames.get((int) Math.floorMod(index, (long) frames.size()));
+        }
+
         private enum Part { HEAD, HOLD, END }
 
         /**
@@ -170,6 +177,22 @@ public final class PsychNoteTextureCache implements AutoCloseable {
         String animation = style.receptors[safeLane][Math.max(0, Math.min(2, state))];
         if (animation == null && state != 0) animation = style.receptors[safeLane][0];
         SparrowAtlas.Frame frame = style.frame(animation);
+        if (frame == null) return false;
+        NoteStyle.prepareCustomNoteDraw();
+        style.atlas.drawScaled(gui, frame, centerX, centerY,
+                size / Math.max(1, Math.max(frame.frameW, frame.frameH)));
+        return true;
+    }
+
+    /** Custom-skin confirm animation used only while a sustain is actively held. */
+    public boolean drawSustainReceptor(GuiGraphics gui, String texture, int lane,
+                                       long animationFrame, float centerX, float centerY, float size) {
+        Style style = style(texture);
+        if (style == null) return false;
+        int safeLane = Math.floorMod(lane, 4);
+        String animation = style.receptors[safeLane][2];
+        if (animation == null) return false;
+        SparrowAtlas.Frame frame = style.loopedFrame(animation, animationFrame);
         if (frame == null) return false;
         NoteStyle.prepareCustomNoteDraw();
         style.atlas.drawScaled(gui, frame, centerX, centerY,

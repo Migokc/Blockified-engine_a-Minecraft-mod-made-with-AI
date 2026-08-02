@@ -50,7 +50,11 @@ public final class LuaWorldObjectRenderer {
 
             poseStack.pushPose();
             poseStack.translate(position.x - cameraPos.x, position.y - cameraPos.y, position.z - cameraPos.z);
-            int light = object.lighting()
+            // See-through objects are always-on-top overlays, so they are full-bright:
+            // a world-lit sample here is often 0 (the object sits at the machine block's
+            // centre, inside solid geometry) which multiplied by the lightmap made
+            // see-through text render as invisible black glyphs.
+            int light = object.lighting() && !object.seeThrough()
                     ? LevelRenderer.getLightColor(minecraft.level, BlockPos.containing(position))
                     : LightTexture.FULL_BRIGHT;
 
@@ -88,6 +92,10 @@ public final class LuaWorldObjectRenderer {
             // Minecraft name tags use a mirrored XY text plane after applying
             // the camera quaternion, which keeps glyphs readable from the camera.
             poseStack.mulPose(camera.rotation());
+            // Cheap fix: billboard text otherwise renders y-inverted. A half-turn
+            // matches the non-billboard branch's 180°; applied from the live
+            // billboard flag, so turning billboard off (e.g. via Lua) is not flipped.
+            poseStack.mulPose(Axis.YP.rotationDegrees(180f));
         } else {
             // The extra half-turn compensates for the mirrored text plane and
             // makes fixed text face the same stage direction as fixed sprites.

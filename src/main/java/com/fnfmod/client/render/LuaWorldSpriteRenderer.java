@@ -18,9 +18,12 @@ final class LuaWorldSpriteRenderer {
                        LuaWorldObject.Sprite sprite, int light) {
         if (sprite.width() <= 0 || sprite.height() <= 0) return;
         ResourceLocation texture = sprite.texture() == null ? WHITE_TEXTURE : sprite.texture();
-        RenderType renderType = sprite.lighting()
+        RenderType lit = sprite.lighting()
                 ? RenderType.entityTranslucent(texture)
                 : RenderType.entityTranslucentEmissive(texture);
+        RenderType renderType = sprite.seeThrough()
+                ? SeeThroughSprite.renderType(texture, lit)
+                : lit;
         VertexConsumer vertices = buffers.getBuffer(renderType);
 
         float left = (float) (-sprite.width() * 0.5);

@@ -58,6 +58,17 @@ public abstract class CameraMixin {
                     getXRot() + (float) rotation.x,
                     getRoll() + (float) rotation.z);
         }
+
+        // Free-cam X/Y/Z already describe the camera's absolute world position
+        // relative to the stage anchor. Do not add that position to Minecraft's
+        // detached third-person offset; doing so shifts view-selected away from
+        // the object's origin even when the look direction is mathematically exact.
+        if (GameplayCamera.isFreeCamEngaged() && GameplayCamera.isFreeCamInitialized()) {
+            Vec3 pos = GameplayCamera.freeCamWorldPos();
+            setPosition(pos.x, pos.y, pos.z);
+            return;
+        }
+
         Vec3 offset = GameplayCamera.worldOffset(getLeftVector(), getUpVector(), getLookVector(),
                 stageLeft, stageUp, stageLook);
         if (offset == null) return;

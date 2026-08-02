@@ -17,6 +17,7 @@ public sealed interface LuaWorldObject permits LuaWorldObject.Sprite, LuaWorldOb
     int color();
     boolean billboard();
     boolean lighting();
+    boolean seeThrough();
 
     /** Immutable atlas data for the currently displayed animation frame. */
     record Frame(int x, int y, int width, int height, int frameX, int frameY,
@@ -44,7 +45,8 @@ public sealed interface LuaWorldObject permits LuaWorldObject.Sprite, LuaWorldOb
             double rotationY,
             int color,
             boolean billboard,
-            boolean lighting
+            boolean lighting,
+            boolean seeThrough
     ) implements LuaWorldObject {}
 
     record Text(
@@ -63,6 +65,12 @@ public sealed interface LuaWorldObject permits LuaWorldObject.Sprite, LuaWorldOb
             double rotationY,
             int color,
             boolean billboard,
-            boolean lighting
+            boolean lighting,
+            boolean seeThrough,
+            double borderSize,
+            int borderColor,
+            String borderStyle,
+            String alignment,
+            boolean italic
     ) implements LuaWorldObject {}
 }

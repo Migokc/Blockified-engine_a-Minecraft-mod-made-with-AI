@@ -314,6 +314,17 @@ public final class CharacterAnimations {
         }
     }
 
+    /** The animation names a definition maps (role-agnostic), for the editor's anim list. */
+    public static synchronized List<String> actionNames(String setName, String role) {
+        AnimSet set = resolveSet(setName);
+        if (set == null) return List.of();
+        java.util.LinkedHashSet<String> names = new java.util.LinkedHashSet<>();
+        for (String actionKey : set.actions.keySet()) {
+            names.add(actionKey.startsWith("opponent.") ? actionKey.substring("opponent.".length()) : actionKey);
+        }
+        return new ArrayList<>(names);
+    }
+
     private static AnimSet resolveSet(String setName) {
         boolean modScoped = CharacterDefinitionPaths.isModScoped(setName);
         String selected = CharacterDefinitionPaths.unscopedName(setName);

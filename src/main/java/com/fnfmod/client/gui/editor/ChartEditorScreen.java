@@ -882,7 +882,8 @@ public final class ChartEditorScreen extends Screen {
             camReadout.setTooltip(Tooltip.create(Component.literal(
                     "While free-cam is active (Ctrl+Shift+Space in a playtest), shows the "
                             + "camera position and 3D rotation as Camera Follow Pos / Camera "
-                            + "Rotation 3D values. Ctrl+C copies them; paste in the editor."))); y += 16;
+                            + "Rotation 3D values. With no object selected, Ctrl+C copies them "
+                            + "for pasting in the editor."))); y += 16;
             Button waveform = button(x + 4, y, w - 8, "Waveform...", b -> {}); waveform.active = false;
         }
     }

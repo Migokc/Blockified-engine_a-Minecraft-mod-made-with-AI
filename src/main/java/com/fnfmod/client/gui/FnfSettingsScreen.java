@@ -425,11 +425,13 @@ public class FnfSettingsScreen extends Screen {
     }
 
     private void pickFolder() {
-        // native dialog blocks, so it runs off-thread
+        // Native dialog blocks, so it runs off-thread. Uses the modern Explorer-style
+        // file selector (choose any file inside the folder) rather than the legacy tree.
         new Thread(() -> {
-            String picked = org.lwjgl.util.tinyfd.TinyFileDialogs.tinyfd_selectFolderDialog(
-                    "Select a Psych Engine mod folder", System.getProperty("user.home", ""));
-            if (picked == null || picked.isBlank()) return;
+            var folder = com.fnfmod.client.gameplay.NativeFilePicker.selectFolder(
+                    "Select a Psych Engine mod folder");
+            if (folder.isEmpty()) return;
+            String picked = folder.get().toString();
             minecraft.execute(() -> {
                 var list = new java.util.ArrayList<>(SongLibrary.getExternalFolders());
                 if (!list.contains(picked)) list.add(picked);

@@ -1,5 +1,8 @@
 {
   "block.fnfmod.funkin_machine": "Funkin' Machine",
+  "item.fnfmod.funkin_designer": "Funkin' Designer",
+  "item.fnfmod.machine_anchor": "Temporary Machine Anchor",
+  "block.fnfmod.machine_anchor": "Machine Anchor",
   "itemGroup.fnfmod": "Funkin' Machine",
   "key.categories.fnfmod": "Funkin' Machine",
   "key.fnfmod.note_left": "FNF Note Left",
