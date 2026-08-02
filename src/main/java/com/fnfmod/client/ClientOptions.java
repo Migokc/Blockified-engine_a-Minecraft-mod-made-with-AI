@@ -10,10 +10,15 @@ import java.nio.file.Path;
 
 /** Client-side gameplay options, stored in config/fnfmod/options.json. */
 public class ClientOptions {
+    public static final String SONG_ICON = "__song__";
+    public static final String NOTE_SKIN_DEFAULT = "default";
+    public static final String NOTE_SKIN_NONE = "none";
     public boolean downscroll = false;
     /** Your strumline centered, opponent notes split to the screen edges. */
     public boolean middlescroll = false;
     public boolean ghostTapping = true;
+    /** Bot auto-plays your notes. Scores are shown but never saved. */
+    public boolean botplay = false;
     public double offsetMs = 0;
     public double scrollSpeedMult = 1.0;
     /** true = constant scroll speed (overrides chart), false = multiplier of chart speed. */
@@ -21,15 +26,15 @@ public class ClientOptions {
     /** Rating popup position, as a fraction of the screen (-1 = use default). */
     public double ratingX = -1;
     public double ratingY = -1;
-    /** Which animation set (folder in config/fnfmod/animations/) plays on your character. */
-    public String animationSet = "default";
+    /** none = disabled; default = song-defined set; otherwise named global/song set. */
+    public String animationSet = "none";
     /** Solo mode side: 0 = player, 1 = opponent, 2 = both. */
     public int playAs = 0;
-    /** Note skin folder under config/fnfmod/skins/. */
-    public String noteSkin = "default";
-    /** Health icons ("" = none). */
-    public String playerIcon = "";
-    public String botIcon = "";
+    /** default = chart arrowSkin/splashSkin; none = procedural; otherwise skins/&lt;name&gt;. */
+    public String noteSkin = NOTE_SKIN_DEFAULT;
+    /** Health icons (__song__ = current song, "" = none). */
+    public String playerIcon = SONG_ICON;
+    public String botIcon = SONG_ICON;
     /** HUD style: default, abbreviated, numbers, vanilla, fnf. */
     public String hudStyle = "default";
     /** Splash pair name in config/fnfmod/splashes/ ("" = off). Ignored when the note skin ships its own. */
@@ -41,6 +46,41 @@ public class ClientOptions {
     /** Chart editor playback hitsounds, per chart side. */
     public boolean editorHitsoundPlayer = false;
     public boolean editorHitsoundOpponent = false;
+
+    /** Show the world XYZ axis gizmo (bottom-right) while playtesting from the editor. */
+    public boolean editorShowAxisGizmo = false;
+
+    /** Show the free-camera position/rotation readout while playtesting. */
+    public boolean editorShowCameraReadout = true;
+
+    /**
+     * Route note input through the frame-rate-independent sampler. Off keeps the
+     * per-frame GLFW handler. The high-rate backend is added in a later step; until
+     * then this only changes which path GLFW input flows through.
+     */
+    public boolean preciseInput = false;
+
+    /**
+     * Pre-song warning flags: "on" (both sources), "off" (neither),
+     * "blockified" (engine-detected only), "song" (author warnings.txt only).
+     */
+    public String songWarnings = "on";
+
+    /** Legacy boolean form of {@link #songWarnings}, read once to migrate old saves. */
+    @Deprecated
+    public Boolean showSongWarnings;
+
+    /** Engine-detected warnings — render distance and future hardcoded checks. */
+    public boolean warnBlockified() {
+        String mode = songWarnings == null ? "on" : songWarnings;
+        return mode.equals("on") || mode.equals("blockified");
+    }
+
+    /** Author warnings from a song's or pack's warnings.txt. */
+    public boolean warnSong() {
+        String mode = songWarnings == null ? "on" : songWarnings;
+        return mode.equals("on") || mode.equals("song");
+    }
 
     /** Psych-style RGB note colors (applies to skins authored with the red/green/blue template). */
     public boolean noteColorsEnabled = true;
@@ -73,6 +113,17 @@ public class ClientOptions {
             FnfMod.LOGGER.warn("Could not read options.json: {}", e.toString());
         }
         if (instance == null) instance = new ClientOptions();
+        // Migrate the old on/off boolean to the new four-way mode.
+        if (instance.showSongWarnings != null) {
+            instance.songWarnings = instance.showSongWarnings ? "on" : "off";
+            instance.showSongWarnings = null;
+        }
+        if (instance.songWarnings == null || instance.songWarnings.isBlank()) {
+            instance.songWarnings = "on";
+        }
+        if (instance.noteSkin == null || instance.noteSkin.isBlank()) {
+            instance.noteSkin = NOTE_SKIN_DEFAULT;
+        }
         if (instance.noteColorBase == null || instance.noteColorBase.length != 4) {
             instance.noteColorBase = defaultBase();
         }

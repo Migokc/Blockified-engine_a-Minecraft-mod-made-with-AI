@@ -27,4 +27,11 @@ public final class FnfKeys {
         }
         return -1;
     }
+
+    /** The four lanes' currently bound GLFW key codes, for the raw input backend. */
+    public static int[] currentKeyCodes() {
+        int[] codes = new int[4];
+        for (int i = 0; i < 4; i++) codes[i] = NOTE_KEYS[i].getKey().getValue();
+        return codes;
+    }
 }

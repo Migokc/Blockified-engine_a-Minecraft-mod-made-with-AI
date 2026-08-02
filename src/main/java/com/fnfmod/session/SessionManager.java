@@ -4,24 +4,34 @@ import com.fnfmod.FnfMod;
 import com.fnfmod.block.FunkinMachineBlock;
 import com.fnfmod.chart.SongChart;
 import com.fnfmod.chart.CommandEventPlaceholders;
+import com.fnfmod.chart.ChartEventTypes;
 import com.fnfmod.character.CharacterTransform;
+import com.fnfmod.gameplay.PlaybackMode;
+import com.fnfmod.gameplay.PlaybackPolicy;
+import com.fnfmod.machine.MachineLibrary;
 import com.fnfmod.net.FnfPayloads;
 import com.fnfmod.song.SongEntry;
 import com.fnfmod.song.SongLibrary;
+import com.fnfmod.world.ModContentScope;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.world.entity.decoration.ArmorStand;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.network.chat.Component;
+import net.minecraft.nbt.CompoundTag;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.storage.LevelResource;
+import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.neoforge.event.entity.player.PlayerEvent;
 import net.neoforged.neoforge.event.server.ServerStartingEvent;
+import net.neoforged.neoforge.event.server.ServerStoppedEvent;
+import net.neoforged.neoforge.event.tick.ServerTickEvent;
 import net.neoforged.neoforge.network.PacketDistributor;
 
 import java.io.IOException;
@@ -42,7 +52,21 @@ import java.util.UUID;
 public final class SessionManager {
 
     private static final int CHUNK_SIZE = 400 * 1024;
-    private static final long MAX_SONG_BYTES = 256L * 1024 * 1024;
+    /** Requested missing files only; large FNF packs commonly exceed 256 MiB. */
+    private static final long MAX_TRANSFER_REQUEST_BYTES = 1024L * 1024 * 1024;
+
+    /**
+     * File transfers stream off the server tick thread. Reading and slicing a
+     * large pack on the main thread froze the world for the whole transfer, and
+     * cancelling could not interrupt it. A daemon worker keeps the tick free and
+     * checks the session's cancel flag between chunks so a cancel stops it at once.
+     */
+    private static final java.util.concurrent.ExecutorService TRANSFER_POOL =
+            java.util.concurrent.Executors.newFixedThreadPool(2, runnable -> {
+                Thread thread = new Thread(runnable, "fnfmod-file-transfer");
+                thread.setDaemon(true);
+                return thread;
+            });
 
     private record Key(ResourceKey<Level> dim, BlockPos pos) {}
 
@@ -64,22 +88,43 @@ public final class SessionManager {
         CharacterTransform guestTransform = CharacterTransform.DEFAULT;
         /** solo only: 0 = player, 1 = opponent, 2 = both */
         byte playSide = 0;
+        PlaybackPolicy playbackPolicy = PlaybackPolicy.resolve(PlaybackMode.MINECRAFT, null);
         /** decorative bot armor stand in solo play */
         ArmorStand botStand;
         /** invisible command target at the Funkin' Machine/speakers. */
         ArmorStand speakersMarker;
+        /** Set when the session ends so an in-flight background transfer stops. */
+        volatile boolean transferCancelled;
         /** Prevents duet clients or duplicate packets from running a server event twice. */
         final Set<Integer> executedServerEvents = new HashSet<>();
+        long luaCommandWindowNanos;
+        int luaCommandsInWindow;
+        /** First state seen for each block changed by a song command. */
+        final Map<WorldBlockKey, BlockSnapshot> changedBlocks = new HashMap<>();
     }
 
     private static final Map<Key, Session> SESSIONS = new HashMap<>();
+
+    private record WorldBlockKey(ResourceKey<Level> dimension, BlockPos pos) {}
+    private record BlockSnapshot(BlockState state, CompoundTag blockEntity) {}
+    /** Commands execute synchronously on server thread. Null outside a song command. */
+    private static Session activeMutationSession;
+    private static boolean restoringWorld;
 
     /** Where each participant stood before being placed on the stage. */
     private record ReturnPoint(double x, double y, double z, float yaw, float pitch) {}
 
     private static final Map<UUID, ReturnPoint> RETURN_POINTS = new HashMap<>();
+    /** Full player NBT before stage placement: inventory, XP, effects, abilities, etc. */
+    private static final Map<UUID, CompoundTag> PLAYER_STATE_BEFORE = new HashMap<>();
     /** Real health captured before a vanilla-HUD song, restored afterwards. */
     private static final Map<UUID, Float> HEALTH_BEFORE = new HashMap<>();
+    private record FoodBefore(int level, float saturation, float exhaustion) {}
+    private record VanillaHudTarget(float health, int foodLevel) {}
+    /** Food state captured before a vanilla-HUD song, restored afterwards. */
+    private static final Map<UUID, FoodBefore> FOOD_BEFORE = new HashMap<>();
+    /** Authoritative values pinned after each server tick while the song is active. */
+    private static final Map<UUID, VanillaHudTarget> VANILLA_HUD_TARGETS = new HashMap<>();
     /** Invulnerability state before the song, restored afterwards. */
     private static final Map<UUID, Boolean> INVULN_BEFORE = new HashMap<>();
 
@@ -87,7 +132,29 @@ public final class SessionManager {
 
     @SubscribeEvent
     public static void onServerStarting(ServerStartingEvent event) {
+        ModContentScope.bindWorld(event.getServer().getWorldPath(LevelResource.ROOT));
         SongLibrary.rescan();
+        MachineLibrary.rescan();
+    }
+
+    @SubscribeEvent
+    public static void onServerStopped(ServerStoppedEvent event) {
+        ModContentScope.clear();
+        MachineLibrary.rescan();
+    }
+
+    @SubscribeEvent
+    public static void onServerTick(ServerTickEvent.Post event) {
+        var iterator = VANILLA_HUD_TARGETS.entrySet().iterator();
+        while (iterator.hasNext()) {
+            var entry = iterator.next();
+            ServerPlayer player = event.getServer().getPlayerList().getPlayer(entry.getKey());
+            if (player == null || !RETURN_POINTS.containsKey(entry.getKey())) {
+                iterator.remove();
+                continue;
+            }
+            applyVanillaHudTarget(player, entry.getValue());
+        }
     }
 
     @SubscribeEvent
@@ -99,12 +166,33 @@ public final class SessionManager {
                 if (s.host == sp || s.guest == sp) toCancel.add(e.getKey());
             }
             for (Key k : toCancel) cancel(SESSIONS.get(k), sp, "Partner disconnected");
+            com.fnfmod.machine.MachineHitboxService.clearPlayer(sp);
             restorePosition(sp); // covers finishing the song and logging out from the results screen
         }
     }
 
+    @SubscribeEvent
+    public static void onPlayerLoggedIn(PlayerEvent.PlayerLoggedInEvent event) {
+        if (!(event.getEntity() instanceof ServerPlayer player)) return;
+        String modId = "";
+        String packVersion = "built-in";
+        if (player.getServer() != null && !player.getServer().isDedicatedServer()
+                && ModContentScope.isModWorld()) {
+            modId = ModContentScope.activeMod().map(ModContentScope.ActiveMod::id).orElse("");
+            packVersion = MachineLibrary.packVersion();
+        }
+        PacketDistributor.sendToPlayer(player, new FnfPayloads.ModScopeS2C(modId, packVersion));
+    }
+
     private static Key keyOf(ServerPlayer player, BlockPos pos) {
         return new Key(player.level().dimension(), pos);
+    }
+
+    /** Cancels any session whose real/virtual machine origin was removed. */
+    public static void onMachineRemoved(ServerLevel level, BlockPos pos) {
+        if (level == null || pos == null) return;
+        Session session = SESSIONS.get(new Key(level.dimension(), pos));
+        if (session != null) cancel(session, null, "Machine removed");
     }
 
     public static void onInteract(ServerPlayer player, BlockPos pos) {
@@ -118,7 +206,7 @@ public final class SessionManager {
                 session.host = player;
                 SESSIONS.put(key, session);
                 PacketDistributor.sendToPlayer(player, new FnfPayloads.OpenMenuS2C(
-                        pos, (byte) 0, player.getGameProfile().getName(), songList()));
+                        pos, (byte) 0, player.getGameProfile().getName(), availableSongs()));
             }
             return;
         }
@@ -132,7 +220,9 @@ public final class SessionManager {
             SongEntry entry = SongLibrary.get(session.songId);
             if (entry != null) {
                 PacketDistributor.sendToPlayer(player, new FnfPayloads.FileManifestS2C(
-                        pos, session.songId, session.difficulty, true, manifest(entry, session.difficulty)));
+                        pos, session.songId, session.difficulty, true, true,
+                        session.playbackPolicy.mode().networkId(), session.playbackPolicy.songAssets(),
+                        manifest(entry, session.difficulty, session.playbackPolicy)));
             }
             return;
         }
@@ -140,6 +230,39 @@ public final class SessionManager {
         // machine is busy
         PacketDistributor.sendToPlayer(player, new FnfPayloads.OpenMenuS2C(
                 pos, (byte) 2, session.host.getGameProfile().getName(), List.of()));
+    }
+
+    /** Reserves chooser ownership for a custom Lua menu without opening the built-in selector. */
+    public static boolean prepareCustomMenu(ServerPlayer player, BlockPos pos) {
+        Key key = keyOf(player, pos);
+        Session session = SESSIONS.get(key);
+        if (session == null) {
+            session = new Session();
+            session.key = key;
+            session.host = player;
+            SESSIONS.put(key, session);
+            return true;
+        }
+        return session.host == player
+                && (session.state == State.CHOOSING || session.state == State.WAITING_GUEST);
+    }
+
+    /** Creates/reuses a host session without opening the built-in selector. */
+    public static boolean onDirectSelectSong(ServerPlayer player, FnfPayloads.MachineDirectPlayC2S payload) {
+        Key key = keyOf(player, payload.pos());
+        Session session = SESSIONS.get(key);
+        if (session == null) {
+            session = new Session();
+            session.key = key;
+            session.host = player;
+            SESSIONS.put(key, session);
+        } else if (session.host != player) {
+            return false;
+        }
+        if (session.state != State.CHOOSING && session.state != State.WAITING_GUEST) return false;
+        onSelectSong(player, new FnfPayloads.SelectSongC2S(payload.pos(), payload.songId(),
+                payload.difficulty(), payload.duet(), payload.playSide(), payload.playbackMode()));
+        return true;
     }
 
     public static void onSelectSong(ServerPlayer player, FnfPayloads.SelectSongC2S payload) {
@@ -152,10 +275,16 @@ public final class SessionManager {
             player.sendSystemMessage(Component.literal("Song not found on server: " + payload.songId()));
             return;
         }
+        if (!entry.difficulties.contains(payload.difficulty())) {
+            player.sendSystemMessage(Component.literal("Difficulty not found for song: " + payload.difficulty()));
+            return;
+        }
         session.songId = payload.songId();
         session.difficulty = payload.difficulty();
         session.duet = payload.duet();
         session.playSide = payload.duet() ? 0 : (byte) Math.max(0, Math.min(2, payload.playSide()));
+        session.playbackPolicy = PlaybackPolicy.resolve(
+                PlaybackMode.fromNetworkId(payload.playbackMode()), entry);
         session.hostReady = false;
         session.guestReady = false;
         session.executedServerEvents.clear();
@@ -168,7 +297,10 @@ public final class SessionManager {
             session.state = State.PREPARING;
         }
         PacketDistributor.sendToPlayer(player, new FnfPayloads.FileManifestS2C(
-                payload.pos(), session.songId, session.difficulty, payload.duet(), manifest(entry, session.difficulty)));
+                payload.pos(), session.songId, session.difficulty, payload.duet(),
+                !payload.duet() && session.playSide == 1,
+                session.playbackPolicy.mode().networkId(), session.playbackPolicy.songAssets(),
+                manifest(entry, session.difficulty, session.playbackPolicy)));
     }
 
     public static void onRequestFiles(ServerPlayer player, FnfPayloads.RequestFilesC2S payload) {
@@ -177,31 +309,53 @@ public final class SessionManager {
         SongEntry entry = SongLibrary.get(payload.songId());
         if (entry == null) return;
 
-        List<Path> candidates = entry.allTransferFiles();
+        java.util.Set<String> requested = new java.util.HashSet<>(payload.fileNames());
+        List<Path> candidates = entry.transferFiles(session.difficulty, session.playbackPolicy).stream()
+                .filter(file -> requested.contains(entry.transferName(file))).toList();
         long total = 0;
         for (Path f : candidates) {
             try {
                 total += Files.size(f);
             } catch (IOException ignored) {}
         }
-        if (total > MAX_SONG_BYTES) {
-            player.sendSystemMessage(Component.literal("Song is too large to transfer."));
+        if (total > MAX_TRANSFER_REQUEST_BYTES) {
+            player.sendSystemMessage(Component.literal("Requested song files exceed the 1 GiB transfer limit."));
             return;
         }
 
+        // Stream the files off the tick thread so the world keeps running, and
+        // stop between chunks if the session is cancelled or the player leaves.
+        String songId = payload.songId();
+        TRANSFER_POOL.execute(() -> streamFiles(session, player, entry, songId, candidates));
+    }
+
+    private static void streamFiles(Session session, ServerPlayer player, SongEntry entry,
+                                    String songId, List<Path> candidates) {
+        byte[] buffer = new byte[CHUNK_SIZE];
         for (Path f : candidates) {
-            String name = f.getFileName().toString();
-            if (!payload.fileNames().contains(name)) continue;
+            if (session.transferCancelled || player.hasDisconnected()) return;
+            String name = entry.transferName(f);
+            long size;
             try {
-                byte[] bytes = Files.readAllBytes(f);
-                int chunks = Math.max(1, (bytes.length + CHUNK_SIZE - 1) / CHUNK_SIZE);
+                size = Files.size(f);
+            } catch (IOException e) {
+                FnfMod.LOGGER.error("Failed to stat song file {}", f, e);
+                continue;
+            }
+            int chunks = (int) Math.max(1, (size + CHUNK_SIZE - 1) / CHUNK_SIZE);
+            try (java.io.InputStream in = new java.io.BufferedInputStream(Files.newInputStream(f))) {
                 for (int i = 0; i < chunks; i++) {
-                    int from = i * CHUNK_SIZE;
-                    int to = Math.min(bytes.length, from + CHUNK_SIZE);
-                    byte[] slice = new byte[to - from];
-                    System.arraycopy(bytes, from, slice, 0, slice.length);
+                    if (session.transferCancelled || player.hasDisconnected()) return;
+                    int filled = 0;
+                    while (filled < buffer.length) {
+                        int read = in.read(buffer, filled, buffer.length - filled);
+                        if (read < 0) break;
+                        filled += read;
+                    }
+                    byte[] slice = filled == buffer.length ? buffer.clone()
+                            : java.util.Arrays.copyOf(buffer, filled);
                     PacketDistributor.sendToPlayer(player, new FnfPayloads.FileChunkS2C(
-                            payload.songId(), name, i, chunks, slice));
+                            songId, name, i, chunks, slice));
                 }
             } catch (IOException e) {
                 FnfMod.LOGGER.error("Failed to send song file {}", f, e);
@@ -267,6 +421,7 @@ public final class SessionManager {
      */
     private static void placeOnStage(ServerPlayer player, BlockPos machinePos, byte playSide,
                                      CharacterTransform transform) {
+        PLAYER_STATE_BEFORE.putIfAbsent(player.getUUID(), player.saveWithoutId(new CompoundTag()));
         RETURN_POINTS.putIfAbsent(player.getUUID(), new ReturnPoint(
                 player.getX(), player.getY(), player.getZ(), player.getYRot(), player.getXRot()));
 
@@ -278,7 +433,9 @@ public final class SessionManager {
         // camera looks back toward the machine; its screen-right is facing.getCounterClockWise()
         Direction right = facing.getCounterClockWise();
         Vec3 posOffset = transform.positionOffset();
-        double side = playSide == 0 ? 1.5 : playSide == 1 ? -1.5 : 0.0; // both = center stage
+        // BOTH controls both chart sides, but visually occupies the normal
+        // player slot. It is not a third/center stage role.
+        double side = playSide == 1 ? -1.5 : 1.5;
         double x = machinePos.getX() + 0.5 + facing.getStepX() * 2.0
                 + right.getStepX() * side + posOffset.x;
         double y = machinePos.getY() + posOffset.y;
@@ -296,8 +453,6 @@ public final class SessionManager {
 
     /** Spawns the decorative bot armor stand on the opposite stage spot from the player. */
     private static void spawnBotStand(Session session, BlockPos machinePos) {
-        // BOTH mode centers the player and has no unplayed side to represent.
-        if (session.playSide == 2) return;
         ServerPlayer host = session.host;
         if (!(host.level() instanceof ServerLevel level)) return;
         Direction facing = Direction.NORTH;
@@ -305,11 +460,11 @@ public final class SessionManager {
         if (state.hasProperty(FunkinMachineBlock.FACING)) facing = state.getValue(FunkinMachineBlock.FACING);
         Direction right = facing.getCounterClockWise();
         // player is on 'playSide'; the bot sits on the opposite side (or opponent slot in "both")
-        double botSide = session.playSide == 0 ? -1.5 : 1.5;
+        double botSide = session.playSide == 1 ? 1.5 : -1.5;
         double x = machinePos.getX() + 0.5 + facing.getStepX() * 2.0 + right.getStepX() * botSide;
         double z = machinePos.getZ() + 0.5 + facing.getStepZ() * 2.0 + right.getStepZ() * botSide;
         // face toward the camera but angled slightly to the side the player is on
-        float yaw = facing.toYRot() + (session.playSide == 0 ? 20f : -20f);
+        float yaw = facing.toYRot() + (session.playSide == 1 ? -20f : 20f);
 
         ArmorStand stand = new ArmorStand(level, x, machinePos.getY(), z);
         stand.setYRot(yaw);
@@ -340,15 +495,12 @@ public final class SessionManager {
         if (session.duet) {
             session.host.addTag(playerTag);
             if (session.guest != null) session.guest.addTag(opponentTag);
-        } else if (session.playSide == 0) {
+        } else if (session.playSide != 1) {
             session.host.addTag(playerTag);
             if (session.botStand != null) session.botStand.addTag(opponentTag);
         } else if (session.playSide == 1) {
             session.host.addTag(opponentTag);
             if (session.botStand != null) session.botStand.addTag(playerTag);
-        } else {
-            session.host.addTag(playerTag);
-            session.host.addTag(opponentTag);
         }
 
         ServerLevel level = session.host.serverLevel();
@@ -394,7 +546,7 @@ public final class SessionManager {
             SongChart chart = SongLibrary.loadChart(entry, session.difficulty);
             if (payload.eventIndex() < 0 || payload.eventIndex() >= chart.events.size()) return;
             SongChart.Event event = chart.events.get(payload.eventIndex());
-            if (!isMinecraftCommandEvent(event.name) || !"server".equalsIgnoreCase(event.value2.trim())) {
+            if (!ChartEventTypes.isMinecraftCommand(event.name)) {
                 FnfMod.LOGGER.warn("Rejected unlisted server command event from {} for song {}",
                         player.getGameProfile().getName(), session.songId);
                 return;
@@ -408,19 +560,63 @@ public final class SessionManager {
                     event.value1, payload.pos(), machineFacing).trim();
             while (command.startsWith("/")) command = command.substring(1).trim();
             if (command.isEmpty() || player.getServer() == null) return;
-            player.getServer().getCommands().performPrefixedCommand(
-                    player.getServer().createCommandSourceStack()
-                            .withLevel(player.serverLevel())
-                            .withPosition(Vec3.atCenterOf(payload.pos())), command);
+            String trackedCommand = command;
+            boolean serverRunner = "server".equalsIgnoreCase(event.value2.trim());
+            runTrackedCommand(session, () -> player.getServer().getCommands().performPrefixedCommand(
+                    serverRunner
+                            ? player.getServer().createCommandSourceStack()
+                                    .withLevel(player.serverLevel())
+                                    .withPosition(Vec3.atCenterOf(payload.pos()))
+                            : player.createCommandSourceStack(),
+                    trackedCommand));
         } catch (Exception e) {
             FnfMod.LOGGER.warn("Could not run server command event for {}: {}",
                     session.songId, e.toString());
         }
     }
 
-    private static boolean isMinecraftCommandEvent(String name) {
-        return name != null && (name.equalsIgnoreCase("Minecraft Command")
-                || name.equalsIgnoreCase("Run Minecraft Command"));
+    public static void onLuaCommand(ServerPlayer player, FnfPayloads.LuaCommandC2S payload) {
+        Session session = SESSIONS.get(keyOf(player, payload.pos()));
+        // Host-only prevents duet clients from executing same script command twice.
+        if (session == null || session.state != State.PLAYING || session.host != player) return;
+        var server = player.getServer();
+        if (server == null) return;
+        boolean serverRunner = "server".equalsIgnoreCase(payload.runner().trim());
+        // Lua is client-provided. Never grant arbitrary server-source commands to
+        // untrusted dedicated-server players. Player-run commands retain normal permissions.
+        if (serverRunner && !player.hasPermissions(2)
+                && !server.isSingleplayerOwner(player.getGameProfile())) {
+            player.sendSystemMessage(Component.literal(
+                    "Blockified Lua: server commands require operator permission"));
+            return;
+        }
+        long now = System.nanoTime();
+        if (now - session.luaCommandWindowNanos >= 1_000_000_000L) {
+            session.luaCommandWindowNanos = now;
+            session.luaCommandsInWindow = 0;
+        }
+        if (++session.luaCommandsInWindow > 100) return;
+
+        try {
+            BlockState machineState = player.serverLevel().getBlockState(payload.pos());
+            Direction machineFacing = machineState.hasProperty(FunkinMachineBlock.FACING)
+                    ? machineState.getValue(FunkinMachineBlock.FACING) : Direction.NORTH;
+            String command = CommandEventPlaceholders.expand(
+                    payload.command(), payload.pos(), machineFacing).trim();
+            while (command.startsWith("/")) command = command.substring(1).trim();
+            if (command.isEmpty()) return;
+            String trackedCommand = command;
+            runTrackedCommand(session, () -> server.getCommands().performPrefixedCommand(
+                    serverRunner
+                            ? server.createCommandSourceStack()
+                                    .withLevel(player.serverLevel())
+                                    .withPosition(Vec3.atCenterOf(payload.pos()))
+                            : player.createCommandSourceStack(),
+                    trackedCommand));
+        } catch (Exception error) {
+            FnfMod.LOGGER.warn("Could not run Lua server command for {}: {}",
+                    session.songId, error.toString());
+        }
     }
 
     public static void onNoteEvent(ServerPlayer player, FnfPayloads.NoteEventC2S payload) {
@@ -447,6 +643,7 @@ public final class SessionManager {
         boolean allEnded = session.hostEnded && (session.guest == null || session.guestEnded || !session.duet);
         if (allEnded) {
             clearSessionActors(session);
+            restoreWorld(session);
             SESSIONS.remove(session.key);
         }
     }
@@ -464,7 +661,7 @@ public final class SessionManager {
         for (Session s : SESSIONS.values()) {
             if (s.host == player && s.state == State.CHOOSING) {
                 PacketDistributor.sendToPlayer(player, new FnfPayloads.OpenMenuS2C(
-                        s.key.pos(), (byte) 0, player.getGameProfile().getName(), songList()));
+                        s.key.pos(), (byte) 0, player.getGameProfile().getName(), availableSongs()));
                 break;
             }
         }
@@ -497,6 +694,15 @@ public final class SessionManager {
 
     /** Teleports the player back to where they stood before the song, if recorded. */
     private static void restorePosition(ServerPlayer player) {
+        CompoundTag playerState = PLAYER_STATE_BEFORE.remove(player.getUUID());
+        if (playerState != null) {
+            try {
+                player.load(playerState);
+            } catch (Exception e) {
+                FnfMod.LOGGER.warn("Could not restore player state of {}: {}",
+                        player.getGameProfile().getName(), e.toString());
+            }
+        }
         Boolean inv = INVULN_BEFORE.remove(player.getUUID());
         if (inv != null) {
             try {
@@ -509,6 +715,15 @@ public final class SessionManager {
                 player.setHealth(Math.max(1f, Math.min(player.getMaxHealth(), hp)));
             } catch (Exception ignored) {}
         }
+        VANILLA_HUD_TARGETS.remove(player.getUUID());
+        FoodBefore food = FOOD_BEFORE.remove(player.getUUID());
+        if (food != null) {
+            try {
+                player.getFoodData().setFoodLevel(food.level());
+                player.getFoodData().setSaturation(food.saturation());
+                player.getFoodData().setExhaustion(food.exhaustion());
+            } catch (Exception ignored) {}
+        }
         ReturnPoint rp = RETURN_POINTS.remove(player.getUUID());
         if (rp == null) return;
         try {
@@ -519,18 +734,34 @@ public final class SessionManager {
         }
     }
 
-    /** Vanilla HUD: set the player's real health without ever killing them. */
-    public static void onSetHealth(ServerPlayer player, float health) {
+    /** Vanilla HUD: lock real health and food to Blockified without ever killing the player. */
+    public static void onSyncVanillaHud(ServerPlayer player, float health, int foodLevel) {
         // only within an active session (return point recorded at song start)
         if (!RETURN_POINTS.containsKey(player.getUUID())) return;
         HEALTH_BEFORE.putIfAbsent(player.getUUID(), player.getHealth());
-        float clamped = Math.max(1f, Math.min(player.getMaxHealth(), health));
-        player.setHealth(clamped);
+        FOOD_BEFORE.putIfAbsent(player.getUUID(), new FoodBefore(
+                player.getFoodData().getFoodLevel(), player.getFoodData().getSaturationLevel(),
+                player.getFoodData().getExhaustionLevel()));
+        VanillaHudTarget target = new VanillaHudTarget(
+                Math.max(1f, Math.min(player.getMaxHealth(), health)),
+                Math.max(0, Math.min(20, foodLevel)));
+        VANILLA_HUD_TARGETS.put(player.getUUID(), target);
+        applyVanillaHudTarget(player, target);
+    }
+
+    private static void applyVanillaHudTarget(ServerPlayer player, VanillaHudTarget target) {
+        player.setHealth(Math.max(1f, Math.min(player.getMaxHealth(), target.health())));
+        player.getFoodData().setFoodLevel(target.foodLevel());
+        // Keep vanilla exhaustion/regeneration from changing Blockified's display.
+        player.getFoodData().setSaturation(0);
+        player.getFoodData().setExhaustion(0);
     }
 
     private static void cancel(Session session, ServerPlayer leaver, String reason) {
         if (session == null) return;
+        session.transferCancelled = true; // stop any background file transfer at once
         clearSessionActors(session);
+        restoreWorld(session);
         SESSIONS.remove(session.key);
         for (ServerPlayer p : new ServerPlayer[]{session.host, session.guest}) {
             if (p == null) continue;
@@ -541,7 +772,54 @@ public final class SessionManager {
         }
     }
 
-    private static List<FnfPayloads.SongInfo> songList() {
+    private static void runTrackedCommand(Session session, Runnable command) {
+        Session previous = activeMutationSession;
+        activeMutationSession = session;
+        try {
+            command.run();
+        } finally {
+            activeMutationSession = previous;
+        }
+    }
+
+    /** Called by LevelMutationMixin before setBlock mutates server state. */
+    public static void captureBlockBeforeMutation(Level level, BlockPos pos) {
+        Session session = activeMutationSession;
+        if (session == null || restoringWorld || level.isClientSide()) return;
+        WorldBlockKey key = new WorldBlockKey(level.dimension(), pos.immutable());
+        if (session.changedBlocks.containsKey(key)) return;
+        BlockEntity entity = level.getBlockEntity(pos);
+        CompoundTag entityTag = entity == null ? null : entity.saveWithFullMetadata(level.registryAccess());
+        session.changedBlocks.put(key, new BlockSnapshot(level.getBlockState(pos), entityTag));
+    }
+
+    private static void restoreWorld(Session session) {
+        if (session.changedBlocks.isEmpty() || session.host.getServer() == null) return;
+        restoringWorld = true;
+        try {
+            for (var entry : session.changedBlocks.entrySet()) {
+                ServerLevel level = session.host.getServer().getLevel(entry.getKey().dimension());
+                if (level == null) continue;
+                BlockPos pos = entry.getKey().pos();
+                BlockSnapshot snapshot = entry.getValue();
+                level.setBlock(pos, snapshot.state(), 3);
+                if (snapshot.blockEntity() != null) {
+                    BlockEntity entity = level.getBlockEntity(pos);
+                    if (entity != null) {
+                        entity.loadWithComponents(snapshot.blockEntity(), level.registryAccess());
+                        entity.setChanged();
+                    }
+                }
+            }
+        } catch (Exception e) {
+            FnfMod.LOGGER.error("Could not fully restore song world changes", e);
+        } finally {
+            restoringWorld = false;
+            session.changedBlocks.clear();
+        }
+    }
+
+    public static List<FnfPayloads.SongInfo> availableSongs() {
         List<FnfPayloads.SongInfo> out = new ArrayList<>();
         for (SongEntry e : SongLibrary.getSongs().values()) {
             String iconPath = e.opponentIconFile != null ? e.opponentIconFile.toAbsolutePath().toString() : "";
@@ -550,11 +828,12 @@ public final class SessionManager {
         return out;
     }
 
-    private static List<FnfPayloads.FileMeta> manifest(SongEntry entry, String difficulty) {
+    private static List<FnfPayloads.FileMeta> manifest(SongEntry entry, String difficulty,
+                                                       PlaybackPolicy policy) {
         List<FnfPayloads.FileMeta> out = new ArrayList<>();
-        for (Path f : entry.transferFiles(difficulty)) {
+        for (Path f : entry.transferFiles(difficulty, policy)) {
             try {
-                out.add(new FnfPayloads.FileMeta(f.getFileName().toString(), Files.size(f), sha1(f)));
+                out.add(new FnfPayloads.FileMeta(entry.transferName(f), Files.size(f), sha1(f)));
             } catch (IOException e) {
                 FnfMod.LOGGER.error("Failed to hash {}", f, e);
             }

@@ -22,7 +22,17 @@ public abstract class CameraMixin {
 
     @Shadow public abstract Vector3f getLeftVector();
 
+    @Shadow public abstract Vector3f getLookVector();
+
+    @Shadow public abstract float getXRot();
+
+    @Shadow public abstract float getYRot();
+
+    @Shadow public abstract float getRoll();
+
     @Shadow protected abstract void setPosition(double x, double y, double z);
+
+    @Shadow protected abstract void setRotation(float yaw, float pitch, float roll);
 
     /**
      * The character may have a custom body rotation, but the gameplay camera
@@ -37,9 +47,40 @@ public abstract class CameraMixin {
     @Inject(method = "setup", at = @At("TAIL"))
     private void fnfmod$applyGameplayPan(BlockGetter level, Entity entity, boolean detached,
                                          boolean thirdPersonReverse, float partialTick, CallbackInfo ci) {
-        Vec3 offset = GameplayCamera.worldOffset(getLeftVector(), getUpVector());
+        Vec3 rotation = GameplayCamera.rotationOffset();
+        // Snapshot the stage-facing basis before Camera Rotation 3D tilts it, so
+        // Camera Follow Pos can keep its offsets aligned to the machine facing.
+        Vector3f stageLeft = new Vector3f(getLeftVector());
+        Vector3f stageUp = new Vector3f(getUpVector());
+        Vector3f stageLook = new Vector3f(getLookVector());
+        if (!rotation.equals(Vec3.ZERO)) {
+            setRotation(getYRot() + (float) rotation.y,
+                    getXRot() + (float) rotation.x,
+                    getRoll() + (float) rotation.z);
+        }
+
+        // Free-cam X/Y/Z already describe the camera's absolute world position
+        // relative to the stage anchor. Do not add that position to Minecraft's
+        // detached third-person offset; doing so shifts view-selected away from
+        // the object's origin even when the look direction is mathematically exact.
+        if (GameplayCamera.isFreeCamEngaged() && GameplayCamera.isFreeCamInitialized()) {
+            Vec3 pos = GameplayCamera.freeCamWorldPos();
+            setPosition(pos.x, pos.y, pos.z);
+            return;
+        }
+
+        Vec3 offset = GameplayCamera.worldOffset(getLeftVector(), getUpVector(), getLookVector(),
+                stageLeft, stageUp, stageLook);
         if (offset == null) return;
         Vec3 pos = getPosition();
         setPosition(pos.x + offset.x, pos.y + offset.y, pos.z + offset.z);
+
+        // On the first free-camera frame the normal follow pose above is the exact
+        // starting point; capture it (using the un-rotated stage basis) so the
+        // free camera takes over without a visible jump.
+        if (GameplayCamera.isFreeCamEngaged() && !GameplayCamera.isFreeCamInitialized()) {
+            GameplayCamera.captureFreeCamStart(getPosition(), getYRot(), getXRot(), getRoll(),
+                    stageLeft, stageUp, stageLook);
+        }
     }
 }

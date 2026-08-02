@@ -73,11 +73,17 @@ public class SongSelectScreen extends Screen {
 
         addRenderableWidget(Button.builder(Component.literal("Chart Editor"), b -> {
             ClientSession.leave();
-            minecraft.setScreen(new ChartEditorScreen(null));
+            // Carry the machine through: it anchors the playtest stage, so without
+            // it the editor cannot place performers or the camera and playtesting
+            // is disabled entirely.
+            minecraft.setScreen(new ChartEditorScreen(null, null, null, null, null, pos));
         }).bounds(right, 40, 100, 20).build());
 
+        addRenderableWidget(Button.builder(Component.literal("Character Editor"), b ->
+                minecraft.setScreen(new CharacterEditorScreen(this))).bounds(right, 62, 100, 20).build());
+
         addRenderableWidget(Button.builder(Component.literal("Settings"), b ->
-                minecraft.setScreen(new FnfSettingsScreen(this))).bounds(right, 62, 100, 20).build());
+                minecraft.setScreen(new FnfSettingsScreen(this))).bounds(right, 84, 100, 20).build());
 
         addRenderableWidget(Button.builder(Component.literal("Reload Songs"), b -> {
             SongLibrary.rescan();
@@ -85,7 +91,7 @@ public class SongSelectScreen extends Screen {
             CharacterAnimations.reload();
             NoteStyle.reload();
             PacketDistributor.sendToServer(new FnfPayloads.ReloadC2S());
-        }).bounds(right, 84, 100, 20).build());
+        }).bounds(right, 106, 100, 20).build());
 
         addRenderableWidget(Button.builder(Component.literal("Close"), b -> {
             ClientSession.leave();
@@ -142,7 +148,7 @@ public class SongSelectScreen extends Screen {
                 gui.drawCenteredString(font, "No songs match \"" + query + "\"", x + w / 2, y + 30, 0xFFFF6666);
             } else {
                 gui.drawCenteredString(font, "No songs found!", x + w / 2, y + 30, 0xFFFF6666);
-                gui.drawCenteredString(font, "Put FNF songs into config/fnfmod/songs/<name>/", x + w / 2, y + 46, 0xFFAAAAAA);
+                gui.drawCenteredString(font, "Use config/fnfmod/songs/<name> or mods/<pack>", x + w / 2, y + 46, 0xFFAAAAAA);
                 gui.drawCenteredString(font, "or add a mod folder in Settings > Directories", x + w / 2, y + 60, 0xFFAAAAAA);
             }
             return;

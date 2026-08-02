@@ -18,7 +18,7 @@ public final class FnfNetworking {
 
     @SubscribeEvent
     public static void register(RegisterPayloadHandlersEvent event) {
-        PayloadRegistrar registrar = event.registrar("1");
+        PayloadRegistrar registrar = event.registrar("2");
 
         // client-bound
         registrar.playToClient(FnfPayloads.OpenMenuS2C.TYPE, FnfPayloads.OpenMenuS2C.CODEC, FnfNetworking::client);
@@ -29,6 +29,14 @@ public final class FnfNetworking {
         registrar.playToClient(FnfPayloads.PartnerNoteS2C.TYPE, FnfPayloads.PartnerNoteS2C.CODEC, FnfNetworking::client);
         registrar.playToClient(FnfPayloads.PartnerEndS2C.TYPE, FnfPayloads.PartnerEndS2C.CODEC, FnfNetworking::client);
         registrar.playToClient(FnfPayloads.SessionCancelS2C.TYPE, FnfPayloads.SessionCancelS2C.CODEC, FnfNetworking::client);
+        registrar.playToClient(FnfPayloads.OpenMachineEditorS2C.TYPE, FnfPayloads.OpenMachineEditorS2C.CODEC, FnfNetworking::client);
+        registrar.playToClient(FnfPayloads.MachineEditorResultS2C.TYPE, FnfPayloads.MachineEditorResultS2C.CODEC, FnfNetworking::client);
+        registrar.playToClient(FnfPayloads.OpenMachineMenuS2C.TYPE, FnfPayloads.OpenMachineMenuS2C.CODEC, FnfNetworking::client);
+        registrar.playToClient(FnfPayloads.ModScopeS2C.TYPE, FnfPayloads.ModScopeS2C.CODEC, FnfNetworking::client);
+        registrar.playToClient(FnfPayloads.OpenHitboxBuilderS2C.TYPE, FnfPayloads.OpenHitboxBuilderS2C.CODEC, FnfNetworking::client);
+        registrar.playToClient(FnfPayloads.HitboxSelectionStateS2C.TYPE, FnfPayloads.HitboxSelectionStateS2C.CODEC, FnfNetworking::client);
+        registrar.playToClient(FnfPayloads.ConfirmHitboxRemovalS2C.TYPE,
+                FnfPayloads.ConfirmHitboxRemovalS2C.CODEC, FnfNetworking::client);
 
         // server-bound
         registrar.playToServer(FnfPayloads.SelectSongC2S.TYPE, FnfPayloads.SelectSongC2S.CODEC,
@@ -55,6 +63,10 @@ public final class FnfNetworking {
                 (payload, ctx) -> ctx.enqueueWork(() -> {
                     if (ctx.player() instanceof ServerPlayer sp) SessionManager.onCommandEvent(sp, payload);
                 }));
+        registrar.playToServer(FnfPayloads.LuaCommandC2S.TYPE, FnfPayloads.LuaCommandC2S.CODEC,
+                (payload, ctx) -> ctx.enqueueWork(() -> {
+                    if (ctx.player() instanceof ServerPlayer sp) SessionManager.onLuaCommand(sp, payload);
+                }));
         registrar.playToServer(FnfPayloads.LeaveC2S.TYPE, FnfPayloads.LeaveC2S.CODEC,
                 (payload, ctx) -> ctx.enqueueWork(() -> {
                     if (ctx.player() instanceof ServerPlayer sp) SessionManager.onLeave(sp, payload.pos(), payload.finishedOnly(), payload.reopenMenu());
@@ -63,9 +75,43 @@ public final class FnfNetworking {
                 (payload, ctx) -> ctx.enqueueWork(() -> {
                     if (ctx.player() instanceof ServerPlayer sp) SessionManager.onReloadRequest(sp);
                 }));
-        registrar.playToServer(FnfPayloads.SetHealthC2S.TYPE, FnfPayloads.SetHealthC2S.CODEC,
+        registrar.playToServer(FnfPayloads.SyncVanillaHudC2S.TYPE, FnfPayloads.SyncVanillaHudC2S.CODEC,
                 (payload, ctx) -> ctx.enqueueWork(() -> {
-                    if (ctx.player() instanceof ServerPlayer sp) SessionManager.onSetHealth(sp, payload.health());
+                    if (ctx.player() instanceof ServerPlayer sp) {
+                        SessionManager.onSyncVanillaHud(sp, payload.health(), payload.foodLevel());
+                    }
+                }));
+        registrar.playToServer(FnfPayloads.MachineEditC2S.TYPE, FnfPayloads.MachineEditC2S.CODEC,
+                (payload, ctx) -> ctx.enqueueWork(() -> {
+                    if (ctx.player() instanceof ServerPlayer sp) {
+                        com.fnfmod.machine.MachineEditorService.handleEdit(sp, payload);
+                    }
+                }));
+        registrar.playToServer(FnfPayloads.MachineMenuActionC2S.TYPE, FnfPayloads.MachineMenuActionC2S.CODEC,
+                (payload, ctx) -> ctx.enqueueWork(() -> {
+                    if (ctx.player() instanceof ServerPlayer sp) {
+                        com.fnfmod.machine.MachineMenuService.handleAction(sp, payload);
+                    }
+                }));
+        registrar.playToServer(FnfPayloads.HitboxBuilderC2S.TYPE, FnfPayloads.HitboxBuilderC2S.CODEC,
+                (payload, ctx) -> ctx.enqueueWork(() -> {
+                    if (ctx.player() instanceof ServerPlayer sp) {
+                        com.fnfmod.machine.MachineHitboxService.handleBuilder(sp, payload);
+                    }
+                }));
+        registrar.playToServer(FnfPayloads.ConfirmHitboxRemovalC2S.TYPE,
+                FnfPayloads.ConfirmHitboxRemovalC2S.CODEC,
+                (payload, ctx) -> ctx.enqueueWork(() -> {
+                    if (ctx.player() instanceof ServerPlayer sp) {
+                        com.fnfmod.machine.MachineHitboxService.confirmRemoval(sp, payload);
+                    }
+                }));
+        registrar.playToServer(FnfPayloads.MachineDirectPlayC2S.TYPE,
+                FnfPayloads.MachineDirectPlayC2S.CODEC,
+                (payload, ctx) -> ctx.enqueueWork(() -> {
+                    if (ctx.player() instanceof ServerPlayer sp) {
+                        com.fnfmod.machine.MachineMenuService.handleDirectPlay(sp, payload);
+                    }
                 }));
     }
 

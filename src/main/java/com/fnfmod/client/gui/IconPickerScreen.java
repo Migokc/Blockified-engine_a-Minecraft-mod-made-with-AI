@@ -33,7 +33,8 @@ public class IconPickerScreen extends Screen {
     @Override
     protected void init() {
         all = new ArrayList<>();
-        all.add(""); // "none"
+        all.add(ClientOptions.SONG_ICON);
+        all.add("");
         all.addAll(IconLibrary.list());
         visible = all;
 
@@ -51,9 +52,11 @@ public class IconPickerScreen extends Screen {
             visible = all;
         } else {
             visible = new ArrayList<>();
+            visible.add(ClientOptions.SONG_ICON);
             visible.add("");
             for (String n : all) {
-                if (!n.isEmpty() && n.toLowerCase(Locale.ROOT).contains(query)) visible.add(n);
+                if (!n.isEmpty() && !n.equals(ClientOptions.SONG_ICON)
+                        && n.toLowerCase(Locale.ROOT).contains(query)) visible.add(n);
             }
         }
         scroll = 0;
@@ -90,7 +93,10 @@ public class IconPickerScreen extends Screen {
             boolean sel = name.equals(current);
             if (sel) gui.fill(x, ry, x + w, ry + ROW, 0x66FF44AA);
             else if (hover) gui.fill(x, ry, x + w, ry + ROW, 0x33FFFFFF);
-            if (name.isEmpty()) {
+            if (name.equals(ClientOptions.SONG_ICON)) {
+                gui.drawString(font, "Default (current song)", x + 12,
+                        ry + ROW / 2 - 4, 0xFFFFFF);
+            } else if (name.isEmpty()) {
                 gui.drawString(font, "None", x + 34, ry + ROW / 2 - 4, 0xCCCCCC);
             } else {
                 IconLibrary.draw(gui, name, 0, x + 16, ry + ROW / 2f, 26);

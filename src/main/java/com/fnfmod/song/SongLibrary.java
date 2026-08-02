@@ -5,8 +5,7 @@ import com.fnfmod.chart.CodenameChartParser;
 import com.fnfmod.chart.LegacyChartParser;
 import com.fnfmod.chart.SongChart;
 import com.fnfmod.chart.VSliceChartParser;
-import com.google.gson.GsonBuilder;
-import com.google.gson.JsonArray;
+import com.fnfmod.world.ModContentScope;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
@@ -25,7 +24,7 @@ import java.util.Set;
 import java.util.stream.Stream;
 
 /**
- * Scans config/fnfmod/songs/&lt;song&gt;/ for charts + audio.
+ * Scans lightweight config/fnfmod/songs entries and complete config/fnfmod/mods packs.
  * Each side (server, client) scans its own folder; in multiplayer the
  * server's library is authoritative and files are streamed to clients.
  */
@@ -45,6 +44,11 @@ public class SongLibrary {
 
     public static EnumSet<ExternalContent> allExternalContent() {
         return EnumSet.allOf(ExternalContent.class);
+    }
+
+    /** Lightweight config/fnfmod/songs entries intentionally have no runtime asset surface. */
+    public static EnumSet<ExternalContent> basicSongContent() {
+        return EnumSet.of(ExternalContent.CHARTS, ExternalContent.AUDIO, ExternalContent.EVENTS);
     }
 
     /** A chart-only local override uses this file to inherit assets from its original mod. */
@@ -132,23 +136,31 @@ public class SongLibrary {
         ensureFolders();
         Map<String, SongEntry> found = new LinkedHashMap<>();
         Map<String, Path> icons = new LinkedHashMap<>();
-        try (Stream<Path> dirs = Files.list(songsDir())) {
-            dirs.filter(Files::isDirectory).sorted().forEach(dir -> {
-                SongEntry entry = scanSong(dir);
-                if (entry != null) found.put(entry.id, entry);
-                collectIcons(dir, icons);
-            });
-        } catch (IOException e) {
-            FnfMod.LOGGER.error("Failed to scan songs folder", e);
+        // A bundled mod world is intentionally isolated to its owning pack.
+        // Ordinary worlds retain the complete lightweight/global library.
+        if (!ModContentScope.isModWorld()) {
+            try (Stream<Path> dirs = Files.list(songsDir())) {
+                dirs.filter(Files::isDirectory).sorted().forEach(dir -> {
+                    SongEntry entry = scanSong(dir);
+                    if (entry != null) found.put(entry.id, entry);
+                });
+            } catch (IOException e) {
+                FnfMod.LOGGER.error("Failed to scan songs folder", e);
+            }
         }
-        // Complete engine-style packs. Direct songs above retain highest priority.
-        scanPsychRoot(modsDir(), found, icons);
-        for (String folder : getExternalFolders()) {
-            try {
-                EnumSet<ExternalContent> content = getExternalFolderContent(folder);
-                scanPsychRoot(Path.of(folder), found, icons, content);
-            } catch (Exception e) {
-                FnfMod.LOGGER.warn("Failed to scan external folder {}: {}", folder, e.toString());
+        // A bundled world sees only its owner. Every other world sees all installed
+        // packs and configured external directories.
+        if (ModContentScope.mode() == ModContentScope.Mode.MOD_WORLD) {
+            ModContentScope.activeMod().ifPresent(active -> scanPsychRoot(active.root(), found, icons));
+        } else if (ModContentScope.mode() == ModContentScope.Mode.ALL) {
+            scanPsychRoot(modsDir(), found, icons);
+            for (String folder : getExternalFolders()) {
+                try {
+                    EnumSet<ExternalContent> content = getExternalFolderContent(folder);
+                    scanPsychRoot(Path.of(folder), found, icons, content);
+                } catch (Exception e) {
+                    FnfMod.LOGGER.warn("Failed to scan external folder {}: {}", folder, e.toString());
+                }
             }
         }
         // assign difficulty keys now that every folder's variations are gathered
@@ -169,14 +181,14 @@ public class SongLibrary {
     private static void resolveOpponentIcon(SongEntry e) {
         if (e.opponentIcon == null || e.opponentIcon.isEmpty()) return;
         String charId = e.opponentIcon;
-        Path root = e.characterRoot != null ? e.characterRoot
+        Path characterRoot = e.characterRoot != null ? e.characterRoot
                 : (e.modRoot != null ? e.modRoot : e.folder);
         String iconName = charId;
-        if (root != null) {
+        if (characterRoot != null) {
             // the character json names the actual health icon (V-Slice healthIcon.id / Psych healthicon)
             if (e.allows(ExternalContent.CHARACTERS)) {
                 for (String sub : new String[]{"data/characters", "characters"}) {
-                    Path cj = root.resolve(sub).resolve(charId + ".json");
+                    Path cj = characterRoot.resolve(sub).resolve(charId + ".json");
                     if (Files.isRegularFile(cj)) {
                         String hi = readHealthIconName(cj);
                         if (hi != null && !hi.isEmpty()) iconName = hi;
@@ -186,14 +198,19 @@ public class SongLibrary {
             }
             // find the icon png inside this mod
             if (e.allows(ExternalContent.ICONS)) {
-                for (String sub : new String[]{"images/icons", "icons", "images/characters", ""}) {
-                    Path dir = sub.isEmpty() ? root : root.resolve(sub);
-                    for (String fn : new String[]{"icon-" + iconName + ".png", iconName + ".png"}) {
-                        Path p = dir.resolve(fn);
-                        if (Files.isRegularFile(p)) {
-                            e.opponentIconFile = p;
-                            e.opponentIcon = iconName;
-                            return;
+                LinkedHashMap<Path, Boolean> roots = new LinkedHashMap<>();
+                if (e.modRoot != null) roots.put(e.modRoot, Boolean.TRUE);
+                roots.put(characterRoot, Boolean.TRUE);
+                for (Path root : roots.keySet()) {
+                    for (String sub : new String[]{"images/icons", "icons", "images/characters", ""}) {
+                        Path dir = sub.isEmpty() ? root : root.resolve(sub);
+                        for (String fn : new String[]{"icon-" + iconName + ".png", iconName + ".png"}) {
+                            Path p = dir.resolve(fn);
+                            if (Files.isRegularFile(p)) {
+                                e.opponentIconFile = p;
+                                e.opponentIcon = iconName;
+                                return;
+                            }
                         }
                     }
                 }
@@ -244,147 +261,59 @@ public class SongLibrary {
     // ------------------------------------------------------------ download cache
 
     public static long cacheSizeBytes() {
-        long[] total = {0};
-        try (Stream<Path> files = Files.walk(cacheDir())) {
-            files.filter(Files::isRegularFile).forEach(f -> {
-                try {
-                    total[0] += Files.size(f);
-                } catch (IOException ignored) {}
-            });
-        } catch (IOException ignored) {}
-        return total[0];
+        return SongCache.sizeBytes(cacheDir());
     }
 
     public static void clearCache() {
-        deleteRecursively(cacheDir());
-        FnfMod.LOGGER.info("Cleared FNF song download cache");
+        SongCache.clear(cacheDir());
     }
 
     /** Deletes cached songs that haven't been used for the given number of days. */
     public static void pruneCache(int days) {
-        long cutoff = System.currentTimeMillis() - days * 24L * 60 * 60 * 1000;
-        try (Stream<Path> dirs = Files.list(cacheDir())) {
-            dirs.filter(Files::isDirectory).forEach(dir -> {
-                try {
-                    if (Files.getLastModifiedTime(dir).toMillis() < cutoff) {
-                        deleteRecursively(dir);
-                        FnfMod.LOGGER.info("Pruned stale cached song {}", dir.getFileName());
-                    }
-                } catch (IOException ignored) {}
-            });
-        } catch (IOException ignored) {}
+        SongCache.prune(cacheDir(), days);
     }
 
     /** Refreshes a cached song's timestamp so pruning knows it's still in use. */
     public static void touchCacheEntry(Path dir) {
-        try {
-            if (Files.isDirectory(dir) && dir.startsWith(cacheDir())) {
-                Files.setLastModifiedTime(dir, java.nio.file.attribute.FileTime.fromMillis(System.currentTimeMillis()));
-            }
-        } catch (IOException ignored) {}
-    }
-
-    private static void deleteRecursively(Path dir) {
-        if (!Files.isDirectory(dir)) return;
-        try (Stream<Path> walk = Files.walk(dir)) {
-            walk.sorted(java.util.Comparator.reverseOrder()).forEach(f -> {
-                if (f.equals(cacheDir())) return;
-                try {
-                    Files.delete(f);
-                } catch (IOException ignored) {}
-            });
-        } catch (IOException ignored) {}
+        SongCache.touch(cacheDir(), dir);
     }
 
     // ------------------------------------------------------------ external Psych folders
 
-    private static Path externalFoldersFile() {
-        return root().resolve("external_folders.txt");
-    }
-
-    private static Path externalFolderFiltersFile() {
-        return root().resolve("external_folder_filters.json");
-    }
-
     /** User-selected folders scanned with the Psych Engine mod layout. */
     public static List<String> getExternalFolders() {
-        List<String> out = new ArrayList<>();
-        try {
-            if (Files.isRegularFile(externalFoldersFile())) {
-                for (String line : Files.readAllLines(externalFoldersFile())) {
-                    String trimmed = line.trim();
-                    if (!trimmed.isEmpty()) out.add(trimmed);
-                }
-            }
-        } catch (IOException e) {
-            FnfMod.LOGGER.warn("Could not read external_folders.txt: {}", e.toString());
-        }
-        return out;
+        return new ExternalDirectoryConfig(root()).folders();
     }
 
     public static void setExternalFolders(List<String> folders) {
-        try {
-            Files.createDirectories(root());
-            Files.write(externalFoldersFile(), folders);
-            Map<String, EnumSet<ExternalContent>> filters = readExternalFolderFilters();
-            if (filters.keySet().retainAll(folders)) writeExternalFolderFilters(filters);
-        } catch (IOException e) {
-            FnfMod.LOGGER.warn("Could not save external_folders.txt: {}", e.toString());
-        }
+        new ExternalDirectoryConfig(root()).setFolders(folders);
     }
 
     /** Missing entries deliberately mean every category, preserving pre-checklist installations. */
     public static EnumSet<ExternalContent> getExternalFolderContent(String folder) {
-        EnumSet<ExternalContent> saved = readExternalFolderFilters().get(folder);
-        return saved == null ? allExternalContent() : EnumSet.copyOf(saved);
+        return new ExternalDirectoryConfig(root()).content(folder);
     }
 
     public static void setExternalFolderContent(String folder, ExternalContent content, boolean enabled) {
-        Map<String, EnumSet<ExternalContent>> filters = readExternalFolderFilters();
-        EnumSet<ExternalContent> selected = filters.containsKey(folder)
-                ? EnumSet.copyOf(filters.get(folder)) : allExternalContent();
-        if (enabled) selected.add(content); else selected.remove(content);
-        filters.put(folder, selected);
-        writeExternalFolderFilters(filters);
+        new ExternalDirectoryConfig(root()).setContent(folder, content, enabled);
     }
 
-    private static Map<String, EnumSet<ExternalContent>> readExternalFolderFilters() {
-        Map<String, EnumSet<ExternalContent>> out = new LinkedHashMap<>();
+    /**
+     * Shared Psych assets come only from the first configured directory. This
+     * keeps directory order meaningful without leaking same-named assets from
+     * unrelated packs lower in the song-search list.
+     */
+    public static Path primaryExternalAssetRoot(ExternalContent content) {
+        if (ModContentScope.mode() != ModContentScope.Mode.ALL) return null;
+        List<String> folders = getExternalFolders();
+        if (folders.isEmpty()) return null;
+        String first = folders.get(0);
+        if (!getExternalFolderContent(first).contains(content)) return null;
         try {
-            Path file = externalFolderFiltersFile();
-            if (!Files.isRegularFile(file)) return out;
-            JsonObject json = JsonParser.parseString(Files.readString(file)).getAsJsonObject();
-            for (var entry : json.entrySet()) {
-                if (!entry.getValue().isJsonArray()) continue;
-                EnumSet<ExternalContent> selected = EnumSet.noneOf(ExternalContent.class);
-                for (JsonElement value : entry.getValue().getAsJsonArray()) {
-                    try {
-                        selected.add(ExternalContent.valueOf(value.getAsString().toUpperCase(Locale.ROOT)));
-                    } catch (Exception ignored) {}
-                }
-                out.put(entry.getKey(), selected);
-            }
-        } catch (Exception e) {
-            FnfMod.LOGGER.warn("Could not read external_folder_filters.json: {}", e.toString());
-        }
-        return out;
-    }
-
-    private static void writeExternalFolderFilters(Map<String, EnumSet<ExternalContent>> filters) {
-        try {
-            Files.createDirectories(root());
-            JsonObject json = new JsonObject();
-            for (var entry : filters.entrySet()) {
-                JsonArray values = new JsonArray();
-                for (ExternalContent content : ExternalContent.values()) {
-                    if (entry.getValue().contains(content)) values.add(content.name().toLowerCase(Locale.ROOT));
-                }
-                json.add(entry.getKey(), values);
-            }
-            Files.writeString(externalFolderFiltersFile(),
-                    new GsonBuilder().setPrettyPrinting().create().toJson(json));
-        } catch (IOException e) {
-            FnfMod.LOGGER.warn("Could not save external_folder_filters.json: {}", e.toString());
+            Path root = Path.of(first).toAbsolutePath().normalize();
+            return Files.isDirectory(root) ? root : null;
+        } catch (Exception ignored) {
+            return null;
         }
     }
 
@@ -446,6 +375,7 @@ public class SongLibrary {
                 entry.folder = songDir;
                 entry.format = SongEntry.Format.LEGACY;
                 entry.modRoot = mod;
+                entry.fullModLayout = true;
                 entry.externalContent = EnumSet.copyOf(content);
 
                 try (Stream<Path> files = Files.list(songDir)) {
@@ -530,9 +460,13 @@ public class SongLibrary {
                     entry.displayName = id;
                     entry.folder = songDir;
                     entry.format = SongEntry.Format.VSLICE;
+                    entry.modRoot = mod;
+                    entry.fullModLayout = true;
                     entry.externalContent = EnumSet.copyOf(content);
                 } else if (entry.format != SongEntry.Format.VSLICE) {
                     return; // don't mix with a legacy song of the same id
+                } else if (!entry.fullModLayout) {
+                    return; // lightweight songs/ entries keep priority over complete packs
                 }
                 if (content.contains(ExternalContent.EVENTS)) {
                     for (Path json : jsons) {
@@ -597,6 +531,7 @@ public class SongLibrary {
         entry.folder = dir;
         entry.format = SongEntry.Format.CODENAME;
         entry.modRoot = modRoot;
+        entry.fullModLayout = modRoot != null && !inside(modRoot, songsDir());
         entry.externalContent = EnumSet.copyOf(content);
         Path eventsFile = chartSource.resolve("events.json");
         if (content.contains(ExternalContent.EVENTS) && Files.isRegularFile(eventsFile)) {
@@ -750,9 +685,11 @@ public class SongLibrary {
     }
 
     private static SongEntry scanSong(Path dir) {
+        boolean basicLocal = inside(dir, songsDir());
         // Codename Engine song folder: meta.json (+ charts/ or a flattened download cache)
         if (Files.isRegularFile(dir.resolve("meta.json")) || Files.isDirectory(dir.resolve("charts"))) {
-            SongEntry cn = scanCodenameSong(dir, dir);
+            SongEntry cn = scanCodenameSong(dir, basicLocal ? null : dir,
+                    basicLocal ? basicSongContent() : allExternalContent());
             if (cn != null) return cn;
         }
 
@@ -760,6 +697,9 @@ public class SongLibrary {
         entry.id = dir.getFileName().toString();
         entry.displayName = entry.id;
         entry.folder = dir;
+        entry.fullModLayout = !basicLocal && looksLikeTransferredMod(dir);
+        entry.modRoot = entry.fullModLayout ? dir : null;
+        entry.externalContent = basicLocal ? basicSongContent() : allExternalContent();
 
         List<Path> jsons = new ArrayList<>();
         try (Stream<Path> files = Files.list(dir)) {
@@ -770,8 +710,6 @@ public class SongLibrary {
                     jsons.add(f);
                 } else if (lower.endsWith(".ogg")) {
                     classifyAudio(entry, f, lower);
-                } else if (lower.endsWith(".lua")) {
-                    entry.luaFiles.add(f);
                 }
             });
         } catch (IOException e) {
@@ -788,7 +726,7 @@ public class SongLibrary {
         });
         if (hasVslice) {
             entry.format = SongEntry.Format.VSLICE;
-            buildVSliceVariations(entry, jsons, dir, dir, allExternalContent()); // fills rawVars; finalized after all scanning
+            buildVSliceVariations(entry, jsons, dir, entry.modRoot, entry.externalContent); // fills rawVars; finalized after all scanning
             if (entry.rawVars.isEmpty()) return null;
             if (entry.rawVars.stream().allMatch(r -> r.files.instFile == null)) {
                 FnfMod.LOGGER.warn("V-Slice song {} has charts but no matching Inst.ogg in the same folder "
@@ -822,7 +760,6 @@ public class SongLibrary {
                 }
                 if (entry.opponentIcon.isEmpty()) {
                     entry.opponentIcon = LegacyChartParser.optString(songObj, "player2", "dad");
-                    entry.modRoot = dir;
                 }
             } catch (Exception ignored) {}
         }
@@ -858,6 +795,11 @@ public class SongLibrary {
             if (!source.isAbsolute()) source = localDir.resolve(source);
             source = source.toAbsolutePath().normalize();
             if (source.equals(localDir.toAbsolutePath().normalize()) || !Files.isDirectory(source)) return null;
+            if (!ModContentScope.allowsContentPath(source)) {
+                FnfMod.LOGGER.warn("Chart override {} cannot access out-of-scope source {}",
+                        override.id, source);
+                return null;
+            }
 
             Map<String, SongEntry> sourceSongs = new LinkedHashMap<>();
             scanPsychRoot(source, sourceSongs, new LinkedHashMap<>());
@@ -877,16 +819,25 @@ public class SongLibrary {
             }
             if (original.isVslice()) finalizeVSlice(original);
 
-            // Keep the source only as a chart/audio library. Runtime resources must
-            // resolve from the local override, never from the origin pack.
+            // The locally saved chart wins, while the exact source pack remains
+            // its complete runtime resource root. This keeps edited charts fully
+            // playable without copying a potentially large mod into songs/.
             original.chartOriginRoot = source;
-            original.characterRoot = source;
             original.folder = localDir;
-            original.modRoot = localDir;
-            original.opponentIconFile = null;
-            // Scripts beside the locally saved chart belong only to this song.
-            original.luaFiles.clear();
-            original.luaFiles.addAll(override.luaFiles);
+            original.fullModLayout = original.modRoot != null;
+            original.externalContent = allExternalContent();
+            // A separately saved events.json replaces the source events. Without
+            // one, keep the source event timeline just like every other asset.
+            if (override.eventsFile != null) {
+                original.eventsFile = override.eventsFile;
+                original.eventsOverride = true;
+            }
+            // A complete local import must take priority over the referenced
+            // source while keeping the reference as a fallback for missing data.
+            if (override.instFile != null) original.instFile = override.instFile;
+            if (override.voicesFile != null) original.voicesFile = override.voicesFile;
+            if (override.voicesPlayerFile != null) original.voicesPlayerFile = override.voicesPlayerFile;
+            if (override.voicesOpponentFile != null) original.voicesOpponentFile = override.voicesOpponentFile;
             for (var local : override.legacyChartFiles.entrySet()) {
                 String difficulty = original.difficulties.stream()
                         .filter(d -> normalizedDifficultyKey(d).equals(normalizedDifficultyKey(local.getKey())))
@@ -894,11 +845,8 @@ public class SongLibrary {
                 original.chartOverrides.put(difficulty, local.getValue());
                 if (!original.difficulties.contains(difficulty)) original.difficulties.add(difficulty);
             }
-            if (override.eventsFile != null) {
-                original.eventsFile = override.eventsFile;
-                original.eventsOverride = true;
-            }
-            FnfMod.LOGGER.info("Chart override {} inherits assets from {}", override.id, source);
+            FnfMod.LOGGER.info("Edited chart {} inherits complete runtime assets from {}",
+                    override.id, source);
             return original;
         } catch (Exception e) {
             FnfMod.LOGGER.warn("Could not resolve chart override source for {}: {}", override.id, e.toString());
@@ -908,6 +856,20 @@ public class SongLibrary {
 
     private static String normalizedDifficultyKey(String value) {
         return value.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9_-]", "-");
+    }
+
+    private static boolean inside(Path path, Path root) {
+        if (path == null || root == null) return false;
+        return path.toAbsolutePath().normalize().startsWith(root.toAbsolutePath().normalize());
+    }
+
+    /** Download caches preserve these directories when a complete mod is transferred. */
+    private static boolean looksLikeTransferredMod(Path root) {
+        for (String folder : new String[]{"scripts", "custom_events", "custom_notetypes", "images",
+                "characters", "stages", "sounds", "fonts", "animations", "data", "songs"}) {
+            if (Files.isDirectory(root.resolve(folder))) return true;
+        }
+        return false;
     }
 
     /**
@@ -1143,7 +1105,7 @@ public class SongLibrary {
     /** Loads and parses a chart for the given difficulty. */
     public static SongChart loadChart(SongEntry entry, String difficulty) throws IOException {
         SongChart chart;
-        Path chartOverride = entry.chartOverrides.get(difficulty);
+        Path chartOverride = entry.chartOverrideFor(difficulty);
         if (chartOverride != null && Files.isRegularFile(chartOverride)) {
             chart = LegacyChartParser.parse(Files.readString(chartOverride));
         } else if (entry.format == SongEntry.Format.VSLICE) {
@@ -1153,17 +1115,13 @@ public class SongLibrary {
             String metaJson = Files.readString(v.metadataFile);
             chart = VSliceChartParser.parse(chartJson, metaJson, entry.realDifficulty(difficulty));
         } else if (entry.format == SongEntry.Format.CODENAME) {
-            Path f = entry.legacyChartFiles.get(difficulty);
-            if (f == null && !entry.legacyChartFiles.isEmpty()) f = entry.legacyChartFiles.values().iterator().next();
+            Path f = entry.legacyChartFor(difficulty);
             if (f == null) throw new IOException("No chart for difficulty " + difficulty);
             String metaJson = entry.metaFile != null && Files.isRegularFile(entry.metaFile)
                     ? Files.readString(entry.metaFile) : null;
             chart = CodenameChartParser.parse(Files.readString(f), metaJson, difficulty);
         } else {
-            Path f = entry.legacyChartFiles.get(difficulty);
-            if (f == null && !entry.legacyChartFiles.isEmpty()) {
-                f = entry.legacyChartFiles.values().iterator().next();
-            }
+            Path f = entry.legacyChartFor(difficulty);
             if (f == null) throw new IOException("No chart for difficulty " + difficulty);
             chart = LegacyChartParser.parse(Files.readString(f));
         }

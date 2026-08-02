@@ -80,7 +80,9 @@ public final class FnfPayloads {
         public Type<? extends CustomPacketPayload> type() { return TYPE; }
     }
 
-    public record FileManifestS2C(BlockPos pos, String songId, String difficulty, boolean duet, List<FileMeta> files)
+    public record FileManifestS2C(BlockPos pos, String songId, String difficulty, boolean duet,
+                                  boolean opponentSide, byte playbackMode, boolean songAssets,
+                                  List<FileMeta> files)
             implements CustomPacketPayload {
         public static final Type<FileManifestS2C> TYPE = new Type<>(FnfMod.id("file_manifest"));
         public static final StreamCodec<FriendlyByteBuf, FileManifestS2C> CODEC = StreamCodec.of(
@@ -89,9 +91,13 @@ public final class FnfPayloads {
                     buf.writeUtf(v.songId);
                     buf.writeUtf(v.difficulty);
                     buf.writeBoolean(v.duet);
+                    buf.writeBoolean(v.opponentSide);
+                    buf.writeByte(v.playbackMode);
+                    buf.writeBoolean(v.songAssets);
                     buf.writeCollection(v.files, FileMeta::write);
                 },
                 buf -> new FileManifestS2C(buf.readBlockPos(), buf.readUtf(), buf.readUtf(), buf.readBoolean(),
+                        buf.readBoolean(), buf.readByte(), buf.readBoolean(),
                         buf.readList(FileMeta::read)));
 
         @Override
@@ -185,10 +191,118 @@ public final class FnfPayloads {
         public Type<? extends CustomPacketPayload> type() { return TYPE; }
     }
 
+    public record OpenMachineEditorS2C(BlockPos pos, String profileId) implements CustomPacketPayload {
+        public static final Type<OpenMachineEditorS2C> TYPE = new Type<>(FnfMod.id("open_machine_editor"));
+        public static final StreamCodec<FriendlyByteBuf, OpenMachineEditorS2C> CODEC = StreamCodec.of(
+                (buf, value) -> {
+                    buf.writeBlockPos(value.pos());
+                    buf.writeUtf(value.profileId(), 128);
+                },
+                buf -> new OpenMachineEditorS2C(buf.readBlockPos(), buf.readUtf(128)));
+
+        @Override
+        public Type<? extends CustomPacketPayload> type() { return TYPE; }
+    }
+
+    public record MachineEditorResultS2C(boolean success, String message, String profileId,
+                                         boolean refresh) implements CustomPacketPayload {
+        public static final Type<MachineEditorResultS2C> TYPE = new Type<>(FnfMod.id("machine_editor_result"));
+        public static final StreamCodec<FriendlyByteBuf, MachineEditorResultS2C> CODEC = StreamCodec.of(
+                (buf, value) -> {
+                    buf.writeBoolean(value.success());
+                    buf.writeUtf(value.message(), 1024);
+                    buf.writeUtf(value.profileId(), 128);
+                    buf.writeBoolean(value.refresh());
+                },
+                buf -> new MachineEditorResultS2C(buf.readBoolean(), buf.readUtf(1024),
+                        buf.readUtf(128), buf.readBoolean()));
+
+        @Override
+        public Type<? extends CustomPacketPayload> type() { return TYPE; }
+    }
+
+    public record OpenMachineMenuS2C(BlockPos pos, String profileId, String machineData,
+                                     String modId, String packVersion, List<SongInfo> songs)
+            implements CustomPacketPayload {
+        public static final Type<OpenMachineMenuS2C> TYPE = new Type<>(FnfMod.id("open_machine_menu"));
+        public static final StreamCodec<FriendlyByteBuf, OpenMachineMenuS2C> CODEC = StreamCodec.of(
+                (buf, value) -> {
+                    buf.writeBlockPos(value.pos());
+                    buf.writeUtf(value.profileId(), 128);
+                    buf.writeUtf(value.machineData(), 32767);
+                    buf.writeUtf(value.modId(), 128);
+                    buf.writeUtf(value.packVersion(), 128);
+                    buf.writeCollection(value.songs(), SongInfo::write);
+                },
+                buf -> new OpenMachineMenuS2C(buf.readBlockPos(), buf.readUtf(128),
+                        buf.readUtf(32767), buf.readUtf(128), buf.readUtf(128),
+                        buf.readList(SongInfo::read)));
+
+        @Override
+        public Type<? extends CustomPacketPayload> type() { return TYPE; }
+    }
+
+    /** Active bundled-mod scope handshake for integrated/LAN clients. Empty ID means no mod assets. */
+    public record ModScopeS2C(String modId, String packVersion) implements CustomPacketPayload {
+        public static final Type<ModScopeS2C> TYPE = new Type<>(FnfMod.id("mod_scope"));
+        public static final StreamCodec<FriendlyByteBuf, ModScopeS2C> CODEC = StreamCodec.of(
+                (buf, value) -> {
+                    buf.writeUtf(value.modId(), 128);
+                    buf.writeUtf(value.packVersion(), 128);
+                },
+                buf -> new ModScopeS2C(buf.readUtf(128), buf.readUtf(128)));
+
+        @Override
+        public Type<? extends CustomPacketPayload> type() { return TYPE; }
+    }
+
+    public record OpenHitboxBuilderS2C(String profileId) implements CustomPacketPayload {
+        public static final Type<OpenHitboxBuilderS2C> TYPE = new Type<>(FnfMod.id("open_hitbox_builder"));
+        public static final StreamCodec<FriendlyByteBuf, OpenHitboxBuilderS2C> CODEC = StreamCodec.of(
+                (buf, value) -> buf.writeUtf(value.profileId(), 128),
+                buf -> new OpenHitboxBuilderS2C(buf.readUtf(128)));
+
+        @Override public Type<? extends CustomPacketPayload> type() { return TYPE; }
+    }
+
+    /** stage: 0 clear, 1 choosing first point, 2 choosing second point, 3 ready for anchor. */
+    public record HitboxSelectionStateS2C(byte stage, byte mode,
+                                          double minX, double minY, double minZ,
+                                          double maxX, double maxY, double maxZ) implements CustomPacketPayload {
+        public static final Type<HitboxSelectionStateS2C> TYPE = new Type<>(FnfMod.id("hitbox_selection_state"));
+        public static final StreamCodec<FriendlyByteBuf, HitboxSelectionStateS2C> CODEC = StreamCodec.of(
+                (buf, value) -> {
+                    buf.writeByte(value.stage());
+                    buf.writeByte(value.mode());
+                    buf.writeDouble(value.minX()); buf.writeDouble(value.minY()); buf.writeDouble(value.minZ());
+                    buf.writeDouble(value.maxX()); buf.writeDouble(value.maxY()); buf.writeDouble(value.maxZ());
+                },
+                buf -> new HitboxSelectionStateS2C(buf.readByte(), buf.readByte(),
+                        buf.readDouble(), buf.readDouble(), buf.readDouble(),
+                        buf.readDouble(), buf.readDouble(), buf.readDouble()));
+
+        @Override public Type<? extends CustomPacketPayload> type() { return TYPE; }
+    }
+
+    /** Opens a client confirmation screen before deleting a virtual-machine hitbox. */
+    public record ConfirmHitboxRemovalS2C(BlockPos anchorPos, UUID groupId) implements CustomPacketPayload {
+        public static final Type<ConfirmHitboxRemovalS2C> TYPE =
+                new Type<>(FnfMod.id("confirm_hitbox_removal"));
+        public static final StreamCodec<FriendlyByteBuf, ConfirmHitboxRemovalS2C> CODEC = StreamCodec.of(
+                (buf, value) -> {
+                    buf.writeBlockPos(value.anchorPos());
+                    buf.writeUUID(value.groupId());
+                },
+                buf -> new ConfirmHitboxRemovalS2C(buf.readBlockPos(), buf.readUUID()));
+
+        @Override public Type<? extends CustomPacketPayload> type() { return TYPE; }
+    }
+
     // ------------------------------------------------------------------ C2S
 
-    /** playSide (solo only): 0 = player, 1 = opponent, 2 = both */
-    public record SelectSongC2S(BlockPos pos, String songId, String difficulty, boolean duet, byte playSide)
+    /** playSide (solo only): 0 = player, 1 = opponent, 2 = both. */
+    public record SelectSongC2S(BlockPos pos, String songId, String difficulty, boolean duet,
+                                byte playSide, byte playbackMode)
             implements CustomPacketPayload {
         public static final Type<SelectSongC2S> TYPE = new Type<>(FnfMod.id("select_song"));
         public static final StreamCodec<FriendlyByteBuf, SelectSongC2S> CODEC = StreamCodec.of(
@@ -198,9 +312,10 @@ public final class FnfPayloads {
                     buf.writeUtf(v.difficulty);
                     buf.writeBoolean(v.duet);
                     buf.writeByte(v.playSide);
+                    buf.writeByte(v.playbackMode);
                 },
                 buf -> new SelectSongC2S(buf.readBlockPos(), buf.readUtf(), buf.readUtf(), buf.readBoolean(),
-                        buf.readByte()));
+                        buf.readByte(), buf.readByte()));
 
         @Override
         public Type<? extends CustomPacketPayload> type() { return TYPE; }
@@ -289,6 +404,21 @@ public final class FnfPayloads {
         public Type<? extends CustomPacketPayload> type() { return TYPE; }
     }
 
+    /** Requests a tracked Lua command. Server preserves player/server runner semantics. */
+    public record LuaCommandC2S(BlockPos pos, String command, String runner) implements CustomPacketPayload {
+        public static final Type<LuaCommandC2S> TYPE = new Type<>(FnfMod.id("lua_command"));
+        public static final StreamCodec<FriendlyByteBuf, LuaCommandC2S> CODEC = StreamCodec.of(
+                (buf, value) -> {
+                    buf.writeBlockPos(value.pos());
+                    buf.writeUtf(value.command(), 32767);
+                    buf.writeUtf(value.runner(), 16);
+                },
+                buf -> new LuaCommandC2S(buf.readBlockPos(), buf.readUtf(32767), buf.readUtf(16)));
+
+        @Override
+        public Type<? extends CustomPacketPayload> type() { return TYPE; }
+    }
+
     /** Asks the server to rescan its song library (requires op on dedicated servers). */
     public record ReloadC2S() implements CustomPacketPayload {
         public static final Type<ReloadC2S> TYPE = new Type<>(FnfMod.id("reload"));
@@ -299,12 +429,15 @@ public final class FnfPayloads {
     }
 
     /** finishedOnly = the song ended normally; just restore my position, don't cancel anything. */
-    /** Vanilla HUD mode: drive the real hearts. health clamped server-side, never lethal. */
-    public record SetHealthC2S(float health) implements CustomPacketPayload {
-        public static final Type<SetHealthC2S> TYPE = new Type<>(FnfMod.id("set_health"));
-        public static final StreamCodec<FriendlyByteBuf, SetHealthC2S> CODEC = StreamCodec.of(
-                (buf, v) -> buf.writeFloat(v.health),
-                buf -> new SetHealthC2S(buf.readFloat()));
+    /** Vanilla HUD mode: drive Minecraft's real hearts and food while preserving pre-song state. */
+    public record SyncVanillaHudC2S(float health, int foodLevel) implements CustomPacketPayload {
+        public static final Type<SyncVanillaHudC2S> TYPE = new Type<>(FnfMod.id("sync_vanilla_hud"));
+        public static final StreamCodec<FriendlyByteBuf, SyncVanillaHudC2S> CODEC = StreamCodec.of(
+                (buf, value) -> {
+                    buf.writeFloat(value.health);
+                    buf.writeVarInt(value.foodLevel);
+                },
+                buf -> new SyncVanillaHudC2S(buf.readFloat(), buf.readVarInt()));
 
         @Override
         public Type<? extends CustomPacketPayload> type() { return TYPE; }
@@ -323,5 +456,83 @@ public final class FnfPayloads {
 
         @Override
         public Type<? extends CustomPacketPayload> type() { return TYPE; }
+    }
+
+    /** action: 0 save selection, 1 create starter profile, 2 reload active pack machines. */
+    public record MachineEditC2S(BlockPos pos, byte action, String value) implements CustomPacketPayload {
+        public static final Type<MachineEditC2S> TYPE = new Type<>(FnfMod.id("machine_edit"));
+        public static final StreamCodec<FriendlyByteBuf, MachineEditC2S> CODEC = StreamCodec.of(
+                (buf, payload) -> {
+                    buf.writeBlockPos(payload.pos());
+                    buf.writeByte(payload.action());
+                    buf.writeUtf(payload.value(), 128);
+                },
+                buf -> new MachineEditC2S(buf.readBlockPos(), buf.readByte(), buf.readUtf(128)));
+
+        @Override
+        public Type<? extends CustomPacketPayload> type() { return TYPE; }
+    }
+
+    /** action: 0 open built-in song selector, 1 persist machineData SNBT. */
+    public record MachineMenuActionC2S(BlockPos pos, byte action, String value) implements CustomPacketPayload {
+        public static final Type<MachineMenuActionC2S> TYPE = new Type<>(FnfMod.id("machine_menu_action"));
+        public static final StreamCodec<FriendlyByteBuf, MachineMenuActionC2S> CODEC = StreamCodec.of(
+                (buf, payload) -> {
+                    buf.writeBlockPos(payload.pos());
+                    buf.writeByte(payload.action());
+                    buf.writeUtf(payload.value(), 32767);
+                },
+                buf -> new MachineMenuActionC2S(buf.readBlockPos(), buf.readByte(), buf.readUtf(32767)));
+
+        @Override
+        public Type<? extends CustomPacketPayload> type() { return TYPE; }
+    }
+
+    /** action: 0 begin/restart selection, 1 cancel. mode: 0 full blocks, 1 precise. */
+    public record HitboxBuilderC2S(byte action, byte mode, String profileId) implements CustomPacketPayload {
+        public static final Type<HitboxBuilderC2S> TYPE = new Type<>(FnfMod.id("hitbox_builder"));
+        public static final StreamCodec<FriendlyByteBuf, HitboxBuilderC2S> CODEC = StreamCodec.of(
+                (buf, value) -> {
+                    buf.writeByte(value.action());
+                    buf.writeByte(value.mode());
+                    buf.writeUtf(value.profileId(), 128);
+                },
+                buf -> new HitboxBuilderC2S(buf.readByte(), buf.readByte(), buf.readUtf(128)));
+
+        @Override public Type<? extends CustomPacketPayload> type() { return TYPE; }
+    }
+
+    /** Confirms deletion only if the same anchor/group still exists and remains reachable. */
+    public record ConfirmHitboxRemovalC2S(BlockPos anchorPos, UUID groupId) implements CustomPacketPayload {
+        public static final Type<ConfirmHitboxRemovalC2S> TYPE =
+                new Type<>(FnfMod.id("confirm_hitbox_removal_response"));
+        public static final StreamCodec<FriendlyByteBuf, ConfirmHitboxRemovalC2S> CODEC = StreamCodec.of(
+                (buf, value) -> {
+                    buf.writeBlockPos(value.anchorPos());
+                    buf.writeUUID(value.groupId());
+                },
+                buf -> new ConfirmHitboxRemovalC2S(buf.readBlockPos(), buf.readUUID()));
+
+        @Override public Type<? extends CustomPacketPayload> type() { return TYPE; }
+    }
+
+    /** Direct launch requested by a sandboxed custom machine menu. */
+    public record MachineDirectPlayC2S(BlockPos pos, String songId, String difficulty,
+                                       boolean duet, byte playSide, byte playbackMode)
+            implements CustomPacketPayload {
+        public static final Type<MachineDirectPlayC2S> TYPE = new Type<>(FnfMod.id("machine_direct_play"));
+        public static final StreamCodec<FriendlyByteBuf, MachineDirectPlayC2S> CODEC = StreamCodec.of(
+                (buf, value) -> {
+                    buf.writeBlockPos(value.pos());
+                    buf.writeUtf(value.songId(), 256);
+                    buf.writeUtf(value.difficulty(), 128);
+                    buf.writeBoolean(value.duet());
+                    buf.writeByte(value.playSide());
+                    buf.writeByte(value.playbackMode());
+                },
+                buf -> new MachineDirectPlayC2S(buf.readBlockPos(), buf.readUtf(256),
+                        buf.readUtf(128), buf.readBoolean(), buf.readByte(), buf.readByte()));
+
+        @Override public Type<? extends CustomPacketPayload> type() { return TYPE; }
     }
 }
