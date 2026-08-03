@@ -84,7 +84,14 @@ public final class MachineMenuRuntime implements AutoCloseable {
 
     private static final int MAX_WIDGETS = 256;
     private static final int MAX_TWEENS = 256;
-    private static final long CALL_BUDGET_NANOS = 25_000_000L;
+    // Runaway-script guard is measured in executed Lua instructions, not wall
+    // time, so it is immune to JVM warmup. An infinite loop burns through this in
+    // a fraction of a second; a normal menu uses a tiny fraction of it.
+    private static final long MAX_CALL_INSTRUCTIONS = 50_000_000L;
+    // Large wall-clock backstop only, so a pathological call still cannot hang the
+    // client. Kept far above cold-start stalls (class loading, Lua compilation,
+    // font parsing) that previously tripped a 25 ms budget on the first menu open.
+    private static final long CALL_WALL_CEILING_NANOS = 5_000_000_000L;
 
     private final MachineDefinition definition;
     private final Host host;
@@ -1071,17 +1078,18 @@ public final class MachineMenuRuntime implements AutoCloseable {
     // ------------------------------------------------------------------- sound
 
     /**
-     * Menu sound playback. Files resolve like every other asset: relative to the
-     * machine folder, staying inside the active mod. An OGG extension is optional
-     * so {@code playSound('sounds/click')} matches Psych's convention. A tag lets
-     * a sound be stopped, paused/resumed, or re-volumed later; untagged sounds
-     * fire-and-forget from a small pool.
+     * Menu sound playback. Following the menu widget convention, the tag and path
+     * come first, then the optional config. Files resolve like every other asset:
+     * relative to the machine folder, staying inside the active mod. An OGG
+     * extension is optional so {@code playSound('click', 'sounds/click')} matches
+     * Psych's convention. The tag lets a sound be stopped, paused/resumed, or
+     * re-volumed later; pass an empty tag for a fire-and-forget sound from a pool.
      */
     private void installSound() {
         globals.set("playSound", function(args -> {
-            String name = args.arg(1).optjstring("");
-            float volume = (float) args.arg(2).optdouble(1.0);
-            String tag = args.arg(3).optjstring("");
+            String tag = args.arg(1).optjstring("");
+            String name = args.arg(2).optjstring("");
+            float volume = (float) args.arg(3).optdouble(1.0);
             boolean loop = args.arg(4).optboolean(false);
             return LuaValue.valueOf(soundPlayer().play(name,
                     volume, tag.isBlank() ? null : tag, loop));
@@ -1253,18 +1261,27 @@ public final class MachineMenuRuntime implements AutoCloseable {
 
     private static final class BudgetDebugLib extends DebugLib {
         private long deadline = Long.MAX_VALUE;
+        private long remainingInstructions = Long.MAX_VALUE;
 
         void begin() {
-            deadline = System.nanoTime() + CALL_BUDGET_NANOS;
+            remainingInstructions = MAX_CALL_INSTRUCTIONS;
+            deadline = System.nanoTime() + CALL_WALL_CEILING_NANOS;
         }
 
         void end() {
+            remainingInstructions = Long.MAX_VALUE;
             deadline = Long.MAX_VALUE;
         }
 
         @Override
         public void onInstruction(int pc, Varargs varargs, int top) {
-            if (System.nanoTime() > deadline) throw new LuaError("machine menu exceeded execution budget");
+            // Instruction count is the primary guard; the wall-clock ceiling is a
+            // large backstop. The old wall-only budget falsely tripped on the
+            // first menu opened after launch, when a cold JVM stalled wall time
+            // between instructions (Lua compilation, class loading, font parsing).
+            if (--remainingInstructions < 0 || System.nanoTime() > deadline) {
+                throw new LuaError("machine menu exceeded execution budget");
+            }
             super.onInstruction(pc, varargs, top);
         }
     }

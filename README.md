@@ -2,9 +2,19 @@
 
 A feature-full Friday Night Funkin' engine inside of Minecraft — **NeoForge 1.21.1**.
 
-Current release: **2.1.4bbs**.
+Current release: **2.1.5bbs**.
 
 Documentation: **[Blockified Engine Docs](https://migokc.github.io/Blockified-engine_a-Minecraft-mod-made-with-AI/)**.
+
+### 2.1.5bbs highlights
+
+- Custom machine menus no longer fail to load the first time one is opened after
+  Minecraft launches. The runaway-script guard now counts executed Lua
+  instructions instead of wall-clock time, so a cold JVM's first-open startup
+  work (Lua compilation, class loading, font parsing) can no longer trip it.
+- Machine menu `playSound` now takes the tag and path first —
+  `playSound(tag, name, [volume], [loop])` — matching the widget-creation
+  argument order. Pass an empty tag for a fire-and-forget sound.
 
 ### 2.1.4bbs highlights
 

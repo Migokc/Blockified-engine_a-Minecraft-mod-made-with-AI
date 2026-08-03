@@ -20,7 +20,7 @@
 
   const pages = {};
 
-  pages.home = page("Blockified Engine", "Documentation · Guides · Wiki", "Build Friday Night Funkin' songs, stages, machines, and world scenes inside Minecraft.", ["2.1.4bbs", "NeoForge 1.21.1", "Singleplayer + LAN"],
+  pages.home = page("Blockified Engine", "Documentation · Guides · Wiki", "Build Friday Night Funkin' songs, stages, machines, and world scenes inside Minecraft.", ["2.1.5bbs", "NeoForge 1.21.1", "Singleplayer + LAN"],
     `<div class="hero-panel"><span>DOCUMENTATION · GUIDES · WIKI</span><h2>Build with Blockified.</h2><p>Learn by following a guide, look up exact behavior in documentation, or understand systems through the wiki. This site covers Blockified additions and changes without duplicating unchanged Psych Engine material.</p><div class="hero-actions"><a class="button-link" href="#/quick-start">Start here</a><a class="button-link secondary" href="#/animations">Make animations</a><a class="button-link secondary" href="#/lua-overview">Lua API</a></div></div>`,
     section("choose", "Choose how to use this site", `<div class="card-grid category-grid">
       <a class="doc-card category-card guide-card" href="#/quick-start"><span>GUIDES</span><h3>Make something</h3><p>Follow ordered, practical steps from installation to a playable song, complete pack, animation, or custom machine.</p></a>
@@ -433,7 +433,7 @@ end`)}` + `<p>Completion also calls an optional widget method: <code>function co
 dancer:addAnimationByPrefix('idle', 'idle', 24, true)
 dancer:playAnimation('idle')`)}`),
     section("sound", "Sound", `<p>Menus can play OGG sound effects and music from the machine or mod folder. Files resolve like every other asset: the path is relative to the machine folder and must stay inside the active mod. The <code>.ogg</code> extension is optional, matching Psych's convention.</p><div class="api-list">
-      ${api("playSound(name, [volume], [tag], [loop])", "Plays an OGG. volume defaults to 1.0 and follows the master sound slider. Pass a tag to control the sound later; omit it for a fire-and-forget effect. Set loop true for looping music. Returns true on success.", "Machine")}
+      ${api("playSound(tag, name, [volume], [loop])", "Plays an OGG. Like the widget calls, the tag and path come first. volume defaults to 1.0 and follows the master sound slider. Give a tag to control the sound later, or an empty tag for a fire-and-forget effect. Set loop true for looping music. Returns true on success.", "Machine")}
       ${api("stopSound(tag)", "Stops and releases a tagged sound.", "Machine")}
       ${api("pauseSound(tag) / resumeSound(tag)", "Pauses or resumes a tagged sound.", "Machine")}
       ${api("setSoundVolume(tag, volume)", "Sets a tagged sound's volume from 0 to 1.", "Machine")}
@@ -443,11 +443,11 @@ local play = ui.button('play', 'Play', 0.5, 0.5, 180, 24)
 
 function onOpen()
   precacheSound('sounds/select')
-  playSound('sounds/music', 0.6, 'menuMusic', true)
+  playSound('menuMusic', 'sounds/music', 0.6, true)
 end
 
 function play:onClick()
-  playSound('sounds/select')
+  playSound('click', 'sounds/select')
   machine.playSong('tutorial')
 end
 
