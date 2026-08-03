@@ -20,7 +20,7 @@
 
   const pages = {};
 
-  pages.home = page("Blockified Engine", "Documentation · Guides · Wiki", "Build Friday Night Funkin' songs, stages, machines, and world scenes inside Minecraft.", ["2.1.3bbs", "NeoForge 1.21.1", "Singleplayer + LAN"],
+  pages.home = page("Blockified Engine", "Documentation · Guides · Wiki", "Build Friday Night Funkin' songs, stages, machines, and world scenes inside Minecraft.", ["2.1.4bbs", "NeoForge 1.21.1", "Singleplayer + LAN"],
     `<div class="hero-panel"><span>DOCUMENTATION · GUIDES · WIKI</span><h2>Build with Blockified.</h2><p>Learn by following a guide, look up exact behavior in documentation, or understand systems through the wiki. This site covers Blockified additions and changes without duplicating unchanged Psych Engine material.</p><div class="hero-actions"><a class="button-link" href="#/quick-start">Start here</a><a class="button-link secondary" href="#/animations">Make animations</a><a class="button-link secondary" href="#/lua-overview">Lua API</a></div></div>`,
     section("choose", "Choose how to use this site", `<div class="card-grid category-grid">
       <a class="doc-card category-card guide-card" href="#/quick-start"><span>GUIDES</span><h3>Make something</h3><p>Follow ordered, practical steps from installation to a playable song, complete pack, animation, or custom machine.</p></a>
@@ -432,6 +432,28 @@ end`)}` + `<p>Completion also calls an optional widget method: <code>function co
     section("animation", "Animated sprites", `<p>Animated sprites support add-by-name/prefix, play/pause/resume/stop, frame selection, animation listing, FPS/loop, transform, tint, alpha, antialiasing, and <code>onComplete</code>.</p>${code("lua", `local dancer = ui.animatedSprite('dancer', 'images/dancer.png', 'images/dancer.xml', 0.5, 0.25)
 dancer:addAnimationByPrefix('idle', 'idle', 24, true)
 dancer:playAnimation('idle')`)}`),
+    section("sound", "Sound", `<p>Menus can play OGG sound effects and music from the machine or mod folder. Files resolve like every other asset: the path is relative to the machine folder and must stay inside the active mod. The <code>.ogg</code> extension is optional, matching Psych's convention.</p><div class="api-list">
+      ${api("playSound(name, [volume], [tag], [loop])", "Plays an OGG. volume defaults to 1.0 and follows the master sound slider. Pass a tag to control the sound later; omit it for a fire-and-forget effect. Set loop true for looping music. Returns true on success.", "Machine")}
+      ${api("stopSound(tag)", "Stops and releases a tagged sound.", "Machine")}
+      ${api("pauseSound(tag) / resumeSound(tag)", "Pauses or resumes a tagged sound.", "Machine")}
+      ${api("setSoundVolume(tag, volume)", "Sets a tagged sound's volume from 0 to 1.", "Machine")}
+      ${api("precacheSound(name)", "Decodes and caches a sound up front to avoid a first-play hitch.", "Machine")}
+    </div><p>An optional <code>onSoundFinished(tag)</code> global is called when a tagged sound ends on its own.</p>${code("lua", `-- Click feedback and looping menu music.
+local play = ui.button('play', 'Play', 0.5, 0.5, 180, 24)
+
+function onOpen()
+  precacheSound('sounds/select')
+  playSound('sounds/music', 0.6, 'menuMusic', true)
+end
+
+function play:onClick()
+  playSound('sounds/select')
+  machine.playSong('tutorial')
+end
+
+function onClose()
+  stopSound('menuMusic')
+end`)}${callout("Where sounds live", "Put OGG files under the machine folder, for example <code>machines/&lt;machine&gt;/sounds/</code>, and reference them by that relative path. Missing or non-OGG files write one warning to the log and play nothing.")}`),
     section("preset", "Minimal preset", code("lua", `-- Blockified machine menu
 local title = ui.label('title', 'Earrings Machine', 0.5, 0.16)
 local play = ui.button('play', 'Choose Song', 0.5, 0.42, 180, 24)

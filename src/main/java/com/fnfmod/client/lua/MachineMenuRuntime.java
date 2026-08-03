@@ -1,6 +1,7 @@
 package com.fnfmod.client.lua;
 
 import com.fnfmod.FnfMod;
+import com.fnfmod.client.audio.PsychSoundPlayer;
 import com.fnfmod.client.render.MachineAtlasCache;
 import com.fnfmod.client.render.MachineTextureCache;
 import com.fnfmod.client.render.PsychCanvas;
@@ -95,6 +96,8 @@ public final class MachineMenuRuntime implements AutoCloseable {
     private final Map<String, Tween> tweens = new LinkedHashMap<>();
     private final LuaTable machineData;
     private final LuaFontLoader fontLoader;
+    /** OpenAL sound player for menu playSound; created on first use, closed with the menu. */
+    private PsychSoundPlayer soundPlayer;
     private int nextWidgetOrder;
     private byte songExitTarget = FnfPayloads.LeaveC2S.RETURN_MACHINE_MENU;
     private String error;
@@ -121,6 +124,7 @@ public final class MachineMenuRuntime implements AutoCloseable {
         installUi();
         installTweens();
         installMachine();
+        installSound();
         globals.set("machineData", machineData);
         // Machine menus share Psych's fixed canvas. These stay stable when the
         // window resolution or Minecraft GUI scale changes.
@@ -660,6 +664,7 @@ public final class MachineMenuRuntime implements AutoCloseable {
     }
 
     public void tick() {
+        if (soundPlayer != null) soundPlayer.update();
         callGlobal("onUpdate", LuaValue.valueOf(0.05));
     }
 
@@ -1063,6 +1068,65 @@ public final class MachineMenuRuntime implements AutoCloseable {
         return file.startsWith(definition.root()) && ModContentScope.allowsContentPath(file) ? file : null;
     }
 
+    // ------------------------------------------------------------------- sound
+
+    /**
+     * Menu sound playback. Files resolve like every other asset: relative to the
+     * machine folder, staying inside the active mod. An OGG extension is optional
+     * so {@code playSound('sounds/click')} matches Psych's convention. A tag lets
+     * a sound be stopped, paused/resumed, or re-volumed later; untagged sounds
+     * fire-and-forget from a small pool.
+     */
+    private void installSound() {
+        globals.set("playSound", function(args -> {
+            String name = args.arg(1).optjstring("");
+            float volume = (float) args.arg(2).optdouble(1.0);
+            String tag = args.arg(3).optjstring("");
+            boolean loop = args.arg(4).optboolean(false);
+            return LuaValue.valueOf(soundPlayer().play(name,
+                    volume, tag.isBlank() ? null : tag, loop));
+        }));
+        globals.set("stopSound", function(args -> {
+            if (soundPlayer != null) soundPlayer.stop(args.arg(1).optjstring(""));
+            return LuaValue.NIL;
+        }));
+        globals.set("pauseSound", function(args -> {
+            if (soundPlayer != null) soundPlayer.pause(args.arg(1).optjstring(""));
+            return LuaValue.NIL;
+        }));
+        globals.set("resumeSound", function(args -> {
+            if (soundPlayer != null) soundPlayer.resume(args.arg(1).optjstring(""));
+            return LuaValue.NIL;
+        }));
+        globals.set("setSoundVolume", function(args -> {
+            if (soundPlayer != null) {
+                soundPlayer.setVolume(args.arg(1).optjstring(""), (float) args.arg(2).optdouble(1.0));
+            }
+            return LuaValue.NIL;
+        }));
+        globals.set("precacheSound", function(args ->
+                LuaValue.valueOf(soundPlayer().precache(args.arg(1).optjstring("")))));
+    }
+
+    private PsychSoundPlayer soundPlayer() {
+        if (soundPlayer == null) {
+            soundPlayer = new PsychSoundPlayer(this::resolveSound, this::onSoundFinished);
+        }
+        return soundPlayer;
+    }
+
+    private Path resolveSound(String name) {
+        Path direct = resolveAsset(name);
+        if (direct != null && Files.isRegularFile(direct)) return direct;
+        String withExt = name != null && name.toLowerCase(Locale.ROOT).endsWith(".ogg")
+                ? name : name + ".ogg";
+        return resolveAsset(withExt);
+    }
+
+    private void onSoundFinished(String tag) {
+        if (tag != null && !tag.isBlank()) callGlobal("onSoundFinished", LuaValue.valueOf(tag));
+    }
+
     private static void beginSpriteColor(GuiGraphics gui, LuaTable data) {
         int rgb = data.get("color").optint(0xFFFFFF);
         float alpha = (float) Math.max(0, Math.min(1, data.get("alpha").optdouble(1)));
@@ -1181,6 +1245,10 @@ public final class MachineMenuRuntime implements AutoCloseable {
         callGlobal("onClose");
         tweens.clear();
         fontLoader.close();
+        if (soundPlayer != null) {
+            soundPlayer.close();
+            soundPlayer = null;
+        }
     }
 
     private static final class BudgetDebugLib extends DebugLib {

@@ -2,9 +2,17 @@
 
 A feature-full Friday Night Funkin' engine inside of Minecraft — **NeoForge 1.21.1**.
 
-Current release: **2.1.3bbs**.
+Current release: **2.1.4bbs**.
 
 Documentation: **[Blockified Engine Docs](https://migokc.github.io/Blockified-engine_a-Minecraft-mod-made-with-AI/)**.
+
+### 2.1.4bbs highlights
+
+- Machine Lua menus can now play OGG sound effects and music through
+  `playSound`, with `stopSound`, `pauseSound`/`resumeSound`, `setSoundVolume`,
+  `precacheSound`, and an optional `onSoundFinished` callback. Sounds resolve
+  from the machine or mod folder like every other asset, the `.ogg` extension is
+  optional, and volume follows the master sound slider.
 
 ### 2.1.3bbs highlights
 
