@@ -81,9 +81,15 @@
     });
   }
 
-  function route() {
-    const slug = location.hash.replace(/^#\/?/, "").split("?")[0];
-    return docs.pages[slug] ? slug : "home";
+  function routeState() {
+    const raw = location.hash.replace(/^#\/?/, "");
+    const separator = raw.indexOf("?");
+    const slug = separator >= 0 ? raw.slice(0, separator) : raw;
+    const query = separator >= 0 ? raw.slice(separator + 1) : "";
+    return {
+      slug: docs.pages[slug] ? slug : "home",
+      section: new URLSearchParams(query).get("section") || ""
+    };
   }
 
   function renderNav() {
@@ -101,7 +107,8 @@
   }
 
   function renderPage() {
-    const slug = route();
+    const state = routeState();
+    const slug = state.slug;
     const page = docs.pages[slug];
     const pageTitle = page.titleLogo
       ? '<h1 class="page-title-logo-wrap"><img class="page-title-logo" src="' + escapeHtml(page.titleLogo) +
@@ -139,10 +146,23 @@
     hydrateLatestRelease();
 
     const headings = Array.from(content.querySelectorAll(".doc-section > h2"));
-    toc.innerHTML = headings.map((heading) => '<a href="#' + heading.parentElement.id + '">' +
-      escapeHtml(heading.textContent) + '</a>').join("");
+    toc.innerHTML = headings.map((heading) => {
+      const sectionId = heading.parentElement.id;
+      const active = sectionId === state.section;
+      return '<a' + (active ? ' class="active" aria-current="location"' : '') +
+        ' href="#/' + slug + '?section=' + encodeURIComponent(sectionId) + '">' +
+        escapeHtml(heading.textContent) + '</a>';
+    }).join("");
     closeSidebar();
-    window.scrollTo({ top: 0, behavior: "instant" });
+    if (state.section) {
+      requestAnimationFrame(() => {
+        const target = document.getElementById(state.section);
+        if (target) target.scrollIntoView({ block: "start", behavior: "instant" });
+        else window.scrollTo({ top: 0, behavior: "instant" });
+      });
+    } else {
+      window.scrollTo({ top: 0, behavior: "instant" });
+    }
   }
 
   function openSidebar() {
@@ -196,7 +216,9 @@
       chip.textContent = releaseVersion(release) || chip.textContent;
     });
   }).catch(() => {});
-  window.addEventListener("hashchange", renderPage);
+  window.addEventListener("hashchange", () => {
+    if (location.hash.startsWith("#/")) renderPage();
+  });
   mobileMenu.addEventListener("click", () => sidebar.classList.contains("open") ? closeSidebar() : openSidebar());
   scrim.addEventListener("click", closeSidebar);
   searchTrigger.addEventListener("click", openSearch);
