@@ -112,6 +112,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     private String eventPlayerIcon;
     private String eventOpponentIcon;
     private final boolean duet;
+    private final byte songExitTarget;
     private long startAtEpochMs;
 
     private final Conductor conductor;
@@ -255,6 +256,8 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     private boolean openingMinecraftPause;
     /** Prevents the hard-coded emergency-exit chord from running twice. */
     private boolean forceExitStarted;
+    /** Normal gameplay waits for the authoritative server reset before rebuilding. */
+    private boolean restartPending;
     private boolean resourcesDisposed;
     /** Prevents one held Enter press from pausing and then confirming Resume via key repeat. */
     private boolean enterReady = true;
@@ -385,6 +388,8 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                 ? CharacterAnimations.DEFAULT_SET : partnerAnimSet;
         this.initialPartnerAnimSet = this.partnerAnimSet;
         this.duet = partnerId != null;
+        this.songExitTarget = FnfPayloads.LeaveC2S.normalizeReturnTarget(
+                ClientSession.pendingSongExitTarget);
         this.startAtEpochMs = startAtEpochMs;
         this.conductor = new Conductor(chart);
         applySongNoteTextures(chart);
@@ -3098,7 +3103,8 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                 machinePos, playbackPolicy);
 
         GameplayCamera.end();
-        PacketDistributor.sendToServer(new FnfPayloads.LeaveC2S(machinePos, false, false));
+        PacketDistributor.sendToServer(new FnfPayloads.LeaveC2S(machinePos, false,
+                FnfPayloads.LeaveC2S.RETURN_WORLD));
         ClientSession.reset();
         if (minecraft.player != null) CharacterAnimations.stop(minecraft.player);
         // setScreen removes this gameplay screen, which disposes its SongPlayer;
@@ -3114,6 +3120,22 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
      * carried over into the next attempt. Rebuilding cannot miss anything.
      */
     private void restart() {
+        if (!editorPlaytest) {
+            if (restartPending) return;
+            restartPending = true;
+            PacketDistributor.sendToServer(new FnfPayloads.RestartSongC2S(machinePos));
+            return;
+        }
+        rebuildForRestart(botEntityId, 2000);
+    }
+
+    /** Called after the server restored a normal solo session to its pre-song state. */
+    public void onServerRestart(FnfPayloads.RestartSongS2C payload) {
+        if (editorPlaytest || resourcesDisposed || !machinePos.equals(payload.pos())) return;
+        rebuildForRestart(payload.botEntityId(), Math.max(0, payload.startDelayMs()));
+    }
+
+    private void rebuildForRestart(int nextBotEntityId, long startDelayMs) {
         // The machine cannot rotate between runs, so keep the captured facing
         // across the teardown: the new screen's stage teleport then uses it even
         // if the player wandered far and the machine chunk is currently unloaded.
@@ -3142,7 +3164,8 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         songPlayer.setOpponentVoiceVolume(1f);
 
         GameplayScreen next = new GameplayScreen(machinePos, chart, songPlayer, mode, partnerId,
-                partnerName, initialPartnerAnimSet, botEntityId, System.currentTimeMillis() + 2000);
+                partnerName, initialPartnerAnimSet, nextBotEntityId,
+                System.currentTimeMillis() + startDelayMs);
         if (editorPlaytest) carryEditorPlaytestState(next);
         minecraft.setScreen(next);
     }
@@ -3205,18 +3228,20 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             minecraft.setScreen(editorReturnFactory == null ? null : editorReturnFactory.get());
             return;
         }
-        // Solo play returns to the song menu instead of the world (on finish, quit, or death).
-        // Duet keeps returning to the world to avoid host/guest contention over one machine.
-        boolean reopenMenu = !duet;
+        // Direct custom-menu launches may return to that same menu or close every
+        // menu. Built-in selection keeps its existing selector return. Duets always
+        // return to the world to avoid host/guest contention over one machine.
+        byte returnTarget = duet ? FnfPayloads.LeaveC2S.RETURN_WORLD : songExitTarget;
         // finishedOnly = the song ended normally (server already tore the session down on SongEnd);
         // otherwise the server cancels the still-active session. Either way it then reopens the menu.
-        PacketDistributor.sendToServer(new FnfPayloads.LeaveC2S(machinePos, endSent, reopenMenu));
+        PacketDistributor.sendToServer(new FnfPayloads.LeaveC2S(machinePos, endSent, returnTarget));
         ClientSession.reset();
         songPlayer.dispose();
         if (minecraft.player != null) CharacterAnimations.stop(minecraft.player);
-        minecraft.setScreen(reopenMenu
-                ? new WaitingScreen(Component.literal("Returning to song list..."))
-                : null);
+        String returning = returnTarget == FnfPayloads.LeaveC2S.RETURN_MACHINE_MENU
+                ? "Returning to machine menu..." : "Returning to song list...";
+        minecraft.setScreen(returnTarget == FnfPayloads.LeaveC2S.RETURN_WORLD
+                ? null : new WaitingScreen(Component.literal(returning)));
     }
 
     /**

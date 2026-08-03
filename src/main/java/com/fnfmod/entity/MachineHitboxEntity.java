@@ -78,11 +78,21 @@ public final class MachineHitboxEntity extends Entity {
     }
 
     private void updateCustomBoundingBox() {
+        setBoundingBox(makeBoundingBox());
+    }
+
+    /**
+     * Vanilla calls makeBoundingBox whenever position/network interpolation is
+     * reapplied. Returning the custom volume here prevents a one-frame fallback
+     * to EntityType's registered 1x1 box between client sync and tick.
+     */
+    @Override
+    protected AABB makeBoundingBox() {
         double halfX = hitboxWidth() * 0.5;
         double halfZ = hitboxDepth() * 0.5;
         double halfY = hitboxHeight() * 0.5;
-        setBoundingBox(new AABB(getX() - halfX, getY() - halfY, getZ() - halfZ,
-                getX() + halfX, getY() + halfY, getZ() + halfZ));
+        return new AABB(getX() - halfX, getY() - halfY, getZ() - halfZ,
+                getX() + halfX, getY() + halfY, getZ() + halfZ);
     }
 
     @Override

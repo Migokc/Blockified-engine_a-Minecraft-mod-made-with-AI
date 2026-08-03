@@ -3,11 +3,13 @@ package com.fnfmod.client.lua;
 import com.fnfmod.FnfMod;
 import com.fnfmod.client.render.MachineAtlasCache;
 import com.fnfmod.client.render.MachineTextureCache;
+import com.fnfmod.client.render.PsychCanvas;
 import com.fnfmod.client.render.SparrowAtlas;
 import com.fnfmod.gameplay.PlaybackMode;
 import com.fnfmod.machine.MachineDefinition;
 import com.fnfmod.machine.MachineLibrary;
 import com.fnfmod.net.FnfPayloads;
+import com.fnfmod.song.SongLibrary;
 import com.fnfmod.world.ModContentScope;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphics;
@@ -26,6 +28,7 @@ import org.luaj.vm2.lib.jse.JsePlatform;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -37,9 +40,10 @@ public final class MachineMenuRuntime implements AutoCloseable {
     public interface Host {
         int screenWidth();
         int screenHeight();
-        void openSongSelect();
+        void openSongSelect(byte returnTarget);
         boolean openSongDetails(String songId);
-        boolean playSong(String songId, String difficulty, boolean duet, byte playSide, byte playbackMode);
+        boolean playSong(String songId, String difficulty, boolean duet, byte playSide,
+                         byte playbackMode, byte returnTarget);
         void openSettings();
         void openCharacterEditor();
         void openChartEditor(String songId, String difficulty);
@@ -49,6 +53,9 @@ public final class MachineMenuRuntime implements AutoCloseable {
 
     private record Widget(String kind, String id, LuaTable data) {}
     private record AnimationDef(String prefix, double fps, boolean loop) {}
+    private record Tween(String tag, String widgetId, String property, double from, double to,
+                         double finalValue, long startedNanos, long durationNanos,
+                         String ease, boolean color) {}
 
     private static final class AnimatedState {
         final String id;
@@ -75,6 +82,7 @@ public final class MachineMenuRuntime implements AutoCloseable {
     }
 
     private static final int MAX_WIDGETS = 256;
+    private static final int MAX_TWEENS = 256;
     private static final long CALL_BUDGET_NANOS = 25_000_000L;
 
     private final MachineDefinition definition;
@@ -84,7 +92,11 @@ public final class MachineMenuRuntime implements AutoCloseable {
     private final BudgetDebugLib budget = new BudgetDebugLib();
     private final List<Widget> widgets = new ArrayList<>();
     private final Map<String, AnimatedState> animatedStates = new LinkedHashMap<>();
+    private final Map<String, Tween> tweens = new LinkedHashMap<>();
     private final LuaTable machineData;
+    private final LuaFontLoader fontLoader;
+    private int nextWidgetOrder;
+    private byte songExitTarget = FnfPayloads.LeaveC2S.RETURN_MACHINE_MENU;
     private String error;
 
     public MachineMenuRuntime(MachineDefinition definition, String snbt,
@@ -92,6 +104,10 @@ public final class MachineMenuRuntime implements AutoCloseable {
         this.definition = definition;
         this.host = host;
         this.songs = songs == null ? List.of() : List.copyOf(songs);
+        List<Path> fontRoots = new ArrayList<>();
+        if (definition.root() != null) fontRoots.add(definition.root());
+        ModContentScope.activeMod().map(ModContentScope.ActiveMod::root).ifPresent(fontRoots::add);
+        this.fontLoader = new LuaFontLoader(fontRoots, SongLibrary.fontsDir(), true);
         CompoundTag initial;
         try {
             initial = snbt == null || snbt.isBlank() ? new CompoundTag() : TagParser.parseTag(snbt);
@@ -103,8 +119,13 @@ public final class MachineMenuRuntime implements AutoCloseable {
         globals.load(budget);
         sandbox(globals);
         installUi();
+        installTweens();
         installMachine();
         globals.set("machineData", machineData);
+        // Machine menus share Psych's fixed canvas. These stay stable when the
+        // window resolution or Minecraft GUI scale changes.
+        globals.set("screenWidth", PsychCanvas.WIDTH);
+        globals.set("screenHeight", PsychCanvas.HEIGHT);
         load();
     }
 
@@ -152,6 +173,8 @@ public final class MachineMenuRuntime implements AutoCloseable {
         ui.set("image", creator("image", ui));
         ui.set("sprite", creator("sprite", ui));
         ui.set("animatedSprite", creator("animatedSprite", ui));
+        ui.set("graph", graphCreator(ui));
+        ui.set("graphic", ui.get("graph"));
         ui.set("toggle", creator("toggle", ui));
         ui.set("slider", creator("slider", ui));
         ui.set("get", function(args -> {
@@ -162,14 +185,54 @@ public final class MachineMenuRuntime implements AutoCloseable {
         ui.set("remove", function(args -> {
             String id = args.arg(offset(args, ui)).optjstring("");
             animatedStates.remove(id);
+            tweens.values().removeIf(tween -> tween.widgetId().equals(id));
             return LuaValue.valueOf(widgets.removeIf(widget -> widget.id().equals(id)));
         }));
         ui.set("clear", function(args -> {
             widgets.clear();
             animatedStates.clear();
+            tweens.clear();
+            nextWidgetOrder = 0;
+            return LuaValue.TRUE;
+        }));
+        globals.set("setObjectOrder", function(args -> {
+            Widget widget = widget(args.arg1().optjstring(""));
+            if (widget == null) return LuaValue.FALSE;
+            widget.data().set("order", args.arg(2).checkint());
             return LuaValue.TRUE;
         }));
         globals.set("ui", ui);
+    }
+
+    private LuaValue graphCreator(LuaTable ui) {
+        return function(args -> {
+            if (widgets.size() >= MAX_WIDGETS) throw new LuaError("widget limit exceeded");
+            int at = offset(args, ui);
+            String id = args.arg(at).checkjstring();
+            widgets.removeIf(widget -> widget.id().equals(id));
+            animatedStates.remove(id);
+            tweens.values().removeIf(tween -> tween.widgetId().equals(id));
+
+            LuaValue shapeArg = args.arg(at + 1);
+            boolean explicitShape = shapeArg.isstring();
+            String shape = explicitShape ? shapeArg.optjstring("rectangle") : "rectangle";
+            int geometryAt = explicitShape ? at + 2 : at + 1;
+            LuaTable table = new LuaTable();
+            table.set("id", id);
+            table.set("kind", "graph");
+            table.set("shape", shape);
+            table.set("visible", LuaValue.TRUE);
+            table.set("alpha", 1.0);
+            table.set("order", nextWidgetOrder++);
+            table.set("color", luaColor(args.arg(geometryAt + 4), 0xFFFFFF));
+            table.set("angle", 0.0);
+            table.set("borderSize", 0.0);
+            table.set("borderColor", 0xFFFFFF);
+            table.set("thickness", 1.0);
+            setGeometry(table, args, geometryAt, 64, 64);
+            widgets.add(new Widget("graph", id, table));
+            return table;
+        });
     }
 
     private LuaValue creator(String kind, LuaTable ui) {
@@ -179,11 +242,13 @@ public final class MachineMenuRuntime implements AutoCloseable {
             String id = args.arg(at).checkjstring();
             widgets.removeIf(widget -> widget.id().equals(id));
             animatedStates.remove(id);
+            tweens.values().removeIf(tween -> tween.widgetId().equals(id));
             LuaTable table = new LuaTable();
             table.set("id", id);
             table.set("kind", kind);
             table.set("visible", LuaValue.TRUE);
             table.set("alpha", 1.0);
+            table.set("order", nextWidgetOrder++);
             table.set("color", kind.equals("panel") ? 0xAA111111 : 0xFFFFFFFF);
             if (kind.equals("image") || kind.equals("sprite")) {
                 table.set("path", args.arg(at + 1).optjstring(""));
@@ -209,6 +274,11 @@ public final class MachineMenuRuntime implements AutoCloseable {
                 table.set("text", args.arg(at + 1).optjstring(""));
                 setGeometry(table, args, at + 2,
                         kind.equals("label") ? 0 : 180, kind.equals("label") ? 10 : 24);
+                if (!kind.equals("panel")) {
+                    table.set("font", "");
+                    table.set("fontScale", 1.0);
+                    table.set("shadow", LuaValue.TRUE);
+                }
             }
             if (kind.equals("toggle")) table.set("value", LuaValue.FALSE);
             if (kind.equals("slider")) {
@@ -366,13 +436,15 @@ public final class MachineMenuRuntime implements AutoCloseable {
         LuaTable machine = new LuaTable();
         machine.set("profileId", definition.id());
         machine.set("openSongSelect", function(args -> {
+            int at = offset(args, machine);
             host.saveData(dataSnbt());
-            host.openSongSelect();
+            host.openSongSelect(parseSongExitTarget(args.arg(at), songExitTarget));
             return LuaValue.TRUE;
         }));
         machine.set("join", function(args -> {
+            int at = offset(args, machine);
             host.saveData(dataSnbt());
-            host.openSongSelect();
+            host.openSongSelect(parseSongExitTarget(args.arg(at), songExitTarget));
             return LuaValue.TRUE;
         }));
         machine.set("getSongs", function(args -> songsTable()));
@@ -385,6 +457,13 @@ public final class MachineMenuRuntime implements AutoCloseable {
             String id = args.arg(offset(args, machine)).optjstring("");
             return LuaValue.valueOf(findSong(id).isPresent());
         }));
+        machine.set("setSongExitTarget", function(args -> {
+            int at = offset(args, machine);
+            songExitTarget = parseSongExitTarget(args.arg(at), songExitTarget);
+            return LuaValue.valueOf(songExitTargetName(songExitTarget));
+        }));
+        machine.set("getSongExitTarget", function(args ->
+                LuaValue.valueOf(songExitTargetName(songExitTarget))));
         machine.set("openSongDetails", function(args -> {
             String id = args.arg(offset(args, machine)).optjstring("");
             host.saveData(dataSnbt());
@@ -400,17 +479,23 @@ public final class MachineMenuRuntime implements AutoCloseable {
             boolean duet;
             byte playSide;
             byte playbackMode;
+            byte returnTarget;
             if (options.istable()) {
                 duet = options.get("duet").optboolean(false);
                 playSide = parsePlaySide(options.get("playAs"));
                 playbackMode = parsePlaybackMode(options.get("look"));
+                LuaValue requestedReturn = options.get("returnTo");
+                if (requestedReturn.isnil()) requestedReturn = options.get("onExit");
+                returnTarget = parseSongExitTarget(requestedReturn, songExitTarget);
             } else {
                 duet = options.optboolean(false);
                 playSide = parsePlaySide(args.arg(at + 3));
                 playbackMode = parsePlaybackMode(args.arg(at + 4));
+                returnTarget = parseSongExitTarget(args.arg(at + 5), songExitTarget);
             }
             host.saveData(dataSnbt());
-            return LuaValue.valueOf(host.playSong(id, difficulty, duet, playSide, playbackMode));
+            return LuaValue.valueOf(host.playSong(id, difficulty, duet, playSide,
+                    playbackMode, returnTarget));
         }));
         machine.set("openSettings", function(args -> {
             host.saveData(dataSnbt());
@@ -481,18 +566,164 @@ public final class MachineMenuRuntime implements AutoCloseable {
         };
     }
 
+    private void installTweens() {
+        installTweenFunction("doTweenX", "x");
+        installTweenFunction("doTweenY", "y");
+        installTweenFunction("doTweenAlpha", "alpha");
+        installTweenFunction("doTweenAngle", "angle");
+        installTweenFunction("doTweenWidth", "width");
+        installTweenFunction("doTweenHeight", "height");
+        installTweenFunction("doTweenFontScale", "fontScale");
+        globals.set("doTweenColor", function(args -> {
+            String tag = args.arg(1).checkjstring();
+            String widgetId = args.arg(2).checkjstring();
+            Widget widget = widget(widgetId);
+            if (widget == null) return LuaValue.FALSE;
+            int from = widget.data().get("color").optint(0xFFFFFF) & 0xFFFFFF;
+            int to = args.arg(3).isnumber()
+                    ? args.arg(3).toint() & 0xFFFFFF
+                    : PsychColor.parse(args.arg(3).optjstring("FFFFFF")) & 0xFFFFFF;
+            startTween(tag, widgetId, "color", from, to,
+                    args.arg(4).optdouble(1), args.arg(5).optjstring("linear"), true);
+            return LuaValue.TRUE;
+        }));
+        globals.set("cancelTween", function(args ->
+                LuaValue.valueOf(tweens.remove(args.arg(1).optjstring("")) != null)));
+    }
+
+    private void installTweenFunction(String name, String property) {
+        globals.set(name, function(args -> {
+            String tag = args.arg(1).checkjstring();
+            String widgetId = args.arg(2).checkjstring();
+            Widget widget = widget(widgetId);
+            if (widget == null) return LuaValue.FALSE;
+            double from = widget.data().get(property).optdouble(defaultTweenValue(property));
+            startTween(tag, widgetId, property, from, args.arg(3).optdouble(from),
+                    args.arg(4).optdouble(1), args.arg(5).optjstring("linear"), false);
+            return LuaValue.TRUE;
+        }));
+    }
+
+    private void startTween(String tag, String widgetId, String property, double from, double to,
+                            double seconds, String ease, boolean color) {
+        if (tag == null || tag.isBlank()) throw new LuaError("tween tag cannot be blank");
+        if (!tweens.containsKey(tag) && tweens.size() >= MAX_TWEENS) {
+            throw new LuaError("tween limit exceeded");
+        }
+        double finalValue = to;
+        if (!color && (property.equals("x") || property.equals("y"))
+                && normalizedCoordinate(from) != normalizedCoordinate(to)) {
+            double extent = property.equals("x") ? PsychCanvas.WIDTH : PsychCanvas.HEIGHT;
+            if (normalizedCoordinate(from)) from *= extent;
+            if (normalizedCoordinate(to)) to *= extent;
+        }
+        double safeSeconds = Math.max(0, Math.min(3600, seconds));
+        long duration = Math.max(1_000_000L, (long) (safeSeconds * 1_000_000_000L));
+        tweens.put(tag, new Tween(tag, widgetId, property, from, to, finalValue,
+                System.nanoTime(), duration,
+                ease == null || ease.isBlank() ? "linear" : ease, color));
+    }
+
+    private static double defaultTweenValue(String property) {
+        return property.equals("alpha") || property.equals("fontScale") ? 1 : 0;
+    }
+
+    private Widget widget(String id) {
+        if (id == null || id.isBlank()) return null;
+        return widgets.stream().filter(widget -> widget.id().equals(id)).findFirst().orElse(null);
+    }
+
     private static byte parsePlaybackMode(LuaValue value) {
         if (value.isnumber()) return PlaybackMode.fromNetworkId((byte) value.toint()).networkId();
         return PlaybackMode.parse(value.optjstring("minecraft")).networkId();
+    }
+
+    private static byte parseSongExitTarget(LuaValue value, byte fallback) {
+        if (value == null || value.isnil()) return fallback;
+        return switch (value.optjstring("").trim().toLowerCase(Locale.ROOT)) {
+            case "menu", "machine", "custom", "custom-menu" ->
+                    FnfPayloads.LeaveC2S.RETURN_MACHINE_MENU;
+            case "world", "close", "none", "no-menu" ->
+                    FnfPayloads.LeaveC2S.RETURN_WORLD;
+            case "selector", "songs", "song-select", "song-selector" ->
+                    FnfPayloads.LeaveC2S.RETURN_SELECTOR;
+            default -> fallback;
+        };
+    }
+
+    private static String songExitTargetName(byte target) {
+        return switch (FnfPayloads.LeaveC2S.normalizeReturnTarget(target)) {
+            case FnfPayloads.LeaveC2S.RETURN_MACHINE_MENU -> "menu";
+            case FnfPayloads.LeaveC2S.RETURN_SELECTOR -> "selector";
+            default -> "world";
+        };
     }
 
     public void tick() {
         callGlobal("onUpdate", LuaValue.valueOf(0.05));
     }
 
+    private void advanceTweens() {
+        long now = System.nanoTime();
+        for (Tween tween : List.copyOf(tweens.values())) {
+            Widget widget = widget(tween.widgetId());
+            if (widget == null) {
+                tweens.remove(tween.tag(), tween);
+                continue;
+            }
+            double progress = Math.min(1, Math.max(0,
+                    (now - tween.startedNanos()) / (double) tween.durationNanos()));
+            double eased = PsychEasing.apply(tween.ease(), progress);
+            if (tween.color()) {
+                widget.data().set(tween.property(), blendColor(
+                        (int) tween.from(), (int) tween.to(), eased));
+            } else {
+                widget.data().set(tween.property(), progress >= 1 ? tween.finalValue()
+                        : tween.from() + (tween.to() - tween.from()) * eased);
+            }
+            if (progress >= 1 && tweens.remove(tween.tag(), tween)) {
+                call(widget.data().get("onTweenCompleted"), widget.data(),
+                        LuaValue.valueOf(tween.tag()));
+                callGlobal("onTweenCompleted", LuaValue.valueOf(tween.tag()));
+            }
+        }
+    }
+
+    private static int blendColor(int from, int to, double amount) {
+        double t = Math.max(0, Math.min(1, amount));
+        int r = (int) Math.round(((from >> 16) & 255) + (((to >> 16) & 255) - ((from >> 16) & 255)) * t);
+        int g = (int) Math.round(((from >> 8) & 255) + (((to >> 8) & 255) - ((from >> 8) & 255)) * t);
+        int b = (int) Math.round((from & 255) + ((to & 255) - (from & 255)) * t);
+        return r << 16 | g << 8 | b;
+    }
+
     public void render(GuiGraphics gui, Font font, int mouseX, int mouseY) {
+        advanceTweens();
         advanceAnimations();
-        for (Widget widget : List.copyOf(widgets)) renderWidget(gui, font, widget, mouseX, mouseY);
+        double canvasMouseX = screenToCanvasX(mouseX);
+        double canvasMouseY = screenToCanvasY(mouseY);
+        List<Widget> ordered = orderedWidgets();
+        PsychCanvas.push(gui, 1f);
+        try {
+            for (int i = 0; i < ordered.size(); i++) {
+                gui.pose().pushPose();
+                try {
+                    gui.pose().translate(0, 0, i + 1);
+                    renderWidget(gui, font, ordered.get(i), canvasMouseX, canvasMouseY);
+                    gui.flush();
+                } finally {
+                    gui.pose().popPose();
+                }
+            }
+        } finally {
+            PsychCanvas.pop(gui);
+        }
+    }
+
+    private List<Widget> orderedWidgets() {
+        List<Widget> ordered = new ArrayList<>(widgets);
+        ordered.sort(Comparator.comparingInt(widget -> widget.data().get("order").optint(0)));
+        return ordered;
     }
 
     private void advanceAnimations() {
@@ -542,34 +773,41 @@ public final class MachineMenuRuntime implements AutoCloseable {
         }
     }
 
-    private void renderWidget(GuiGraphics gui, Font font, Widget widget, int mouseX, int mouseY) {
+    private void renderWidget(GuiGraphics gui, Font font, Widget widget,
+                              double mouseX, double mouseY) {
         LuaTable data = widget.data();
         if (!data.get("visible").optboolean(true)) return;
         int width = Math.max(1, (int) Math.round(data.get("width").optdouble(1)));
         int height = Math.max(1, (int) Math.round(data.get("height").optdouble(1)));
-        int centerX = coordinate(data.get("x").optdouble(0.5), host.screenWidth());
-        int centerY = coordinate(data.get("y").optdouble(0.5), host.screenHeight());
+        int centerX = coordinate(data.get("x").optdouble(0.5), PsychCanvas.WIDTH);
+        int centerY = coordinate(data.get("y").optdouble(0.5), PsychCanvas.HEIGHT);
         int x = centerX - width / 2;
         int y = centerY - height / 2;
         int color = color(data);
+        Font textFont = widgetFont(data, font);
+        float fontScale = (float) Math.max(0.1, Math.min(16.0,
+                data.get("fontScale").optdouble(1.0)));
+        boolean textShadow = data.get("shadow").optboolean(true);
         boolean hover = mouseX >= x && mouseX < x + width && mouseY >= y && mouseY < y + height;
         switch (widget.kind()) {
             case "panel" -> gui.fill(x, y, x + width, y + height, color);
+            case "graph" -> renderGraph(gui, data, centerX, centerY, width, height);
             case "image", "sprite" -> renderImage(gui, data, centerX, centerY, width, height);
             case "animatedSprite" -> renderAnimatedSprite(gui, widget.id(), data,
                     centerX, centerY, width, height);
-            case "label" -> gui.drawCenteredString(font, data.get("text").optjstring(""), centerX,
-                    centerY - font.lineHeight / 2, color);
+            case "label" -> drawCenteredText(gui, textFont, data.get("text").optjstring(""),
+                    centerX, centerY, color, fontScale, textShadow);
             case "button" -> {
                 gui.fill(x, y, x + width, y + height, hover ? 0xCC555555 : 0xCC333333);
-                gui.drawCenteredString(font, data.get("text").optjstring(""), centerX,
-                        centerY - font.lineHeight / 2, color);
+                drawCenteredText(gui, textFont, data.get("text").optjstring(""),
+                        centerX, centerY, color, fontScale, textShadow);
             }
             case "toggle" -> {
                 boolean value = data.get("value").optboolean(false);
                 gui.fill(x, y, x + width, y + height, value ? 0xCC397A49 : 0xCC5A3333);
-                gui.drawCenteredString(font, data.get("text").optjstring("") + ": " + (value ? "ON" : "OFF"),
-                        centerX, centerY - font.lineHeight / 2, color);
+                drawCenteredText(gui, textFont,
+                        data.get("text").optjstring("") + ": " + (value ? "ON" : "OFF"),
+                        centerX, centerY, color, fontScale, textShadow);
             }
             case "slider" -> {
                 double min = data.get("min").optdouble(0);
@@ -578,9 +816,184 @@ public final class MachineMenuRuntime implements AutoCloseable {
                 double ratio = max <= min ? 0 : Math.max(0, Math.min(1, (value - min) / (max - min)));
                 gui.fill(x, y, x + width, y + height, 0xCC222222);
                 gui.fill(x, y, x + (int) Math.round(width * ratio), y + height, 0xCC5577AA);
-                gui.drawCenteredString(font, data.get("text").optjstring(""), centerX,
-                        centerY - font.lineHeight / 2, color);
+                drawCenteredText(gui, textFont, data.get("text").optjstring(""),
+                        centerX, centerY, color, fontScale, textShadow);
             }
+        }
+    }
+
+    private void renderGraph(GuiGraphics gui, LuaTable data, int centerX, int centerY,
+                             int requestedWidth, int requestedHeight) {
+        int width = Math.max(1, Math.min(requestedWidth, PsychCanvas.WIDTH * 2));
+        int height = Math.max(1, Math.min(requestedHeight, PsychCanvas.HEIGHT * 2));
+        int fill = color(data);
+        int border = widgetColor(data, "borderColor", 0xFFFFFF);
+        int borderSize = Math.max(0, Math.min(Math.max(width, height),
+                (int) Math.round(data.get("borderSize").optdouble(0))));
+        int thickness = Math.max(1, Math.min(Math.max(width, height),
+                (int) Math.round(data.get("thickness").optdouble(1))));
+        String shape = data.get("shape").optjstring("rectangle").trim().toLowerCase(Locale.ROOT);
+
+        gui.pose().pushPose();
+        try {
+            gui.pose().translate(centerX, centerY, 0);
+            gui.pose().mulPose(com.mojang.math.Axis.ZP.rotationDegrees(
+                    (float) data.get("angle").optdouble(0)));
+            switch (shape) {
+                case "circle", "ellipse", "oval" -> {
+                    if (borderSize > 0) drawEllipse(gui, width, height, border);
+                    drawEllipse(gui, Math.max(0, width - borderSize * 2),
+                            Math.max(0, height - borderSize * 2), fill);
+                }
+                case "line" -> {
+                    int x1 = -width / 2;
+                    int y1 = -height / 2;
+                    int x2 = x1 + width - 1;
+                    int y2 = y1 + height - 1;
+                    if (borderSize > 0) drawLine(gui, x1, y1, x2, y2,
+                            thickness + borderSize * 2, border);
+                    drawLine(gui, x1, y1, x2, y2, thickness, fill);
+                }
+                case "triangle", "polygon" -> {
+                    List<double[]> points = graphPoints(data, shape, width, height);
+                    fillPolygon(gui, points, fill);
+                    if (borderSize > 0) strokePolygon(gui, points, borderSize, border);
+                }
+                default -> {
+                    int left = -width / 2;
+                    int top = -height / 2;
+                    if (borderSize > 0) gui.fill(left, top, left + width, top + height, border);
+                    int inset = Math.min(borderSize, Math.min(width, height) / 2);
+                    gui.fill(left + inset, top + inset, left + width - inset,
+                            top + height - inset, fill);
+                }
+            }
+        } finally {
+            gui.pose().popPose();
+        }
+    }
+
+    private static void drawEllipse(GuiGraphics gui, int width, int height, int color) {
+        if (width <= 0 || height <= 0 || color >>> 24 == 0) return;
+        double rx = width / 2.0;
+        double ry = height / 2.0;
+        int top = -height / 2;
+        for (int row = 0; row < height; row++) {
+            double dy = (top + row + 0.5) / ry;
+            double span = rx * Math.sqrt(Math.max(0, 1 - dy * dy));
+            int left = (int) Math.ceil(-span);
+            int right = (int) Math.floor(span);
+            if (right >= left) gui.fill(left, top + row, right + 1, top + row + 1, color);
+        }
+    }
+
+    private static void drawLine(GuiGraphics gui, int x1, int y1, int x2, int y2,
+                                 int thickness, int color) {
+        if (color >>> 24 == 0) return;
+        int steps = Math.max(Math.abs(x2 - x1), Math.abs(y2 - y1));
+        int radius = Math.max(0, thickness / 2);
+        for (int i = 0; i <= Math.max(1, steps); i++) {
+            double t = steps == 0 ? 0 : i / (double) steps;
+            int x = (int) Math.round(x1 + (x2 - x1) * t);
+            int y = (int) Math.round(y1 + (y2 - y1) * t);
+            gui.fill(x - radius, y - radius, x - radius + thickness,
+                    y - radius + thickness, color);
+        }
+    }
+
+    private static List<double[]> graphPoints(LuaTable data, String shape, int width, int height) {
+        List<double[]> points = new ArrayList<>();
+        LuaValue raw = data.get("points");
+        if (raw.istable()) {
+            LuaTable table = raw.checktable();
+            if (table.length() > 0 && table.get(1).istable()) {
+                for (int i = 1; i <= Math.min(64, table.length()); i++) {
+                    LuaValue point = table.get(i);
+                    if (!point.istable()) continue;
+                    points.add(new double[]{point.get(1).optdouble(0), point.get(2).optdouble(0)});
+                }
+            } else {
+                for (int i = 1; i + 1 <= Math.min(128, table.length()); i += 2) {
+                    points.add(new double[]{table.get(i).optdouble(0), table.get(i + 1).optdouble(0)});
+                }
+            }
+        }
+        if (points.size() >= 3) return points;
+        int left = -width / 2, right = left + width - 1;
+        int top = -height / 2, bottom = top + height - 1;
+        if (shape.equals("triangle")) {
+            return List.of(new double[]{0, top}, new double[]{right, bottom},
+                    new double[]{left, bottom});
+        }
+        return List.of(new double[]{0, top}, new double[]{right, 0},
+                new double[]{0, bottom}, new double[]{left, 0});
+    }
+
+    private static void fillPolygon(GuiGraphics gui, List<double[]> points, int color) {
+        if (points.size() < 3 || color >>> 24 == 0) return;
+        int minY = (int) Math.floor(points.stream().mapToDouble(point -> point[1]).min().orElse(0));
+        int maxY = (int) Math.ceil(points.stream().mapToDouble(point -> point[1]).max().orElse(0));
+        minY = Math.max(-8192, minY);
+        maxY = Math.min(8192, maxY);
+        for (int y = minY; y <= maxY; y++) {
+            double scanY = y + 0.5;
+            List<Double> intersections = new ArrayList<>();
+            for (int i = 0; i < points.size(); i++) {
+                double[] a = points.get(i);
+                double[] b = points.get((i + 1) % points.size());
+                if ((a[1] <= scanY && b[1] > scanY) || (b[1] <= scanY && a[1] > scanY)) {
+                    intersections.add(a[0] + (scanY - a[1]) * (b[0] - a[0]) / (b[1] - a[1]));
+                }
+            }
+            intersections.sort(Double::compareTo);
+            for (int i = 0; i + 1 < intersections.size(); i += 2) {
+                int left = (int) Math.ceil(intersections.get(i));
+                int right = (int) Math.floor(intersections.get(i + 1));
+                if (right >= left) gui.fill(left, y, right + 1, y + 1, color);
+            }
+        }
+    }
+
+    private static void strokePolygon(GuiGraphics gui, List<double[]> points,
+                                      int thickness, int color) {
+        for (int i = 0; i < points.size(); i++) {
+            double[] a = points.get(i);
+            double[] b = points.get((i + 1) % points.size());
+            drawLine(gui, (int) Math.round(a[0]), (int) Math.round(a[1]),
+                    (int) Math.round(b[0]), (int) Math.round(b[1]), thickness, color);
+        }
+    }
+
+    private int widgetColor(LuaTable data, String property, int fallback) {
+        int alpha = (int) Math.round(Math.max(0, Math.min(1,
+                data.get("alpha").optdouble(1))) * 255);
+        return alpha << 24 | data.get(property).optint(fallback) & 0xFFFFFF;
+    }
+
+    private static int luaColor(LuaValue value, int fallback) {
+        if (value == null || value.isnil()) return fallback;
+        return value.isnumber() ? value.toint() & 0xFFFFFF
+                : PsychColor.parse(value.optjstring("FFFFFF")) & 0xFFFFFF;
+    }
+
+    private Font widgetFont(LuaTable data, Font fallback) {
+        String name = data.get("font").optjstring("").trim();
+        if (name.isEmpty()) return fallback;
+        Font selected = fontLoader.get(name);
+        return selected == null ? fallback : selected;
+    }
+
+    private static void drawCenteredText(GuiGraphics gui, Font font, String text,
+                                         int centerX, int centerY, int color, float scale,
+                                         boolean shadow) {
+        gui.pose().pushPose();
+        try {
+            gui.pose().translate(centerX, centerY, 0);
+            gui.pose().scale(scale, scale, 1);
+            gui.drawString(font, text, -font.width(text) / 2, -font.lineHeight / 2,
+                    color, shadow);
+        } finally {
+            gui.pose().popPose();
         }
     }
 
@@ -665,24 +1078,30 @@ public final class MachineMenuRuntime implements AutoCloseable {
 
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
         if (button != 0) return false;
-        for (int i = widgets.size() - 1; i >= 0; i--) {
-            Widget widget = widgets.get(i);
+        double canvasMouseX = screenToCanvasX(mouseX);
+        double canvasMouseY = screenToCanvasY(mouseY);
+        List<Widget> ordered = orderedWidgets();
+        for (int i = ordered.size() - 1; i >= 0; i--) {
+            Widget widget = ordered.get(i);
             LuaTable data = widget.data();
             if (!data.get("visible").optboolean(true) || widget.kind().equals("label")
-                    || widget.kind().equals("panel") || widget.kind().equals("image")
+                    || widget.kind().equals("panel") || widget.kind().equals("graph")
+                    || widget.kind().equals("image")
                     || widget.kind().equals("sprite") || widget.kind().equals("animatedSprite")) continue;
             int width = Math.max(1, (int) Math.round(data.get("width").optdouble(1)));
             int height = Math.max(1, (int) Math.round(data.get("height").optdouble(1)));
-            int x = coordinate(data.get("x").optdouble(0.5), host.screenWidth()) - width / 2;
-            int y = coordinate(data.get("y").optdouble(0.5), host.screenHeight()) - height / 2;
-            if (mouseX < x || mouseX >= x + width || mouseY < y || mouseY >= y + height) continue;
+            int x = coordinate(data.get("x").optdouble(0.5), PsychCanvas.WIDTH) - width / 2;
+            int y = coordinate(data.get("y").optdouble(0.5), PsychCanvas.HEIGHT) - height / 2;
+            if (canvasMouseX < x || canvasMouseX >= x + width
+                    || canvasMouseY < y || canvasMouseY >= y + height) continue;
             if (widget.kind().equals("toggle")) {
                 data.set("value", LuaValue.valueOf(!data.get("value").optboolean(false)));
                 call(data.get("onChange"), data, data.get("value"));
             } else if (widget.kind().equals("slider")) {
                 double min = data.get("min").optdouble(0);
                 double max = data.get("max").optdouble(1);
-                data.set("value", min + (max - min) * Math.max(0, Math.min(1, (mouseX - x) / width)));
+                data.set("value", min + (max - min) * Math.max(0,
+                        Math.min(1, (canvasMouseX - x) / width)));
                 call(data.get("onChange"), data, data.get("value"));
             } else {
                 call(data.get("onClick"), data);
@@ -700,6 +1119,25 @@ public final class MachineMenuRuntime implements AutoCloseable {
 
     private static int coordinate(double value, int extent) {
         return Math.abs(value) <= 1.0 ? (int) Math.round(value * extent) : (int) Math.round(value);
+    }
+
+    private static boolean normalizedCoordinate(double value) {
+        return Math.abs(value) <= 1.0;
+    }
+
+    private double canvasScale() {
+        return Math.max(1.0e-6, Math.min(host.screenWidth() / (double) PsychCanvas.WIDTH,
+                host.screenHeight() / (double) PsychCanvas.HEIGHT));
+    }
+
+    private double screenToCanvasX(double x) {
+        double scale = canvasScale();
+        return (x - (host.screenWidth() - PsychCanvas.WIDTH * scale) * 0.5) / scale;
+    }
+
+    private double screenToCanvasY(double y) {
+        double scale = canvasScale();
+        return (y - (host.screenHeight() - PsychCanvas.HEIGHT * scale) * 0.5) / scale;
     }
 
     private void callGlobal(String name, LuaValue... args) {
@@ -741,6 +1179,8 @@ public final class MachineMenuRuntime implements AutoCloseable {
     @Override
     public void close() {
         callGlobal("onClose");
+        tweens.clear();
+        fontLoader.close();
     }
 
     private static final class BudgetDebugLib extends DebugLib {

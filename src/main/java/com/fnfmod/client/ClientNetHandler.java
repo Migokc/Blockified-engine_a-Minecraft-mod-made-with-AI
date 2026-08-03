@@ -27,7 +27,11 @@ public final class ClientNetHandler {
         if (payload instanceof FnfPayloads.OpenMenuS2C p) {
             switch (p.role()) {
                 case 0 -> {
+                    // A custom menu may hand off to the built-in selector while
+                    // retaining its chosen post-song destination.
+                    byte returnTarget = ClientSession.pendingSongExitTarget;
                     ClientSession.reset();
+                    ClientSession.pendingSongExitTarget = FnfPayloads.LeaveC2S.normalizeReturnTarget(returnTarget);
                     ClientSession.activePos = p.pos();
                     mc.setScreen(new SongSelectScreen(p.pos(), p.songs()));
                 }
@@ -56,6 +60,10 @@ public final class ClientNetHandler {
             ClientSession.onChunk(p);
         } else if (payload instanceof FnfPayloads.StartSongS2C p) {
             ClientSession.onStart(p);
+        } else if (payload instanceof FnfPayloads.RestartSongS2C p) {
+            if (mc.screen instanceof GameplayScreen gameplay) {
+                gameplay.onServerRestart(p);
+            }
         } else if (payload instanceof FnfPayloads.PartnerNoteS2C p) {
             if (mc.screen instanceof GameplayScreen gameplay) {
                 gameplay.onPartnerNote(p.lane(), p.judgement(), p.combo(), p.score());

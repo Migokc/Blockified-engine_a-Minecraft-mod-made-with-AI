@@ -147,6 +147,22 @@ public final class FnfPayloads {
         public Type<? extends CustomPacketPayload> type() { return TYPE; }
     }
 
+    /** Confirms that the server restored a solo session and the client may rebuild gameplay. */
+    public record RestartSongS2C(BlockPos pos, int botEntityId, long startDelayMs)
+            implements CustomPacketPayload {
+        public static final Type<RestartSongS2C> TYPE = new Type<>(FnfMod.id("restart_song_ack"));
+        public static final StreamCodec<FriendlyByteBuf, RestartSongS2C> CODEC = StreamCodec.of(
+                (buf, value) -> {
+                    buf.writeBlockPos(value.pos());
+                    buf.writeVarInt(value.botEntityId() + 1);
+                    buf.writeLong(value.startDelayMs());
+                },
+                buf -> new RestartSongS2C(buf.readBlockPos(), buf.readVarInt() - 1, buf.readLong()));
+
+        @Override
+        public Type<? extends CustomPacketPayload> type() { return TYPE; }
+    }
+
     /** judgement: 0=sick 1=good 2=bad 3=shit 4=miss */
     public record PartnerNoteS2C(int lane, byte judgement, int combo, int score) implements CustomPacketPayload {
         public static final Type<PartnerNoteS2C> TYPE = new Type<>(FnfMod.id("partner_note"));
@@ -354,6 +370,17 @@ public final class FnfPayloads {
         public Type<? extends CustomPacketPayload> type() { return TYPE; }
     }
 
+    /** Requests an authoritative reset of an active solo song session. */
+    public record RestartSongC2S(BlockPos pos) implements CustomPacketPayload {
+        public static final Type<RestartSongC2S> TYPE = new Type<>(FnfMod.id("restart_song_request"));
+        public static final StreamCodec<FriendlyByteBuf, RestartSongC2S> CODEC = StreamCodec.of(
+                (buf, value) -> buf.writeBlockPos(value.pos()),
+                buf -> new RestartSongC2S(buf.readBlockPos()));
+
+        @Override
+        public Type<? extends CustomPacketPayload> type() { return TYPE; }
+    }
+
     public record NoteEventC2S(BlockPos pos, int lane, byte judgement, int combo, int score)
             implements CustomPacketPayload {
         public static final Type<NoteEventC2S> TYPE = new Type<>(FnfMod.id("note_event"));
@@ -443,16 +470,23 @@ public final class FnfPayloads {
         public Type<? extends CustomPacketPayload> type() { return TYPE; }
     }
 
-    /** reopenMenu = after leaving, recreate the session and push the song menu instead of returning to the world. */
-    public record LeaveC2S(BlockPos pos, boolean finishedOnly, boolean reopenMenu) implements CustomPacketPayload {
+    /** Return target after leaving: world/no menu, built-in selector, or owning custom machine menu. */
+    public record LeaveC2S(BlockPos pos, boolean finishedOnly, byte returnTarget) implements CustomPacketPayload {
+        public static final byte RETURN_WORLD = 0;
+        public static final byte RETURN_SELECTOR = 1;
+        public static final byte RETURN_MACHINE_MENU = 2;
         public static final Type<LeaveC2S> TYPE = new Type<>(FnfMod.id("leave"));
         public static final StreamCodec<FriendlyByteBuf, LeaveC2S> CODEC = StreamCodec.of(
                 (buf, v) -> {
                     buf.writeBlockPos(v.pos);
                     buf.writeBoolean(v.finishedOnly);
-                    buf.writeBoolean(v.reopenMenu);
+                    buf.writeByte(v.returnTarget);
                 },
-                buf -> new LeaveC2S(buf.readBlockPos(), buf.readBoolean(), buf.readBoolean()));
+                buf -> new LeaveC2S(buf.readBlockPos(), buf.readBoolean(), buf.readByte()));
+
+        public static byte normalizeReturnTarget(byte target) {
+            return target == RETURN_SELECTOR || target == RETURN_MACHINE_MENU ? target : RETURN_WORLD;
+        }
 
         @Override
         public Type<? extends CustomPacketPayload> type() { return TYPE; }

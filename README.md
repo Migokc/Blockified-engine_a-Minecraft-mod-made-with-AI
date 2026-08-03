@@ -2,11 +2,11 @@
 
 A feature-full Friday Night Funkin' engine inside of Minecraft — **NeoForge 1.21.1**.
 
-Current release: **2.1.1bbs**.
+Current release: **2.1.3bbs**.
 
 Documentation: **[Blockified Engine Docs](https://migokc.github.io/Blockified-engine_a-Minecraft-mod-made-with-AI/)**.
 
-### 2.1.1bbs highlights
+### 2.1.3bbs highlights
 
 - Custom machines now support mod-owned Lua menus, direct song launching,
   settings/editor navigation, static sprites, and animated Sparrow XML atlases.
@@ -19,6 +19,13 @@ Documentation: **[Blockified Engine Docs](https://migokc.github.io/Blockified-en
   transforms, axis/plane constraints, transform resets, origin framing, Lua
   object copy/paste, and editable existing world objects.
 - Long-note arrow-skin animations advance every two atlas frames while held.
+- Normal gameplay restarts now use the same clean rebuild as editor playtests,
+  including server-side world/player rollback and command-event reset.
+- Machine Lua menus now support generated graphics, layers, custom fonts,
+  optional text shadows, tagged tweens, fixed 1280x720 scaling, and direct-song
+  exit routing. Mixed pixel/normalized tweens interpolate without snapping.
+- Virtual machine hitboxes retain their custom dimensions through client
+  synchronization instead of briefly blinking back to a 1x1 box.
 - New searchable, responsive GitHub Pages documentation covers Blockified-only
   songs, packs, machines, events, note skins, Lua, multiplayer, and tools.
 
@@ -290,6 +297,86 @@ Normal Lua variables, tables, functions work. Widgets expose mutable `text`, `x`
 `ui.get(id)`, `ui.remove(id)`, `ui.clear()`, `onOpen()`, `onUpdate(dt)`, `onClose()`
 supported. `machineData` persists per placed machine/world save.
 
+Machine menus use a fixed 1280x720 canvas, scaled uniformly and centered. Window
+resolution and Minecraft GUI scale therefore do not change widget layout;
+GUI scale also does not change physical widget size. Normalized X/Y values (`-1` through `1`) use canvas dimensions;
+larger values are canvas pixels. Lua globals `screenWidth` and `screenHeight` are
+always `1280` and `720`. Non-16:9 screens letterbox the canvas.
+
+Machine widgets expose mutable `order`. Higher values render in front and receive
+clicks first. Creation order is used by default. Psych-style
+`setObjectOrder('widgetId', order)` is also supported:
+
+```lua
+local title = ui.label('title', 'Behind cover', 0.5, 0.7)
+local cover = ui.image('cover', 'images/cover.png', 0.5, 0.5, 180, 180)
+setObjectOrder('title', 0)
+setObjectOrder('cover', 1)
+```
+
+Generated graphics need no texture file. `ui.graph` (alias `ui.graphic`) supports
+`rectangle`, `circle`/`ellipse`, `line`, `triangle`, and `polygon`:
+
+```lua
+local card = ui.graph('card', 'rectangle', 0.5, 0.5, 320, 180, '28003F')
+card.borderSize = 4
+card.borderColor = 0xFF00FF
+
+local slash = ui.graph('slash', 'line', 0.5, 0.5, 180, 60, 'FFFFFF')
+slash.thickness = 5
+slash.angle = -15
+
+local badge = ui.graph('badge', 'polygon', 0.5, 0.3, 140, 120, 'E600FF')
+badge.points = {{0, -60}, {70, 45}, {0, 60}, {-70, 45}}
+```
+
+Signature: `ui.graph(id, shape, x, y, width, height, color)`. Omit `shape` to
+create a rectangle. Polygon points are pixel offsets from the graph center.
+Graphics support normal `x`, `y`, `width`, `height`, `color`, `alpha`, `angle`,
+`visible`, `order`, and compatible widget tweens. `borderSize`, `borderColor`,
+and line `thickness` are mutable.
+
+Text widgets (`label`, `button`, `toggle`, and `slider`) support custom TTF/OTF
+fonts through mutable `font` and `fontScale` fields. Set mutable `shadow` to
+`false` to disable Minecraft's default text shadow:
+
+```lua
+local title = ui.label('title', 'Earrings Machine', 0.5, 0.15)
+title.font = 'VCR_OSD_MONO.ttf'
+title.fontScale = 2.0
+title.shadow = false
+```
+
+Fonts resolve from the machine profile's `fonts/`, then the owning mod's `fonts/`,
+then `config/fnfmod/fonts/`. Missing or invalid fonts log a warning and use the
+Minecraft font.
+
+Machine widgets support Psych-style tweens:
+
+```lua
+local cover = ui.image('cover', 'images/cover.png', -0.2, 0.5, 100, 100)
+
+function onOpen()
+  doTweenX('cover-enter', 'cover', 0.5, 1, 'sineOut')
+end
+
+function onTweenCompleted(tag)
+  if tag == 'cover-enter' then
+    doTweenAlpha('cover-fade', 'cover', 0.5, 0.4, 'linear')
+  end
+end
+```
+
+Available calls: `doTweenX`, `doTweenY`, `doTweenAlpha`, `doTweenAngle`,
+`doTweenWidth`, `doTweenHeight`, `doTweenFontScale`, `doTweenColor`, and
+`cancelTween`. Starting another tween with the same tag replaces it. Completion
+calls global `onTweenCompleted(tag)` and optional widget method
+`function cover:onTweenCompleted(tag)`.
+
+X/Y tweens may cross between pixel and normalized coordinates. Blockified
+converts both endpoints to canvas pixels while interpolating, then stores the
+requested final value, preventing an end-of-tween position snap.
+
 Static sprites and FNF/Psych Sparrow XML animations are supported inside machine
 menus. Files must stay inside active machine profile/mod:
 
@@ -342,13 +429,18 @@ launch. `machine.openSongDetails(id)` opens built-in options for one song.
 
 Navigation/API calls:
 
-- `machine.openSongSelect()` — existing complete selector.
+- `machine.openSongSelect([returnTo])` — existing complete selector; optional
+  `menu`, `world`, or `selector` controls where its next solo song exits.
 - `machine.openSettings()` / `machine.openOptions()` — settings; Back returns to Lua menu.
 - `machine.openCharacterEditor()` — character editor; Back returns to Lua menu.
 - `machine.openChartEditor([songId], [difficulty])` — chart editor.
 - `machine.join()` — join waiting LAN session; alias of selector/session interaction.
 - `machine.saveData()` — persist `machineData` immediately.
 - `machine.close()` — close menu and release machine session.
+- `machine.setSongExitTarget('menu'|'world'|'selector')` — choose where solo
+  gameplay returns after finish, quit, or loss. Direct custom-menu songs default
+  to `menu`; `world` closes every menu. The target also survives a handoff through
+  `machine.openSongSelect()`.
 
 Existing APIs remain compatible. Escape also releases chooser ownership. Lua menu
 owns normal machine session rules: one host, optional LAN guest, busy-state checks.

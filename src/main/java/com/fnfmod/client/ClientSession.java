@@ -47,6 +47,8 @@ public final class ClientSession {
     /** Solo side choice sent with the last song selection: 0 player, 1 opponent, 2 both. */
     public static byte pendingPlaySide;
     public static PlaybackMode pendingPlaybackMode = PlaybackMode.MINECRAFT;
+    /** Destination after solo gameplay exits; built-in selection remains the safe default. */
+    public static byte pendingSongExitTarget = FnfPayloads.LeaveC2S.RETURN_SELECTOR;
     public static PlaybackMode playbackMode = PlaybackMode.MINECRAFT;
     /** Server-resolved rich-resource permission for the selected playback mode/source. */
     public static boolean songAssets = true;
@@ -70,6 +72,7 @@ public final class ClientSession {
         difficulty = "";
         duet = false;
         opponentSide = false;
+        pendingSongExitTarget = FnfPayloads.LeaveC2S.RETURN_SELECTOR;
         playbackMode = PlaybackMode.MINECRAFT;
         songAssets = true;
         chart = null;
@@ -85,7 +88,8 @@ public final class ClientSession {
 
     public static void leave() {
         if (activePos != null) {
-            PacketDistributor.sendToServer(new FnfPayloads.LeaveC2S(activePos, false, false));
+            PacketDistributor.sendToServer(new FnfPayloads.LeaveC2S(activePos, false,
+                    FnfPayloads.LeaveC2S.RETURN_WORLD));
         }
         reset();
     }

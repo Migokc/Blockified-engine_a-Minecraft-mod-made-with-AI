@@ -9,6 +9,7 @@ import com.fnfmod.character.CharacterTransform;
 import com.fnfmod.gameplay.PlaybackMode;
 import com.fnfmod.gameplay.PlaybackPolicy;
 import com.fnfmod.machine.MachineLibrary;
+import com.fnfmod.machine.MachineMenuService;
 import com.fnfmod.net.FnfPayloads;
 import com.fnfmod.song.SongEntry;
 import com.fnfmod.song.SongLibrary;
@@ -405,6 +406,35 @@ public final class SessionManager {
         }
     }
 
+    /**
+     * Makes a normal solo restart equivalent to leaving and starting again while
+     * retaining the active session and already-transferred song files.
+     */
+    public static void onRestartSong(ServerPlayer player, FnfPayloads.RestartSongC2S payload) {
+        Session session = SESSIONS.get(keyOf(player, payload.pos()));
+        if (session == null || session.state != State.PLAYING || session.host != player
+                || session.duet) return;
+
+        // Restore everything affected by the previous attempt before establishing
+        // a fresh rollback baseline for the replacement attempt.
+        clearSessionActors(session);
+        restoreWorld(session);
+        restorePosition(player);
+
+        session.executedServerEvents.clear();
+        session.hostEnded = false;
+        session.guestEnded = false;
+        session.luaCommandWindowNanos = 0;
+        session.luaCommandsInWindow = 0;
+
+        placeOnStage(player, payload.pos(), session.playSide, session.hostTransform);
+        spawnBotStand(session, payload.pos());
+        prepareCommandTargets(session, payload.pos());
+        int botEntityId = session.botStand == null ? -1 : session.botStand.getId();
+        PacketDistributor.sendToPlayer(player,
+                new FnfPayloads.RestartSongS2C(payload.pos(), botEntityId, 2000));
+    }
+
     private static CharacterTransform transformFrom(FnfPayloads.ReadyC2S payload) {
         Vec3 offset = new Vec3(payload.offsetX(), payload.offsetY(), payload.offsetZ());
         if (!Double.isFinite(offset.x) || !Double.isFinite(offset.y) || !Double.isFinite(offset.z)
@@ -675,7 +705,7 @@ public final class SessionManager {
         }
     }
 
-    public static void onLeave(ServerPlayer player, BlockPos pos, boolean finishedOnly, boolean reopenMenu) {
+    public static void onLeave(ServerPlayer player, BlockPos pos, boolean finishedOnly, byte requestedReturnTarget) {
         if (finishedOnly) {
             restorePosition(player);
         } else {
@@ -686,10 +716,15 @@ public final class SessionManager {
                 cancel(session, player, player.getGameProfile().getName() + " left");
             }
         }
-        // returning to the song menu instead of the world: with the old session now
-        // torn down, run the same path as clicking the block to create a fresh
-        // CHOOSING session and push the menu back to the player.
-        if (reopenMenu) onInteract(player, pos);
+        // With the old session torn down, recreate only the requested chooser.
+        // Custom-menu routing revalidates machine reach, profile, world scope,
+        // and LAN policy before sending any executable menu content.
+        byte returnTarget = FnfPayloads.LeaveC2S.normalizeReturnTarget(requestedReturnTarget);
+        if (returnTarget == FnfPayloads.LeaveC2S.RETURN_SELECTOR) {
+            onInteract(player, pos);
+        } else if (returnTarget == FnfPayloads.LeaveC2S.RETURN_MACHINE_MENU) {
+            MachineMenuService.onInteract(player, pos);
+        }
     }
 
     /** Teleports the player back to where they stood before the song, if recorded. */

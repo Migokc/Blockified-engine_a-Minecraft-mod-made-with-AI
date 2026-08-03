@@ -20,7 +20,7 @@
 
   const pages = {};
 
-  pages.home = page("Blockified Engine", "Documentation · Guides · Wiki", "Build Friday Night Funkin' songs, stages, machines, and world scenes inside Minecraft.", ["2.1.1bbs", "NeoForge 1.21.1", "Singleplayer + LAN"],
+  pages.home = page("Blockified Engine", "Documentation · Guides · Wiki", "Build Friday Night Funkin' songs, stages, machines, and world scenes inside Minecraft.", ["2.1.3bbs", "NeoForge 1.21.1", "Singleplayer + LAN"],
     `<div class="hero-panel"><span>DOCUMENTATION · GUIDES · WIKI</span><h2>Build with Blockified.</h2><p>Learn by following a guide, look up exact behavior in documentation, or understand systems through the wiki. This site covers Blockified additions and changes without duplicating unchanged Psych Engine material.</p><div class="hero-actions"><a class="button-link" href="#/quick-start">Start here</a><a class="button-link secondary" href="#/animations">Make animations</a><a class="button-link secondary" href="#/lua-overview">Lua API</a></div></div>`,
     section("choose", "Choose how to use this site", `<div class="card-grid category-grid">
       <a class="doc-card category-card guide-card" href="#/quick-start"><span>GUIDES</span><h3>Make something</h3><p>Follow ordered, practical steps from installation to a playable song, complete pack, animation, or custom machine.</p></a>
@@ -292,7 +292,7 @@ dancer:playAnimation('idle')`)),
     section("state", "Captured state", `<p>The playstate records required player/world state, including inventory and synchronous block changes produced during the session.</p>`),
     section("blocks", "Modified blocks", `<p>Block state is captured copy-on-write: the original is saved on the first affected change. A chart command such as <code>/setblock ... air</code> can restore what existed before the song.</p>`),
     section("explosions", "Explosions", callout("Timing boundary", "Immediate command-driven changes inside the active transaction can restore. Delayed TNT or creeper explosions outside it are not guaranteed rollback coverage.")),
-    section("ends", "End paths", `<p>The same restoration runs after normal finish, quit, or giving up after a loss.</p>`)
+    section("ends", "End paths", `<p>The same restoration runs after normal finish, quit, or giving up after a loss. Restarting normal solo gameplay also restores the pre-song player/world baseline, clears executed command-event history, recreates session actors, and then rebuilds PlayState. Editor playtests rebuild locally because they have no server song session.</p>`)
   );
 
   pages.multiplayer = page("Multiplayer", "Documentation · Gameplay", "Server-authoritative sessions with streamed charts and audio.", ["LAN", "Server authority"],
@@ -365,9 +365,26 @@ end`)}`),
       ${api("ui.image(id, path, x, y, width, height)", "Displays an image.", "Machine UI")}
       ${api("ui.sprite(id, path, x, y)", "Displays a static sprite.", "Machine UI")}
       ${api("ui.animatedSprite(id, image, xml, x, y)", "Loads a Sparrow XML atlas.", "Machine UI")}
-    </div>`),
+      ${api("ui.graph(id, shape, x, y, width, height, color)", "Draws a generated rectangle, circle/ellipse, line, triangle, or polygon. ui.graphic is an alias.", "Machine UI")}
+    </div><p>Machine menus use a fixed 1280x720 canvas that scales uniformly and stays centered. Minecraft GUI scale does not change layout or physical widget size; window resolution scales the complete canvas proportionally. Normalized X/Y values use canvas dimensions; larger values are canvas pixels. <code>screenWidth</code> and <code>screenHeight</code> are always <code>1280</code> and <code>720</code>. Non-16:9 screens letterbox the canvas.</p><p>Widgets use creation order by default. Higher <code>order</code> values render in front and receive clicks first. Change a layer through <code>widget.order</code> or <code>setObjectOrder('widgetId', order)</code>.</p>${code("lua", `local title = ui.label('title', 'Behind cover', 0.5, 0.7)
+local cover = ui.image('cover', 'images/cover.png', 0.5, 0.5, 180, 180)
+setObjectOrder('title', 0)
+setObjectOrder('cover', 1)`)}`),
+    section("graphs", "Generated graphics", `<p>Graphs require no image asset. Omit <code>shape</code> for a rectangle. They share widget position, size, visibility, alpha, angle, color, tween, and layer fields. Mutable graph-only fields are <code>borderSize</code>, <code>borderColor</code>, and line <code>thickness</code>. Polygon <code>points</code> are local pixel offsets from the graph center and accept nested pairs or one flat number list.</p>${code("lua", `local card = ui.graph('card', 'rectangle', 0.5, 0.5, 320, 180, '28003F')
+card.borderSize = 4
+card.borderColor = 0xFF00FF
+
+local dot = ui.graph('dot', 'circle', 0.25, 0.3, 48, 48, 'FFFFFF')
+
+local slash = ui.graph('slash', 'line', 0.5, 0.5, 180, 60, 'FFFFFF')
+slash.thickness = 5
+slash.angle = -15
+
+local badge = ui.graph('badge', 'polygon', 0.75, 0.3, 140, 120, 'E600FF')
+badge.points = {{0, -60}, {70, 45}, {0, 60}, {-70, 45}}
+setObjectOrder('badge', 10)`)}`),
     section("actions", "Machine actions", `<div class="api-list">
-      ${api("machine.openSongSelect()", "Opens the included selector.", "Machine")}
+      ${api("machine.openSongSelect([returnTo])", "Opens the included selector; optional menu, world, or selector sets the next solo song's exit destination.", "Machine")}
       ${api("machine.getSongs()", "Returns authoritative available songs.", "Machine")}
       ${api("machine.getSong(id) / machine.hasSong(id)", "Reads or checks one song.", "Machine")}
       ${api("machine.playSong(id)", "Starts an available song directly.", "Machine")}
@@ -375,6 +392,8 @@ end`)}`),
       ${api("machine.openSettings() / machine.openOptions()", "Opens settings.", "Machine")}
       ${api("machine.openCharacterEditor()", "Opens character editor.", "Machine")}
       ${api("machine.openChartEditor()", "Opens chart editor.", "Machine")}
+      ${api("machine.setSongExitTarget(target)", "Sets solo-song return target: menu, world, or selector. Direct custom-menu play defaults to menu.", "Machine")}
+      ${api("machine.getSongExitTarget()", "Returns menu, world, or selector.", "Machine")}
       ${api("machine.join(...) / machine.save() / machine.close()", "Join, persist, or close.", "Machine")}
     </div>`),
     section("direct", "Direct-song button", code("lua", `local play = ui.button('play', 'Play Tutorial', 0.5, 0.42, 180, 24)
@@ -383,6 +402,33 @@ function play:onClick()
     machine.playSong('tutorial')
   end
 end`)),
+    section("return", "Choose where quitting returns", `<p>Songs launched directly or through <code>machine.openSongSelect()</code> return to the custom menu by default. Change the destination before opening or playing:</p>${code("lua", `-- Return to Minecraft with every menu closed.
+machine.setSongExitTarget('world')
+
+-- This also applies if the next call is machine.openSongSelect().
+-- Other values: 'menu' or 'selector'.`)}` + `<p>One direct-play call can override it with an options table:</p>` + code("lua", `machine.playSong('tutorial', 'normal', {
+  playAs = 'player',
+  look = 'minecraft',
+  returnTo = 'world'
+})`) + callout("Duets", "Multiplayer duets still return to the world to prevent host/guest menu contention.")),
+    section("fonts", "Custom fonts and shadows", `<p>Labels, buttons, toggles, and sliders accept TTF/OTF fonts through their mutable <code>font</code> field. <code>fontScale</code> changes rendered text size without changing the widget hitbox. Text uses Minecraft's shadow by default; set <code>shadow = false</code> to disable it per widget.</p>${code("lua", `local title = ui.label('title', 'Earrings Machine', 0.5, 0.15)
+title.font = 'VCR_OSD_MONO.ttf'
+title.fontScale = 2.0
+title.shadow = false
+
+local play = ui.button('play', 'Play', 0.5, 0.5, 180, 24)
+play.font = 'VCR_OSD_MONO.ttf'`)}<p>Resolution order:</p><ol><li><code>machines/&lt;machine&gt;/fonts/</code></li><li>Owning mod's <code>fonts/</code></li><li><code>config/fnfmod/fonts/</code></li></ol>${callout("Safe fallback", "Missing or invalid fonts use Minecraft's default font and write one warning to the log.")}`),
+    section("tweens", "Widget tweening", `<p>Machine menus expose Psych-style tagged tweens for widget properties. Supported functions are <code>doTweenX</code>, <code>doTweenY</code>, <code>doTweenAlpha</code>, <code>doTweenAngle</code>, <code>doTweenWidth</code>, <code>doTweenHeight</code>, <code>doTweenFontScale</code>, <code>doTweenColor</code>, and <code>cancelTween</code>.</p>${code("lua", `local cover = ui.image('cover', 'images/cover.png', -0.2, 0.5, 100, 100)
+
+function onOpen()
+  doTweenX('cover-enter', 'cover', 0.5, 1, 'sineOut')
+end
+
+function onTweenCompleted(tag)
+  if tag == 'cover-enter' then
+    doTweenAlpha('cover-fade', 'cover', 0.5, 0.4, 'linear')
+  end
+end`)}` + `<p>Completion also calls an optional widget method: <code>function cover:onTweenCompleted(tag)</code>. Reusing a tag replaces its active tween; <code>cancelTween(tag)</code> stops it without completion callbacks.</p>` + callout("Coordinate modes", "X/Y tweens can cross between pixel and normalized coordinates. Blockified converts mixed endpoints to canvas pixels during interpolation and restores the requested final value without snapping.")),
     section("animation", "Animated sprites", `<p>Animated sprites support add-by-name/prefix, play/pause/resume/stop, frame selection, animation listing, FPS/loop, transform, tint, alpha, antialiasing, and <code>onComplete</code>.</p>${code("lua", `local dancer = ui.animatedSprite('dancer', 'images/dancer.png', 'images/dancer.xml', 0.5, 0.25)
 dancer:addAnimationByPrefix('idle', 'idle', 24, true)
 dancer:playAnimation('idle')`)}`),

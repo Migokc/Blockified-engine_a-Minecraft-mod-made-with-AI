@@ -26,6 +26,8 @@ public final class FnfNetworking {
         registrar.playToClient(FnfPayloads.FileManifestS2C.TYPE, FnfPayloads.FileManifestS2C.CODEC, FnfNetworking::client);
         registrar.playToClient(FnfPayloads.FileChunkS2C.TYPE, FnfPayloads.FileChunkS2C.CODEC, FnfNetworking::client);
         registrar.playToClient(FnfPayloads.StartSongS2C.TYPE, FnfPayloads.StartSongS2C.CODEC, FnfNetworking::client);
+        registrar.playToClient(FnfPayloads.RestartSongS2C.TYPE, FnfPayloads.RestartSongS2C.CODEC,
+                FnfNetworking::client);
         registrar.playToClient(FnfPayloads.PartnerNoteS2C.TYPE, FnfPayloads.PartnerNoteS2C.CODEC, FnfNetworking::client);
         registrar.playToClient(FnfPayloads.PartnerEndS2C.TYPE, FnfPayloads.PartnerEndS2C.CODEC, FnfNetworking::client);
         registrar.playToClient(FnfPayloads.SessionCancelS2C.TYPE, FnfPayloads.SessionCancelS2C.CODEC, FnfNetworking::client);
@@ -51,6 +53,10 @@ public final class FnfNetworking {
                 (payload, ctx) -> ctx.enqueueWork(() -> {
                     if (ctx.player() instanceof ServerPlayer sp) SessionManager.onReady(sp, payload);
                 }));
+        registrar.playToServer(FnfPayloads.RestartSongC2S.TYPE, FnfPayloads.RestartSongC2S.CODEC,
+                (payload, ctx) -> ctx.enqueueWork(() -> {
+                    if (ctx.player() instanceof ServerPlayer sp) SessionManager.onRestartSong(sp, payload);
+                }));
         registrar.playToServer(FnfPayloads.NoteEventC2S.TYPE, FnfPayloads.NoteEventC2S.CODEC,
                 (payload, ctx) -> ctx.enqueueWork(() -> {
                     if (ctx.player() instanceof ServerPlayer sp) SessionManager.onNoteEvent(sp, payload);
@@ -69,7 +75,7 @@ public final class FnfNetworking {
                 }));
         registrar.playToServer(FnfPayloads.LeaveC2S.TYPE, FnfPayloads.LeaveC2S.CODEC,
                 (payload, ctx) -> ctx.enqueueWork(() -> {
-                    if (ctx.player() instanceof ServerPlayer sp) SessionManager.onLeave(sp, payload.pos(), payload.finishedOnly(), payload.reopenMenu());
+                    if (ctx.player() instanceof ServerPlayer sp) SessionManager.onLeave(sp, payload.pos(), payload.finishedOnly(), payload.returnTarget());
                 }));
         registrar.playToServer(FnfPayloads.ReloadC2S.TYPE, FnfPayloads.ReloadC2S.CODEC,
                 (payload, ctx) -> ctx.enqueueWork(() -> {

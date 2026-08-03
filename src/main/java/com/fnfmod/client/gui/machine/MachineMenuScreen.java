@@ -50,13 +50,16 @@ public final class MachineMenuScreen extends Screen implements MachineMenuRuntim
             loadError = compatibilityError;
         } else if (definition == null) {
             loadError = "Profile unavailable. Install matching mod/version.";
-        } else {
+        } else if (runtime == null) {
             runtime = new MachineMenuRuntime(definition, currentData, songs, this);
             if (!runtime.loaded()) loadError = runtime.error();
+        } else if (!runtime.loaded()) {
+            loadError = runtime.error();
         }
         if (loadError != null) {
             addRenderableWidget(Button.builder(Component.literal("Open Default Song Menu"), button ->
-                    openSongSelect()).bounds(width / 2 - 100, height / 2 + 24, 200, 20).build());
+                    openSongSelect(FnfPayloads.LeaveC2S.RETURN_MACHINE_MENU))
+                    .bounds(width / 2 - 100, height / 2 + 24, 200, 20).build());
         }
     }
 
@@ -87,7 +90,8 @@ public final class MachineMenuScreen extends Screen implements MachineMenuRuntim
     }
 
     @Override
-    public void openSongSelect() {
+    public void openSongSelect(byte returnTarget) {
+        ClientSession.pendingSongExitTarget = FnfPayloads.LeaveC2S.normalizeReturnTarget(returnTarget);
         PacketDistributor.sendToServer(new FnfPayloads.MachineMenuActionC2S(pos, (byte) 0, ""));
     }
 
@@ -106,7 +110,7 @@ public final class MachineMenuScreen extends Screen implements MachineMenuRuntim
 
     @Override
     public boolean playSong(String songId, String difficulty, boolean duet,
-                            byte playSide, byte playbackMode) {
+                            byte playSide, byte playbackMode, byte returnTarget) {
         FnfPayloads.SongInfo song = songs.stream()
                 .filter(value -> value.id().equalsIgnoreCase(songId == null ? "" : songId.trim()))
                 .findFirst().orElse(null);
@@ -117,6 +121,7 @@ public final class MachineMenuScreen extends Screen implements MachineMenuRuntim
         ClientSession.activePos = pos;
         ClientSession.pendingPlaySide = duet ? 0 : (byte) Math.max(0, Math.min(2, playSide));
         ClientSession.pendingPlaybackMode = PlaybackMode.fromNetworkId(playbackMode);
+        ClientSession.pendingSongExitTarget = FnfPayloads.LeaveC2S.normalizeReturnTarget(returnTarget);
         PacketDistributor.sendToServer(new FnfPayloads.MachineDirectPlayC2S(pos, song.id(), difficulty,
                 duet, ClientSession.pendingPlaySide, ClientSession.pendingPlaybackMode.networkId()));
         return true;
@@ -185,6 +190,7 @@ public final class MachineMenuScreen extends Screen implements MachineMenuRuntim
         if (runtime != null) {
             runtime.close();
             saveData(runtime.dataSnbt());
+            runtime = null;
         }
         super.removed();
     }
