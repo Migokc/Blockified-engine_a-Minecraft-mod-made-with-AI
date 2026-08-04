@@ -30,6 +30,15 @@ public final class MachineMenuScreen extends Screen implements MachineMenuRuntim
     private MachineMenuRuntime runtime;
     private String loadError;
     private boolean closing;
+    // Silent preload gate: while menuLoading the screen renders nothing and input
+    // stays blocked. Heavy asset decoding runs on a worker thread; the cheap GL
+    // upload finalizes on the render thread afterwards.
+    private boolean menuLoading;
+    private java.util.Queue<Runnable> mainPreloadTasks;
+    private volatile boolean preloadDecodeDone;
+    private final java.util.concurrent.atomic.AtomicBoolean preloadCancelled =
+            new java.util.concurrent.atomic.AtomicBoolean();
+    private Thread preloadThread;
 
     public MachineMenuScreen(BlockPos pos, String profileId, String initialData,
                              String compatibilityError, List<FnfPayloads.SongInfo> songs) {
@@ -53,6 +62,7 @@ public final class MachineMenuScreen extends Screen implements MachineMenuRuntim
         } else if (runtime == null) {
             runtime = new MachineMenuRuntime(definition, currentData, songs, this);
             if (!runtime.loaded()) loadError = runtime.error();
+            else beginPreload();
         } else if (!runtime.loaded()) {
             loadError = runtime.error();
         }
@@ -63,14 +73,95 @@ public final class MachineMenuScreen extends Screen implements MachineMenuRuntim
         }
     }
 
+    private void beginPreload() {
+        java.util.List<Runnable> background = runtime.takeBackgroundPreloadTasks();
+        mainPreloadTasks = new java.util.ArrayDeque<>(runtime.takeMainPreloadTasks());
+        if (background.isEmpty() && mainPreloadTasks.isEmpty()) {
+            runtime.open();
+            menuLoading = false;
+            return;
+        }
+        menuLoading = true;
+        if (background.isEmpty()) {
+            preloadDecodeDone = true;
+            return;
+        }
+        // Decode heavy assets off the render thread so the game does not freeze.
+        preloadThread = new Thread(() -> {
+            for (Runnable task : background) {
+                if (preloadCancelled.get()) break;
+                try {
+                    task.run();
+                } catch (Throwable ignored) {
+                    // A single bad asset must not stall the whole preload.
+                }
+            }
+            preloadDecodeDone = true;
+        }, "fnf-menu-preload");
+        preloadThread.setDaemon(true);
+        preloadThread.start();
+    }
+
+    /**
+     * Once background decoding is done, finalizes the assets on the render thread in
+     * time-sliced batches (each finalize is only a cheap GL upload), then opens the menu.
+     */
+    private void processPreload() {
+        if (mainPreloadTasks == null) {
+            menuLoading = false;
+            return;
+        }
+        if (!preloadDecodeDone) return; // still decoding in the background; keep the gate held
+        long deadline = System.nanoTime() + 8_000_000L;
+        Runnable task;
+        while ((task = mainPreloadTasks.poll()) != null) {
+            try {
+                task.run();
+            } catch (Throwable ignored) {
+                // A single bad asset must not block opening; it falls back at render.
+            }
+            if (System.nanoTime() >= deadline) break;
+        }
+        if (mainPreloadTasks.isEmpty()) {
+            mainPreloadTasks = null;
+            menuLoading = false;
+            if (runtime != null) runtime.open();
+        }
+    }
+
     @Override
     public void tick() {
-        if (runtime != null) runtime.tick();
+        if (!menuLoading && runtime != null) runtime.tick();
+    }
+
+    @Override
+    protected void renderMenuBackground(GuiGraphics gui) {
+        // Custom machine menus draw their own background; skip Minecraft's dark
+        // in-world menu tint entirely so the scene behind the menu stays clean.
+        // (Not Lua-configurable — always off for custom menus.)
+    }
+
+    @Override
+    protected void renderBlurredBackground(float partialTick) {
+        // While the menu is still loading, the gate is invisible: no blur yet, so the
+        // player just sees the world with input held until the menu is ready.
+        if (menuLoading) return;
+        // A menu that controls the blur overrides the player's option for its own
+        // screen only; otherwise vanilla behavior (the player's setting) is kept.
+        if (runtime != null && runtime.loaded() && runtime.isMenuBlurControlled()) {
+            com.fnfmod.client.render.MenuBlur.render(minecraft, (float) runtime.currentMenuBlur(), partialTick);
+            return;
+        }
+        super.renderBlurredBackground(partialTick);
     }
 
     @Override
     public void render(GuiGraphics gui, int mouseX, int mouseY, float partialTick) {
         super.render(gui, mouseX, mouseY, partialTick);
+        if (menuLoading) {
+            processPreload();
+            return;
+        }
         if (runtime != null && runtime.loaded()) runtime.render(gui, font, mouseX, mouseY);
         String runtimeError = runtime == null ? loadError : runtime.error();
         if (runtimeError != null) {
@@ -85,7 +176,8 @@ public final class MachineMenuScreen extends Screen implements MachineMenuRuntim
 
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
-        if (runtime != null && runtime.loaded() && runtime.mouseClicked(mouseX, mouseY, button)) return true;
+        if (!menuLoading && runtime != null && runtime.loaded()
+                && runtime.mouseClicked(mouseX, mouseY, button)) return true;
         return super.mouseClicked(mouseX, mouseY, button);
     }
 
@@ -187,6 +279,13 @@ public final class MachineMenuScreen extends Screen implements MachineMenuRuntim
     @Override
     public void removed() {
         closing = true;
+        // Esc/close during loading cancels the background decode and frees anything
+        // it decoded that never got uploaded.
+        preloadCancelled.set(true);
+        menuLoading = false;
+        mainPreloadTasks = null;
+        com.fnfmod.client.render.MachineTextureCache.dropPending();
+        com.fnfmod.client.render.MachineAtlasCache.dropPending();
         if (runtime != null) {
             runtime.close();
             saveData(runtime.dataSnbt());

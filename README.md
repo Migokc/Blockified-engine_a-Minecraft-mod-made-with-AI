@@ -2,9 +2,25 @@
 
 A feature-full Friday Night Funkin' engine inside of Minecraft — **NeoForge 1.21.1**.
 
-Current release: **2.1.5bbs**.
+Current release: **2.1.6bbs**.
 
 Documentation: **[Blockified Engine Docs](https://migokc.github.io/Blockified-engine_a-Minecraft-mod-made-with-AI/)**.
+
+### 2.1.6bbs highlights
+
+- Custom machine menus preload their assets before opening: heavy image, atlas,
+  and sound decoding runs on a background thread so the game no longer freezes,
+  and only the quick final upload happens on the main thread. Player input is
+  held during the silent gate and Esc cancels it. Every sound named by a literal
+  in `playSound`/`precacheSound` anywhere in the script is preloaded, so a sound
+  played from a click handler no longer lags on first play.
+- Machine menu Lua can control Minecraft's background blur for its own screen —
+  `setMenuBlur`, `enableMenuBlur`, `disableMenuBlur`, `getMenuBlur`,
+  `resetMenuBlur`, and `doTweenMenuBlur` — while the dark in-world menu tint is
+  always removed so custom scenes stay clean.
+- New cursor API for menus: the live `cursor` table (`x`, `y`, `down`, `overId`),
+  `getMouseX`/`getMouseY`, `isMouseDown`, `mouseOver`, `mouseInside`,
+  `getHoveredObject`, and a live `hovered` boolean on every widget.
 
 ### 2.1.5bbs highlights
 

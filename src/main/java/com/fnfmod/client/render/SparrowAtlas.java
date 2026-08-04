@@ -58,26 +58,45 @@ public class SparrowAtlas implements AutoCloseable {
         return image;
     }
 
+    /**
+     * Background-safe decode result: the PNG pixels and parsed XML frames, with no
+     * GL objects yet. Pass to {@link #finish(Decoded)} on the render thread to upload.
+     */
+    public static final class Decoded {
+        private final NativeImage image;
+        private final List<Frame> allFrames;
+        private final Map<String, List<Frame>> animations;
+
+        private Decoded(NativeImage image, List<Frame> allFrames, Map<String, List<Frame>> animations) {
+            this.image = image;
+            this.allFrames = allFrames;
+            this.animations = animations;
+        }
+
+        /** Frees the decoded pixels if this atlas is never finished (e.g. cancelled). */
+        public void close() {
+            try { image.close(); } catch (Exception ignored) {}
+        }
+    }
+
     /** Returns null on any failure (missing files, bad xml). */
     public static SparrowAtlas load(Path png, Path xml) {
+        return finish(decode(png, xml));
+    }
+
+    /**
+     * Reads and parses the atlas (PNG decode + XML parse) with no GL work, so it can
+     * run on a worker thread. Returns null on failure.
+     */
+    public static Decoded decode(Path png, Path xml) {
         NativeImage image = null;
-        DynamicTexture texture = null;
-        ResourceLocation id = null;
-        boolean registered = false;
         try {
             if (!Files.isRegularFile(png) || !Files.isRegularFile(xml)) return null;
             try (InputStream in = Files.newInputStream(png)) {
                 image = NativeImage.read(in);
             }
-            id = FnfMod.id("atlas/" + NEXT_ID.incrementAndGet());
-            texture = new DynamicTexture(image);
-            Minecraft.getInstance().getTextureManager().register(id, texture);
-            registered = true;
-            Textures.smooth(texture); // antialias custom skin art (default skin = procedural arrows, untouched)
-
-            SparrowAtlas atlas = new SparrowAtlas(id, image.getWidth(), image.getHeight());
-            atlas.image = image;
-            atlas.dynamicTexture = texture;
+            List<Frame> allFrames = new ArrayList<>();
+            Map<String, List<Frame>> animations = new LinkedHashMap<>();
 
             DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
             factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
@@ -100,19 +119,46 @@ public class SparrowAtlas implements AutoCloseable {
                 f.frameW = el.hasAttribute("frameWidth") ? intAttr(el, "frameWidth") : f.w;
                 f.frameH = el.hasAttribute("frameHeight") ? intAttr(el, "frameHeight") : f.h;
                 String prefix = stripFrameNumber(f.name);
-                atlas.allFrames.add(f);
-                atlas.animations.computeIfAbsent(prefix, k -> new ArrayList<>()).add(f);
+                allFrames.add(f);
+                animations.computeIfAbsent(prefix, k -> new ArrayList<>()).add(f);
             }
+            return new Decoded(image, allFrames, animations);
+        } catch (Exception e) {
+            if (image != null) image.close();
+            FnfMod.LOGGER.warn("Failed to decode sparrow atlas {} / {}: {}", png, xml, e.toString());
+            return null;
+        }
+    }
+
+    /** Uploads a decoded atlas to a GL texture. Must run on the render thread. */
+    public static SparrowAtlas finish(Decoded decoded) {
+        if (decoded == null) return null;
+        NativeImage image = decoded.image;
+        DynamicTexture texture = null;
+        ResourceLocation id = null;
+        boolean registered = false;
+        try {
+            id = FnfMod.id("atlas/" + NEXT_ID.incrementAndGet());
+            texture = new DynamicTexture(image);
+            Minecraft.getInstance().getTextureManager().register(id, texture);
+            registered = true;
+            Textures.smooth(texture); // antialias custom skin art (default skin = procedural arrows, untouched)
+
+            SparrowAtlas atlas = new SparrowAtlas(id, image.getWidth(), image.getHeight());
+            atlas.image = image;
+            atlas.dynamicTexture = texture;
+            atlas.allFrames.addAll(decoded.allFrames);
+            atlas.animations.putAll(decoded.animations);
             return atlas;
         } catch (Exception e) {
             if (registered && id != null) {
                 Minecraft.getInstance().getTextureManager().release(id);
             } else if (texture != null) {
                 texture.close();
-            } else if (image != null) {
+            } else {
                 image.close();
             }
-            FnfMod.LOGGER.warn("Failed to load sparrow atlas {} / {}: {}", png, xml, e.toString());
+            FnfMod.LOGGER.warn("Failed to upload sparrow atlas: {}", e.toString());
             return null;
         }
     }

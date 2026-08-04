@@ -32,10 +32,16 @@ public final class PsychSoundPlayer implements AutoCloseable {
     private final Function<String, Path> resolver;
     private final Consumer<String> finishedCallback;
     private final Map<Path, Integer> buffers = new HashMap<>();
+    // OGG decoded to PCM on a worker thread, awaiting a cheap OpenAL upload on the
+    // render thread. Lets menu sounds preload without freezing on the decode.
+    private final Map<Path, Pcm> pendingPcm = new HashMap<>();
     private final Map<String, Integer> taggedSources = new LinkedHashMap<>();
     private final List<Integer> untaggedSources = new ArrayList<>();
     private final Map<String, Fade> fades = new LinkedHashMap<>();
     private int nextUntagged;
+
+    /** Decoded PCM (native memory, must be freed) with no OpenAL objects yet. */
+    private record Pcm(ShortBuffer pcm, int channels, int sampleRate) {}
 
     /**
      * A running volume ramp on a tagged sound. {@code stopWhenDone} reproduces
@@ -51,6 +57,29 @@ public final class PsychSoundPlayer implements AutoCloseable {
     public boolean precache(String name) {
         Path file = resolver.apply(name);
         return file != null && buffer(file) != 0;
+    }
+
+    /**
+     * Background-safe: decodes the OGG to PCM ahead of time with no OpenAL work, so
+     * a later {@link #precache}/{@link #play} only does the cheap buffer upload. Safe
+     * to call for an already-loaded sound.
+     */
+    public void prefetch(String name) {
+        Path file = resolver.apply(name);
+        if (file == null) return;
+        Path key = file.toAbsolutePath().normalize();
+        synchronized (this) {
+            if (buffers.containsKey(key) || pendingPcm.containsKey(key)) return;
+        }
+        Pcm data = decodePcm(key);
+        if (data == null) return;
+        synchronized (this) {
+            if (buffers.containsKey(key) || pendingPcm.containsKey(key)) {
+                org.lwjgl.system.libc.LibCStdlib.free(data.pcm());
+            } else {
+                pendingPcm.put(key, data);
+            }
+        }
     }
 
     public boolean play(String name, float volume, String tag, boolean loop) {
@@ -196,18 +225,20 @@ public final class PsychSoundPlayer implements AutoCloseable {
         AL10.alSourcef(source, AL10.AL_GAIN, Math.max(0, Math.min(1, volume * master)));
     }
 
-    private int buffer(Path rawFile) {
+    private synchronized int buffer(Path rawFile) {
         Path file = rawFile.toAbsolutePath().normalize();
         Integer existing = buffers.get(file);
         if (existing != null) return existing;
-        int loaded = decode(file);
+        Pcm pending = pendingPcm.remove(file);
+        Pcm data = pending != null ? pending : decodePcm(file);
+        int loaded = data == null ? 0 : upload(data);
         buffers.put(file, loaded);
         return loaded;
     }
 
-    private static int decode(Path file) {
+    /** Background-safe: reads and decodes the OGG to PCM with no OpenAL work. */
+    private static Pcm decodePcm(Path file) {
         ByteBuffer fileData = null;
-        ShortBuffer pcm = null;
         try (FileChannel channel = FileChannel.open(file, StandardOpenOption.READ)) {
             fileData = MemoryUtil.memAlloc((int) channel.size());
             while (fileData.hasRemaining() && channel.read(fileData) > 0) {}
@@ -215,24 +246,32 @@ public final class PsychSoundPlayer implements AutoCloseable {
             try (MemoryStack stack = MemoryStack.stackPush()) {
                 IntBuffer channels = stack.mallocInt(1);
                 IntBuffer sampleRate = stack.mallocInt(1);
-                pcm = STBVorbis.stb_vorbis_decode_memory(fileData, channels, sampleRate);
-                if (pcm == null) return 0;
-                int buffer = AL10.alGenBuffers();
-                int format = channels.get(0) == 2 ? AL10.AL_FORMAT_STEREO16 : AL10.AL_FORMAT_MONO16;
-                AL10.alBufferData(buffer, format, pcm, sampleRate.get(0));
-                return buffer;
+                ShortBuffer pcm = STBVorbis.stb_vorbis_decode_memory(fileData, channels, sampleRate);
+                if (pcm == null) return null;
+                return new Pcm(pcm, channels.get(0), sampleRate.get(0));
             }
         } catch (Throwable error) {
             FnfMod.LOGGER.warn("Could not decode Psych sound {}: {}", file, error.toString());
-            return 0;
+            return null;
         } finally {
-            if (pcm != null) org.lwjgl.system.libc.LibCStdlib.free(pcm);
             if (fileData != null) MemoryUtil.memFree(fileData);
         }
     }
 
+    /** Uploads decoded PCM to an OpenAL buffer and frees the PCM. Render-thread only. */
+    private static int upload(Pcm data) {
+        try {
+            int buffer = AL10.alGenBuffers();
+            int format = data.channels() == 2 ? AL10.AL_FORMAT_STEREO16 : AL10.AL_FORMAT_MONO16;
+            AL10.alBufferData(buffer, format, data.pcm(), data.sampleRate());
+            return buffer;
+        } finally {
+            org.lwjgl.system.libc.LibCStdlib.free(data.pcm());
+        }
+    }
+
     @Override
-    public void close() {
+    public synchronized void close() {
         for (int source : taggedSources.values()) {
             try { AL10.alSourceStop(source); AL10.alDeleteSources(source); } catch (Throwable ignored) {}
         }
@@ -242,6 +281,9 @@ public final class PsychSoundPlayer implements AutoCloseable {
         for (int buffer : buffers.values()) {
             if (buffer != 0) try { AL10.alDeleteBuffers(buffer); } catch (Throwable ignored) {}
         }
-        taggedSources.clear(); untaggedSources.clear(); buffers.clear(); fades.clear();
+        for (Pcm data : pendingPcm.values()) {
+            try { org.lwjgl.system.libc.LibCStdlib.free(data.pcm()); } catch (Throwable ignored) {}
+        }
+        taggedSources.clear(); untaggedSources.clear(); buffers.clear(); pendingPcm.clear(); fades.clear();
     }
 }

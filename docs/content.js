@@ -20,7 +20,7 @@
 
   const pages = {};
 
-  pages.home = page("Blockified Engine", "Documentation · Guides · Wiki", "Build Friday Night Funkin' songs, stages, machines, and world scenes inside Minecraft.", ["2.1.5bbs", "NeoForge 1.21.1", "Singleplayer + LAN"],
+  pages.home = page("Blockified Engine", "Documentation · Guides · Wiki", "Build Friday Night Funkin' songs, stages, machines, and world scenes inside Minecraft.", ["2.1.6bbs", "NeoForge 1.21.1", "Singleplayer + LAN"],
     `<div class="hero-panel"><span>DOCUMENTATION · GUIDES · WIKI</span><h2>Build with Blockified.</h2><p>Learn by following a guide, look up exact behavior in documentation, or understand systems through the wiki. This site covers Blockified additions and changes without duplicating unchanged Psych Engine material.</p><div class="hero-actions"><a class="button-link" href="#/quick-start">Start here</a><a class="button-link secondary" href="#/animations">Make animations</a><a class="button-link secondary" href="#/lua-overview">Lua API</a></div></div>`,
     section("choose", "Choose how to use this site", `<div class="card-grid category-grid">
       <a class="doc-card category-card guide-card" href="#/quick-start"><span>GUIDES</span><h3>Make something</h3><p>Follow ordered, practical steps from installation to a playable song, complete pack, animation, or custom machine.</p></a>
@@ -454,6 +454,46 @@ end
 function onClose()
   stopSound('menuMusic')
 end`)}${callout("Where sounds live", "Put OGG files under the machine folder, for example <code>machines/&lt;machine&gt;/sounds/</code>, and reference them by that relative path. Missing or non-OGG files write one warning to the log and play nothing.")}`),
+    section("cursor", "Cursor", `<p>Menus can read the cursor position and test what it is over. All positions are in canvas (1280x720) coordinates, the same space as widget <code>x</code>/<code>y</code>. The live <code>cursor</code> table is refreshed every frame, and every widget gets a live <code>hovered</code> boolean.</p><div class="api-list">
+      ${api("cursor.x / cursor.y", "Current cursor position in canvas coordinates.", "Machine UI")}
+      ${api("cursor.down", "True while the left mouse button is held.", "Machine UI")}
+      ${api("cursor.overId", "Id of the topmost visible widget under the cursor, or \"\" if none.", "Machine UI")}
+      ${api("getMouseX() / getMouseY()", "Cursor position in canvas coordinates.", "Machine UI")}
+      ${api("isMouseDown([button])", "True if a mouse button is held: 0 left (default), 1 right, 2 middle.", "Machine UI")}
+      ${api("mouseOver(widgetId)", "True if the cursor is over that widget's bounds and it is visible.", "Machine UI")}
+      ${api("mouseInside(x, y, width, height)", "True if the cursor is inside a center-anchored rectangle (x/y center, size in canvas pixels).", "Machine UI")}
+      ${api("getHoveredObject()", "Id of the topmost visible widget under the cursor, or \"\".", "Machine UI")}
+      ${api("widget.hovered", "Live per-widget boolean, true while the cursor is over it.", "Machine UI")}
+    </div>${code("lua", `local play = ui.button('play', 'Play', 0.5, 0.5, 220, 48)
+
+function onUpdate(dt)
+  -- Grow the button while hovered.
+  play.fontScale = play.hovered and 2.2 or 2.0
+
+  -- Point a cursor sprite at the mouse.
+  reticle.x = getMouseX()
+  reticle.y = getMouseY()
+
+  if cursor.down and cursor.overId == 'play' then
+    -- pressing the play button
+  end
+end`)}`),
+    section("blur", "Menu background blur", `<p>Custom machine menus never draw Minecraft's dark in-world menu tint, so the scene behind the menu stays clean. This is always on for custom menus and is not configurable.</p><p>A menu can also control Minecraft's background <em>blur</em> for its own screen, independent of the player's accessibility setting. Until a script touches it, the player's own blur is kept. Radius is fractional; a value below <code>1</code> means no blur, larger values blur more. <code>resetMenuBlur</code> hands control back to the player's setting.</p><div class="api-list">
+      ${api("setMenuBlur(radius)", "Sets the blur radius. Below 1 disables the blur.", "Machine")}
+      ${api("enableMenuBlur([radius])", "Enables blur; radius defaults to the player's setting, or 8 if that is off.", "Machine")}
+      ${api("disableMenuBlur()", "Turns the blur off for this menu.", "Machine")}
+      ${api("getMenuBlur()", "Returns the current radius.", "Machine")}
+      ${api("resetMenuBlur()", "Releases control back to the player's blur setting.", "Machine")}
+      ${api("doTweenMenuBlur(tag, radius, [duration], [ease])", "Tweens the blur radius. Completion calls onTweenCompleted(tag); cancelTween(tag) stops it.", "Machine")}
+    </div>${code("lua", `function onOpen()
+  setMenuBlur(0)                              -- start sharp
+  doTweenMenuBlur('blurIn', 12, 0.6, 'sineOut')  -- ease the blur in
+end
+
+function play:onClick()
+  doTweenMenuBlur('blurOut', 0, 0.3, 'sineIn')   -- clear it before playing
+end`)}${callout("Scope", "The override applies only while this machine menu is open. Leaving the menu restores the player's normal blur automatically.")}`),
+    section("loading", "Asset preloading", `<p>Before a custom menu appears, Blockified silently preloads every asset its widgets reference — images, static and animated sprites, and fonts — plus every sound named by a literal path in <code>playSound</code> or <code>precacheSound</code> anywhere in the script (including inside click handlers), so a sound played later does not lag on first play. Heavy image, atlas, and sound decoding runs on a background thread so the game keeps running instead of freezing; only the quick final upload happens on the main thread, spread across frames. During this brief gate the player cannot move or look around and nothing is drawn yet, so loading never freezes an open menu or desyncs tweens. <code>onOpen</code> runs the instant loading finishes, so tweens started there stay in sync.</p>${callout("Cancel with Esc", "Pressing Esc while a menu is still loading cancels the background decode and leaves, without ever opening the menu.")}<p>Sound paths are found by scanning for literal strings, so <code>playSound('theme', 'sounds/menu.ogg')</code> preloads automatically. A path built from a variable cannot be detected — precache those explicitly, or reference them at the top level. Widgets and assets first created inside <code>onOpen</code> still load on demand.</p>`),
     section("preset", "Minimal preset", code("lua", `-- Blockified machine menu
 local title = ui.label('title', 'Earrings Machine', 0.5, 0.16)
 local play = ui.button('play', 'Choose Song', 0.5, 0.42, 180, 24)

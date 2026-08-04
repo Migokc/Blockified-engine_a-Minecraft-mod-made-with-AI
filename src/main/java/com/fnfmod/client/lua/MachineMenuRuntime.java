@@ -12,6 +12,7 @@ import com.fnfmod.machine.MachineLibrary;
 import com.fnfmod.net.FnfPayloads;
 import com.fnfmod.song.SongLibrary;
 import com.fnfmod.world.ModContentScope;
+import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.nbt.CompoundTag;
@@ -25,6 +26,7 @@ import org.luaj.vm2.Varargs;
 import org.luaj.vm2.lib.DebugLib;
 import org.luaj.vm2.lib.VarArgFunction;
 import org.luaj.vm2.lib.jse.JsePlatform;
+import org.lwjgl.glfw.GLFW;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -105,9 +107,34 @@ public final class MachineMenuRuntime implements AutoCloseable {
     private final LuaFontLoader fontLoader;
     /** OpenAL sound player for menu playSound; created on first use, closed with the menu. */
     private PsychSoundPlayer soundPlayer;
+    // Vanilla menu-blur control. When uncontrolled the screen keeps the player's
+    // own blur option; once a script touches it, menuBlurValue is authoritative
+    // (a value below 1 means no blur). The tween interpolates it in wall-clock time.
+    private boolean menuBlurControlled;
+    private double menuBlurValue;
+    private boolean menuBlurTweening;
+    private String menuBlurTweenTag;
+    private double menuBlurFrom, menuBlurTo;
+    private long menuBlurStartNanos, menuBlurDurationNanos;
+    private String menuBlurEase = "linear";
     private int nextWidgetOrder;
     private byte songExitTarget = FnfPayloads.LeaveC2S.RETURN_MACHINE_MENU;
     private String error;
+    // Two-phase open: the script's top-level chunk runs immediately (defining the
+    // widgets, so their assets are known), but onOpen and rendering wait until the
+    // screen has preloaded everything. This keeps heavy first-frame loading out of
+    // the live menu, where it froze the game and desynced tweens.
+    private boolean opened;
+    // Split preload: background tasks decode assets off the render thread; main tasks
+    // do the cheap GL upload / finalize afterwards on the render thread.
+    private List<Runnable> backgroundPreload;
+    private List<Runnable> mainPreload;
+    private final List<String> pendingPrecache = new ArrayList<>();
+    private String scriptSource = "";
+    // Live cursor position in canvas (1280x720) coordinates, refreshed each frame,
+    // plus the cursor table exposed to Lua.
+    private double cursorX, cursorY;
+    private LuaTable cursor;
 
     public MachineMenuRuntime(MachineDefinition definition, String snbt,
                               List<FnfPayloads.SongInfo> songs, Host host) {
@@ -132,12 +159,15 @@ public final class MachineMenuRuntime implements AutoCloseable {
         installTweens();
         installMachine();
         installSound();
+        installMenuBlur();
+        installCursor();
         globals.set("machineData", machineData);
         // Machine menus share Psych's fixed canvas. These stay stable when the
         // window resolution or Minecraft GUI scale changes.
         globals.set("screenWidth", PsychCanvas.WIDTH);
         globals.set("screenHeight", PsychCanvas.HEIGHT);
-        load();
+        loadScript();
+        buildPreloadTasks();
     }
 
     public boolean loaded() {
@@ -152,21 +182,118 @@ public final class MachineMenuRuntime implements AutoCloseable {
         return MachineLuaData.toNbt(machineData).toString();
     }
 
-    private void load() {
+    private void loadScript() {
         if (definition.menuScript() == null || !Files.isRegularFile(definition.menuScript())
                 || !ModContentScope.allowsContentPath(definition.menuScript())) {
             error = "menu.lua missing or outside active mod.";
             return;
         }
         try {
+            scriptSource = Files.readString(definition.menuScript());
             budget.begin();
-            globals.load(Files.readString(definition.menuScript()), definition.menuScript().toString()).call();
+            globals.load(scriptSource, definition.menuScript().toString()).call();
             budget.end();
-            callGlobal("onOpen");
         } catch (Throwable throwable) {
             budget.end();
             fail(throwable);
         }
+    }
+
+    /**
+     * Runs onOpen and marks the menu live. The screen calls this only after every
+     * preload task has finished, so onOpen (which typically starts tweens) begins
+     * exactly when rendering does and stays in sync.
+     */
+    public void open() {
+        if (opened || error != null) return;
+        opened = true;
+        callGlobal("onOpen");
+    }
+
+    /**
+     * Collects preload work for every asset the top-level widgets reference, split so
+     * the heavy decoding runs on a worker thread and only the cheap GL upload runs on
+     * the render thread. Fonts and short sounds finalize directly on the main pass.
+     */
+    private void buildPreloadTasks() {
+        backgroundPreload = new ArrayList<>();
+        mainPreload = new ArrayList<>();
+        if (!loaded()) return;
+
+        java.util.LinkedHashSet<String> fonts = new java.util.LinkedHashSet<>();
+        for (Widget widget : widgets) {
+            LuaTable data = widget.data();
+            switch (widget.kind()) {
+                case "image", "sprite" -> {
+                    Path file = resolveAsset(data.get("path").optjstring(""));
+                    if (file != null) {
+                        backgroundPreload.add(() -> MachineTextureCache.prefetch(file));
+                        mainPreload.add(() -> MachineTextureCache.get(file));
+                    }
+                }
+                case "animatedSprite" -> {
+                    Path png = resolveAsset(data.get("path").optjstring(""));
+                    Path xml = resolveAsset(data.get("xml").optjstring(""));
+                    if (png != null) {
+                        backgroundPreload.add(() -> MachineAtlasCache.prefetch(png, xml));
+                        mainPreload.add(() -> MachineAtlasCache.get(png, xml));
+                    }
+                }
+                default -> { }
+            }
+            String font = data.get("font").optjstring("").trim();
+            if (!font.isEmpty()) fonts.add(font);
+        }
+        for (String font : fonts) mainPreload.add(() -> fontLoader.get(font));
+
+        // Every sound named by a literal in playSound/precacheSound anywhere in the
+        // script is preloaded, not just top-level precacheSound, so a sound played
+        // from a click handler is already decoded and does not lag on first play.
+        java.util.LinkedHashSet<String> sounds = scanSoundNames(scriptSource);
+        sounds.addAll(pendingPrecache);
+        if (!sounds.isEmpty()) {
+            soundPlayer(); // create on the render thread before the worker touches it
+            for (String sound : sounds) {
+                backgroundPreload.add(() -> soundPlayer().prefetch(sound));
+                mainPreload.add(() -> soundPlayer().precache(sound));
+            }
+        }
+    }
+
+    /** String-literal sound paths named by playSound(tag, name, ...) or precacheSound(name). */
+    private static java.util.LinkedHashSet<String> scanSoundNames(String source) {
+        java.util.LinkedHashSet<String> names = new java.util.LinkedHashSet<>();
+        if (source == null || source.isEmpty()) return names;
+        String literal = "(\"(?:[^\"\\\\]|\\\\.)*\"|'(?:[^'\\\\]|\\\\.)*')";
+        // playSound: tag first, path second — capture the second string literal.
+        java.util.regex.Matcher play = java.util.regex.Pattern
+                .compile("playSound\\s*\\(\\s*" + literal + "\\s*,\\s*" + literal).matcher(source);
+        while (play.find()) addSoundLiteral(names, play.group(2));
+        java.util.regex.Matcher precache = java.util.regex.Pattern
+                .compile("precacheSound\\s*\\(\\s*" + literal).matcher(source);
+        while (precache.find()) addSoundLiteral(names, precache.group(1));
+        return names;
+    }
+
+    private static void addSoundLiteral(java.util.Set<String> names, String quoted) {
+        if (quoted == null || quoted.length() < 2) return;
+        String inner = quoted.substring(1, quoted.length() - 1)
+                .replace("\\\"", "\"").replace("\\'", "'").replace("\\\\", "\\");
+        if (!inner.isBlank()) names.add(inner);
+    }
+
+    /** Off-render-thread decode tasks; run these first, then {@link #takeMainPreloadTasks()}. */
+    public List<Runnable> takeBackgroundPreloadTasks() {
+        List<Runnable> tasks = backgroundPreload == null ? List.of() : backgroundPreload;
+        backgroundPreload = null;
+        return tasks;
+    }
+
+    /** Render-thread finalize tasks; run after the background decode has finished. */
+    public List<Runnable> takeMainPreloadTasks() {
+        List<Runnable> tasks = mainPreload == null ? List.of() : mainPreload;
+        mainPreload = null;
+        return tasks;
     }
 
     private static void sandbox(Globals globals) {
@@ -598,8 +725,16 @@ public final class MachineMenuRuntime implements AutoCloseable {
                     args.arg(4).optdouble(1), args.arg(5).optjstring("linear"), true);
             return LuaValue.TRUE;
         }));
-        globals.set("cancelTween", function(args ->
-                LuaValue.valueOf(tweens.remove(args.arg(1).optjstring("")) != null)));
+        globals.set("cancelTween", function(args -> {
+            String tag = args.arg(1).optjstring("");
+            boolean removed = tweens.remove(tag) != null;
+            if (menuBlurTweening && tag.equals(menuBlurTweenTag)) {
+                menuBlurTweening = false;
+                menuBlurTweenTag = null;
+                removed = true;
+            }
+            return LuaValue.valueOf(removed);
+        }));
     }
 
     private void installTweenFunction(String name, String property) {
@@ -677,6 +812,19 @@ public final class MachineMenuRuntime implements AutoCloseable {
 
     private void advanceTweens() {
         long now = System.nanoTime();
+        if (menuBlurTweening) {
+            double progress = Math.min(1, Math.max(0,
+                    (now - menuBlurStartNanos) / (double) menuBlurDurationNanos));
+            double eased = PsychEasing.apply(menuBlurEase, progress);
+            menuBlurValue = menuBlurFrom + (menuBlurTo - menuBlurFrom) * eased;
+            if (progress >= 1) {
+                menuBlurValue = menuBlurTo;
+                menuBlurTweening = false;
+                String tag = menuBlurTweenTag;
+                menuBlurTweenTag = null;
+                if (tag != null && !tag.isBlank()) callGlobal("onTweenCompleted", LuaValue.valueOf(tag));
+            }
+        }
         for (Tween tween : List.copyOf(tweens.values())) {
             Widget widget = widget(tween.widgetId());
             if (widget == null) {
@@ -714,6 +862,9 @@ public final class MachineMenuRuntime implements AutoCloseable {
         advanceAnimations();
         double canvasMouseX = screenToCanvasX(mouseX);
         double canvasMouseY = screenToCanvasY(mouseY);
+        cursorX = canvasMouseX;
+        cursorY = canvasMouseY;
+        updateCursor();
         List<Widget> ordered = orderedWidgets();
         PsychCanvas.push(gui, 1f);
         try {
@@ -801,6 +952,7 @@ public final class MachineMenuRuntime implements AutoCloseable {
                 data.get("fontScale").optdouble(1.0)));
         boolean textShadow = data.get("shadow").optboolean(true);
         boolean hover = mouseX >= x && mouseX < x + width && mouseY >= y && mouseY < y + height;
+        data.set("hovered", LuaValue.valueOf(hover && data.get("visible").optboolean(true)));
         switch (widget.kind()) {
             case "panel" -> gui.fill(x, y, x + width, y + height, color);
             case "graph" -> renderGraph(gui, data, centerX, centerY, width, height);
@@ -1112,8 +1264,16 @@ public final class MachineMenuRuntime implements AutoCloseable {
             }
             return LuaValue.NIL;
         }));
-        globals.set("precacheSound", function(args ->
-                LuaValue.valueOf(soundPlayer().precache(args.arg(1).optjstring("")))));
+        globals.set("precacheSound", function(args -> {
+            String name = args.arg(1).optjstring("");
+            // Before the menu opens, defer to the preload gate so the decode happens
+            // during loading instead of freezing the live menu; after, decode now.
+            if (!opened) {
+                pendingPrecache.add(name);
+                return LuaValue.TRUE;
+            }
+            return LuaValue.valueOf(soundPlayer().precache(name));
+        }));
     }
 
     private PsychSoundPlayer soundPlayer() {
@@ -1133,6 +1293,154 @@ public final class MachineMenuRuntime implements AutoCloseable {
 
     private void onSoundFinished(String tag) {
         if (tag != null && !tag.isBlank()) callGlobal("onSoundFinished", LuaValue.valueOf(tag));
+    }
+
+    // --------------------------------------------------------------- menu blur
+
+    /**
+     * Controls Minecraft's default menu background blur for this menu only. Until a
+     * script calls one of these, the player's own blur setting is left alone. A
+     * radius below 1 disables the blur; larger values blur more. {@code resetMenuBlur}
+     * hands control back to the vanilla setting.
+     */
+    private void installMenuBlur() {
+        globals.set("setMenuBlur", function(args -> {
+            takeMenuBlur(Math.max(0, args.arg(1).optdouble(0)));
+            return LuaValue.NIL;
+        }));
+        globals.set("enableMenuBlur", function(args -> {
+            takeMenuBlur(Math.max(1, args.arg(1).optdouble(defaultMenuBlur())));
+            return LuaValue.NIL;
+        }));
+        globals.set("disableMenuBlur", function(args -> {
+            takeMenuBlur(0);
+            return LuaValue.NIL;
+        }));
+        globals.set("resetMenuBlur", function(args -> {
+            menuBlurControlled = false;
+            menuBlurTweening = false;
+            menuBlurTweenTag = null;
+            return LuaValue.NIL;
+        }));
+        globals.set("getMenuBlur", function(args ->
+                LuaValue.valueOf(menuBlurControlled ? menuBlurValue : defaultMenuBlur())));
+        globals.set("doTweenMenuBlur", function(args -> {
+            String tag = args.arg(1).optjstring("");
+            double target = Math.max(0, args.arg(2).optdouble(0));
+            double seconds = Math.max(0, Math.min(3600, args.arg(3).optdouble(1)));
+            String ease = args.arg(4).optjstring("linear");
+            menuBlurFrom = menuBlurControlled ? menuBlurValue : defaultMenuBlur();
+            menuBlurTo = target;
+            menuBlurStartNanos = System.nanoTime();
+            menuBlurDurationNanos = Math.max(1_000_000L, (long) (seconds * 1_000_000_000L));
+            menuBlurEase = ease == null || ease.isBlank() ? "linear" : ease;
+            menuBlurTweenTag = tag;
+            menuBlurTweening = true;
+            menuBlurControlled = true;
+            menuBlurValue = menuBlurFrom;
+            return LuaValue.TRUE;
+        }));
+    }
+
+    private void takeMenuBlur(double value) {
+        menuBlurControlled = true;
+        menuBlurTweening = false;
+        menuBlurTweenTag = null;
+        menuBlurValue = value;
+    }
+
+    private static double defaultMenuBlur() {
+        Minecraft minecraft = Minecraft.getInstance();
+        double option = minecraft == null ? 0 : minecraft.options.getMenuBackgroundBlurriness();
+        return option >= 1 ? option : 8;
+    }
+
+    /** True once a script has taken over the menu blur; the screen then uses {@link #currentMenuBlur()}. */
+    public boolean isMenuBlurControlled() {
+        return menuBlurControlled;
+    }
+
+    /** The blur radius the screen should apply this frame (below 1 means no blur). */
+    public double currentMenuBlur() {
+        return menuBlurValue;
+    }
+
+    // ------------------------------------------------------------------ cursor
+
+    /**
+     * Cursor helpers. All positions are in canvas (1280x720) coordinates, matching
+     * widget x/y. The live {@code cursor} table is refreshed every frame:
+     * {@code cursor.x}, {@code cursor.y}, {@code cursor.down} (left button), and
+     * {@code cursor.overId} (topmost visible widget under the cursor, or ""). Each
+     * widget also gets a live {@code hovered} boolean.
+     */
+    private void installCursor() {
+        cursor = new LuaTable();
+        cursor.set("x", 0.0);
+        cursor.set("y", 0.0);
+        cursor.set("down", LuaValue.FALSE);
+        cursor.set("overId", "");
+        globals.set("cursor", cursor);
+
+        globals.set("getMouseX", function(args -> LuaValue.valueOf(cursorX)));
+        globals.set("getMouseY", function(args -> LuaValue.valueOf(cursorY)));
+        globals.set("isMouseDown", function(args ->
+                LuaValue.valueOf(mouseButtonDown(args.arg(1).optint(0)))));
+        globals.set("getHoveredObject", function(args ->
+                LuaValue.valueOf(hoveredId(cursorX, cursorY))));
+        globals.set("mouseOver", function(args -> {
+            Widget widget = widget(args.arg(1).optjstring(""));
+            return LuaValue.valueOf(widget != null
+                    && widget.data().get("visible").optboolean(true)
+                    && contains(widget.data(), cursorX, cursorY));
+        }));
+        // Arbitrary rectangle test; x/y are the center (like a widget), width/height
+        // in canvas pixels.
+        globals.set("mouseInside", function(args -> {
+            double centerX = coordinate(args.arg(1).optdouble(0.5), PsychCanvas.WIDTH);
+            double centerY = coordinate(args.arg(2).optdouble(0.5), PsychCanvas.HEIGHT);
+            double halfW = args.arg(3).optdouble(0) / 2;
+            double halfH = args.arg(4).optdouble(0) / 2;
+            return LuaValue.valueOf(cursorX >= centerX - halfW && cursorX < centerX + halfW
+                    && cursorY >= centerY - halfH && cursorY < centerY + halfH);
+        }));
+    }
+
+    private void updateCursor() {
+        if (cursor == null) return;
+        cursor.set("x", cursorX);
+        cursor.set("y", cursorY);
+        cursor.set("down", LuaValue.valueOf(mouseButtonDown(0)));
+        cursor.set("overId", hoveredId(cursorX, cursorY));
+    }
+
+    /** Topmost visible widget under the given canvas point, or "" if none. */
+    private String hoveredId(double mouseX, double mouseY) {
+        List<Widget> ordered = orderedWidgets();
+        for (int i = ordered.size() - 1; i >= 0; i--) {
+            Widget widget = ordered.get(i);
+            if (!widget.data().get("visible").optboolean(true)) continue;
+            if (contains(widget.data(), mouseX, mouseY)) return widget.id();
+        }
+        return "";
+    }
+
+    /** Whether the given canvas point is inside a widget's center-anchored bounds. */
+    private static boolean contains(LuaTable data, double mouseX, double mouseY) {
+        int width = Math.max(1, (int) Math.round(data.get("width").optdouble(1)));
+        int height = Math.max(1, (int) Math.round(data.get("height").optdouble(1)));
+        int x = coordinate(data.get("x").optdouble(0.5), PsychCanvas.WIDTH) - width / 2;
+        int y = coordinate(data.get("y").optdouble(0.5), PsychCanvas.HEIGHT) - height / 2;
+        return mouseX >= x && mouseX < x + width && mouseY >= y && mouseY < y + height;
+    }
+
+    private static boolean mouseButtonDown(int button) {
+        try {
+            long window = net.minecraft.client.Minecraft.getInstance().getWindow().getWindow();
+            return GLFW.glfwGetMouseButton(window, Math.max(0, button)) == GLFW.GLFW_PRESS;
+        } catch (Throwable ignored) {
+            return false;
+        }
     }
 
     private static void beginSpriteColor(GuiGraphics gui, LuaTable data) {
@@ -1250,7 +1558,7 @@ public final class MachineMenuRuntime implements AutoCloseable {
 
     @Override
     public void close() {
-        callGlobal("onClose");
+        if (opened) callGlobal("onClose");
         tweens.clear();
         fontLoader.close();
         if (soundPlayer != null) {
