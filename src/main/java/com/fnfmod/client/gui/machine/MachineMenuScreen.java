@@ -182,6 +182,13 @@ public final class MachineMenuScreen extends Screen implements MachineMenuRuntim
     }
 
     @Override
+    public boolean mouseReleased(double mouseX, double mouseY, int button) {
+        if (!menuLoading && runtime != null && runtime.loaded()
+                && runtime.mouseReleased(mouseX, mouseY, button)) return true;
+        return super.mouseReleased(mouseX, mouseY, button);
+    }
+
+    @Override
     public void openSongSelect(byte returnTarget) {
         ClientSession.pendingSongExitTarget = FnfPayloads.LeaveC2S.normalizeReturnTarget(returnTarget);
         PacketDistributor.sendToServer(new FnfPayloads.MachineMenuActionC2S(pos, (byte) 0, ""));

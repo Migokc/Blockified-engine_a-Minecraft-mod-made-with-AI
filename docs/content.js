@@ -20,7 +20,7 @@
 
   const pages = {};
 
-  pages.home = page("Blockified Engine", "Documentation · Guides · Wiki", "Build Friday Night Funkin' songs, stages, machines, and world scenes inside Minecraft.", ["2.1.6bbs", "NeoForge 1.21.1", "Singleplayer + LAN"],
+  pages.home = page("Blockified Engine", "Documentation · Guides · Wiki", "Build Friday Night Funkin' songs, stages, machines, and world scenes inside Minecraft.", ["2.1.7bbs", "NeoForge 1.21.1", "Singleplayer + LAN"],
     `<div class="hero-panel"><span>DOCUMENTATION · GUIDES · WIKI</span><h2>Build with Blockified.</h2><p>Learn by following a guide, look up exact behavior in documentation, or understand systems through the wiki. This site covers Blockified additions and changes without duplicating unchanged Psych Engine material.</p><div class="hero-actions"><a class="button-link" href="#/quick-start">Start here</a><a class="button-link secondary" href="#/animations">Make animations</a><a class="button-link secondary" href="#/lua-overview">Lua API</a></div></div>`,
     section("choose", "Choose how to use this site", `<div class="card-grid category-grid">
       <a class="doc-card category-card guide-card" href="#/quick-start"><span>GUIDES</span><h3>Make something</h3><p>Follow ordered, practical steps from installation to a playable song, complete pack, animation, or custom machine.</p></a>
@@ -334,7 +334,42 @@ setProperty('FNFBF.lighting', false)`)),
     section("multiple", "Animate multiple tags", code("lua", `local singers = {'FNFBF', 'SecondSinger', 'ThirdSinger'}
 for _, tag in ipairs(singers) do
   triggerEvent('Play Animation', 'singRIGHT', tag)
-end`))
+end`)),
+    section("flat", "Full-bright / flat shading", `<p>A <code>fullbright</code> property renders a target unlit — always at maximum brightness, ignoring world light and time of day — for a flat, evenly-lit look. It works the same on the main performers (boyfriend, dad, gf), extra characters, and world sprites and text. <code>flatShading</code> and <code>unlit</code> are aliases; it is the inverse of the existing <code>lighting</code> property.</p><div class="api-list">
+      ${api("setProperty('boyfriend.fullbright', true)", "Full-brights a performer (BBS form lighting = 0). false restores normal lighting.")}
+      ${api("setProperty('sprite.fullbright', true)", "Same for a world sprite/text object; equivalent to lighting = false.")}
+      ${api("setFlatShading(on) / setFullbright(on)", "Global: full-brights boyfriend, dad, gf, and every existing world object at once.")}
+    </div>${code("lua", `-- Flat, unshaded characters (matches 2D FNF art regardless of world light).
+setProperty('boyfriend.fullbright', true)
+setProperty('dad.fullbright', true)
+
+-- Or all main performers and world objects at once:
+setFlatShading(true)`)}${callout("Unlit, not de-shaded", "This removes world lighting for a flat look. It does not remove Minecraft's directional face-shading on 3D character models — that is fixed inside BBS's own renderer, which Blockified does not modify.")}`),
+    section("hud", "HUD, rating, and time", `<p>Rating, combo, score, and time are already exposed as Psych-style globals updated every frame, so you can read them directly and draw your own HUD: <code>ratingName</code>, <code>ratingFC</code>, <code>combo</code>, <code>score</code>, <code>misses</code>, <code>curStep</code>, <code>curBeat</code>, <code>curSection</code>, <code>curDecBeat</code>, <code>curDecStep</code>, <code>songLength</code>, and <code>getSongPosition()</code>.</p><div class="api-list">
+      ${api("setHudStyle(style)", "Overrides the HUD style for this song: 'fnf', 'vanilla', 'default', 'abbreviated', 'numbers', or 'none'. Blockified-only.")}
+      ${api("getHudStyle()", "Returns the active HUD style.")}
+      ${api("setProperty('rating.visible', false)", "Hides Blockified's built-in rating/combo popups so you can draw your own.")}
+      ${api("setProperty('timeBar.visible', false)", "Hides the magenta time-bar fill.")}
+      ${api("setProperty('timeTxt.visible', false)", "Hides the song-title text on the time bar.")}
+      ${api("showTimeBar(false)", "Convenience: hides the whole time bar (fill + title) at once.")}
+      ${api("function onRatingPopup(name, combo)", "Fires when a note is judged (name = 'sick'/'good'/'bad'/'shit'), even while the built-in popup is hidden — spawn your own popup here.")}
+    </div>${code("lua", `function onCreatePost()
+  setHudStyle('none')                        -- start from a clean HUD
+  setProperty('rating.visible', false)       -- draw ratings yourself
+  showTimeBar(false)                         -- and the time bar
+  makeLuaText('myrating', '', 400, 260, 260, 60)
+  addLuaText('myrating')
+end
+
+function onRatingPopup(name, combo)
+  setTextString('myrating', name .. (combo > 1 and ' x' .. combo or ''))
+end
+
+function onUpdate(elapsed)
+  -- your own time readout
+  local left = math.max(0, (songLength - getSongPosition()) / 1000)
+  setTextString('mytime', string.format('%d:%02d', left // 60, left % 60))
+end`)}${callout("Time bar", "Blockified's time bar is the magenta progress fill plus the song title, at the top on upscroll and the bottom on downscroll. The two visible flags hide each part; showTimeBar(false) hides both.")}`)
   );
 
   pages["lua-world"] = page("World-camera Lua objects", "Documentation · Lua", "Put sprites, atlases, text, and characters in Minecraft space.", ["3D transforms", "64 px = 1 block"],
@@ -429,10 +464,23 @@ function onTweenCompleted(tag)
     doTweenAlpha('cover-fade', 'cover', 0.5, 0.4, 'linear')
   end
 end`)}` + `<p>Completion also calls an optional widget method: <code>function cover:onTweenCompleted(tag)</code>. Reusing a tag replaces its active tween; <code>cancelTween(tag)</code> stops it without completion callbacks.</p>` + callout("Coordinate modes", "X/Y tweens can cross between pixel and normalized coordinates. Blockified converts mixed endpoints to canvas pixels during interpolation and restores the requested final value without snapping.")),
+    section("timers", "Timers", `<p>Machine menus support Psych-style timers, matching the song Lua. <code>runTimer(tag, seconds, loops)</code> starts a timer that fires <code>onTimerCompleted(tag, loops, loopsLeft)</code> after each interval; <code>loops</code> defaults to 1 (<code>seconds</code> to 1). Reusing a tag restarts that timer, and <code>cancelTimer(tag)</code> stops it. Timers run in real time and pair well with <code>onOpen</code>.</p><div class="api-list">
+      ${api("runTimer(tag, [seconds], [loops])", "Starts (or restarts) a timer; fires onTimerCompleted each interval, loops times.", "Machine")}
+      ${api("cancelTimer(tag)", "Stops a timer without firing its callback.", "Machine")}
+    </div>${code("lua", `function onOpen()
+  runTimer('tick', 1, 3)   -- fire 3 times, one second apart
+end
+
+function onTimerCompleted(tag, loops, loopsLeft)
+  if tag == 'tick' then
+    -- loops = times fired so far, loopsLeft = remaining
+    if loopsLeft == 0 then playSound('', 'sounds/done') end
+  end
+end`)}`),
     section("animation", "Animated sprites", `<p>Animated sprites support add-by-name/prefix, play/pause/resume/stop, frame selection, animation listing, FPS/loop, transform, tint, alpha, antialiasing, and <code>onComplete</code>.</p>${code("lua", `local dancer = ui.animatedSprite('dancer', 'images/dancer.png', 'images/dancer.xml', 0.5, 0.25)
 dancer:addAnimationByPrefix('idle', 'idle', 24, true)
 dancer:playAnimation('idle')`)}`),
-    section("sound", "Sound", `<p>Menus can play OGG sound effects and music from the machine or mod folder. Files resolve like every other asset: the path is relative to the machine folder and must stay inside the active mod. The <code>.ogg</code> extension is optional, matching Psych's convention.</p><div class="api-list">
+    section("sound", "Sound", `<p>Menus can play OGG sound effects and music. Files resolve like every other menu asset: the path is tried in the machine folder first, then in the owning mod's root, so shared sounds can live in <code>&lt;mod&gt;/sounds/</code>. The <code>.ogg</code> extension is optional, matching Psych's convention.</p><div class="api-list">
       ${api("playSound(tag, name, [volume], [loop])", "Plays an OGG. Like the widget calls, the tag and path come first. volume defaults to 1.0 and follows the master sound slider. Give a tag to control the sound later, or an empty tag for a fire-and-forget effect. Set loop true for looping music. Returns true on success.", "Machine")}
       ${api("stopSound(tag)", "Stops and releases a tagged sound.", "Machine")}
       ${api("pauseSound(tag) / resumeSound(tag)", "Pauses or resumes a tagged sound.", "Machine")}
@@ -453,7 +501,7 @@ end
 
 function onClose()
   stopSound('menuMusic')
-end`)}${callout("Where sounds live", "Put OGG files under the machine folder, for example <code>machines/&lt;machine&gt;/sounds/</code>, and reference them by that relative path. Missing or non-OGG files write one warning to the log and play nothing.")}`),
+end`)}${callout("Machine folder or mod root", "A bare path like <code>sounds/click.ogg</code> is looked up in <code>machines/&lt;machine&gt;/sounds/</code> first, then in <code>&lt;mod&gt;/sounds/</code>. Force one with a prefix: <code>mod:sounds/click.ogg</code> or <code>machine:sounds/click.ogg</code>. This applies to every menu asset (images, sprites, atlases, sounds), and paths must stay inside the active mod.")}`),
     section("cursor", "Cursor", `<p>Menus can read the cursor position and test what it is over. All positions are in canvas (1280x720) coordinates, the same space as widget <code>x</code>/<code>y</code>. The live <code>cursor</code> table is refreshed every frame, and every widget gets a live <code>hovered</code> boolean.</p><div class="api-list">
       ${api("cursor.x / cursor.y", "Current cursor position in canvas coordinates.", "Machine UI")}
       ${api("cursor.down", "True while the left mouse button is held.", "Machine UI")}
@@ -464,19 +512,35 @@ end`)}${callout("Where sounds live", "Put OGG files under the machine folder, fo
       ${api("mouseInside(x, y, width, height)", "True if the cursor is inside a center-anchored rectangle (x/y center, size in canvas pixels).", "Machine UI")}
       ${api("getHoveredObject()", "Id of the topmost visible widget under the cursor, or \"\".", "Machine UI")}
       ${api("widget.hovered", "Live per-widget boolean, true while the cursor is over it.", "Machine UI")}
-    </div>${code("lua", `local play = ui.button('play', 'Play', 0.5, 0.5, 220, 48)
+    </div><p>Hover can also be handled with callbacks that fire once when the cursor enters or leaves a widget, so you do not have to track the previous state yourself. Each widget can define <code>onHover</code>/<code>onHoverExit</code> methods (called with the widget as <code>self</code>, like <code>onClick</code>), and the globals <code>onHover(id)</code>/<code>onHoverExit(id)</code> fire for any widget. Callbacks run before drawing, so they may safely tween, add, or remove widgets.</p><div class="api-list">
+      ${api("function widget:onHover()", "Fires once when the cursor enters the widget.", "Machine UI")}
+      ${api("function widget:onHoverExit()", "Fires once when the cursor leaves the widget.", "Machine UI")}
+      ${api("onHover(id) / onHoverExit(id)", "Global callbacks for entering/leaving any widget.", "Machine UI")}
+    </div><p>Clicks and presses use the same callback style. <code>onClick</code> now works on <em>any</em> widget, not just buttons, so an image or panel can act as a button by defining it. <code>onMouseDown</code>/<code>onMouseUp</code> fire on press and release and receive the button (0 left, 1 right, 2 middle). A widget with no handler and that is not a control lets the click fall through to whatever is under it.</p><div class="api-list">
+      ${api("function widget:onClick()", "Left-click on any widget that defines it.", "Machine UI")}
+      ${api("function widget:onMouseDown(button)", "Press on the widget; button is 0/1/2.", "Machine UI")}
+      ${api("function widget:onMouseUp(button)", "Release over the widget.", "Machine UI")}
+      ${api("onClick(id)", "Global: any widget was left-clicked.", "Machine UI")}
+      ${api("onMouseDown(id, button) / onMouseUp(id, button)", "Global press/release on a widget.", "Machine UI")}
+    </div>${code("lua", `-- An image that behaves like a button.
+local cover = ui.image('cover', 'images/cover.png', 0.5, 0.4, 360, 360)
+function cover:onClick()
+  machine.playSong('tutorial')
+end
+function cover:onMouseDown(button)
+  if button == 1 then machine.openSongDetails('tutorial') end   -- right-click
+end`)}${code("lua", `local play = ui.button('play', 'Play', 0.5, 0.5, 220, 48)
+local cover = ui.image('cover', 'images/cover.png', 0.5, 0.4, 360, 360)
 
-function onUpdate(dt)
-  -- Grow the button while hovered.
-  play.fontScale = play.hovered and 2.2 or 2.0
+-- Grow the cover when the play button is hovered, no per-frame tracking.
+function play:onHover()
+  doTweenWidth('coverW', 'cover', 396, 0.3, 'expoOut')
+  doTweenHeight('coverH', 'cover', 396, 0.3, 'expoOut')
+end
 
-  -- Point a cursor sprite at the mouse.
-  reticle.x = getMouseX()
-  reticle.y = getMouseY()
-
-  if cursor.down and cursor.overId == 'play' then
-    -- pressing the play button
-  end
+function play:onHoverExit()
+  doTweenWidth('coverW', 'cover', 360, 0.3, 'expoOut')
+  doTweenHeight('coverH', 'cover', 360, 0.3, 'expoOut')
 end`)}`),
     section("blur", "Menu background blur", `<p>Custom machine menus never draw Minecraft's dark in-world menu tint, so the scene behind the menu stays clean. This is always on for custom menus and is not configurable.</p><p>A menu can also control Minecraft's background <em>blur</em> for its own screen, independent of the player's accessibility setting. Until a script touches it, the player's own blur is kept. Radius is fractional; a value below <code>1</code> means no blur, larger values blur more. <code>resetMenuBlur</code> hands control back to the player's setting.</p><div class="api-list">
       ${api("setMenuBlur(radius)", "Sets the blur radius. Below 1 disables the blur.", "Machine")}

@@ -60,6 +60,13 @@ public final class MachineMenuRuntime implements AutoCloseable {
                          double finalValue, long startedNanos, long durationNanos,
                          String ease, boolean color) {}
 
+    /** Psych-style repeating timer; fires onTimerCompleted(tag, loops, loopsLeft). */
+    private record Timer(String tag, long intervalNanos, int totalLoops, long nextAt, int completed) {
+        Timer advance(long next) {
+            return new Timer(tag, intervalNanos, totalLoops, next, completed + 1);
+        }
+    }
+
     private static final class AnimatedState {
         final String id;
         final LuaTable data;
@@ -103,6 +110,7 @@ public final class MachineMenuRuntime implements AutoCloseable {
     private final List<Widget> widgets = new ArrayList<>();
     private final Map<String, AnimatedState> animatedStates = new LinkedHashMap<>();
     private final Map<String, Tween> tweens = new LinkedHashMap<>();
+    private final Map<String, Timer> timers = new LinkedHashMap<>();
     private final LuaTable machineData;
     private final LuaFontLoader fontLoader;
     /** OpenAL sound player for menu playSound; created on first use, closed with the menu. */
@@ -135,6 +143,8 @@ public final class MachineMenuRuntime implements AutoCloseable {
     // plus the cursor table exposed to Lua.
     private double cursorX, cursorY;
     private LuaTable cursor;
+    /** Widget ids currently hovered, so onHover/onHoverExit fire once per transition. */
+    private final java.util.Set<String> hoveredWidgets = new java.util.HashSet<>();
 
     public MachineMenuRuntime(MachineDefinition definition, String snbt,
                               List<FnfPayloads.SongInfo> songs, Host host) {
@@ -735,6 +745,38 @@ public final class MachineMenuRuntime implements AutoCloseable {
             }
             return LuaValue.valueOf(removed);
         }));
+        // Psych-style timers. runTimer(tag, seconds, loops) fires
+        // onTimerCompleted(tag, loops, loopsLeft) each interval; loops defaults to 1.
+        globals.set("runTimer", function(args -> {
+            runTimer(args.arg(1).optjstring(""), args.arg(2).optdouble(1), args.arg(3).optint(1));
+            return LuaValue.NIL;
+        }));
+        globals.set("cancelTimer", function(args ->
+                LuaValue.valueOf(timers.remove(args.arg(1).optjstring("")) != null)));
+    }
+
+    private void runTimer(String tag, double seconds, int loops) {
+        if (!timers.containsKey(tag) && timers.size() >= MAX_TWEENS) {
+            throw new LuaError("timer limit exceeded");
+        }
+        long interval = Math.max(1_000_000L, (long) (Math.max(0, seconds) * 1_000_000_000L));
+        timers.put(tag, new Timer(tag, interval, Math.max(1, loops), System.nanoTime() + interval, 0));
+    }
+
+    private void updateTimers() {
+        long now = System.nanoTime();
+        for (Timer timer : new ArrayList<>(timers.values())) {
+            if (now < timer.nextAt()) continue;
+            int completed = timer.completed() + 1;
+            int left = Math.max(0, timer.totalLoops() - completed);
+            if (left == 0) {
+                timers.remove(timer.tag());
+            } else {
+                timers.put(timer.tag(), timer.advance(now + timer.intervalNanos()));
+            }
+            callGlobal("onTimerCompleted", LuaValue.valueOf(timer.tag()),
+                    LuaValue.valueOf(completed), LuaValue.valueOf(left));
+        }
     }
 
     private void installTweenFunction(String name, String property) {
@@ -811,6 +853,7 @@ public final class MachineMenuRuntime implements AutoCloseable {
     }
 
     private void advanceTweens() {
+        updateTimers();
         long now = System.nanoTime();
         if (menuBlurTweening) {
             double progress = Math.min(1, Math.max(0,
@@ -865,6 +908,7 @@ public final class MachineMenuRuntime implements AutoCloseable {
         cursorX = canvasMouseX;
         cursorY = canvasMouseY;
         updateCursor();
+        updateHover();
         List<Widget> ordered = orderedWidgets();
         PsychCanvas.push(gui, 1f);
         try {
@@ -1221,10 +1265,33 @@ public final class MachineMenuRuntime implements AutoCloseable {
         }
     }
 
+    /**
+     * Resolves a menu asset path. By default it looks in the machine folder first,
+     * then falls back to the owning mod's root, so assets shared across machines
+     * (sounds, fonts, images) can live in {@code <mod>/sounds/...} etc. A {@code mod:}
+     * prefix forces the mod root and {@code machine:} forces the machine folder.
+     */
     private Path resolveAsset(String raw) {
-        if (definition.root() == null || raw == null || raw.isBlank()) return null;
-        Path file = definition.root().resolve(raw).normalize();
-        return file.startsWith(definition.root()) && ModContentScope.allowsContentPath(file) ? file : null;
+        if (raw == null || raw.isBlank()) return null;
+        String path = raw.trim();
+        Path modRoot = ModContentScope.activeMod().map(ModContentScope.ActiveMod::root).orElse(null);
+        if (path.regionMatches(true, 0, "mod:", 0, 4)) {
+            return resolveUnder(modRoot, path.substring(4));
+        }
+        if (path.regionMatches(true, 0, "machine:", 0, 8)) {
+            return resolveUnder(definition.root(), path.substring(8));
+        }
+        Path fromMachine = resolveUnder(definition.root(), path);
+        if (fromMachine != null && Files.isRegularFile(fromMachine)) return fromMachine;
+        Path fromMod = resolveUnder(modRoot, path);
+        if (fromMod != null && Files.isRegularFile(fromMod)) return fromMod;
+        return fromMachine != null ? fromMachine : fromMod;
+    }
+
+    private static Path resolveUnder(Path base, String raw) {
+        if (base == null || raw == null || raw.isBlank()) return null;
+        Path file = base.resolve(raw).normalize();
+        return file.startsWith(base) && ModContentScope.allowsContentPath(file) ? file : null;
     }
 
     // ------------------------------------------------------------------- sound
@@ -1414,6 +1481,32 @@ public final class MachineMenuRuntime implements AutoCloseable {
         cursor.set("overId", hoveredId(cursorX, cursorY));
     }
 
+    /**
+     * Fires hover enter/exit callbacks once per transition: the widget method
+     * {@code function widget:onHover()} / {@code widget:onHoverExit()} (called with
+     * the widget as self, like onClick) and the globals {@code onHover(id)} /
+     * {@code onHoverExit(id)}. Runs before the draw loop so a callback may safely
+     * add, remove, or tween widgets.
+     */
+    private void updateHover() {
+        for (Widget widget : List.copyOf(widgets)) {
+            boolean now = widget.data().get("visible").optboolean(true)
+                    && contains(widget.data(), cursorX, cursorY);
+            boolean was = hoveredWidgets.contains(widget.id());
+            if (now && !was) {
+                hoveredWidgets.add(widget.id());
+                call(widget.data().get("onHover"), widget.data());
+                callGlobal("onHover", LuaValue.valueOf(widget.id()));
+            } else if (!now && was) {
+                hoveredWidgets.remove(widget.id());
+                call(widget.data().get("onHoverExit"), widget.data());
+                callGlobal("onHoverExit", LuaValue.valueOf(widget.id()));
+            }
+        }
+        // Drop ids whose widget no longer exists so the set cannot grow unbounded.
+        hoveredWidgets.removeIf(id -> widget(id) == null);
+    }
+
     /** Topmost visible widget under the given canvas point, or "" if none. */
     private String hoveredId(double mouseX, double mouseY) {
         List<Widget> ordered = orderedWidgets();
@@ -1457,38 +1550,70 @@ public final class MachineMenuRuntime implements AutoCloseable {
     }
 
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
-        if (button != 0) return false;
         double canvasMouseX = screenToCanvasX(mouseX);
         double canvasMouseY = screenToCanvasY(mouseY);
         List<Widget> ordered = orderedWidgets();
         for (int i = ordered.size() - 1; i >= 0; i--) {
             Widget widget = ordered.get(i);
             LuaTable data = widget.data();
-            if (!data.get("visible").optboolean(true) || widget.kind().equals("label")
-                    || widget.kind().equals("panel") || widget.kind().equals("graph")
-                    || widget.kind().equals("image")
-                    || widget.kind().equals("sprite") || widget.kind().equals("animatedSprite")) continue;
-            int width = Math.max(1, (int) Math.round(data.get("width").optdouble(1)));
-            int height = Math.max(1, (int) Math.round(data.get("height").optdouble(1)));
-            int x = coordinate(data.get("x").optdouble(0.5), PsychCanvas.WIDTH) - width / 2;
-            int y = coordinate(data.get("y").optdouble(0.5), PsychCanvas.HEIGHT) - height / 2;
-            if (canvasMouseX < x || canvasMouseX >= x + width
-                    || canvasMouseY < y || canvasMouseY >= y + height) continue;
-            if (widget.kind().equals("toggle")) {
-                data.set("value", LuaValue.valueOf(!data.get("value").optboolean(false)));
-                call(data.get("onChange"), data, data.get("value"));
-            } else if (widget.kind().equals("slider")) {
-                double min = data.get("min").optdouble(0);
-                double max = data.get("max").optdouble(1);
-                data.set("value", min + (max - min) * Math.max(0,
-                        Math.min(1, (canvasMouseX - x) / width)));
-                call(data.get("onChange"), data, data.get("value"));
-            } else {
+            // Decorative widgets (no handler and not a control) let the press fall
+            // through to whatever is under them.
+            if (!data.get("visible").optboolean(true) || !contains(data, canvasMouseX, canvasMouseY)
+                    || !isInteractive(widget)) continue;
+
+            // Press callback (any button), per-widget and global.
+            call(data.get("onMouseDown"), data, LuaValue.valueOf(button));
+            callGlobal("onMouseDown", LuaValue.valueOf(widget.id()), LuaValue.valueOf(button));
+
+            // Click behavior is left-button only, matching the widget conventions.
+            if (button == 0) {
+                if (widget.kind().equals("toggle")) {
+                    data.set("value", LuaValue.valueOf(!data.get("value").optboolean(false)));
+                    call(data.get("onChange"), data, data.get("value"));
+                } else if (widget.kind().equals("slider")) {
+                    int width = Math.max(1, (int) Math.round(data.get("width").optdouble(1)));
+                    int x = coordinate(data.get("x").optdouble(0.5), PsychCanvas.WIDTH) - width / 2;
+                    double min = data.get("min").optdouble(0);
+                    double max = data.get("max").optdouble(1);
+                    data.set("value", min + (max - min) * Math.max(0,
+                            Math.min(1, (canvasMouseX - x) / width)));
+                    call(data.get("onChange"), data, data.get("value"));
+                }
                 call(data.get("onClick"), data);
+                callGlobal("onClick", LuaValue.valueOf(widget.id()));
             }
             return true;
         }
         return false;
+    }
+
+    /** Release callback: fires onMouseUp on the widget under the cursor. */
+    public boolean mouseReleased(double mouseX, double mouseY, int button) {
+        double canvasMouseX = screenToCanvasX(mouseX);
+        double canvasMouseY = screenToCanvasY(mouseY);
+        List<Widget> ordered = orderedWidgets();
+        for (int i = ordered.size() - 1; i >= 0; i--) {
+            Widget widget = ordered.get(i);
+            LuaTable data = widget.data();
+            if (!data.get("visible").optboolean(true) || !contains(data, canvasMouseX, canvasMouseY)
+                    || !isInteractive(widget)) continue;
+            call(data.get("onMouseUp"), data, LuaValue.valueOf(button));
+            callGlobal("onMouseUp", LuaValue.valueOf(widget.id()), LuaValue.valueOf(button));
+            return true;
+        }
+        return false;
+    }
+
+    /** A widget receives clicks if it is a control or defines a mouse handler. */
+    private static boolean isInteractive(Widget widget) {
+        switch (widget.kind()) {
+            case "button", "toggle", "slider" -> { return true; }
+            default -> {
+                LuaTable data = widget.data();
+                return data.get("onClick").isfunction() || data.get("onMouseDown").isfunction()
+                        || data.get("onMouseUp").isfunction();
+            }
+        }
     }
 
     private int color(LuaTable data) {
@@ -1560,6 +1685,7 @@ public final class MachineMenuRuntime implements AutoCloseable {
     public void close() {
         if (opened) callGlobal("onClose");
         tweens.clear();
+        timers.clear();
         fontLoader.close();
         if (soundPlayer != null) {
             soundPlayer.close();

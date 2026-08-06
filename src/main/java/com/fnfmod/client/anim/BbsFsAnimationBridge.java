@@ -40,6 +40,12 @@ final class BbsFsAnimationBridge {
     private static Method morphGet;
     private static Method morphGetForm;
     private static Method morphSetForm;
+    // BBS Form.lighting (a ValueFloat, 1 = world-lit, 0 = full-bright); set through
+    // its one-argument set method. Lets a performer render unlit/flat.
+    private static Field formLightingField;
+    private static Method lightingValueSet;
+    /** Players forced to a non-default form lighting, re-applied when their form changes. */
+    private static final Map<UUID, Float> FORCED_LIGHTING = new HashMap<>();
     private static Method formCopy;
     private static Method formPlayState;
     private static Field formStates;
@@ -111,6 +117,17 @@ final class BbsFsAnimationBridge {
             sendFormTrigger = findMethod(clientNetworkClass, "sendFormTrigger", true, 2,
                     String.class, int.class);
 
+            // Optional: full-bright control via the form's lighting value.
+            try {
+                formLightingField = formClass.getField("lighting");
+                Method set = findOptionalMethod(formLightingField.getType(), "set", false, 1, float.class);
+                if (set == null) set = findOptionalMethod(formLightingField.getType(), "set", false, 1, Float.class);
+                if (set == null) set = findOptionalMethod(formLightingField.getType(), "set", false, 1);
+                lightingValueSet = set;
+            } catch (Throwable ignored) {
+                formLightingField = null;
+                lightingValueSet = null;
+            }
 
             available = true;
             initBundling();
@@ -217,6 +234,7 @@ final class BbsFsAnimationBridge {
         if (minecraft.level == null) {
             ORIGINAL_FORMS.clear();
             APPLIED_FORMS.clear();
+            FORCED_LIGHTING.clear();
             return;
         }
 
@@ -238,6 +256,7 @@ final class BbsFsAnimationBridge {
 
         ORIGINAL_FORMS.clear();
         APPLIED_FORMS.clear();
+        FORCED_LIGHTING.clear();
     }
 
     /** Restores one performer without disturbing the other song characters. */
@@ -246,6 +265,7 @@ final class BbsFsAnimationBridge {
         UUID id = player.getUUID();
         OriginalForm saved = ORIGINAL_FORMS.remove(id);
         APPLIED_FORMS.remove(id);
+        FORCED_LIGHTING.remove(id);
         if (saved == null) return;
 
         try {
@@ -278,7 +298,46 @@ final class BbsFsAnimationBridge {
         Object copy = formCopy.invoke(null, template);
         morphSetForm.invoke(morph, copy);
         APPLIED_FORMS.put(player.getUUID(), requestedKey);
+        // A newly applied form resets to default lighting; re-force it if requested.
+        applyLighting(player, copy);
         if (isLocalPlayer(player)) sendPlayerForm.invoke(null, copy);
+    }
+
+    /**
+     * Forces a performer's BBS form lighting (0 = full-bright/unlit, 1 = normal world
+     * light). Persists across form swaps until reset to 1. Returns false if BBS or the
+     * lighting value is unavailable.
+     */
+    static synchronized boolean setLighting(Player player, float value) {
+        if (!isAvailable() || player == null || formLightingField == null || lightingValueSet == null) {
+            return false;
+        }
+        if (value >= 1f) FORCED_LIGHTING.remove(player.getUUID());
+        else FORCED_LIGHTING.put(player.getUUID(), value);
+        try {
+            Object morph = morphGet.invoke(null, player);
+            if (morph == null) return false;
+            applyLighting(player, morphGetForm.invoke(morph));
+            return true;
+        } catch (Throwable error) {
+            warnOnce("Failed to set a BBS FS form lighting", error);
+            return false;
+        }
+    }
+
+    static synchronized boolean isLightingForced(Player player) {
+        return player != null && FORCED_LIGHTING.containsKey(player.getUUID());
+    }
+
+    private static void applyLighting(Player player, Object form) {
+        if (form == null || formLightingField == null || lightingValueSet == null) return;
+        Float forced = FORCED_LIGHTING.get(player.getUUID());
+        try {
+            Object lightingValue = formLightingField.get(form);
+            if (lightingValue != null) lightingValueSet.invoke(lightingValue, forced == null ? 1f : forced);
+        } catch (Throwable ignored) {
+            // Best effort; a missing lighting value just leaves normal lighting.
+        }
     }
 
     private static void refreshForms() {

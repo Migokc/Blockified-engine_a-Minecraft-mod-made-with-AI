@@ -613,6 +613,11 @@ public final class PsychLuaRuntime implements AutoCloseable {
         // so raising the base FOV widens the zoom range. Restored when the song ends.
         fn(g, "setFOV", args -> { host.psychLuaSetFov(args.optdouble(1, 70)); return LuaValue.NIL; });
         fn(g, "getFOV", args -> LuaValue.valueOf(host.psychLuaGetFov()));
+        // HUD style override + time-bar visibility (rating/time visibility also work
+        // through setProperty('rating.visible'/'timeBar.visible'/'timeTxt.visible', ...)).
+        fn(g, "setHudStyle", args -> { host.psychLuaSetHudStyle(args.optjstring(1, "")); return LuaValue.NIL; });
+        fn(g, "getHudStyle", args -> LuaValue.valueOf(host.psychLuaGetHudStyle()));
+        fn(g, "showTimeBar", args -> { host.psychLuaShowTimeBar(args.optboolean(1, true)); return LuaValue.NIL; });
         fn(g, "getHealth", args -> LuaValue.valueOf(host.psychLuaHealth()));
         fn(g, "setHealth", args -> { host.psychLuaSetHealth(args.optdouble(1, 1)); return LuaValue.NIL; });
         fn(g, "addHealth", args -> { host.psychLuaSetHealth(host.psychLuaHealth() + args.optdouble(1, 0)); return LuaValue.NIL; });
@@ -823,6 +828,10 @@ public final class PsychLuaRuntime implements AutoCloseable {
         fn(g, "runTimer", args -> { runTimer(args.optjstring(1, ""), args.optdouble(2, 1), args.optint(3, 1)); return LuaValue.NIL; });
         fn(g, "cancelTimer", args -> { timers.remove(args.optjstring(1, "")); return LuaValue.NIL; });
         fn(g, "cancelTween", args -> { tweens.remove(args.optjstring(1, "")); return LuaValue.NIL; });
+        // Full-bright / flat (unlit) the main performers at once. Sprites, text, and
+        // extra characters use the per-object .fullbright property (or .lighting).
+        fn(g, "setFlatShading", args -> { setSceneFlatShading(args.optboolean(1, true)); return LuaValue.NIL; });
+        fn(g, "setFullbright", args -> { setSceneFlatShading(args.optboolean(1, true)); return LuaValue.NIL; });
         tweenFn(g, "doTweenX", "x"); tweenFn(g, "doTweenY", "y"); tweenFn(g, "doTweenZ", "z");
         tweenFn(g, "doTweenAngle", "angle"); tweenFn(g, "doTweenAlpha", "alpha");
         tweenFn(g, "doTweenAngleX", "rotation.x"); tweenFn(g, "doTweenAngleY", "rotation.y");
@@ -1793,6 +1802,7 @@ public final class PsychLuaRuntime implements AutoCloseable {
             case "scrollFactor.x" -> o.scrollFactorX; case "scrollFactor.y" -> o.scrollFactorY;
             case "billboard", "worldBillboard", "alwaysFaceCamera" -> o.worldBillboard;
             case "lighting", "worldLighting", "shadows", "worldShadows", "affectedByLighting" -> o.worldLighting;
+            case "fullbright", "fullBright", "unlit", "flat", "flatShading", "flatshading" -> !o.worldLighting;
             case "seeThrough", "seethrough", "worldSeeThrough", "throughWalls", "noDepth" -> o.worldSeeThrough;
             case "animation.curAnim.name" -> animation == null ? null : animation.name;
             case "animation.curAnim.curFrame" -> o.animationFrame;
@@ -1822,6 +1832,7 @@ public final class PsychLuaRuntime implements AutoCloseable {
             case "scrollFactor.y" -> o.scrollFactorY = number(value, o.scrollFactorY);
             case "billboard", "worldBillboard", "alwaysFaceCamera" -> o.worldBillboard = bool(value);
             case "lighting", "worldLighting", "shadows", "worldShadows", "affectedByLighting" -> o.worldLighting = bool(value);
+            case "fullbright", "fullBright", "unlit", "flat", "flatShading", "flatshading" -> o.worldLighting = !bool(value);
             case "seeThrough", "seethrough", "worldSeeThrough", "throughWalls", "noDepth" -> o.worldSeeThrough = bool(value);
             case "offset.x" -> currentAnimationOffsetForWrite(o)[0] = number(value, currentAnimationOffset(o)[0]);
             case "offset.y" -> currentAnimationOffsetForWrite(o)[1] = number(value, currentAnimationOffset(o)[1]);
@@ -1993,6 +2004,16 @@ public final class PsychLuaRuntime implements AutoCloseable {
         timers.put(tag, new Timer(tag, interval, Math.max(1, loops), GameplayClock.now() + interval, 0));
     }
 
+    /** Global toggle: full-bright the main performers and every existing world object. */
+    private void setSceneFlatShading(boolean on) {
+        for (String tag : new String[]{"boyfriend", "dad", "gf"}) {
+            host.psychLuaSetProperty(tag + ".fullbright", on);
+        }
+        for (LuaObject object : objects.values()) {
+            object.worldLighting = !on;
+        }
+    }
+
     public void update(double elapsedSeconds) {
         if (closed) return;
         updateAnimations(elapsedSeconds);
@@ -2156,6 +2177,9 @@ public final class PsychLuaRuntime implements AutoCloseable {
 
     public boolean preUpdateScore(boolean miss) { return !isStop(call("preUpdateScore", miss)); }
     public void onUpdateScore(boolean miss) { call("onUpdateScore", miss); }
+
+    /** Fired when a note is judged, with the rating id ("sick"/"good"/…) and current combo. */
+    public void onRatingPopup(String name, int combo) { call("onRatingPopup", name, combo); }
 
     public void reloadFonts() { fontLoader.close(); }
 

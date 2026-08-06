@@ -228,6 +228,13 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     // fx
     private record Popup(String text, int color, long bornMs) {}
     private final List<Popup> popups = new ArrayList<>();
+    // Lua-controlled HUD visibility. Scripts hide Blockified's built-in rating
+    // popups and time bar to draw their own; setHudStyle overrides the user's
+    // saved HUD preference for this song only.
+    private boolean showRatingPopups = true;
+    private boolean showTimeBar = true;
+    private boolean showTimeText = true;
+    private String hudStyleOverride;
     private record Splash(int lane, int variant, float x, float y, long bornMs,
                           String texture, float alpha) {}
     private final List<Splash> splashes = new ArrayList<>();
@@ -1701,6 +1708,14 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         return property.equals("shadow") || property.equals("shadows");
     }
 
+    /** Full-bright / flat (unlit) toggle for a performer. */
+    private static boolean isFullbrightProperty(String property) {
+        return switch (property) {
+            case "fullbright", "fullBright", "unlit", "flat", "flatShading", "flatshading" -> true;
+            default -> false;
+        };
+    }
+
     private static boolean isCollisionProperty(String property) {
         return property.equals("collision") || property.equals("collisions")
                 || property.equals("solid");
@@ -2122,9 +2137,12 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         voicesMutedUntil = -1;
 
         String[] names = {"SICK!!", "GOOD", "BAD", "SHIT"};
+        String[] ratingIds = {"sick", "good", "bad", "shit"};
         int[] colors = {0xFF66FFFF, 0xFF66FF66, 0xFFFFAA33, 0xFFFF5555};
         if (!best.data.ratingDisabled) {
             addPopup(names[judgement] + (combo > 1 ? "  " + combo : ""), colors[judgement]);
+            // Fires even when the built-in popup is hidden, so a script can draw its own.
+            if (luaRuntime != null) luaRuntime.onRatingPopup(ratingIds[judgement], combo);
         }
 
         if (!best.data.noAnimation) sing(lane, false, best.data);
@@ -3858,6 +3876,12 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
 
     public Object psychLuaGetProperty(String path) {
         if (path == null) return null;
+        switch (path) {
+            case "rating.visible", "combo.visible" -> { return showRatingPopups; }
+            case "timeBar.visible", "timeBarBG.visible" -> { return showTimeBar; }
+            case "timeTxt.visible", "timeText.visible" -> { return showTimeText; }
+            default -> { }
+        }
         int extraDot = path.indexOf('.');
         if (extraDot > 0 && extraCharacters.exists(path.substring(0, extraDot))) {
             String tag = path.substring(0, extraDot);
@@ -3879,6 +3903,8 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                 case "flipx", "flipX", "flip_x" -> extraCharacters.flipX(tag);
                 case "billboard", "worldBillboard", "alwaysFaceCamera" -> extraCharacters.billboard(tag);
                 case "lighting", "worldLighting", "affectedByLighting" -> extraCharacters.lighting(tag);
+                case "fullbright", "fullBright", "unlit", "flat", "flatShading", "flatshading" ->
+                        !extraCharacters.lighting(tag);
                 case "seethrough", "seeThrough", "worldSeeThrough", "throughWalls", "noDepth" -> extraCharacters.seeThrough(tag);
                 case "antialiasing" -> extraCharacters.antialiasing(tag);
                 default -> null;
@@ -3895,6 +3921,12 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         if (extraDot > 0 && isShadowProperty(path.substring(extraDot + 1))) {
             Entity performer = performerEntityForTag(path.substring(0, extraDot));
             if (performer != null) return PerformerShadows.enabled(performer.getId());
+        }
+        if (extraDot > 0 && isFullbrightProperty(path.substring(extraDot + 1))) {
+            Entity performer = performerEntityForTag(path.substring(0, extraDot));
+            if (performer instanceof net.minecraft.world.entity.player.Player player) {
+                return CharacterAnimations.isLightingForced(player);
+            }
         }
         // World-camera pixel coordinates of a performer, relative to the Funkin'
         // Machine, in the same space Lua world sprites use (64 px = 1 block,
@@ -3967,6 +3999,13 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
 
     public boolean psychLuaSetProperty(String path, Object value) {
         if (path == null) return false;
+        switch (path) {
+            case "rating.visible" -> { showRatingPopups = noteBool(value, true); return true; }
+            case "combo.visible" -> { showRatingPopups = noteBool(value, true); return true; }
+            case "timeBar.visible", "timeBarBG.visible" -> { showTimeBar = noteBool(value, true); return true; }
+            case "timeTxt.visible", "timeText.visible" -> { showTimeText = noteBool(value, true); return true; }
+            default -> { }
+        }
         int extraDot = path.indexOf('.');
         if (extraDot > 0 && extraCharacters.exists(path.substring(0, extraDot))) {
             String tag = path.substring(0, extraDot);
@@ -3992,6 +4031,8 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                         extraCharacters.setBillboard(tag, noteBool(value, true));
                 case "lighting", "worldLighting", "affectedByLighting" ->
                         extraCharacters.setLighting(tag, noteBool(value, true));
+                case "fullbright", "fullBright", "unlit", "flat", "flatShading", "flatshading" ->
+                        extraCharacters.setLighting(tag, !noteBool(value, false));
                 case "seethrough", "seeThrough", "worldSeeThrough", "throughWalls", "noDepth" ->
                         extraCharacters.setSeeThrough(tag, noteBool(value, false));
                 case "antialiasing" -> extraCharacters.setAntialiasing(tag, noteBool(value, true));
@@ -4016,6 +4057,14 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             Entity performer = performerEntityForTag(path.substring(0, extraDot));
             if (performer != null) {
                 PerformerShadows.setEnabled(performer.getId(), noteBool(value, true));
+                return true;
+            }
+        }
+        if (extraDot > 0 && isFullbrightProperty(path.substring(extraDot + 1))) {
+            Entity performer = performerEntityForTag(path.substring(0, extraDot));
+            if (performer instanceof net.minecraft.world.entity.player.Player player) {
+                // Full-bright = form lighting 0; normal = 1.
+                CharacterAnimations.setLighting(player, noteBool(value, false) ? 0f : 1f);
                 return true;
             }
         }
@@ -5591,6 +5640,8 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                 : layoutHeight * 0.4f;
         long now = System.currentTimeMillis();
         popups.removeIf(p -> now - p.bornMs > 700);
+        // A script drawing its own rating can hide Blockified's popups.
+        if (!showRatingPopups) return;
         float ratingScale = "fnf".equals(effectiveHudStyle()) ? FNF_NATIVE_UI_SCALE : 1f;
         for (Popup p : popups) {
             float age = (now - p.bornMs) / 700f;
@@ -5639,11 +5690,11 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         int layoutHeight = hudLayoutHeight();
         int progY = down ? layoutHeight - 2 : 0;
         int titleY = down ? layoutHeight - 12 : 6;
-        if (songPlayer.isStarted() && songPlayer.durationMs() > 0) {
+        if (showTimeBar && songPlayer.isStarted() && songPlayer.durationMs() > 0) {
             float frac = (float) Math.min(1, Math.max(0, songPos / songPlayer.durationMs()));
             gui.fill(0, progY, (int) (layoutWidth * frac), progY + 2, 0xFFDD44AA);
         }
-        gui.drawCenteredString(font, chart.title, layoutWidth / 2, titleY, 0x99FFFFFF);
+        if (showTimeText) gui.drawCenteredString(font, chart.title, layoutWidth / 2, titleY, 0x99FFFFFF);
     }
 
     private void renderCountdown(GuiGraphics gui) {
@@ -5813,7 +5864,28 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
 
     /** Active presentation mode may override the user's normal HUD preference. */
     public String effectiveHudStyle() {
-        return playbackPolicy != null && playbackPolicy.forcesFnfHud()
-                ? "fnf" : ClientOptions.effectiveHudStyle();
+        if (playbackPolicy != null && playbackPolicy.forcesFnfHud()) return "fnf";
+        if (hudStyleOverride != null) return hudStyleOverride;
+        return ClientOptions.effectiveHudStyle();
+    }
+
+    // ----------------------------------------------------------- Lua HUD control
+
+    private static final java.util.Set<String> HUD_STYLES = java.util.Set.of(
+            "fnf", "vanilla", "default", "abbreviated", "numbers", "none");
+
+    public void psychLuaSetHudStyle(String style) {
+        String normalized = style == null ? "" : style.trim().toLowerCase(java.util.Locale.ROOT);
+        hudStyleOverride = HUD_STYLES.contains(normalized) ? normalized : null;
+    }
+
+    public String psychLuaGetHudStyle() {
+        return effectiveHudStyle();
+    }
+
+    /** Convenience: hide/show both the time bar fill and the song title at once. */
+    public void psychLuaShowTimeBar(boolean visible) {
+        showTimeBar = visible;
+        showTimeText = visible;
     }
 }

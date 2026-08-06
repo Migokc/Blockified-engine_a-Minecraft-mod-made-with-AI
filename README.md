@@ -2,9 +2,27 @@
 
 A feature-full Friday Night Funkin' engine inside of Minecraft — **NeoForge 1.21.1**.
 
-Current release: **2.1.6bbs**.
+Current release: **2.1.7bbs**.
 
 Documentation: **[Blockified Engine Docs](https://migokc.github.io/Blockified-engine_a-Minecraft-mod-made-with-AI/)**.
+
+### 2.1.7bbs highlights
+
+- Song Lua can switch the HUD style per song (`setHudStyle`/`getHudStyle`), hide
+  Blockified's built-in rating popups and magenta time bar
+  (`setProperty('rating.visible'/'timeBar.visible'/'timeTxt.visible', ...)`,
+  `showTimeBar`), and react to judgements through a new `onRatingPopup(name, combo)`
+  callback, so a script can draw its own HUD from the existing rating/combo/time
+  globals.
+- New `fullbright` property (aliases `flatShading`/`unlit`) renders performers,
+  extra characters, and world sprites/text unlit for a flat look; `setFlatShading`
+  toggles all main performers and world objects at once.
+- Machine menu Lua gains Psych-style `runTimer`/`cancelTimer` timers, hover
+  callbacks (`onHover`/`onHoverExit`), and click/press callbacks (`onClick` on any
+  widget, `onMouseDown`/`onMouseUp`, and their globals).
+- Machine menu asset paths fall back from the machine folder to the mod root, with
+  `mod:`/`machine:` prefixes to force one, so sounds, images, and fonts can be
+  shared across machines.
 
 ### 2.1.6bbs highlights
 

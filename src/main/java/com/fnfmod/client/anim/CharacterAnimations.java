@@ -606,6 +606,16 @@ public final class CharacterAnimations {
         BbsFsAnimationBridge.restoreAll();
     }
 
+    /** Full-bright control for a performer: value 0 = unlit/flat, 1 = normal world light. */
+    public static void setLighting(Player player, float value) {
+        BbsFsAnimationBridge.setLighting(player, value);
+    }
+
+    /** Whether a performer is currently forced to a non-default (e.g. full-bright) lighting. */
+    public static boolean isLightingForced(Player player) {
+        return BbsFsAnimationBridge.isLightingForced(player);
+    }
+
     /** Releases one client-side performer while leaving the active cast intact. */
     public static void release(Player player) {
         BbsFsAnimationBridge.restore(player);
