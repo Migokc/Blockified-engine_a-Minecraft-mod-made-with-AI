@@ -353,6 +353,18 @@ public class SongLibrary {
     }
 
     /**
+     * The naked global mod ({@code config/fnfmod/mods} root) as a Psych-style shared
+     * asset base: its loose {@code characters/}, {@code images/}, {@code stages/},
+     * {@code sounds/}, etc. fall through to every song. Returns {@code null} inside a
+     * bundled mod world, which stays isolated to its owning pack.
+     */
+    public static Path globalSharedAssetRoot() {
+        if (ModContentScope.mode() != ModContentScope.Mode.ALL) return null;
+        Path root = modsDir();
+        return Files.isDirectory(root) ? root : null;
+    }
+
+    /**
      * Shared Psych assets come only from the first configured directory. This
      * keeps directory order meaningful without leaking same-named assets from
      * unrelated packs lower in the song-search list.

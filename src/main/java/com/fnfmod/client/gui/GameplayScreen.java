@@ -2155,6 +2155,12 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                 if (luaRuntime == null || luaRuntime.onGoodNoteHitPre(
                         noteIndex, n.data.lane, n.data.noteType, n.data.sustainMs > 30)) {
                     creditHit(n, judgement);
+                    // Animate the stacked note's own character too. Otherwise an
+                    // overlapping note merged into this press (e.g. a dad note stacked
+                    // with a bf note in Both mode) is scored but never plays its sing
+                    // animation, leaving that character idle. Its role is read from the
+                    // note, so each side animates independently.
+                    if (!n.data.noAnimation) sing(n.data.lane, false, n.data);
                 }
             }
         }

@@ -47,6 +47,12 @@ public final class PsychAssetResolver {
                     addSongRoot(roots, entry.characterRoot, content);
                 }
             }
+            // Naked global mod (config/fnfmod/mods root): a Psych-style shared base
+            // whose loose characters/images/stages/sounds fall through to every song,
+            // added after the song's own pack so the pack's own assets always win.
+            // Available in every playback mode as trusted local content; disabled in a
+            // bundled mod world (globalSharedAssetRoot() returns null there).
+            add(roots, SongLibrary.globalSharedAssetRoot());
         }
         // Shared Psych assets obey the first configured directory's checklist,
         // independently from whichever directory supplied this song/chart.

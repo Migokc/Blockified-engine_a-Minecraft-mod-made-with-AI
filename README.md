@@ -2,9 +2,20 @@
 
 A feature-full Friday Night Funkin' engine inside of Minecraft — **NeoForge 1.21.1**.
 
-Current release: **2.2.0bbs**.
+Current release: **2.2.1bbs**.
 
 Documentation: **[Blockified Engine Docs](https://migokc.github.io/Blockified-engine_a-Minecraft-mod-made-with-AI/)**.
+
+### 2.2.1bbs highlights
+
+- The naked global mod (`config/fnfmod/mods/` root) is now a Psych-style shared
+  asset base: loose `characters/`, `images/`, `stages/`, `sounds/`, and `music/`
+  placed directly there fall through to every song, after the song's own pack so a
+  pack's own assets always win. Available in all playback modes as trusted local
+  content; a bundled mod world stays isolated to its owning pack.
+- Fixed "Both" mode: when a Boyfriend note and a Dad note overlap in the same lane
+  and merge into one hit, the stacked note now plays its own character's sing
+  animation instead of scoring silently, so both characters animate on overlap.
 
 ### 2.2.0bbs highlights
 
