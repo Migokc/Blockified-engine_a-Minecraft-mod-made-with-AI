@@ -107,6 +107,11 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     private String myAnimSet;
     private final String initialPartnerAnimSet;
     private final String initialMyAnimSet;
+    // Solo opponent bot: a client-only RemotePlayer that gives the armor stand a real
+    // BBS character when one resolves. Null (armor stand kept) otherwise.
+    private com.fnfmod.client.gameplay.OpponentBotCharacter opponentBot;
+    private String opponentBotSet;
+    private String opponentBotRole = "opponent";
     private String playerIdleSuffix = "";
     private String opponentIdleSuffix = "";
     private String eventPlayerIcon;
@@ -421,10 +426,20 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         }
         this.myAnimSet = resolvedAnimSet;
         this.initialMyAnimSet = resolvedAnimSet;
+        // The solo bot plays the other side's character; resolve it like myAnimSet.
+        this.opponentBotRole = partnerRole();
+        String botCharacter = myChartSideIsPlayer ? chart.player2 : chart.player1;
+        String botSet = ClientOptions.get().animationSet;
+        if (playbackPolicy.songAssets() && runtimeSongEntry != null
+                && botCharacter != null && !botCharacter.isBlank()) {
+            botSet = CharacterAnimations.modSet(botCharacter);
+        }
+        this.opponentBotSet = botSet;
         this.assetResolver = new PsychAssetResolver(runtimeSongFolder, runtimeSongEntry, playbackPolicy, chart.stage);
         this.customNoteTextures = new PsychNoteTextureCache(
                 assetResolver.customNoteRoots(),
                 playbackPolicy.allows(runtimeSongEntry, SongLibrary.ExternalContent.IMAGES));
+        applySongNoteSkin();
         this.psychScene = PsychGameplayScene.load(chart, runtimeSongFolder, runtimeSongEntry, playbackPolicy);
         Arrays.fill(luaStrumX, Double.NaN);
         Arrays.fill(luaStrumY, Double.NaN);
@@ -525,6 +540,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         screen.customNoteTextures = new PsychNoteTextureCache(
                 screen.assetResolver.customNoteRoots(),
                 screen.playbackPolicy.allows(songEntry, SongLibrary.ExternalContent.IMAGES));
+        screen.applySongNoteSkin();
         screen.psychScene = PsychGameplayScene.load(chart, songFolder, songEntry, screen.playbackPolicy);
         // The normal constructor starts a session camera before it knows this is
         // an editor playtest. Rebuild it using the editor-safe virtual stage.
@@ -946,6 +962,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         }
 
         // bot plays the other side in solo (unless the player is playing both sides)
+        updateOpponentBot();
         if (!duet && !playBoth) {
             for (int lane = 0; lane < 4; lane++) {
                 List<GameNote> list = otherLanes[lane];
@@ -1035,6 +1052,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                 // skipped inside danceAll, exactly like the two above.
                 extraCharacters.danceAll();
                 extraCharacters.beat(beat, 1);
+                if (opponentBot != null) opponentBot.idle();
             }
         }
 
@@ -1207,6 +1225,15 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             boolean boyfriendSide = target.equals("boyfriend");
             if (performerEntity(boyfriendSide) instanceof Player performer) {
                 CharacterAnimations.prepare(performer, activeSet, boyfriendSide ? "player" : "opponent");
+            }
+            // Solo opponent bot follows Change Character too: rebuild with the new
+            // character (or fall back to the armor stand if it has no BBS form).
+            if (opponentBotRole.equals(botRoleFor(target))) {
+                opponentBotSet = animationDefinition;
+                if (opponentBot != null) {
+                    opponentBot.remove(minecraft.level == null ? null : minecraft.level.getEntity(botEntityId));
+                    opponentBot = null; // updateOpponentBot() re-creates it next tick
+                }
             }
         }
     }
@@ -3217,6 +3244,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         next.customNoteTextures = new PsychNoteTextureCache(
                 next.assetResolver.customNoteRoots(),
                 playbackPolicy.allows(runtimeSongEntry, SongLibrary.ExternalContent.IMAGES));
+        next.applySongNoteSkin();
         next.psychScene = PsychGameplayScene.load(chart, runtimeSongFolder, runtimeSongEntry,
                 playbackPolicy);
         // The constructor already started a session camera; swap it for the
@@ -3834,15 +3862,24 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     }
 
     private void animatePsychNote(SongChart.Note note, int lane, boolean miss, String fallbackRole) {
-        if (psychScene == null) return;
         String role = note != null && note.gfNote ? "gf"
                 : note == null ? fallbackRole
                 : note.playerSide ? "boyfriend" : "dad";
-        if (!miss && note != null && "Hey!".equalsIgnoreCase(note.noteType)) {
-            psychScene.hey(role, 0.6);
-        } else {
-            psychScene.sing(role, lane, miss, note == null ? "" : note.animSuffix);
+        boolean hey = !miss && note != null && "Hey!".equalsIgnoreCase(note.noteType);
+        if (psychScene != null) {
+            if (hey) psychScene.hey(role, 0.6);
+            else psychScene.sing(role, lane, miss, note == null ? "" : note.animSuffix);
         }
+        // Drive the solo opponent bot character when the note is on its side.
+        if (opponentBot != null && opponentBot.role().equals(botRoleFor(role))) {
+            opponentBot.play(hey ? "hey" : miss ? "miss" : DIR_NAMES[lane]);
+        }
+    }
+
+    /** Maps a Psych role ("dad"/"boyfriend") to the animation role ("opponent"/"player"). */
+    private static String botRoleFor(String psychRole) {
+        return "dad".equals(psychRole) ? "opponent"
+                : "boyfriend".equals(psychRole) ? "player" : psychRole;
     }
 
     private void animatePsychHold(SongChart.Note note, int lane, String fallbackRole) {
@@ -4316,9 +4353,10 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             float strumX = laneX(true, lane), strumY = laneY(true, lane);
             long sustainFrame = customSustainStrumFrame(true, lane);
             NoteStyle.setDrawAlpha((float) luaStrumAlpha[(myChartSideIsPlayer || playBoth ? 4 : 0) + lane]);
-            boolean custom = sustainFrame >= 0 && customNoteTextures.drawSustainReceptor(
+            boolean custom = !NoteStyle.songSkinActive() && sustainFrame >= 0
+                    && customNoteTextures.drawSustainReceptor(
                     gui, chartDefaultNoteTexture(), lane, sustainFrame, strumX, strumY, noteSize);
-            if (!custom) custom = customNoteTextures.drawReceptor(gui,
+            if (!custom && !NoteStyle.songSkinActive()) custom = customNoteTextures.drawReceptor(gui,
                     chartDefaultNoteTexture(), lane, myState, strumX, strumY, noteSize);
             if (!custom) {
                 NoteStyle.drawReceptor(gui, lane, strumX, strumY, noteSize, myState);
@@ -4333,9 +4371,10 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                 long sustainFrame = customSustainStrumFrame(false, lane);
                 int side = myChartSideIsPlayer ? 0 : 4;
                 NoteStyle.setDrawAlpha((float) (luaStrumAlpha[side + lane] * (fadeOpponent ? 0.6 : 1)));
-                boolean custom = sustainFrame >= 0 && customNoteTextures.drawSustainReceptor(
+                boolean custom = !NoteStyle.songSkinActive() && sustainFrame >= 0
+                        && customNoteTextures.drawSustainReceptor(
                         gui, chartDefaultNoteTexture(), lane, sustainFrame, strumX, strumY, noteSize);
-                if (!custom) custom = customNoteTextures.drawReceptor(gui,
+                if (!custom && !NoteStyle.songSkinActive()) custom = customNoteTextures.drawReceptor(gui,
                         chartDefaultNoteTexture(), lane, otherState, strumX, strumY, noteSize);
                 if (!custom) {
                     NoteStyle.drawReceptor(gui, lane, strumX, strumY, noteSize, otherState);
@@ -5313,6 +5352,46 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         return GameplayCamera.hudZoom("fnf".equals(effectiveHudStyle()));
     }
 
+    /**
+     * Lazily gives the solo opponent bot a real BBS character (a client-only RemotePlayer
+     * that follows the server armor stand and hides it). Falls back to the plain stand when
+     * the character has no BBS form. No-op in duet/both or when there is no bot stand.
+     */
+    private void updateOpponentBot() {
+        if (duet || playBoth || botEntityId < 0 || opponentBotSet == null
+                || !(minecraft.level instanceof net.minecraft.client.multiplayer.ClientLevel level)) return;
+        net.minecraft.world.entity.Entity stand = level.getEntity(botEntityId);
+        if (stand == null) return;
+        if (opponentBot == null) {
+            opponentBot = com.fnfmod.client.gameplay.OpponentBotCharacter.create(
+                    level, opponentBotSet, opponentBotRole, stand);
+        }
+        if (opponentBot != null) opponentBot.follow(stand);
+    }
+
+    /**
+     * Resolves the song's arrowSkin into NoteStyle so the "default" skin renders it with
+     * RGB colours and proper sustains. Called whenever the note-texture cache is (re)built.
+     */
+    private void applySongNoteSkin() {
+        String tex = chart.noteTexture == null ? "" : chart.noteTexture.trim();
+        java.nio.file.Path[] files = tex.isEmpty() ? null : customNoteTextures.resolveSkinFiles(tex);
+        if (files != null) NoteStyle.useSongSkin(files[0], files[1], files[2]);
+        else NoteStyle.useSongSkin(null, null, null);
+    }
+
+    /**
+     * Whether a note should draw through the raw custom-texture path instead of NoteStyle.
+     * Once the song's arrowSkin is loaded into NoteStyle, only a genuine per-note texture
+     * override (different from the chart default) still uses the custom path.
+     */
+    private boolean useCustomNoteTexture(String noteTexture) {
+        if (!NoteStyle.songSkinActive()) return true;
+        String def = chart.noteTexture == null ? "" : chart.noteTexture.trim();
+        String tex = noteTexture == null ? "" : noteTexture.trim();
+        return !tex.isEmpty() && !tex.equalsIgnoreCase(def);
+    }
+
     private void renderNotes(GuiGraphics gui, List<GameNote>[] lanes, int[] laneStart,
                              boolean mine, float noteSize, double visibleMs) {
         for (int lane = 0; lane < 4; lane++) {
@@ -5357,7 +5436,8 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                     top = center - half + (float) n.data.offsetY;
                     bottom = center + half + (float) n.data.offsetY;
                     float drawX = x + (float) n.data.offsetX;
-                    boolean custom = customNoteTextures.drawHold(gui, n.data.texture, lane, drawX,
+                    boolean custom = useCustomNoteTexture(n.data.texture)
+                            && customNoteTextures.drawHold(gui, n.data.texture, lane, drawX,
                             top, bottom, noteSize * (float) Math.max(0.01, n.data.scaleX), down);
                     if (!custom) NoteStyle.drawHoldPiece(gui, lane, drawX, top, bottom,
                             noteSize * (float) Math.max(0.01, n.data.scaleX), down);
@@ -5374,7 +5454,8 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                                 (float) (n.data.angle + n.data.offsetAngle)));
                         gui.pose().scale((float) Math.max(0.01, n.data.scaleX),
                                 (float) Math.max(0.01, n.data.scaleY), 1);
-                        if (!customNoteTextures.drawNote(gui, n.data.texture, lane, 0, 0, noteSize)) {
+                        if (!useCustomNoteTexture(n.data.texture)
+                                || !customNoteTextures.drawNote(gui, n.data.texture, lane, 0, 0, noteSize)) {
                             NoteStyle.drawNote(gui, lane, 0, 0, noteSize);
                         }
                         gui.pose().popPose();
@@ -5850,7 +5931,13 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         if (rawInput != null) { rawInput.stop(); rawInput = null; }
         if (luaRuntime != null) luaRuntime.close();
         extraCharacters.close();
+        if (opponentBot != null) {
+            opponentBot.remove(minecraft.level == null ? null : minecraft.level.getEntity(botEntityId));
+            opponentBot = null;
+        }
         customNoteTextures.close();
+        // Release the song's arrowSkin from the note pipeline so menus/other songs reset.
+        NoteStyle.useSongSkin(null, null, null);
         if (psychScene != null) psychScene.close();
         if (freeCamMove) setFreeCamMove(false);
         freeCam = false;

@@ -67,14 +67,21 @@ public class SongLibrary {
         return root().resolve("mods");
     }
 
+    /**
+     * Subfolder names inside {@code mods/} that are the naked global mod's own
+     * content, never a named mod pack. Skipped when enumerating mods/ subfolders.
+     */
+    public static final Set<String> RESERVED_MOD_SUBDIRS =
+            Set.of("animations", "scripts", "fonts", "images");
+
     /** Global Psych Lua scripts that run for every song. */
     public static Path scriptsDir() {
-        return root().resolve("scripts");
+        return modsDir().resolve("scripts");
     }
 
     /** Loose TTF/OTF files available to every Lua script. */
     public static Path fontsDir() {
-        return root().resolve("fonts");
+        return modsDir().resolve("fonts");
     }
 
     public static Path cacheDir() {
@@ -86,7 +93,7 @@ public class SongLibrary {
     }
 
     public static Path animationsDir() {
-        return root().resolve("animations");
+        return modsDir().resolve("animations");
     }
 
     public static Path hitsoundsDir() {
@@ -97,8 +104,9 @@ public class SongLibrary {
         return root().resolve("splashes");
     }
 
+    /** Global health icons, Psych-style, under the naked global mod's images/icons. */
     public static Path iconsDir() {
-        return root().resolve("icons");
+        return modsDir().resolve("images").resolve("icons");
     }
 
     private static Map<String, SongEntry> songs = new LinkedHashMap<>();
@@ -116,7 +124,10 @@ public class SongLibrary {
         return rescanGen;
     }
 
+    private static boolean migrated;
+
     public static void ensureFolders() {
+        migrateGlobalFolders();
         try {
             Files.createDirectories(songsDir());
             Files.createDirectories(modsDir());
@@ -129,6 +140,49 @@ public class SongLibrary {
             Files.createDirectories(iconsDir());
         } catch (IOException e) {
             FnfMod.LOGGER.error("Could not create fnfmod config folders", e);
+        }
+    }
+
+    /**
+     * One-time move of the pre-2.2 global folders into the naked global mod:
+     * config/fnfmod/{animations,scripts,fonts} -&gt; mods/{...} and the old flat
+     * config/fnfmod/icons -&gt; mods/images/icons. Runs once per process; each old
+     * folder disappears after it is moved, so subsequent starts are no-ops.
+     */
+    private static synchronized void migrateGlobalFolders() {
+        if (migrated) return;
+        migrated = true;
+        moveFolderContents(root().resolve("animations"), animationsDir());
+        moveFolderContents(root().resolve("scripts"), scriptsDir());
+        moveFolderContents(root().resolve("fonts"), fontsDir());
+        moveFolderContents(root().resolve("icons"), iconsDir());
+    }
+
+    /** Moves every child of {@code oldDir} into {@code newDir}, then removes an emptied {@code oldDir}. */
+    private static void moveFolderContents(Path oldDir, Path newDir) {
+        try {
+            if (oldDir == null || newDir == null) return;
+            oldDir = oldDir.toAbsolutePath().normalize();
+            newDir = newDir.toAbsolutePath().normalize();
+            if (oldDir.equals(newDir) || !Files.isDirectory(oldDir)) return;
+            Files.createDirectories(newDir);
+            try (Stream<Path> children = Files.list(oldDir)) {
+                for (Path child : children.toList()) {
+                    Path target = newDir.resolve(child.getFileName().toString());
+                    if (Files.exists(target)) continue; // never clobber content already in the new layout
+                    try {
+                        Files.move(child, target);
+                    } catch (IOException moveError) {
+                        FnfMod.LOGGER.warn("Could not migrate {} -> {}: {}", child, target, moveError.toString());
+                    }
+                }
+            }
+            try (Stream<Path> remaining = Files.list(oldDir)) {
+                if (remaining.findAny().isEmpty()) Files.delete(oldDir);
+            }
+            FnfMod.LOGGER.info("Migrated global folder {} into {}", oldDir, newDir);
+        } catch (IOException e) {
+            FnfMod.LOGGER.warn("Failed to migrate global folder {}: {}", oldDir, e.toString());
         }
     }
 
@@ -153,7 +207,7 @@ public class SongLibrary {
         if (ModContentScope.mode() == ModContentScope.Mode.MOD_WORLD) {
             ModContentScope.activeMod().ifPresent(active -> scanPsychRoot(active.root(), found, icons));
         } else if (ModContentScope.mode() == ModContentScope.Mode.ALL) {
-            scanPsychRoot(modsDir(), found, icons);
+            scanModsDir(found, icons);
             for (String folder : getExternalFolders()) {
                 try {
                     EnumSet<ExternalContent> content = getExternalFolderContent(folder);
@@ -325,6 +379,29 @@ public class SongLibrary {
      */
     private static void scanPsychRoot(Path root, Map<String, SongEntry> found, Map<String, Path> icons) {
         scanPsychRoot(root, found, icons, allExternalContent());
+    }
+
+    /**
+     * Scans the mods/ directory, which is a hybrid: it is both the naked global
+     * mod (its own loose data/songs/images, e.g. images/icons for global health
+     * icons) and the container of named mod packs (mods/&lt;NAME&gt;). Because the
+     * naked global mod's images/ folder would make {@link #isModFolder} treat all
+     * of mods/ as a single pack, both passes run explicitly here, and the global
+     * folders in {@link #RESERVED_MOD_SUBDIRS} are never scanned as named mods.
+     */
+    private static void scanModsDir(Map<String, SongEntry> found, Map<String, Path> icons) {
+        Path mods = modsDir();
+        if (!Files.isDirectory(mods)) return;
+        // Naked global mod: its own loose content (songs, images/icons, ...).
+        if (isModFolder(mods)) scanPsychMod(mods, found, icons, allExternalContent());
+        else collectIcons(mods, icons);
+        // Named mod packs: every subfolder that is not a reserved global folder.
+        try (Stream<Path> subs = Files.list(mods)) {
+            subs.filter(Files::isDirectory).sorted().forEach(sub -> {
+                if (RESERVED_MOD_SUBDIRS.contains(sub.getFileName().toString().toLowerCase(Locale.ROOT))) return;
+                if (isModFolder(sub)) scanPsychMod(sub, found, icons, allExternalContent());
+            });
+        } catch (IOException ignored) {}
     }
 
     private static void scanPsychRoot(Path root, Map<String, SongEntry> found, Map<String, Path> icons,

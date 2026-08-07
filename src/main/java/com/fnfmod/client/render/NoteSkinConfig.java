@@ -17,8 +17,12 @@ public record NoteSkinConfig(Part note, Part receptor, Part sustain, Part splash
             Part.DEFAULT, Part.DEFAULT, Part.DEFAULT, Part.DEFAULT, Part.DEFAULT);
 
     public static NoteSkinConfig load(Path skinDirectory) {
-        Path file = skinDirectory.resolve("skin.json");
-        if (!Files.isRegularFile(file)) return DEFAULT;
+        return loadFile(skinDirectory.resolve("skin.json"));
+    }
+
+    /** Loads a note-skin config from a specific json file (flat skins name it &lt;skin&gt;.json). */
+    public static NoteSkinConfig loadFile(Path file) {
+        if (file == null || !Files.isRegularFile(file)) return DEFAULT;
         try {
             JsonObject json = JsonParser.parseString(Files.readString(file)).getAsJsonObject();
             return new NoteSkinConfig(
@@ -29,7 +33,7 @@ public record NoteSkinConfig(Part note, Part receptor, Part sustain, Part splash
                     part(json, "holdCoverScale", "holdCoverAlpha", "holdCoverX", "holdCoverY")
             );
         } catch (Exception error) {
-            FnfMod.LOGGER.warn("Bad skin.json in {}: {}", skinDirectory, error.toString());
+            FnfMod.LOGGER.warn("Bad note-skin json {}: {}", file, error.toString());
             return DEFAULT;
         }
     }

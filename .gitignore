@@ -16,3 +16,6 @@ run/
 # OS
 Thumbs.db
 .DS_Store
+
+# Local backups
+backups/

@@ -280,6 +280,20 @@ public final class PsychNoteTextureCache implements AutoCloseable {
         return true;
     }
 
+    /**
+     * Resolves a chart arrowSkin name to its {@code {png, xml, json}} files (json may
+     * be null), or null when the PNG/XML pair is missing. Lets NoteStyle render the
+     * song's arrowSkin through the same RGB/sustain pipeline as selectable skins.
+     */
+    public Path[] resolveSkinFiles(String rawTexture) {
+        if (rawTexture == null || rawTexture.isBlank()) return null;
+        String texture = stripExtension(rawTexture.trim().replace('\\', '/'));
+        Path png = resolve(texture + ".png");
+        Path xml = resolve(texture + ".xml");
+        if (png == null || xml == null) return null;
+        return new Path[]{png, xml, resolve(texture + ".json")};
+    }
+
     private Style style(String rawTexture) {
         if (!enabled || rawTexture == null || rawTexture.isBlank()) return null;
         String texture = stripExtension(rawTexture.trim().replace('\\', '/'));

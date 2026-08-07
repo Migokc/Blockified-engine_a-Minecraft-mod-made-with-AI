@@ -2,9 +2,29 @@
 
 A feature-full Friday Night Funkin' engine inside of Minecraft — **NeoForge 1.21.1**.
 
-Current release: **2.1.7bbs**.
+Current release: **2.2.0bbs**.
 
 Documentation: **[Blockified Engine Docs](https://migokc.github.io/Blockified-engine_a-Minecraft-mod-made-with-AI/)**.
+
+### 2.2.0bbs highlights
+
+- Global content folders now live inside `config/fnfmod/mods/` — `mods/animations`,
+  `mods/scripts`, `mods/fonts`, and health icons at `mods/images/icons` — so the
+  `mods/` folder is both the naked global mod and the named-pack container, matching
+  Psych's layout. Existing installs auto-migrate on first launch; `songs`, `skins`,
+  `splashes`, and `hitsounds` stay at the config root.
+- A bundled world can force the player's settings while it is played: a
+  `blockified-options.json` in the world folder shadows any subset of settings keys
+  and locks them (grayed out) in-game, then restores the player's own values on exit.
+  The forced values are never written back to `options.json`.
+- The solo opponent bot now renders a real BBS character (spawned like Add Character
+  performers) instead of a bare armor stand, with sing/miss/idle animations.
+- Note skins support Psych-style flat files named after the skin
+  (`images/noteSkins/<skin>.png/.xml/.json`), and a chart's `arrowSkin` renders
+  through the same RGB/sustain pipeline as selectable skins.
+- A song's `/time` command is undone on exit: world time is snapshotted at song
+  start and restored afterward, while natural day progression during the song is
+  preserved.
 
 ### 2.1.7bbs highlights
 
@@ -400,7 +420,7 @@ title.shadow = false
 ```
 
 Fonts resolve from the machine profile's `fonts/`, then the owning mod's `fonts/`,
-then `config/fnfmod/fonts/`. Missing or invalid fonts log a warning and use the
+then `config/fnfmod/mods/fonts/`. Missing or invalid fonts log a warning and use the
 Minecraft font.
 
 Machine widgets support Psych-style tweens:
@@ -592,7 +612,7 @@ removeBlockifiedCharacter('backup')
 `characterPlayAnim`, `characterDance`, `get/setCharacterX/Y`, generic properties,
 and X/Y/Z/angle tweens recognize the custom tag.
 Definition names use the active mod by default; prefix one with `global:` to use
-a user definition from `config/fnfmod/animations` explicitly.
+a user definition from `config/fnfmod/mods/animations` explicitly.
 
 Each external path in **Settings > Directories** has its own checklist for Charts,
 Song Audio, Events, Lua, Images, Icons, Characters, and Fonts. Existing paths start
@@ -625,7 +645,7 @@ data/<song>/*.lua
 <song folder>/*.lua
 ```
 
-`config/fnfmod/scripts/*.lua` contains global scripts that run with complete mod
+`config/fnfmod/mods/scripts/*.lua` contains global scripts that run with complete mod
 packs. Pack-scoped song scripts belong in `mods/<pack>/data/<song>/` or
 `mods/<pack>/songs/<song>/`. Lightweight `songs/<song>` entries do not run Lua.
 
@@ -803,7 +823,7 @@ searched in this order:
 
 ```
 config/fnfmod/mods/<pack>/fonts/
-config/fnfmod/fonts/                 <- global fonts
+config/fnfmod/mods/fonts/            <- global fonts
 ```
 
 Pack/song fonts are transferred with songs in multiplayer. Each Lua text object
@@ -967,12 +987,12 @@ The animation setting has two built-in choices:
   legacy global `character.json`) is the fallback.
 
 The **Animations** selector lists only character JSON definitions found directly
-in `config/fnfmod/animations/`. It never lists raw BBS forms or definitions from
+in `config/fnfmod/mods/animations/`. It never lists raw BBS forms or definitions from
 installed mods. `idle2` remains opt-in through a JSON definition; when mapped,
 `idle` and `idle2` alternate every beat. Existing playerAnimator/Emotecraft
 animation files are not compatible with BBS FS and are ignored.
 
-**Animation definitions:** each `config/fnfmod/animations/<name>.json` is a
+**Animation definitions:** each `config/fnfmod/mods/animations/<name>.json` is a
 user-selectable mapping. A complete pack can privately provide
 `mods/<pack>/animations/<character>.json`; those names are available to that
 pack's chart and **Change Character** events but cannot be selected in Settings.
@@ -1016,8 +1036,8 @@ beside it (for example, `bf-opp.json` beside `bf.json`) using the same schema. I
 fall back to the normal named JSON.
 
 `icon` is the icon key without `icon-` or `.png`. For example, `"icon": "bf"`
-uses `icon-bf.png` from the song/mod icon folders or from
-`config/fnfmod/icons/`. It is applied when that animation set is active and also
+uses `icon-bf.png` from the song/mod `images/icons` folders or from the global
+`config/fnfmod/mods/images/icons/`. It is applied when that animation set is active and also
 when Change Character selects the set.
 
 `rotation` is a degree offset added to the normal character rotation, so `0`

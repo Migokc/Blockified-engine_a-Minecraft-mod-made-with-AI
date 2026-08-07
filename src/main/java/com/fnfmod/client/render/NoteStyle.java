@@ -2,6 +2,7 @@ package com.fnfmod.client.render;
 
 import com.fnfmod.FnfMod;
 import com.fnfmod.song.SongLibrary;
+import com.fnfmod.world.ModContentScope;
 import com.mojang.blaze3d.platform.NativeImage;
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.math.Axis;
@@ -75,6 +76,11 @@ public final class NoteStyle {
     /** the note skin folder ships its own noteSplashes files */
     private static boolean skinOwnSplash;
     private static NoteSkinConfig skinConfig = NoteSkinConfig.DEFAULT;
+    // The current song's arrowSkin (chart noteTexture), fed in so the "default"
+    // note-skin setting renders it through this pipeline (RGB, proper sustains)
+    // instead of the raw per-note path. songSkinActive is true once it is loaded.
+    private static java.nio.file.Path songSkinPng, songSkinXml, songSkinJson;
+    private static boolean songSkinActive;
     /** external alpha multiplier for everything drawn (middlescroll opponent fade) */
     private static float extAlpha = 1f;
     private static float drawAlpha = 1f;
@@ -158,7 +164,59 @@ public final class NoteStyle {
         }
     }
 
-    /** Selectable skin folders (subfolders of config/fnfmod/skins containing NOTE_assets.png). */
+    /**
+     * Resolved file locations for a skin. Flat skins (a mod's images/noteSkins/&lt;name&gt;.png)
+     * only carry the classic atlas + json; folder skins (config/fnfmod/skins/&lt;name&gt;/) carry
+     * the full fixed-name set. Null fields are simply absent.
+     */
+    private record SkinFiles(Path dir, Path classicPng, Path classicXml, Path json,
+                             Path notesPng, Path notesXml, Path strumPng, Path strumXml,
+                             Path holdAssetsPng, Path splashPng, Path splashXml, boolean folder) {}
+
+    private static SkinFiles resolveSkinFiles(String name) {
+        // Flat file in the active mod's images/noteSkins/, named by the skin.
+        Path flatDir = ModContentScope.resolveActive("images/noteSkins").orElse(null);
+        if (flatDir != null && java.nio.file.Files.isRegularFile(flatDir.resolve(name + ".png"))) {
+            return new SkinFiles(flatDir, flatDir.resolve(name + ".png"), flatDir.resolve(name + ".xml"),
+                    flatDir.resolve(name + ".json"), null, null, null, null, null, null, null, false);
+        }
+        // Flat file directly in config/fnfmod/skins/, named by the skin.
+        Path globalFlat = SongLibrary.skinsDir().resolve(name + ".png");
+        if (java.nio.file.Files.isRegularFile(globalFlat)) {
+            Path base = SongLibrary.skinsDir();
+            return new SkinFiles(base, base.resolve(name + ".png"), base.resolve(name + ".xml"),
+                    base.resolve(name + ".json"), null, null, null, null, null, null, null, false);
+        }
+        // Folder skin under config/fnfmod/skins/ with fixed filenames.
+        Path folder = SongLibrary.skinsDir().resolve(name);
+        if (java.nio.file.Files.isDirectory(folder)) {
+            return new SkinFiles(folder,
+                    folder.resolve("NOTE_assets.png"), folder.resolve("NOTE_assets.xml"),
+                    folder.resolve("skin.json"),
+                    folder.resolve("notes.png"), folder.resolve("notes.xml"),
+                    folder.resolve("noteStrumline.png"), folder.resolve("noteStrumline.xml"),
+                    folder.resolve("NOTE_hold_assets.png"),
+                    folder.resolve("noteSplashes.png"), folder.resolve("noteSplashes.xml"), true);
+        }
+        return null;
+    }
+
+    private static SparrowAtlas atlasOrNull(Path png, Path xml) {
+        return png != null && xml != null ? SparrowAtlas.load(png, xml) : null;
+    }
+
+    /** Resolves a splash pair from the active mod's images/noteSplashes/, then config/fnfmod/splashes/. */
+    private static SparrowAtlas resolveSplashAtlas(String name) {
+        Path modDir = ModContentScope.resolveActive("images/noteSplashes").orElse(null);
+        if (modDir != null) {
+            SparrowAtlas fromMod = atlasOrNull(modDir.resolve(name + ".png"), modDir.resolve(name + ".xml"));
+            if (fromMod != null) return fromMod;
+        }
+        Path dir = SongLibrary.splashesDir();
+        return atlasOrNull(dir.resolve(name + ".png"), dir.resolve(name + ".xml"));
+    }
+
+    /** Selectable skins: folders under config/fnfmod/skins plus flat files in the mod's images/noteSkins. */
     public static java.util.List<String> listSkins() {
         java.util.List<String> out = new java.util.ArrayList<>();
         out.add(com.fnfmod.client.ClientOptions.NOTE_SKIN_DEFAULT);
@@ -176,12 +234,56 @@ public final class NoteStyle {
                                 && !out.contains(name)) out.add(name);
                     });
         } catch (Exception ignored) {}
+        // Flat files directly in config/fnfmod/skins/, named by the skin.
+        try (var files = java.nio.file.Files.list(SongLibrary.skinsDir())) {
+            files.filter(java.nio.file.Files::isRegularFile)
+                    .map(f -> f.getFileName().toString())
+                    .filter(n -> n.toLowerCase(java.util.Locale.ROOT).endsWith(".png"))
+                    .map(n -> n.substring(0, n.length() - 4))
+                    .filter(n -> java.nio.file.Files.isRegularFile(SongLibrary.skinsDir().resolve(n + ".xml")))
+                    .sorted()
+                    .forEach(n -> {
+                        if (!n.equalsIgnoreCase(com.fnfmod.client.ClientOptions.NOTE_SKIN_DEFAULT)
+                                && !n.equalsIgnoreCase(com.fnfmod.client.ClientOptions.NOTE_SKIN_NONE)
+                                && !out.contains(n)) out.add(n);
+                    });
+        } catch (Exception ignored) {}
+        // Flat files in the active mod's images/noteSkins/, named by the skin.
+        Path modSkins = ModContentScope.resolveActive("images/noteSkins").orElse(null);
+        if (modSkins != null) {
+            try (var files = java.nio.file.Files.list(modSkins)) {
+                files.map(f -> f.getFileName().toString())
+                        .filter(n -> n.toLowerCase(java.util.Locale.ROOT).endsWith(".png"))
+                        .map(n -> n.substring(0, n.length() - 4))
+                        .filter(n -> java.nio.file.Files.isRegularFile(modSkins.resolve(n + ".xml")))
+                        .sorted()
+                        .forEach(n -> { if (!out.contains(n)) out.add(n); });
+            } catch (Exception ignored) {}
+        }
         return out;
+    }
+
+    /**
+     * Feeds the current song's arrowSkin (chart {@code noteTexture}) into this pipeline
+     * so the "default" note-skin setting renders it with RGB colours and proper sustains,
+     * instead of the raw per-note path. Pass nulls to clear (menus / song end).
+     */
+    public static void useSongSkin(java.nio.file.Path png, java.nio.file.Path xml, java.nio.file.Path json) {
+        songSkinPng = png;
+        songSkinXml = xml;
+        songSkinJson = json;
+        reload();
+    }
+
+    /** True when the song's arrowSkin is being rendered through this pipeline. */
+    public static boolean songSkinActive() {
+        return songSkinActive;
     }
 
     private static void load() {
         if (loaded) return;
         loaded = true;
+        songSkinActive = false;
         if (arrowTexture == null) {
             arrowTexture = registerGenerated("gen/arrow", makeArrow(false));
             arrowOutlineTexture = registerGenerated("gen/arrow_outline", makeArrow(true));
@@ -190,22 +292,39 @@ public final class NoteStyle {
         if (selected == null || selected.isBlank()) {
             selected = com.fnfmod.client.ClientOptions.NOTE_SKIN_DEFAULT;
         }
-        if (selected.equalsIgnoreCase(com.fnfmod.client.ClientOptions.NOTE_SKIN_DEFAULT)
-                || selected.equalsIgnoreCase(com.fnfmod.client.ClientOptions.NOTE_SKIN_NONE)) {
+        if (selected.equalsIgnoreCase(com.fnfmod.client.ClientOptions.NOTE_SKIN_NONE)) {
             loadProceduralSplashFallback();
-            return; // chart assets are handled per song; note art is intentionally procedural
+            return; // procedural arrows, no chart skin
         }
-        Path skinDir = SongLibrary.skinsDir().resolve(selected);
+        SkinFiles files;
+        if (selected.equalsIgnoreCase(com.fnfmod.client.ClientOptions.NOTE_SKIN_DEFAULT)) {
+            // "default" = the song's own arrowSkin. Render it here when one is supplied;
+            // otherwise fall back to procedural note art.
+            if (songSkinPng != null && java.nio.file.Files.isRegularFile(songSkinPng)
+                    && songSkinXml != null && java.nio.file.Files.isRegularFile(songSkinXml)) {
+                files = new SkinFiles(songSkinPng.getParent(), songSkinPng, songSkinXml, songSkinJson,
+                        null, null, null, null, null, null, null, false);
+                songSkinActive = true;
+            } else {
+                loadProceduralSplashFallback();
+                return;
+            }
+        } else {
+            files = resolveSkinFiles(selected);
+            if (files == null) {
+                loadProceduralSplashFallback();
+                return;
+            }
+        }
+        Path skinDir = files.dir();
 
-        skinConfig = NoteSkinConfig.load(skinDir);
+        skinConfig = NoteSkinConfig.loadFile(files.json());
 
-        // classic single atlas (base game / Psych)
-        SparrowAtlas classic = SparrowAtlas.load(skinDir.resolve("NOTE_assets.png"), skinDir.resolve("NOTE_assets.xml"));
-        // V-Slice split atlases
-        SparrowAtlas vsNotes = classic == null
-                ? SparrowAtlas.load(skinDir.resolve("notes.png"), skinDir.resolve("notes.xml")) : null;
-        SparrowAtlas vsStrums = classic == null
-                ? SparrowAtlas.load(skinDir.resolve("noteStrumline.png"), skinDir.resolve("noteStrumline.xml")) : null;
+        // classic single atlas (base game / Psych; also flat <skin>.png/.xml imports)
+        SparrowAtlas classic = atlasOrNull(files.classicPng(), files.classicXml());
+        // V-Slice split atlases (folder skins only)
+        SparrowAtlas vsNotes = classic == null ? atlasOrNull(files.notesPng(), files.notesXml()) : null;
+        SparrowAtlas vsStrums = classic == null ? atlasOrNull(files.strumPng(), files.strumXml()) : null;
         noteAtlas = classic != null ? classic : vsNotes;
         strumAtlas = classic != null ? classic : vsStrums;
         if (noteAtlas == null && strumAtlas == null) return;
@@ -253,8 +372,9 @@ public final class NoteStyle {
                     || holdPieces[2] != null || holdPieces[3] != null;
         }
         // ...else the V-Slice NOTE_hold_assets.png strip (8 columns: 4 pieces + 4 end caps)
-        if (!holdsFromStrumAtlas) {
-            loadVSliceHoldAssets(skinDir.resolve("NOTE_hold_assets.png"));
+        if (!holdsFromStrumAtlas && files.holdAssetsPng() != null
+                && java.nio.file.Files.isRegularFile(files.holdAssetsPng())) {
+            loadVSliceHoldAssets(files.holdAssetsPng());
         }
 
         // hold cover effects (V-Slice: one atlas per color)
@@ -270,15 +390,14 @@ public final class NoteStyle {
             }
         }
 
-        // hit splashes: the skin's own file wins; otherwise the user-selected pair
-        // from config/fnfmod/splashes/ (colored with the note colors like everything else)
-        splashAtlas = SparrowAtlas.load(skinDir.resolve("noteSplashes.png"), skinDir.resolve("noteSplashes.xml"));
+        // hit splashes: the skin's own file wins; otherwise the user-selected pair from
+        // the mod's images/noteSplashes/ or config/fnfmod/splashes/ (colored like everything else)
+        splashAtlas = atlasOrNull(files.splashPng(), files.splashXml());
         skinOwnSplash = splashAtlas != null;
         if (splashAtlas == null) {
             String sel = com.fnfmod.client.ClientOptions.get().splashSkin;
             if (sel != null && !sel.isEmpty()) {
-                Path dir = SongLibrary.splashesDir();
-                splashAtlas = SparrowAtlas.load(dir.resolve(sel + ".png"), dir.resolve(sel + ".xml"));
+                splashAtlas = resolveSplashAtlas(sel);
             }
         }
         splashAnims = new java.util.List[4];
@@ -320,9 +439,7 @@ public final class NoteStyle {
     private static void loadProceduralSplashFallback() {
         String selected = com.fnfmod.client.ClientOptions.get().splashSkin;
         if (selected == null || selected.isBlank()) return;
-        Path directory = SongLibrary.splashesDir();
-        splashAtlas = SparrowAtlas.load(directory.resolve(selected + ".png"),
-                directory.resolve(selected + ".xml"));
+        splashAtlas = resolveSplashAtlas(selected);
         if (splashAtlas == null) return;
         skinOwnSplash = false;
         splashAnims = new java.util.List[4];
@@ -472,6 +589,18 @@ public final class NoteStyle {
                     .sorted()
                     .forEach(out::add);
         } catch (Exception ignored) {}
+        // Flat pairs in the active mod's images/noteSplashes/.
+        Path modSplashes = ModContentScope.resolveActive("images/noteSplashes").orElse(null);
+        if (modSplashes != null) {
+            try (var files = java.nio.file.Files.list(modSplashes)) {
+                files.map(f -> f.getFileName().toString())
+                        .filter(n -> n.toLowerCase(java.util.Locale.ROOT).endsWith(".png"))
+                        .map(n -> n.substring(0, n.length() - 4))
+                        .filter(n -> java.nio.file.Files.isRegularFile(modSplashes.resolve(n + ".xml")))
+                        .sorted()
+                        .forEach(n -> { if (!out.contains(n)) out.add(n); });
+            } catch (Exception ignored) {}
+        }
         return out;
     }
 

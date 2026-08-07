@@ -102,6 +102,10 @@ public final class SessionManager {
         int luaCommandsInWindow;
         /** First state seen for each block changed by a song command. */
         final Map<WorldBlockKey, BlockSnapshot> changedBlocks = new HashMap<>();
+        /** World time captured at song start, so a song's /time change is undone on exit. */
+        Long startGameTime;
+        long startDayTime;
+        boolean startDaylight;
     }
 
     private static final Map<Key, Session> SESSIONS = new HashMap<>();
@@ -534,6 +538,11 @@ public final class SessionManager {
         }
 
         ServerLevel level = session.host.serverLevel();
+        // Snapshot world time so a song's /time change reverts on exit, while natural
+        // day progression during the song is preserved.
+        session.startGameTime = level.getGameTime();
+        session.startDayTime = level.getDayTime();
+        session.startDaylight = level.getGameRules().getBoolean(net.minecraft.world.level.GameRules.RULE_DAYLIGHT);
         ArmorStand marker = new ArmorStand(level,
                 machinePos.getX() + 0.5, machinePos.getY() + 0.5, machinePos.getZ() + 0.5);
         marker.setInvisible(true);
@@ -829,6 +838,15 @@ public final class SessionManager {
     }
 
     private static void restoreWorld(Session session) {
+        // Undo any /time change: set the day time back to what natural progression
+        // would have reached, so only the command's jump is removed. No-op if the
+        // song never touched time.
+        if (session.startGameTime != null && session.host != null) {
+            ServerLevel level = session.host.serverLevel();
+            long elapsed = Math.max(0, level.getGameTime() - session.startGameTime);
+            level.setDayTime(session.startDayTime + (session.startDaylight ? elapsed : 0));
+            session.startGameTime = null;
+        }
         if (session.changedBlocks.isEmpty() || session.host.getServer() == null) return;
         restoringWorld = true;
         try {

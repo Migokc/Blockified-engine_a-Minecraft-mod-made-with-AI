@@ -70,9 +70,24 @@ public final class FnfClient {
 
     @EventBusSubscriber(modid = FnfMod.MODID, value = Dist.CLIENT)
     public static final class GameBus {
+        /** Overlay a bundled mod world's forced settings once the world scope is bound. */
+        @SubscribeEvent
+        public static void onClientLogin(ClientPlayerNetworkEvent.LoggingIn event) {
+            // Re-read options.json from disk each time any world is entered, so
+            // settings edited outside the game (including note colors) take effect,
+            // then overlay a mod world's forced settings on top.
+            ClientOptions.load();
+            ClientOptions.applyWorldOverrides(ModContentScope.isModWorld()
+                    ? ModContentScope.activeMod().map(ModContentScope.ActiveMod::worldRoot).orElse(null)
+                    : null);
+            // The skin/colors may have changed; rebuild so the effective values render.
+            com.fnfmod.client.render.NoteStyle.reload();
+        }
+
         @SubscribeEvent
         public static void onClientLogout(ClientPlayerNetworkEvent.LoggingOut event) {
             ClientSession.reset();
+            ClientOptions.applyWorldOverrides(null);
             com.fnfmod.client.render.MachineHitboxPreview.clear();
             com.fnfmod.client.render.MachineAtlasCache.clear();
             com.fnfmod.client.render.MachineTextureCache.clear();

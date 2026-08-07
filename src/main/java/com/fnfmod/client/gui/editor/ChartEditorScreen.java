@@ -873,17 +873,6 @@ public final class ChartEditorScreen extends Screen {
             axisGizmo.setTooltip(Tooltip.create(Component.literal(
                     "Shows a world XYZ axis gizmo in the bottom-right while playtesting. "
                             + "Y points up."))); y += 16;
-            Button camReadout = button(x + 4, y, w - 8,
-                    "Camera Readout: " + onOff(options.editorShowCameraReadout), b -> {
-                        options.editorShowCameraReadout = !options.editorShowCameraReadout;
-                        ClientOptions.save();
-                        rebuildUi();
-                    });
-            camReadout.setTooltip(Tooltip.create(Component.literal(
-                    "While free-cam is active (Ctrl+Shift+Space in a playtest), shows the "
-                            + "camera position and 3D rotation as Camera Follow Pos / Camera "
-                            + "Rotation 3D values. With no object selected, Ctrl+C copies them "
-                            + "for pasting in the editor."))); y += 16;
             Button waveform = button(x + 4, y, w - 8, "Waveform...", b -> {}); waveform.active = false;
         }
     }

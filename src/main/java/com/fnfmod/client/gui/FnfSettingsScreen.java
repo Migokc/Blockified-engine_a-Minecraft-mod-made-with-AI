@@ -115,16 +115,24 @@ public class FnfSettingsScreen extends Screen {
     private int sbY() { return rowY(3); }
     private int hueY() { return sbY() + 78; }
 
+    /** True while the current mod world forces the note colour values (locked in-game). */
+    private static boolean noteColorValuesLocked() {
+        return ClientOptions.isLocked("noteColorBase") || ClientOptions.isLocked("noteColorOutline");
+    }
+
     private void initColors() {
         colorDragTarget = 0;
         int w = 170;
         int x = width / 2 - 85;
+        boolean enabledLocked = ClientOptions.isLocked("noteColorsEnabled");
+        boolean valuesLocked = noteColorValuesLocked();
 
-        addRenderableWidget(Button.builder(coloredNotesLabel(), b -> {
+        var toggle = addRenderableWidget(Button.builder(coloredNotesLabel(), b -> {
             ClientOptions.get().noteColorsEnabled = !ClientOptions.get().noteColorsEnabled;
             ClientOptions.save();
             b.setMessage(coloredNotesLabel());
         }).bounds(x, rowY(0), w, 20).build());
+        toggle.active = !enabledLocked;
 
         String[] laneNames = {"Left", "Down", "Up", "Right"};
         addRenderableWidget(Button.builder(Component.literal("Note: " + laneNames[selLane]), b -> {
@@ -141,6 +149,7 @@ public class FnfSettingsScreen extends Screen {
 
         hexBox = addRenderableWidget(new EditBox(font, x + 20, rowY(2) + 2, 62, 16, Component.literal("hex")));
         hexBox.setMaxLength(6);
+        hexBox.setEditable(!valuesLocked);
         hexBox.setResponder(s -> {
             if (updatingHex) return;
             if (s.matches("[0-9a-fA-F]{6}")) {
@@ -152,13 +161,14 @@ public class FnfSettingsScreen extends Screen {
             }
         });
 
-        addRenderableWidget(Button.builder(Component.literal("Reset Lane"), b -> {
+        var reset = addRenderableWidget(Button.builder(Component.literal("Reset Lane"), b -> {
             ClientOptions.get().noteColorBase[selLane] = ClientOptions.defaultBase()[selLane];
             ClientOptions.get().noteColorOutline[selLane] = ClientOptions.defaultOutline()[selLane];
             ClientOptions.save();
             NoteStyle.rebuildLaneColors(selLane);
             loadSelectedColor();
         }).bounds(x + 96, rowY(2), 74, 20).build());
+        reset.active = !valuesLocked;
 
         loadSelectedColor();
     }
@@ -207,13 +217,18 @@ public class FnfSettingsScreen extends Screen {
 
     private boolean beginColorPick(double mx, double my) {
         int sx = sbX(), sy = sbY();
-        if (mx >= sx && mx < sx + 72 && my >= sy && my < sy + 72) {
-            colorDragTarget = 1;
-            return updateColorPick(mx, my);
-        }
-        if (mx >= sx && mx < sx + 170 && my >= hueY() && my < hueY() + 10) {
-            colorDragTarget = 2;
-            return updateColorPick(mx, my);
+        // The saturation/brightness square and hue bar edit the colour value, so
+        // they are inert while the world forces the note colours. Lane selection
+        // (clicking a preview note) stays available.
+        if (!noteColorValuesLocked()) {
+            if (mx >= sx && mx < sx + 72 && my >= sy && my < sy + 72) {
+                colorDragTarget = 1;
+                return updateColorPick(mx, my);
+            }
+            if (mx >= sx && mx < sx + 170 && my >= hueY() && my < hueY() + 10) {
+                colorDragTarget = 2;
+                return updateColorPick(mx, my);
+            }
         }
         // clicking a preview note selects that lane
         for (int i = 0; i < 4; i++) {
@@ -447,14 +462,14 @@ public class FnfSettingsScreen extends Screen {
     private void initDelay() {
         int y = rowY(1);
         int cx = width / 2;
-        addRenderableWidget(Button.builder(Component.literal("-10"), b -> nudgeOffset(-10))
-                .bounds(cx - 90, y, 40, 20).build());
-        addRenderableWidget(Button.builder(Component.literal("-1"), b -> nudgeOffset(-1))
-                .bounds(cx - 46, y, 40, 20).build());
-        addRenderableWidget(Button.builder(Component.literal("+1"), b -> nudgeOffset(1))
-                .bounds(cx + 6, y, 40, 20).build());
-        addRenderableWidget(Button.builder(Component.literal("+10"), b -> nudgeOffset(10))
-                .bounds(cx + 50, y, 40, 20).build());
+        lockIf(addRenderableWidget(Button.builder(Component.literal("-10"), b -> nudgeOffset(-10))
+                .bounds(cx - 90, y, 40, 20).build()), "offsetMs");
+        lockIf(addRenderableWidget(Button.builder(Component.literal("-1"), b -> nudgeOffset(-1))
+                .bounds(cx - 46, y, 40, 20).build()), "offsetMs");
+        lockIf(addRenderableWidget(Button.builder(Component.literal("+1"), b -> nudgeOffset(1))
+                .bounds(cx + 6, y, 40, 20).build()), "offsetMs");
+        lockIf(addRenderableWidget(Button.builder(Component.literal("+10"), b -> nudgeOffset(10))
+                .bounds(cx + 50, y, 40, 20).build()), "offsetMs");
     }
 
     private void nudgeOffset(double delta) {
@@ -462,16 +477,22 @@ public class FnfSettingsScreen extends Screen {
         ClientOptions.save();
     }
 
+    /** Grays out and disables a control whose setting is forced by the current mod world. */
+    private static <T extends net.minecraft.client.gui.components.AbstractWidget> T lockIf(T widget, String field) {
+        if (ClientOptions.isLocked(field)) widget.active = false;
+        return widget;
+    }
+
     private void initVisuals() {
         int w = 170;
         int x = width / 2 - w / 2;
-        addRenderableWidget(Button.builder(noteSkinLabel(), b ->
+        lockIf(addRenderableWidget(Button.builder(noteSkinLabel(), b ->
                 cycle(NoteStyle.listSkins(), ClientOptions.get().noteSkin, false, next -> {
                     ClientOptions.get().noteSkin = next;
                     ClientOptions.save();
                     NoteStyle.reload();
                     b.setMessage(noteSkinLabel());
-                })).bounds(x, rowY(0), w, 20).build());
+                })).bounds(x, rowY(0), w, 20).build()), "noteSkin");
 
         Button splashBtn = addRenderableWidget(Button.builder(splashLabel(), b ->
                 cycle(NoteStyle.listSplashes(), ClientOptions.get().splashSkin, true, next -> {
@@ -480,30 +501,30 @@ public class FnfSettingsScreen extends Screen {
                     NoteStyle.reload();
                     b.setMessage(splashLabel());
                 })).bounds(x, rowY(1), w, 20).build());
-        splashBtn.active = !NoteStyle.skinHasOwnSplash();
+        splashBtn.active = !NoteStyle.skinHasOwnSplash() && !ClientOptions.isLocked("splashSkin");
 
-        addRenderableWidget(Button.builder(animsLabel(), b ->
+        lockIf(addRenderableWidget(Button.builder(animsLabel(), b ->
                 cycle(CharacterAnimations.listSets(), ClientOptions.get().animationSet, false, next -> {
                     ClientOptions.get().animationSet = next;
                     ClientOptions.save();
                     b.setMessage(animsLabel());
-                })).bounds(x, rowY(2), w, 20).build());
+                })).bounds(x, rowY(2), w, 20).build()), "animationSet");
 
-        addRenderableWidget(Button.builder(hudStyleLabel(), b ->
+        lockIf(addRenderableWidget(Button.builder(hudStyleLabel(), b ->
                 cycle(List.of("default", "abbreviated", "numbers", "vanilla", "fnf"),
                         ClientOptions.get().hudStyle, false, next -> {
                             ClientOptions.get().hudStyle = next;
                             ClientOptions.save();
                             b.setMessage(hudStyleLabel());
-                        })).bounds(x, rowY(3), w, 20).build());
+                        })).bounds(x, rowY(3), w, 20).build()), "hudStyle");
 
         // icon selectors open a searchable list
-        addRenderableWidget(Button.builder(iconLabel(true),
+        lockIf(addRenderableWidget(Button.builder(iconLabel(true),
                 b -> minecraft.setScreen(new IconPickerScreen(this, true)))
-                .bounds(x, rowY(4), w, 20).build());
-        addRenderableWidget(Button.builder(iconLabel(false),
+                .bounds(x, rowY(4), w, 20).build()), "playerIcon");
+        lockIf(addRenderableWidget(Button.builder(iconLabel(false),
                 b -> minecraft.setScreen(new IconPickerScreen(this, false)))
-                .bounds(x, rowY(5), w, 20).build());
+                .bounds(x, rowY(5), w, 20).build()), "botIcon");
         addRenderableWidget(Button.builder(Component.literal("Rating Position..."),
                 b -> minecraft.setScreen(new RatingPositionScreen(this)))
                 .bounds(x, rowY(6), w, 20).build());
@@ -539,26 +560,26 @@ public class FnfSettingsScreen extends Screen {
     private void initGameplay() {
         int w = 170;
         int x = width / 2 - w / 2;
-        addRenderableWidget(Button.builder(toggleLabel("Downscroll", ClientOptions.get().downscroll), b -> {
+        lockIf(addRenderableWidget(Button.builder(toggleLabel("Downscroll", ClientOptions.get().downscroll), b -> {
             ClientOptions.get().downscroll = !ClientOptions.get().downscroll;
             ClientOptions.save();
             b.setMessage(toggleLabel("Downscroll", ClientOptions.get().downscroll));
-        }).bounds(x, rowY(0), w, 20).build());
+        }).bounds(x, rowY(0), w, 20).build()), "downscroll");
 
-        addRenderableWidget(Button.builder(toggleLabel("Middlescroll", ClientOptions.get().middlescroll), b -> {
+        lockIf(addRenderableWidget(Button.builder(toggleLabel("Middlescroll", ClientOptions.get().middlescroll), b -> {
             ClientOptions.get().middlescroll = !ClientOptions.get().middlescroll;
             ClientOptions.save();
             b.setMessage(toggleLabel("Middlescroll", ClientOptions.get().middlescroll));
-        }).bounds(x, rowY(1), w, 20).build());
+        }).bounds(x, rowY(1), w, 20).build()), "middlescroll");
 
-        addRenderableWidget(Button.builder(toggleLabel("Ghost Tapping", ClientOptions.get().ghostTapping), b -> {
+        lockIf(addRenderableWidget(Button.builder(toggleLabel("Ghost Tapping", ClientOptions.get().ghostTapping), b -> {
             ClientOptions.get().ghostTapping = !ClientOptions.get().ghostTapping;
             ClientOptions.save();
             b.setMessage(toggleLabel("Ghost Tapping", ClientOptions.get().ghostTapping));
-        }).bounds(x, rowY(2), w, 20).build());
+        }).bounds(x, rowY(2), w, 20).build()), "ghostTapping");
 
         // scroll speed slider (0.35 - 6) + constant/multiplicative mode toggle
-        addRenderableWidget(new net.minecraft.client.gui.components.AbstractSliderButton(
+        lockIf(addRenderableWidget(new net.minecraft.client.gui.components.AbstractSliderButton(
                 x, rowY(3), w - 52, 20, scrollSpeedMsg(),
                 (ClientOptions.get().scrollSpeedMult - 0.35) / (6.0 - 0.35)) {
             @Override protected void updateMessage() { setMessage(scrollSpeedMsg()); }
@@ -566,23 +587,23 @@ public class FnfSettingsScreen extends Screen {
                 ClientOptions.get().scrollSpeedMult = 0.35 + value * (6.0 - 0.35);
                 ClientOptions.save();
             }
-        });
-        addRenderableWidget(Button.builder(scrollModeLabel(), b -> {
+        }), "scrollSpeedMult");
+        lockIf(addRenderableWidget(Button.builder(scrollModeLabel(), b -> {
             ClientOptions.get().constantScrollSpeed = !ClientOptions.get().constantScrollSpeed;
             ClientOptions.save();
             b.setMessage(scrollModeLabel());
-        }).bounds(x + w - 48, rowY(3), 48, 20).build());
+        }).bounds(x + w - 48, rowY(3), 48, 20).build()), "constantScrollSpeed");
 
-        addRenderableWidget(Button.builder(hitsoundLabel(), b ->
+        lockIf(addRenderableWidget(Button.builder(hitsoundLabel(), b ->
                 cycle(HitsoundPlayer.list(), ClientOptions.get().hitsound, true, next -> {
                     ClientOptions.get().hitsound = next;
                     ClientOptions.save();
                     b.setMessage(hitsoundLabel());
                     HitsoundPlayer.play();
-                })).bounds(x, rowY(4), w, 20).build());
+                })).bounds(x, rowY(4), w, 20).build()), "hitsound");
 
         // hitsound volume slider (0% - 100%)
-        addRenderableWidget(new net.minecraft.client.gui.components.AbstractSliderButton(
+        lockIf(addRenderableWidget(new net.minecraft.client.gui.components.AbstractSliderButton(
                 x, rowY(5), w, 20, hitsoundVolMsg(), ClientOptions.get().hitsoundVolume) {
             @Override protected void updateMessage() { setMessage(hitsoundVolMsg()); }
             @Override protected void applyValue() {
@@ -590,27 +611,27 @@ public class FnfSettingsScreen extends Screen {
                 ClientOptions.save();
                 HitsoundPlayer.play();
             }
-        });
+        }), "hitsoundVolume");
 
-        addRenderableWidget(Button.builder(toggleLabel("Botplay", ClientOptions.get().botplay), b -> {
+        lockIf(addRenderableWidget(Button.builder(toggleLabel("Botplay", ClientOptions.get().botplay), b -> {
             ClientOptions.get().botplay = !ClientOptions.get().botplay;
             ClientOptions.save();
             b.setMessage(toggleLabel("Botplay", ClientOptions.get().botplay));
-        }).bounds(x, rowY(6), w, 20).build());
+        }).bounds(x, rowY(6), w, 20).build()), "botplay");
 
-        addRenderableWidget(Button.builder(songWarningsLabel(), b ->
+        lockIf(addRenderableWidget(Button.builder(songWarningsLabel(), b ->
                 cycle(List.of("on", "off", "blockified", "song"),
                         ClientOptions.get().songWarnings, false, next -> {
                             ClientOptions.get().songWarnings = next;
                             ClientOptions.save();
                             b.setMessage(songWarningsLabel());
-                        })).bounds(x, rowY(7), w, 20).build());
+                        })).bounds(x, rowY(7), w, 20).build()), "songWarnings");
 
-        addRenderableWidget(Button.builder(preciseInputLabel(), b -> {
+        lockIf(addRenderableWidget(Button.builder(preciseInputLabel(), b -> {
             ClientOptions.get().preciseInput = !ClientOptions.get().preciseInput;
             ClientOptions.save();
             b.setMessage(preciseInputLabel());
-        }).bounds(x, rowY(8), w, 20).build());
+        }).bounds(x, rowY(8), w, 20).build()), "preciseInput");
     }
 
     private Component preciseInputLabel() {

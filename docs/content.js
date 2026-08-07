@@ -20,7 +20,7 @@
 
   const pages = {};
 
-  pages.home = page("Blockified Engine", "Documentation · Guides · Wiki", "Build Friday Night Funkin' songs, stages, machines, and world scenes inside Minecraft.", ["2.1.7bbs", "NeoForge 1.21.1", "Singleplayer + LAN"],
+  pages.home = page("Blockified Engine", "Documentation · Guides · Wiki", "Build Friday Night Funkin' songs, stages, machines, and world scenes inside Minecraft.", ["2.2.0bbs", "NeoForge 1.21.1", "Singleplayer + LAN"],
     `<div class="hero-panel"><span>DOCUMENTATION · GUIDES · WIKI</span><h2>Build with Blockified.</h2><p>Learn by following a guide, look up exact behavior in documentation, or understand systems through the wiki. This site covers Blockified additions and changes without duplicating unchanged Psych Engine material.</p><div class="hero-actions"><a class="button-link" href="#/quick-start">Start here</a><a class="button-link secondary" href="#/animations">Make animations</a><a class="button-link secondary" href="#/lua-overview">Lua API</a></div></div>`,
     section("choose", "Choose how to use this site", `<div class="card-grid category-grid">
       <a class="doc-card category-card guide-card" href="#/quick-start"><span>GUIDES</span><h3>Make something</h3><p>Follow ordered, practical steps from installation to a playable song, complete pack, animation, or custom machine.</p></a>
@@ -193,7 +193,18 @@ end`)}<p><a href="#/machine-lua">Open full machine Lua reference</a></p>`),
   pages["mod-worlds"] = page("Bundled worlds", "Documentation · Content", "Tie a Minecraft world to one complete Blockified pack.", ["World-scoped assets"],
     section("location", "Location", `<p>Place worlds under <code>config/fnfmod/mods/My-Mod/worlds/</code>. Blockified resolves the owning pack from the active world.</p>`),
     section("scope", "Asset scope", `<div class="table-wrap"><table><thead><tr><th>Location</th><th>Available content</th></tr></thead><tbody><tr><td>Pack's bundled world</td><td>Only the owning pack</td></tr><tr><td>Ordinary local/LAN world</td><td>All lightweight songs, installed packs, and external directories</td></tr><tr><td>Dedicated server</td><td>Global song library; machine authoring/menu Lua disabled</td></tr></tbody></table></div>`),
-    section("reason", "Why", `<p>Bundled worlds stay self-contained and deterministic, while ordinary worlds preserve Blockified's full global library.</p>`)
+    section("reason", "Why", `<p>Bundled worlds stay self-contained and deterministic, while ordinary worlds preserve Blockified's full global library.</p>`),
+    section("world-options", "World-forced settings", `<p>A bundled world can override the player's own settings while it is being played. Put a <code>blockified-options.json</code> in the world folder (<code>config/fnfmod/mods/My-Mod/worlds/My-World/</code>) with any subset of the settings keys — the same keys as the user's <code>options.json</code>.</p>${code("json", `{
+  "downscroll": true,
+  "noteSkin": "NOTE_assets-future",
+  "hudStyle": "fnf",
+  "scrollSpeedMult": 2.4,
+  "constantScrollSpeed": true
+}`)}<div class="api-list">
+      ${api("Defined keys", "Shadow the player's value and are locked (grayed out) in the in-game settings while inside that world.")}
+      ${api("Undefined keys", "Fall back to the player's own setting, unchanged.")}
+      ${api("Scope", "Only applies inside that bundled world. Normal/LAN worlds and menus use the player's plain settings.")}
+    </div>${callout("Never persisted", "The world's forced values only shadow the player's settings in memory — they are never written back to the user's options.json, and the player's own values return when they leave the world.")}`)
   );
 
   pages.machines = page("Custom machines", "Documentation · Content", "Reskin the Funkin' machine and replace its selector with a Lua menu.", ["Singleplayer", "LAN", "Lua UI"],
@@ -217,12 +228,15 @@ end`)}<p><a href="#/machine-lua">Open full machine Lua reference</a></p>`),
   );
 
   pages["note-skins"] = page("Note skins", "Documentation · Gameplay", "Replace receptors, notes, sustains, splashes, and animated arrows.", ["Sparrow XML", "Animated arrows"],
-    section("layout", "Skin layout", code("text", `config/fnfmod/skins/<name>/
+    section("layout", "Skin layout", `<p>Two layouts are supported. A <strong>folder skin</strong> under <code>config/fnfmod/skins/&lt;name&gt;/</code> uses fixed filenames and can carry the full set (V-Slice split atlases, hold covers, its own splashes):</p>${code("text", `config/fnfmod/skins/<name>/
   NOTE_assets.png
   NOTE_assets.xml
-  skin.json`)),
-    section("json", "skin.json additions", `<p>Blockified reads note scale/alpha/X/Y, receptor values, sustain width/hold values, splash values, and hold-cover values. Missing fields use defaults.</p>`),
-    section("chart", "Chart selection", `<p>Use chart <code>arrowSkin</code> and <code>splashSkin</code>. Global splash atlases may live at <code>config/fnfmod/splashes/&lt;name&gt;.png/.xml</code>.</p>`),
+  skin.json`)}<p>Or, Psych-style, <strong>flat files named by the skin</strong> in a mod's <code>images/noteSkins/</code>, with the json forcibly named to match. Easiest to import — drop the files straight in:</p>${code("text", `mods/<mod>/images/noteSkins/
+  NOTE_assets-future.png
+  NOTE_assets-future.xml
+  NOTE_assets-future.json`)}<p>Those same flat files also work loose in the global skins folder (<code>config/fnfmod/skins/NOTE_assets-future.png/.xml/.json</code>), not just inside a mod. The skin name is the file's base name (<code>NOTE_assets-future</code>), not a forced <code>NOTE_assets</code>. Flat skins load the classic single atlas + json; the folder layout keeps its extras. On a name clash the order is: mod <code>images/noteSkins</code> → flat file in <code>config/fnfmod/skins</code> → folder in <code>config/fnfmod/skins</code>.</p>`),
+    section("json", "skin.json additions", `<p>Blockified reads note scale/alpha/X/Y, receptor values, sustain width/hold values, splash values, and hold-cover values. Missing fields use defaults. Flat skins name this file <code>&lt;skin&gt;.json</code>; folder skins name it <code>skin.json</code>.</p>`),
+    section("chart", "Chart selection", `<p>Use chart <code>arrowSkin</code> and <code>splashSkin</code>. Splash atlases live at <code>config/fnfmod/splashes/&lt;name&gt;.png/.xml</code> or a mod's <code>images/noteSplashes/&lt;name&gt;.png/.xml</code> (mod folder checked first).</p>`),
     section("hold", "Long-note animation", `<p>While an animated arrow skin is held on a sustain, Blockified advances the arrow animation every two atlas frames. Only the arrow skin is affected.</p>`),
     section("reload", "Reload", api("/fnf reload skins", "Reloads note skin definitions and atlases.", "Command"))
   );
@@ -452,7 +466,7 @@ title.fontScale = 2.0
 title.shadow = false
 
 local play = ui.button('play', 'Play', 0.5, 0.5, 180, 24)
-play.font = 'VCR_OSD_MONO.ttf'`)}<p>Resolution order:</p><ol><li><code>machines/&lt;machine&gt;/fonts/</code></li><li>Owning mod's <code>fonts/</code></li><li><code>config/fnfmod/fonts/</code></li></ol>${callout("Safe fallback", "Missing or invalid fonts use Minecraft's default font and write one warning to the log.")}`),
+play.font = 'VCR_OSD_MONO.ttf'`)}<p>Resolution order:</p><ol><li><code>machines/&lt;machine&gt;/fonts/</code></li><li>Owning mod's <code>fonts/</code></li><li><code>config/fnfmod/mods/fonts/</code></li></ol>${callout("Safe fallback", "Missing or invalid fonts use Minecraft's default font and write one warning to the log.")}`),
     section("tweens", "Widget tweening", `<p>Machine menus expose Psych-style tagged tweens for widget properties. Supported functions are <code>doTweenX</code>, <code>doTweenY</code>, <code>doTweenAlpha</code>, <code>doTweenAngle</code>, <code>doTweenWidth</code>, <code>doTweenHeight</code>, <code>doTweenFontScale</code>, <code>doTweenColor</code>, and <code>cancelTween</code>.</p>${code("lua", `local cover = ui.image('cover', 'images/cover.png', -0.2, 0.5, 100, 100)
 
 function onOpen()
@@ -597,7 +611,7 @@ end`))
   );
 
   pages.formats = page("Paths and formats", "Documentation · Tools", "Quick reference for Blockified-owned locations.", ["Reference"],
-    section("paths", "Path map", `<div class="table-wrap"><table><thead><tr><th>Content</th><th>Path</th></tr></thead><tbody><tr><td>Lightweight songs</td><td><code>config/fnfmod/songs</code></td></tr><tr><td>Complete packs</td><td><code>config/fnfmod/mods</code></td></tr><tr><td>Note skins</td><td><code>config/fnfmod/skins</code></td></tr><tr><td>Splashes</td><td><code>config/fnfmod/splashes</code></td></tr><tr><td>Pack machines</td><td><code>mods/&lt;mod&gt;/machines</code></td></tr><tr><td>Pack worlds</td><td><code>mods/&lt;mod&gt;/worlds</code></td></tr><tr><td>Pack fonts</td><td><code>mods/&lt;mod&gt;/fonts</code></td></tr></tbody></table></div>`),
+    section("paths", "Path map", `<div class="table-wrap"><table><thead><tr><th>Content</th><th>Path</th></tr></thead><tbody><tr><td>Lightweight songs</td><td><code>config/fnfmod/songs</code></td></tr><tr><td>Complete packs</td><td><code>config/fnfmod/mods</code></td></tr><tr><td>Note skins</td><td><code>config/fnfmod/skins</code></td></tr><tr><td>Splashes</td><td><code>config/fnfmod/splashes</code></td></tr><tr><td>Global BBS mappings</td><td><code>config/fnfmod/mods/animations</code></td></tr><tr><td>Global Lua scripts</td><td><code>config/fnfmod/mods/scripts</code></td></tr><tr><td>Global fonts</td><td><code>config/fnfmod/mods/fonts</code></td></tr><tr><td>Global health icons</td><td><code>config/fnfmod/mods/images/icons</code></td></tr><tr><td>Pack machines</td><td><code>mods/&lt;mod&gt;/machines</code></td></tr><tr><td>Pack worlds</td><td><code>mods/&lt;mod&gt;/worlds</code></td></tr><tr><td>Pack fonts</td><td><code>mods/&lt;mod&gt;/fonts</code></td></tr></tbody></table></div>`),
     section("atlas", "Animated atlases", `<p>Note skins, splashes, characters, world sprites, and machine UI can use PNG plus Sparrow XML. XML prefixes drive animation registration.</p>`),
     section("audio", "Audio", `<p>Song audio uses OGG, conventionally <code>Inst.ogg</code> and optional vocal stems such as <code>Voices.ogg</code>.</p>`),
     section("case", "Portable paths", callout("Keep case exact", "Windows may hide path-case mistakes that fail on case-sensitive systems."))

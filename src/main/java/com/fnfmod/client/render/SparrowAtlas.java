@@ -91,7 +91,7 @@ public class SparrowAtlas implements AutoCloseable {
     public static Decoded decode(Path png, Path xml) {
         NativeImage image = null;
         try {
-            if (!Files.isRegularFile(png) || !Files.isRegularFile(xml)) return null;
+            if (png == null || xml == null || !Files.isRegularFile(png) || !Files.isRegularFile(xml)) return null;
             try (InputStream in = Files.newInputStream(png)) {
                 image = NativeImage.read(in);
             }
