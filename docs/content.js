@@ -20,7 +20,7 @@
 
   const pages = {};
 
-  pages.home = page("Blockified Engine", "Documentation · Guides · Wiki", "Build Friday Night Funkin' songs, stages, machines, and world scenes inside Minecraft.", ["2.2.1bbs", "NeoForge 1.21.1", "Singleplayer + LAN"],
+  pages.home = page("Blockified Engine", "Documentation · Guides · Wiki", "Build Friday Night Funkin' songs, stages, machines, and world scenes inside Minecraft.", ["2.2.2bbs", "NeoForge 1.21.1", "Singleplayer + LAN"],
     `<div class="hero-panel"><span>DOCUMENTATION · GUIDES · WIKI</span><h2>Build with Blockified.</h2><p>Learn by following a guide, look up exact behavior in documentation, or understand systems through the wiki. This site covers Blockified additions and changes without duplicating unchanged Psych Engine material.</p><div class="hero-actions"><a class="button-link" href="#/quick-start">Start here</a><a class="button-link secondary" href="#/animations">Make animations</a><a class="button-link secondary" href="#/lua-overview">Lua API</a></div></div>`,
     section("choose", "Choose how to use this site", `<div class="card-grid category-grid">
       <a class="doc-card category-card guide-card" href="#/quick-start"><span>GUIDES</span><h3>Make something</h3><p>Follow ordered, practical steps from installation to a playable song, complete pack, animation, or custom machine.</p></a>
@@ -282,7 +282,7 @@ dancer:playAnimation('idle')`)),
 
   pages.events = page("Chart events", "Documentation · Gameplay", "Blockified events and modifications to compatible Psych events.", ["Minecraft", "3D camera", "Characters"],
     section("new", "Blockified events", `<div class="api-list">
-      ${api("Minecraft Command", "V1 command; V2 player/server context. Supports player, opponent, speaker, direction, camera, and character placeholders.", "Event")}
+      ${api("Minecraft Command", "V1 command; V2 player/server context. Supports player, opponent, speaker, direction, camera, and character placeholders. Human roles use player selectors; bots and speakers use entity selectors.", "Event")}
       ${api("Camera Zoom", "V1 zoom offset (-1 to 0.9); V2 duration (default 0.5); V3 easing.", "Event")}
       ${api("Camera Focus", "V1 player, opponent, gf, or blank to release; V2 easing.", "Event")}
       ${api("Camera Behavior", "V1 speed multiplier; V2 easing; blank resets. Used by Minecraft/Legacy presentation.", "Event")}
@@ -303,10 +303,10 @@ dancer:playAnimation('idle')`)),
   );
 
   pages.rollback = page("Playstate rollback", "Documentation · Gameplay", "Restore Minecraft state after finishing, quitting, or giving up.", ["Copy-on-write", "Commands"],
-    section("state", "Captured state", `<p>The playstate records required player/world state, including inventory and synchronous block changes produced during the session.</p>`),
+    section("state", "Captured state", `<p>The playstate records required player/world state, including inventory, each participant's game mode, and synchronous block changes produced during the session.</p>`),
     section("blocks", "Modified blocks", `<p>Block state is captured copy-on-write: the original is saved on the first affected change. A chart command such as <code>/setblock ... air</code> can restore what existed before the song.</p>`),
     section("explosions", "Explosions", callout("Timing boundary", "Immediate command-driven changes inside the active transaction can restore. Delayed TNT or creeper explosions outside it are not guaranteed rollback coverage.")),
-    section("ends", "End paths", `<p>The same restoration runs after normal finish, quit, or giving up after a loss. Restarting normal solo gameplay also restores the pre-song player/world baseline, clears executed command-event history, recreates session actors, and then rebuilds PlayState. Editor playtests rebuild locally because they have no server song session.</p>`)
+    section("ends", "End paths", `<p>The same restoration runs after normal finish, quit, cancellation, or giving up after a loss. Restarting normal solo gameplay also restores the pre-song player/world baseline and participant game modes, clears executed command-event history, recreates session actors, and then rebuilds PlayState. Editor playtests rebuild locally because they have no server song session.</p>`)
   );
 
   pages.multiplayer = page("Multiplayer", "Documentation · Gameplay", "Server-authoritative sessions with streamed charts and audio.", ["LAN", "Server authority"],
@@ -599,7 +599,7 @@ end`))
     section("objects", "Object controls", `<div class="table-wrap"><table><thead><tr><th>Input</th><th>Action</th></tr></thead><tbody>
       <tr><td>Click</td><td>Select object</td></tr><tr><td>Numpad .</td><td>Focus selected origin</td></tr><tr><td>G / R / S</td><td>Move / rotate / scale</td></tr><tr><td>Numbers</td><td>Exact transform amount</td></tr><tr><td>Alt + G/R/S</td><td>Reset transform</td></tr><tr><td>X/Y/Z</td><td>Axis</td></tr><tr><td>Shift + axis</td><td>Plane</td></tr><tr><td>Shift / Ctrl</td><td>Precise / snap</td></tr><tr><td>LMB / Enter</td><td>Confirm</td></tr><tr><td>RMB / Esc</td><td>Cancel</td></tr><tr><td>Delete</td><td>Delete selection</td></tr><tr><td>Ctrl+Z / Ctrl+Y</td><td>Undo / redo</td></tr>
     </tbody></table></div>`),
-    section("clipboard", "Lua copy/paste", `<p><code>Ctrl+C</code> copies the selected object's Lua; with no selection it copies camera events. <code>Ctrl+V</code> parses supported marked Lua and duplicates/places its type, name, transform, and modifiers. Code is the source; no hidden metadata is saved.</p>${callout("Paste marker", "Clipboard Lua needs the predefined Blockified object comment; arbitrary clipboard Lua is not executed.")}`),
+    section("clipboard", "Lua copy/paste", `<p><code>Ctrl+C</code> copies the selected object's Lua; with no selection it copies camera events. Camera Follow Pos output compensates for Minecraft's detached-camera baseline, so replay reaches the same authored world position; rotation and zoom values are copied unchanged. <code>Ctrl+V</code> parses supported marked Lua and duplicates/places its type, name, transform, and modifiers. Code is the source; no hidden metadata is saved.</p>${callout("Paste marker", "Clipboard Lua needs the predefined Blockified object comment; arbitrary clipboard Lua is not executed.")}`),
     section("types", "Editable objects", `<p>Blockified characters, sprites, Sparrow XML spritesheets, graphs, world text, and registered free-camera objects can be selected. Framing uses the visible origin marker.</p>`),
     section("ui", "Viewport UI", `<p>HUD starts hidden. Hide Menu swaps menu-only and HUD-only; its button remains at 30% opacity. The bottom-right gizmo hides with the menu. A thick camera marker shows original position/rotation.</p>`)
   );

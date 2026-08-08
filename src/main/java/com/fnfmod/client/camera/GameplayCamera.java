@@ -106,6 +106,12 @@ public final class GameplayCamera {
     private static Vec3 stageRightWorld = new Vec3(1, 0, 0);
     private static Vec3 stageUpWorld = new Vec3(0, 1, 0);
     private static Vec3 stageForwardWorld = new Vec3(0, 0, 1);
+    // Minecraft's detached third-person camera starts offset from cameraEntityPos
+    // before Blockified adds its normal follow offset. Free cam later replaces the
+    // camera position absolutely, but a pasted Camera Follow Pos still runs through
+    // that detached baseline. Copy values must subtract it or playback adds it twice.
+    private static Vec3 detachedCameraBaselineWorld = Vec3.ZERO;
+    private static Vec3 lastNormalWorldOffset = Vec3.ZERO;
 
     public static void beginFreeCam() {
         freeCamEngaged = true;
@@ -143,6 +149,12 @@ public final class GameplayCamera {
         stageRightWorld = new Vec3(rx, ry, rz);
         stageUpWorld = new Vec3(ux, uy, uz);
         stageForwardWorld = new Vec3(fx, fy, fz);
+        // camPos already includes lastNormalWorldOffset. Removing it recovers
+        // Minecraft's untouched detached-camera position; comparing that with
+        // cameraEntityPos gives the baseline a normal event will add on playback.
+        Vec3 cameraBase = cameraEntityPos == null ? anchor : cameraEntityPos.get();
+        if (cameraBase == null) cameraBase = anchor;
+        detachedCameraBaselineWorld = camPos.subtract(lastNormalWorldOffset).subtract(cameraBase);
         // Rotation is applied additively (Camera Rotation 3D semantics), so start
         // from the active rotation-event offset, not the absolute camera angles.
         updateRotationEvent(GameplayClock.now());
@@ -218,7 +230,10 @@ public final class GameplayCamera {
     public static double[] followPosValues(boolean override, boolean cameraFrame,
                                            Vector3f camLeft, Vector3f camUp, Vector3f camLook) {
         Vec3 cam = freeCamWorldPos();
-        Vec3 origin = override ? anchor : focusWorldPos();
+        // Camera Follow Pos playback starts from Minecraft's detached third-person
+        // baseline. Include it in the origin so copied XYZ describe only the event
+        // offset needed to reach the current absolute free-camera position.
+        Vec3 origin = (override ? anchor : focusWorldPos()).add(detachedCameraBaselineWorld);
         if (!override && camLeft != null) {
             // Default Follow Pos sits at focus + the stage's base camera framing,
             // then adds the event offset. Fold the framing into the origin so the
@@ -336,6 +351,8 @@ public final class GameplayCamera {
         gameShakeIntensity = hudShakeIntensity = 0;
         CameraOverlay.reset();
         curOffset = fromOffset = Vec3.ZERO;
+        detachedCameraBaselineWorld = Vec3.ZERO;
+        lastNormalWorldOffset = Vec3.ZERO;
         offsetInitialized = false;
         transStart = 0;
         lastFrameNano = System.nanoTime();
@@ -388,6 +405,8 @@ public final class GameplayCamera {
         gameShakeIntensity = hudShakeIntensity = 0;
         CameraOverlay.reset();
         curOffset = fromOffset = Vec3.ZERO;
+        detachedCameraBaselineWorld = Vec3.ZERO;
+        lastNormalWorldOffset = Vec3.ZERO;
         offsetInitialized = false;
         transStart = 0;
         lastFrameNano = System.nanoTime();
@@ -873,6 +892,8 @@ public final class GameplayCamera {
 
         // Keep event easing independent from normal follow smoothing. This makes
         // Constant truly snap while default tracking retains its own movement.
-        return curOffset.add(eventWorld);
+        Vec3 result = curOffset.add(eventWorld);
+        lastNormalWorldOffset = result;
+        return result;
     }
 }

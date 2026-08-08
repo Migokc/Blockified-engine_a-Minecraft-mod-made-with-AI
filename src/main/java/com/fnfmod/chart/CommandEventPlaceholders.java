@@ -69,6 +69,11 @@ public final class CommandEventPlaceholders {
         return expand(command, machinePos, machineFacing, false);
     }
 
+    public static String expand(String command, BlockPos machinePos, Direction machineFacing,
+                                boolean selfSelectors) {
+        return expand(command, machinePos, machineFacing, selfSelectors, false, false);
+    }
+
     /**
      * Expands selectors and camera-relative macros.
      *
@@ -79,14 +84,21 @@ public final class CommandEventPlaceholders {
      * runs the command, so every role points at them. Without this a command like
      * {@code tp <player> ...} fails with "No entity was found" and the chart's
      * opening teleport never moves the player onto the scene.
+     *
+     * @param playerHuman   the {@code player} role targets a real player this session
+     *                      (host, or the human side); emits a players-only {@code @a}
+     *                      selector so player-only commands like {@code /gamemode} accept it.
+     * @param opponentHuman the {@code opponent} role targets a real player (duet guest, or
+     *                      the human side); otherwise it is the bot armor stand and keeps
+     *                      the entity {@code @e} selector for {@code tp}/{@code particle}.
      */
     public static String expand(String command, BlockPos machinePos, Direction machineFacing,
-                                boolean selfSelectors) {
+                                boolean selfSelectors, boolean playerHuman, boolean opponentHuman) {
         if (command == null) return "";
         Direction facing = machineFacing == null ? Direction.NORTH : machineFacing;
-        String player = selfSelectors ? "@s" : selector(machinePos, "player");
-        String opponent = selfSelectors ? "@s" : selector(machinePos, "opponent");
-        String speakers = selfSelectors ? "@s" : selector(machinePos, "speakers");
+        String player = selfSelectors ? "@s" : selector(machinePos, "player", playerHuman);
+        String opponent = selfSelectors ? "@s" : selector(machinePos, "opponent", opponentHuman);
+        String speakers = selfSelectors ? "@s" : selector(machinePos, "speakers", false);
         String expanded = command
                 .replace(PLAYER, player)
                 .replace(OPPONENT, opponent)
@@ -183,7 +195,13 @@ public final class CommandEventPlaceholders {
         return BigDecimal.valueOf(value).stripTrailingZeros().toPlainString();
     }
 
-    private static String selector(BlockPos machinePos, String role) {
-        return "@e[tag=" + tag(machinePos, role) + ",limit=1]";
+    /**
+     * Tag selector for a role. {@code playersOnly} emits {@code @a} (players only) so
+     * commands that reject entity selectors (e.g. {@code /gamemode}, {@code /xp}) accept
+     * it; otherwise {@code @e} so a non-player performer (the bot armor stand) can be
+     * targeted by entity commands.
+     */
+    private static String selector(BlockPos machinePos, String role, boolean playersOnly) {
+        return "@" + (playersOnly ? "a" : "e") + "[tag=" + tag(machinePos, role) + ",limit=1]";
     }
 }

@@ -106,6 +106,8 @@ public final class SessionManager {
         Long startGameTime;
         long startDayTime;
         boolean startDaylight;
+        /** Each participant's gamemode at song start, restored on exit so a song's /gamemode change is undone. */
+        final Map<java.util.UUID, net.minecraft.world.level.GameType> startGameModes = new HashMap<>();
     }
 
     private static final Map<Key, Session> SESSIONS = new HashMap<>();
@@ -543,6 +545,10 @@ public final class SessionManager {
         session.startGameTime = level.getGameTime();
         session.startDayTime = level.getDayTime();
         session.startDaylight = level.getGameRules().getBoolean(net.minecraft.world.level.GameRules.RULE_DAYLIGHT);
+        // Snapshot participant gamemodes so a song's /gamemode change reverts on exit.
+        session.startGameModes.clear();
+        captureGameMode(session, session.host);
+        captureGameMode(session, session.guest);
         ArmorStand marker = new ArmorStand(level,
                 machinePos.getX() + 0.5, machinePos.getY() + 0.5, machinePos.getZ() + 0.5);
         marker.setInvisible(true);
@@ -596,7 +602,8 @@ public final class SessionManager {
             Direction machineFacing = machineState.hasProperty(FunkinMachineBlock.FACING)
                     ? machineState.getValue(FunkinMachineBlock.FACING) : Direction.NORTH;
             String command = CommandEventPlaceholders.expand(
-                    event.value1, payload.pos(), machineFacing).trim();
+                    event.value1, payload.pos(), machineFacing,
+                    false, playerRoleIsHuman(session), opponentRoleIsHuman(session)).trim();
             while (command.startsWith("/")) command = command.substring(1).trim();
             if (command.isEmpty() || player.getServer() == null) return;
             String trackedCommand = command;
@@ -641,7 +648,8 @@ public final class SessionManager {
             Direction machineFacing = machineState.hasProperty(FunkinMachineBlock.FACING)
                     ? machineState.getValue(FunkinMachineBlock.FACING) : Direction.NORTH;
             String command = CommandEventPlaceholders.expand(
-                    payload.command(), payload.pos(), machineFacing).trim();
+                    payload.command(), payload.pos(), machineFacing,
+                    false, playerRoleIsHuman(session), opponentRoleIsHuman(session)).trim();
             while (command.startsWith("/")) command = command.substring(1).trim();
             if (command.isEmpty()) return;
             String trackedCommand = command;
@@ -837,6 +845,28 @@ public final class SessionManager {
         session.changedBlocks.put(key, new BlockSnapshot(level.getBlockState(pos), entityTag));
     }
 
+    private static void captureGameMode(Session session, ServerPlayer player) {
+        if (player != null) {
+            session.startGameModes.put(player.getUUID(), player.gameMode.getGameModeForPlayer());
+        }
+    }
+
+    /**
+     * Whether the {@code player}/{@code opponent} command role maps to a real player this
+     * session (see {@link #prepareCommandTargets}). The human sides get an {@code @a}
+     * selector so player-only commands like {@code /gamemode} target them; the bot side is
+     * an armor stand and keeps {@code @e}. Mirrors the tag assignment exactly.
+     */
+    private static boolean playerRoleIsHuman(Session session) {
+        // player tag: host in duet/normal solo; the bot stand when the human plays side 1.
+        return session.duet || session.playSide != 1;
+    }
+
+    private static boolean opponentRoleIsHuman(Session session) {
+        // opponent tag: the duet guest, or the host when the human plays the opponent side.
+        return session.duet ? session.guest != null : session.playSide == 1;
+    }
+
     private static void restoreWorld(Session session) {
         // Undo any /time change: set the day time back to what natural progression
         // would have reached, so only the command's jump is removed. No-op if the
@@ -846,6 +876,18 @@ public final class SessionManager {
             long elapsed = Math.max(0, level.getGameTime() - session.startGameTime);
             level.setDayTime(session.startDayTime + (session.startDaylight ? elapsed : 0));
             session.startGameTime = null;
+        }
+        // Undo any /gamemode change a song command applied to a participant, so
+        // players leave gameplay in the mode they entered with.
+        if (!session.startGameModes.isEmpty() && session.host != null && session.host.getServer() != null) {
+            var playerList = session.host.getServer().getPlayerList();
+            for (var entry : session.startGameModes.entrySet()) {
+                ServerPlayer player = playerList.getPlayer(entry.getKey());
+                if (player != null && player.gameMode.getGameModeForPlayer() != entry.getValue()) {
+                    player.setGameMode(entry.getValue());
+                }
+            }
+            session.startGameModes.clear();
         }
         if (session.changedBlocks.isEmpty() || session.host.getServer() == null) return;
         restoringWorld = true;

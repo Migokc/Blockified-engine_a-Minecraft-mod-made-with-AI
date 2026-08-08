@@ -2,9 +2,20 @@
 
 A feature-full Friday Night Funkin' engine inside of Minecraft — **NeoForge 1.21.1**.
 
-Current release: **2.2.1bbs**.
+Current release: **2.2.2bbs**.
 
 Documentation: **[Blockified Engine Docs](https://migokc.github.io/Blockified-engine_a-Minecraft-mod-made-with-AI/)**.
+
+### 2.2.2bbs highlights
+
+- Free-camera shot copying now compensates for Minecraft's detached third-person
+  camera baseline, so pasted Camera Follow Pos values reproduce the authored
+  position without changing free-camera movement, rotation, or zoom.
+- Minecraft Command event `<player>` and `<opponent>` placeholders now use a
+  player-only selector when that role belongs to a human, allowing player-only
+  commands such as `/gamemode` and `/xp` while bots remain entity-selectable.
+- A song snapshots each participant's game mode and restores it when gameplay
+  finishes, quits, gives up, cancels, or restarts.
 
 ### 2.2.1bbs highlights
 
