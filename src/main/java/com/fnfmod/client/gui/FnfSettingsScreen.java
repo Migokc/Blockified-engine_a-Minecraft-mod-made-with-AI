@@ -607,9 +607,10 @@ public class FnfSettingsScreen extends Screen {
                 x, rowY(5), w, 20, hitsoundVolMsg(), ClientOptions.get().hitsoundVolume) {
             @Override protected void updateMessage() { setMessage(hitsoundVolMsg()); }
             @Override protected void applyValue() {
+                long previousPercent = Math.round(ClientOptions.get().hitsoundVolume * 100);
                 ClientOptions.get().hitsoundVolume = value;
                 ClientOptions.save();
-                HitsoundPlayer.play();
+                if (previousPercent != Math.round(value * 100)) HitsoundPlayer.play();
             }
         }), "hitsoundVolume");
 
