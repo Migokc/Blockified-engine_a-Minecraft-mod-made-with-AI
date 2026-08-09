@@ -13,6 +13,9 @@ import java.util.List;
 /** Serializes a normalized SongChart back to Psych Engine / legacy-compatible JSON. */
 public final class PsychChartWriter {
 
+    /** Human-readable output for chart files and standalone events.json files. */
+    private static final Gson PRETTY_JSON = new GsonBuilder().setPrettyPrinting().create();
+
     private PsychChartWriter() {}
 
     public static String write(SongChart chart) {
@@ -111,14 +114,13 @@ public final class PsychChartWriter {
 
         JsonObject root = new JsonObject();
         root.add("song", song);
-        Gson gson = new GsonBuilder().create();
-        return gson.toJson(root);
+        return PRETTY_JSON.toJson(root) + System.lineSeparator();
     }
 
     public static String writeEvents(SongChart chart) {
         JsonObject root = new JsonObject();
         root.add("events", eventArray(chart));
-        return new GsonBuilder().create().toJson(root);
+        return PRETTY_JSON.toJson(root) + System.lineSeparator();
     }
 
     private static JsonArray eventArray(SongChart chart) {

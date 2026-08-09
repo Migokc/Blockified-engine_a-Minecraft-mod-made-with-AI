@@ -3,17 +3,22 @@ package com.fnfmod.client.gui;
 import com.fnfmod.client.ClientOptions;
 import com.fnfmod.client.anim.CharacterAnimations;
 import com.fnfmod.client.audio.HitsoundPlayer;
+import com.fnfmod.client.math.Easing;
 import com.fnfmod.client.render.NoteStyle;
 import com.fnfmod.song.SongLibrary;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.EditBox;
+import net.minecraft.client.gui.components.AbstractWidget;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.gui.screens.options.controls.KeyBindsScreen;
 import net.minecraft.network.chat.Component;
 import net.minecraft.util.Mth;
 
 import java.util.List;
+import java.util.ArrayList;
+import java.util.IdentityHashMap;
+import java.util.Map;
 
 /**
  * Options menu laid out like Psych Engine's: a category list
@@ -28,7 +33,20 @@ public class FnfSettingsScreen extends Screen {
 
     private static final double[] SCROLL_SPEEDS = {0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0};
     private static final int FOLDER_ROW_H = 26;
-    private int folderScroll;
+    private static final long SCROLL_TWEEN_NANOS = 200_000_000L;
+    private double pageScrollPx;
+    private double pageScrollTargetPx;
+    private double pageScrollFromPx;
+    private long pageScrollTweenStart;
+    private boolean pageScrollTweenActive;
+    private final Map<AbstractWidget, Integer> pageWidgetBaseY = new IdentityHashMap<>();
+    private double folderScrollPx;
+    private double folderScrollTargetPx;
+    private double folderScrollFromPx;
+    private long folderScrollTweenStart;
+    private boolean folderScrollTweenActive;
+    private record FolderWidget(AbstractWidget widget, int baseY) {}
+    private final List<FolderWidget> folderWidgets = new ArrayList<>();
     private boolean draggingFolderThumb;
     private String selectedFolder;
     // Directory edits rescan the whole library, which is heavy; defer that until
@@ -43,8 +61,13 @@ public class FnfSettingsScreen extends Screen {
     @Override
     protected void init() {
         clearWidgets();
+        pageWidgetBaseY.clear();
+        folderWidgets.clear();
         if (category == null) {
             initCategories();
+            capturePageWidgets();
+            addRenderableWidget(Button.builder(Component.literal("Done"), b -> onClose())
+                    .bounds(width / 2 - 60, height - 32, 120, 20).build());
         } else {
             switch (category) {
                 case "delay" -> initDelay();
@@ -53,9 +76,13 @@ public class FnfSettingsScreen extends Screen {
                 case "folders" -> initFolders();
                 case "colors" -> initColors();
             }
+            if (!"folders".equals(category)) capturePageWidgets();
             addRenderableWidget(Button.builder(Component.literal("Back"), b -> switchTo(null))
                     .bounds(width / 2 - 60, height - 32, 120, 20).build());
         }
+        clampScrolls();
+        applyPageWidgetScroll();
+        applyFolderWidgetScroll();
     }
 
     private void switchTo(String newCategory) {
@@ -66,11 +93,84 @@ public class FnfSettingsScreen extends Screen {
             SongLibrary.rescan();
         }
         category = newCategory;
+        pageScrollPx = pageScrollTargetPx = pageScrollFromPx = 0;
+        pageScrollTweenActive = false;
         init();
     }
 
     private int rowY(int index) {
-        return 50 + index * 26;
+        return 50 + index * 26 - (int) Math.round(pageScrollPx);
+    }
+
+    private int pageViewportTop() { return 44; }
+    private int pageViewportBottom() {
+        int reserved = "visuals".equals(category) ? 64 : "delay".equals(category) ? 54 : 40;
+        return Math.max(pageViewportTop() + 20, height - reserved);
+    }
+
+    private int pageContentBottom() {
+        return switch (category == null ? "categories" : category) {
+            case "categories" -> 50 + 5 * 26 + 20;
+            case "visuals" -> 50 + 6 * 26 + 20;
+            case "gameplay" -> 50 + 8 * 26 + 20;
+            case "colors" -> 50 + 3 * 26 + 78 + 28;
+            case "delay" -> 50 + 26 + 20;
+            default -> pageViewportBottom();
+        };
+    }
+
+    private double pageMaxScroll() {
+        return Math.max(0, pageContentBottom() - pageViewportBottom());
+    }
+
+    private void capturePageWidgets() {
+        int offset = (int) Math.round(pageScrollPx);
+        for (var child : children()) {
+            if (child instanceof AbstractWidget widget) {
+                pageWidgetBaseY.put(widget, widget.getY() + offset);
+            }
+        }
+    }
+
+    private void applyPageWidgetScroll() {
+        int offset = (int) Math.round(pageScrollPx);
+        int top = pageViewportTop(), bottom = pageViewportBottom();
+        for (var entry : pageWidgetBaseY.entrySet()) {
+            AbstractWidget widget = entry.getKey();
+            int y = entry.getValue() - offset;
+            widget.setY(y);
+            widget.visible = y + widget.getHeight() > top && y < bottom;
+        }
+    }
+
+    private void clampScrolls() {
+        pageScrollPx = Mth.clamp(pageScrollPx, 0, pageMaxScroll());
+        pageScrollTargetPx = Mth.clamp(pageScrollTargetPx, 0, pageMaxScroll());
+        double folderMax = folderMaxScrollPx(SongLibrary.getExternalFolders().size());
+        folderScrollPx = Mth.clamp(folderScrollPx, 0, folderMax);
+        folderScrollTargetPx = Mth.clamp(folderScrollTargetPx, 0, folderMax);
+    }
+
+    private void scrollPageTo(double target) {
+        updatePageScrollTween();
+        pageScrollFromPx = pageScrollPx;
+        pageScrollTargetPx = Mth.clamp(target, 0, pageMaxScroll());
+        pageScrollTweenStart = System.nanoTime();
+        pageScrollTweenActive = Math.abs(pageScrollTargetPx - pageScrollFromPx) > 0.01;
+        if (!pageScrollTweenActive) pageScrollPx = pageScrollTargetPx;
+    }
+
+    private void updatePageScrollTween() {
+        if (!pageScrollTweenActive) return;
+        double progress = (System.nanoTime() - pageScrollTweenStart) / (double) SCROLL_TWEEN_NANOS;
+        if (progress >= 1) {
+            pageScrollPx = pageScrollTargetPx;
+            pageScrollTweenActive = false;
+        } else {
+            double eased = Easing.apply("expoOut", progress);
+            pageScrollPx = pageScrollFromPx + (pageScrollTargetPx - pageScrollFromPx) * eased;
+        }
+        applyPageWidgetScroll();
     }
 
     // ------------------------------------------------------------------ pages
@@ -96,8 +196,6 @@ public class FnfSettingsScreen extends Screen {
         addRenderableWidget(Button.builder(Component.literal("Directories"),
                         b -> switchTo("folders"))
                 .bounds(x, rowY(5), w, 20).build());
-        addRenderableWidget(Button.builder(Component.literal("Done"), b -> onClose())
-                .bounds(width / 2 - 60, height - 32, 120, 20).build());
     }
 
     // ------------------------------------------------------------------ note colors
@@ -291,11 +389,11 @@ public class FnfSettingsScreen extends Screen {
     public boolean mouseScrolled(double mouseX, double mouseY, double scrollX, double scrollY) {
         if ("folders".equals(category)) {
             if (scrollY == 0) return super.mouseScrolled(mouseX, mouseY, scrollX, scrollY);
-            int old = folderScroll;
-            int step = Math.max(1, (int) Math.ceil(Math.abs(scrollY)));
-            folderScroll = Mth.clamp(folderScroll - (scrollY > 0 ? step : -step),
-                    0, folderMaxScroll(SongLibrary.getExternalFolders().size()));
-            if (folderScroll != old) init();
+            scrollFoldersToPx(folderScrollTargetPx - scrollY * (FOLDER_ROW_H / 2.0));
+            return true;
+        }
+        if (scrollY != 0 && pageMaxScroll() > 0) {
+            scrollPageTo(pageScrollTargetPx - scrollY * 13.0);
             return true;
         }
         return super.mouseScrolled(mouseX, mouseY, scrollX, scrollY);
@@ -315,27 +413,30 @@ public class FnfSettingsScreen extends Screen {
         if (selectedFolder == null || !folders.contains(selectedFolder)) {
             selectedFolder = folders.isEmpty() ? null : folders.get(0);
         }
-        folderScroll = Mth.clamp(folderScroll, 0, folderMaxScroll(folders.size()));
-        int visible = folderVisibleRows();
+        folderScrollPx = Mth.clamp(folderScrollPx, 0, folderMaxScrollPx(folders.size()));
+        folderScrollTargetPx = Mth.clamp(folderScrollTargetPx, 0, folderMaxScrollPx(folders.size()));
         int listX = folderListX();
         int listW = folderListWidth();
-        for (int row = 0; row < visible && folderScroll + row < folders.size(); row++) {
-            int folderIndex = folderScroll + row;
+        for (int folderIndex = 0; folderIndex < folders.size(); folderIndex++) {
             String folder = folders.get(folderIndex);
             final String f = folder;
-            String pathLabel = (folder.equals(selectedFolder) ? "> " : "")
-                    + shortenPath(folder, listW - 76);
-            addRenderableWidget(Button.builder(Component.literal(pathLabel), b -> {
+            int baseY = folderListTop() + folderIndex * FOLDER_ROW_H;
+            String pathLabel = shortenPath(folder, listW - 76);
+            Button path = addRenderableWidget(Button.builder(Component.literal(pathLabel), b -> {
                 selectedFolder = f;
                 switchTo("folders");
-            }).bounds(listX, folderListTop() + row * FOLDER_ROW_H, listW - 68, 20).build());
+            }).bounds(listX, baseY, listW - 68, 20).build());
+            path.active = !folder.equals(selectedFolder);
+            folderWidgets.add(new FolderWidget(path, baseY));
             Button up = addRenderableWidget(Button.builder(Component.literal("↑"), b -> moveFolder(f, -1))
-                    .bounds(listX + listW - 64, folderListTop() + row * FOLDER_ROW_H, 20, 20).build());
+                    .bounds(listX + listW - 64, baseY, 20, 20).build());
             up.active = folderIndex > 0;
+            folderWidgets.add(new FolderWidget(up, baseY));
             Button down = addRenderableWidget(Button.builder(Component.literal("↓"), b -> moveFolder(f, 1))
-                    .bounds(listX + listW - 43, folderListTop() + row * FOLDER_ROW_H, 20, 20).build());
+                    .bounds(listX + listW - 43, baseY, 20, 20).build());
             down.active = folderIndex < folders.size() - 1;
-            addRenderableWidget(Button.builder(Component.literal("X"), b -> {
+            folderWidgets.add(new FolderWidget(down, baseY));
+            Button remove = addRenderableWidget(Button.builder(Component.literal("X"), b -> {
                 var list = new java.util.ArrayList<>(SongLibrary.getExternalFolders());
                 int removed = list.indexOf(f);
                 list.remove(f);
@@ -346,7 +447,8 @@ public class FnfSettingsScreen extends Screen {
                 SongLibrary.setExternalFolders(list);
                 foldersDirty = true;
                 switchTo("folders");
-            }).bounds(listX + listW - 22, folderListTop() + row * FOLDER_ROW_H, 20, 20).build());
+            }).bounds(listX + listW - 22, baseY, 20, 20).build());
+            folderWidgets.add(new FolderWidget(remove, baseY));
         }
 
         if (selectedFolder != null) {
@@ -384,9 +486,14 @@ public class FnfSettingsScreen extends Screen {
         SongLibrary.setExternalFolders(folders);
         foldersDirty = true;
 
-        int visible = folderVisibleRows();
-        if (next < folderScroll) folderScroll = next;
-        else if (next >= folderScroll + visible) folderScroll = next - visible + 1;
+        double rowTop = next * (double) FOLDER_ROW_H;
+        double rowBottom = rowTop + FOLDER_ROW_H;
+        double viewport = folderVisibleRows() * (double) FOLDER_ROW_H;
+        if (rowTop < folderScrollTargetPx) folderScrollTargetPx = rowTop;
+        else if (rowBottom > folderScrollTargetPx + viewport) folderScrollTargetPx = rowBottom - viewport;
+        folderScrollTargetPx = Mth.clamp(folderScrollTargetPx, 0, folderMaxScrollPx(folders.size()));
+        folderScrollPx = folderScrollTargetPx;
+        folderScrollTweenActive = false;
         switchTo("folders");
     }
 
@@ -406,6 +513,7 @@ public class FnfSettingsScreen extends Screen {
         return Math.max(1, (folderListBottom() - folderListTop()) / FOLDER_ROW_H);
     }
     private int folderMaxScroll(int total) { return Math.max(0, total - folderVisibleRows()); }
+    private double folderMaxScrollPx(int total) { return folderMaxScroll(total) * (double) FOLDER_ROW_H; }
     private int folderScrollbarX() { return folderListX() + folderListWidth() + 4; }
 
     private int folderThumbHeight(int total) {
@@ -415,16 +523,48 @@ public class FnfSettingsScreen extends Screen {
 
     private void scrollFoldersTo(double mouseY) {
         int total = SongLibrary.getExternalFolders().size();
-        int max = folderMaxScroll(total);
+        double max = folderMaxScrollPx(total);
         if (max <= 0) return;
         int top = folderListTop();
         int trackH = folderListBottom() - top;
         int thumbH = folderThumbHeight(total);
         double fraction = (mouseY - top - thumbH / 2.0) / Math.max(1, trackH - thumbH);
-        int next = Mth.clamp((int) Math.round(fraction * max), 0, max);
-        if (next != folderScroll) {
-            folderScroll = next;
-            init();
+        folderScrollPx = Mth.clamp(fraction, 0, 1) * max;
+        folderScrollTargetPx = folderScrollFromPx = folderScrollPx;
+        folderScrollTweenActive = false;
+        applyFolderWidgetScroll();
+    }
+
+    private void scrollFoldersToPx(double target) {
+        updateFolderScrollTween();
+        folderScrollFromPx = folderScrollPx;
+        folderScrollTargetPx = Mth.clamp(target, 0,
+                folderMaxScrollPx(SongLibrary.getExternalFolders().size()));
+        folderScrollTweenStart = System.nanoTime();
+        folderScrollTweenActive = Math.abs(folderScrollTargetPx - folderScrollFromPx) > 0.01;
+        if (!folderScrollTweenActive) folderScrollPx = folderScrollTargetPx;
+    }
+
+    private void updateFolderScrollTween() {
+        if (!folderScrollTweenActive) return;
+        double progress = (System.nanoTime() - folderScrollTweenStart) / (double) SCROLL_TWEEN_NANOS;
+        if (progress >= 1) {
+            folderScrollPx = folderScrollTargetPx;
+            folderScrollTweenActive = false;
+        } else {
+            double eased = Easing.apply("expoOut", progress);
+            folderScrollPx = folderScrollFromPx + (folderScrollTargetPx - folderScrollFromPx) * eased;
+        }
+        applyFolderWidgetScroll();
+    }
+
+    private void applyFolderWidgetScroll() {
+        int offset = (int) Math.round(folderScrollPx);
+        int top = folderListTop(), bottom = folderListBottom();
+        for (FolderWidget row : folderWidgets) {
+            int y = row.baseY() - offset;
+            row.widget().setY(y);
+            row.widget().visible = y + row.widget().getHeight() > top && y < bottom;
         }
     }
 
@@ -453,7 +593,8 @@ public class FnfSettingsScreen extends Screen {
                 selectedFolder = picked;
                 SongLibrary.setExternalFolders(list);
                 foldersDirty = true;
-                folderScroll = folderMaxScroll(list.size());
+                folderScrollTargetPx = folderMaxScrollPx(list.size());
+                scrollFoldersToPx(folderScrollTargetPx);
                 if (minecraft.screen == this && "folders".equals(category)) switchTo("folders");
             });
         }, "fnf-folder-picker").start();
@@ -782,6 +923,8 @@ public class FnfSettingsScreen extends Screen {
 
     @Override
     public void render(GuiGraphics gui, int mouseX, int mouseY, float partialTick) {
+        updatePageScrollTween();
+        updateFolderScrollTween();
         super.render(gui, mouseX, mouseY, partialTick);
         String title = switch (category == null ? "" : category) {
             case "delay" -> "Adjust Delay and Combo";
@@ -794,7 +937,9 @@ public class FnfSettingsScreen extends Screen {
         gui.drawCenteredString(font, title, width / 2, 20, 0xFFFFFF);
 
         if ("colors".equals(category)) {
+            gui.enableScissor(0, pageViewportTop(), width, pageViewportBottom());
             renderColorPicker(gui);
+            gui.disableScissor();
         }
 
         if ("folders".equals(category)) {
@@ -807,7 +952,7 @@ public class FnfSettingsScreen extends Screen {
                 int trackH = folderListBottom() - trackTop;
                 int thumbH = folderThumbHeight(folders.size());
                 int thumbY = trackTop + (int) ((trackH - thumbH)
-                        * (folderScroll / (double) folderMaxScroll(folders.size())));
+                        * (folderScrollPx / folderMaxScrollPx(folders.size())));
                 gui.fill(trackX, trackTop, trackX + 5, folderListBottom(), 0x55000000);
                 gui.fill(trackX, thumbY, trackX + 5, thumbY + thumbH, 0xFFAAAAAA);
             }
@@ -815,6 +960,14 @@ public class FnfSettingsScreen extends Screen {
                     ? "Add a directory to choose what it loads"
                     : "Load from selected directory (top = highest priority)";
             gui.drawCenteredString(font, filterHint, width / 2, folderListBottom() + 3, 0xAAAAAA);
+        } else if (pageMaxScroll() > 0) {
+            int top = pageViewportTop(), bottom = pageViewportBottom();
+            int trackH = bottom - top;
+            int contentH = pageContentBottom() - pageViewportTop();
+            int thumbH = Math.max(16, trackH * trackH / Math.max(trackH, contentH));
+            int thumbY = top + (int) ((trackH - thumbH) * (pageScrollPx / pageMaxScroll()));
+            gui.fill(width - 7, top, width - 4, bottom, 0x55000000);
+            gui.fill(width - 7, thumbY, width - 4, thumbY + thumbH, 0xFFAAAAAA);
         }
 
         if ("delay".equals(category)) {

@@ -3,7 +3,6 @@ package com.fnfmod.client.gui;
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.fnfmod.client.anim.CharacterDefinitionFile;
 import com.fnfmod.client.anim.CharacterAnimations;
-import com.fnfmod.client.gameplay.NativeFilePicker;
 import com.fnfmod.character.CharacterDefinitionPaths;
 import com.fnfmod.song.SongLibrary;
 import net.minecraft.client.gui.GuiGraphics;
@@ -16,6 +15,7 @@ import net.minecraft.util.Mth;
 import net.minecraft.world.entity.LivingEntity;
 import org.joml.Quaternionf;
 import org.joml.Vector3f;
+import org.lwjgl.glfw.GLFW;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -60,6 +60,16 @@ public final class CharacterEditorScreen extends Screen {
     private Button formButton;
     private Button actionButton;
     private Button loopIdleButton;
+    private Button colorButton;
+    private boolean colorPickerOpen;
+    private int colorPickerOriginal;
+    private int colorPickerValue;
+    private float colorHue;
+    private float colorSat;
+    private float colorBri;
+    private int colorDrag;
+    private EditBox colorHexField;
+    private boolean updatingColorHex;
 
     public CharacterEditorScreen(Screen parent) {
         super(Component.literal("Blockified Character Editor"));
@@ -121,7 +131,7 @@ public final class CharacterEditorScreen extends Screen {
         loopIdleButton = addRenderableWidget(Button.builder(loopIdleLabel(), button -> toggleLoopIdle())
                 .bounds(left, y, 236, 20).build());
         y += 26;
-        addRenderableWidget(Button.builder(Component.literal(colorLabel()), button -> chooseColor())
+        colorButton = addRenderableWidget(Button.builder(Component.literal(colorLabel()), button -> chooseColor())
                 .bounds(left, y, 236, 20).build());
         y += 26;
         addRenderableWidget(Button.builder(Component.literal("Bundle BBS Model + Texture"),
@@ -411,19 +421,68 @@ public final class CharacterEditorScreen extends Screen {
     private void chooseColor() {
         CharacterDefinitionFile definition = current();
         if (definition == null) return;
-        NativeFilePicker.pickColor("Character waveform / health color",
-                definition.healthColor < 0 ? (opponent ? 0xAF66CE : 0x31B0D1) : definition.healthColor)
-                .ifPresent(color -> {
-                    definition.healthColor = color;
-                    markDirty();
-                    refreshEditorWidgets();
-                });
+        colorPickerOriginal = definition.healthColor;
+        colorPickerValue = definition.healthColor < 0
+                ? (opponent ? 0xAF66CE : 0x31B0D1) : definition.healthColor & 0xFFFFFF;
+        float[] hsb = java.awt.Color.RGBtoHSB((colorPickerValue >> 16) & 255,
+                (colorPickerValue >> 8) & 255, colorPickerValue & 255, null);
+        colorHue = hsb[0];
+        colorSat = hsb[1];
+        colorBri = hsb[2];
+        colorDrag = 0;
+        colorHexField = new EditBox(font, 0, 0, 80, 16, Component.literal("Hex color"));
+        colorHexField.setMaxLength(6);
+        colorHexField.setFilter(value -> value.matches("[0-9a-fA-F]{0,6}"));
+        colorHexField.setResponder(value -> {
+            if (updatingColorHex || !value.matches("[0-9a-fA-F]{6}")) return;
+            colorPickerValue = Integer.parseInt(value, 16);
+            float[] next = java.awt.Color.RGBtoHSB((colorPickerValue >> 16) & 255,
+                    (colorPickerValue >> 8) & 255, colorPickerValue & 255, null);
+            colorHue = next[0]; colorSat = next[1]; colorBri = next[2];
+            definition.healthColor = colorPickerValue;
+        });
+        updateColorHex();
+        colorPickerOpen = true;
     }
 
-    private void refreshEditorWidgets() {
-        clearWidgets();
-        init();
+    private void updateColorHex() {
+        if (colorHexField == null) return;
+        updatingColorHex = true;
+        colorHexField.setValue(String.format(Locale.ROOT, "%06X", colorPickerValue & 0xFFFFFF));
+        updatingColorHex = false;
     }
+
+    private void updateColorPicker(double mouseX, double mouseY) {
+        int x0 = colorPickerX(), y0 = colorPickerY();
+        int squareX = x0 + 12, squareY = y0 + 28, squareSize = 80;
+        int hueX = x0 + 12, hueY = y0 + 120, hueWidth = colorPickerWidth() - 24;
+        if (colorDrag == 1) {
+            colorSat = (float) Mth.clamp((mouseX - squareX) / (squareSize - 1.0), 0, 1);
+            colorBri = 1f - (float) Mth.clamp((mouseY - squareY) / (squareSize - 1.0), 0, 1);
+        } else if (colorDrag == 2) {
+            colorHue = (float) Mth.clamp((mouseX - hueX) / (hueWidth - 1.0), 0, 1);
+        }
+        colorPickerValue = java.awt.Color.HSBtoRGB(colorHue, colorSat, colorBri) & 0xFFFFFF;
+        current().healthColor = colorPickerValue;
+        updateColorHex();
+    }
+
+    private void closeColorPicker(boolean save) {
+        CharacterDefinitionFile definition = current();
+        if (definition != null) {
+            definition.healthColor = save ? colorPickerValue : colorPickerOriginal;
+            if (save) markDirty();
+        }
+        colorPickerOpen = false;
+        colorDrag = 0;
+        colorHexField = null;
+        if (colorButton != null) colorButton.setMessage(Component.literal(colorLabel()));
+    }
+
+    private int colorPickerWidth() { return Math.min(260, Math.max(220, width - 24)); }
+    private int colorPickerHeight() { return 176; }
+    private int colorPickerX() { return (width - colorPickerWidth()) / 2; }
+    private int colorPickerY() { return Math.max(8, (height - colorPickerHeight()) / 2); }
 
     /**
      * Copies the selected BBS form's model + texture into this character's own
@@ -522,6 +581,136 @@ public final class CharacterEditorScreen extends Screen {
         renderPreview(gui);
         gui.drawString(font, trim(status, Math.max(20, width - 24)), 12, height - 18, 0xFFCCCCCC, false);
         super.render(gui, mouseX, mouseY, partialTick);
+        if (colorPickerOpen) renderColorPicker(gui, mouseX, mouseY);
+    }
+
+    private void renderColorPicker(GuiGraphics gui, int mouseX, int mouseY) {
+        gui.fill(0, 0, width, height, 0xF20A0A10);
+        int boxW = colorPickerWidth(), boxH = colorPickerHeight();
+        int x0 = colorPickerX(), y0 = colorPickerY();
+        gui.fill(x0, y0, x0 + boxW, y0 + boxH, 0xFF101018);
+        gui.renderOutline(x0, y0, boxW, boxH, 0xFF6A70FF);
+        gui.drawCenteredString(font, "Character waveform / health color",
+                x0 + boxW / 2, y0 + 9, 0xFFFFFFFF);
+
+        int squareX = x0 + 12, squareY = y0 + 28, squareSize = 80;
+        for (int column = 0; column < squareSize; column++) {
+            int color = java.awt.Color.HSBtoRGB(colorHue, column / (squareSize - 1f), 1f);
+            gui.fill(squareX + column, squareY, squareX + column + 1, squareY + squareSize,
+                    0xFF000000 | (color & 0xFFFFFF));
+        }
+        gui.fillGradient(squareX, squareY, squareX + squareSize, squareY + squareSize,
+                0x00000000, 0xFF000000);
+        int cursorX = squareX + Math.round(colorSat * (squareSize - 1));
+        int cursorY = squareY + Math.round((1 - colorBri) * (squareSize - 1));
+        gui.fill(cursorX - 2, cursorY - 2, cursorX + 3, cursorY + 3, 0xFFFFFFFF);
+        gui.fill(cursorX - 1, cursorY - 1, cursorX + 2, cursorY + 2,
+                0xFF000000 | colorPickerValue);
+
+        int rightX = squareX + squareSize + 14;
+        int rightWidth = x0 + boxW - 12 - rightX;
+        gui.fill(rightX, squareY, rightX + rightWidth, squareY + 36,
+                0xFF000000 | colorPickerValue);
+        gui.renderOutline(rightX, squareY, rightWidth, 36, 0xFF6A7080);
+        gui.drawString(font, "Hex", rightX, squareY + 45, 0xFFBBBBBB, false);
+        if (colorHexField != null) {
+            colorHexField.setX(rightX);
+            colorHexField.setY(squareY + 56);
+            colorHexField.setWidth(rightWidth);
+            colorHexField.render(gui, mouseX, mouseY, 0);
+        }
+
+        int hueX = x0 + 12, hueY = y0 + 120, hueWidth = boxW - 24;
+        for (int column = 0; column < hueWidth; column++) {
+            int color = java.awt.Color.HSBtoRGB(column / (hueWidth - 1f), 1f, 1f);
+            gui.fill(hueX + column, hueY, hueX + column + 1, hueY + 10,
+                    0xFF000000 | (color & 0xFFFFFF));
+        }
+        int hueCursor = hueX + Math.round(colorHue * (hueWidth - 1));
+        gui.fill(hueCursor - 1, hueY - 1, hueCursor + 2, hueY + 11, 0xFFFFFFFF);
+
+        int buttonY = y0 + boxH - 26;
+        int buttonWidth = (boxW - 28) / 2;
+        renderColorButton(gui, x0 + 10, buttonY, buttonWidth, "Cancel", mouseX, mouseY);
+        renderColorButton(gui, x0 + 18 + buttonWidth, buttonY, buttonWidth, "Done", mouseX, mouseY);
+    }
+
+    private void renderColorButton(GuiGraphics gui, int x, int y, int buttonWidth, String text,
+                                   int mouseX, int mouseY) {
+        boolean hover = mouseX >= x && mouseX < x + buttonWidth && mouseY >= y && mouseY < y + 18;
+        gui.fill(x, y, x + buttonWidth, y + 18, hover ? 0xFF505675 : 0xFF303442);
+        gui.renderOutline(x, y, buttonWidth, 18, 0xFF6A7080);
+        gui.drawCenteredString(font, text, x + buttonWidth / 2, y + 5, 0xFFFFFFFF);
+    }
+
+    @Override
+    public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
+        if (colorPickerOpen) {
+            if (keyCode == GLFW.GLFW_KEY_ESCAPE) closeColorPicker(false);
+            else if (keyCode == GLFW.GLFW_KEY_ENTER || keyCode == GLFW.GLFW_KEY_KP_ENTER) {
+                closeColorPicker(true);
+            } else if (colorHexField != null) {
+                colorHexField.keyPressed(keyCode, scanCode, modifiers);
+            }
+            return true;
+        }
+        return super.keyPressed(keyCode, scanCode, modifiers);
+    }
+
+    @Override
+    public boolean charTyped(char codePoint, int modifiers) {
+        if (colorPickerOpen) {
+            if (colorHexField != null) colorHexField.charTyped(codePoint, modifiers);
+            return true;
+        }
+        return super.charTyped(codePoint, modifiers);
+    }
+
+    @Override
+    public boolean mouseClicked(double mouseX, double mouseY, int button) {
+        if (!colorPickerOpen) return super.mouseClicked(mouseX, mouseY, button);
+        if (colorHexField != null) colorHexField.mouseClicked(mouseX, mouseY, button);
+        if (button != GLFW.GLFW_MOUSE_BUTTON_LEFT) return true;
+        int x0 = colorPickerX(), y0 = colorPickerY(), boxW = colorPickerWidth();
+        int squareX = x0 + 12, squareY = y0 + 28;
+        int hueX = x0 + 12, hueY = y0 + 120, hueWidth = boxW - 24;
+        int buttonY = y0 + colorPickerHeight() - 26;
+        int buttonWidth = (boxW - 28) / 2;
+        if (mouseX >= squareX && mouseX < squareX + 80
+                && mouseY >= squareY && mouseY < squareY + 80) {
+            colorDrag = 1;
+            updateColorPicker(mouseX, mouseY);
+        } else if (mouseX >= hueX && mouseX < hueX + hueWidth
+                && mouseY >= hueY && mouseY < hueY + 10) {
+            colorDrag = 2;
+            updateColorPicker(mouseX, mouseY);
+        } else if (mouseY >= buttonY && mouseY < buttonY + 18
+                && mouseX >= x0 + 10 && mouseX < x0 + 10 + buttonWidth) {
+            closeColorPicker(false);
+        } else if (mouseY >= buttonY && mouseY < buttonY + 18
+                && mouseX >= x0 + 18 + buttonWidth
+                && mouseX < x0 + 18 + buttonWidth * 2) {
+            closeColorPicker(true);
+        }
+        return true;
+    }
+
+    @Override
+    public boolean mouseDragged(double mouseX, double mouseY, int button, double dragX, double dragY) {
+        if (colorPickerOpen) {
+            if (colorDrag != 0) updateColorPicker(mouseX, mouseY);
+            return true;
+        }
+        return super.mouseDragged(mouseX, mouseY, button, dragX, dragY);
+    }
+
+    @Override
+    public boolean mouseReleased(double mouseX, double mouseY, int button) {
+        if (colorPickerOpen) {
+            colorDrag = 0;
+            return true;
+        }
+        return super.mouseReleased(mouseX, mouseY, button);
     }
 
     /**

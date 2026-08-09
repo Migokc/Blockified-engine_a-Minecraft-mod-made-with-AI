@@ -14,6 +14,7 @@ import com.fnfmod.net.FnfPayloads;
 import com.fnfmod.song.SongEntry;
 import com.fnfmod.song.SongLibrary;
 import com.fnfmod.world.ModContentScope;
+import com.fnfmod.world.ModWorldOptions;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.world.entity.decoration.ArmorStand;
@@ -146,12 +147,17 @@ public final class SessionManager {
     @SubscribeEvent
     public static void onServerStarting(ServerStartingEvent event) {
         ModContentScope.bindWorld(event.getServer().getWorldPath(LevelResource.ROOT));
+        ModWorldOptions.loadActiveWorld();
+        if (ModWorldOptions.preventSaving()) {
+            event.getServer().getAllLevels().forEach(level -> level.noSave = true);
+        }
         SongLibrary.rescan();
         MachineLibrary.rescan();
     }
 
     @SubscribeEvent
     public static void onServerStopped(ServerStoppedEvent event) {
+        ModWorldOptions.clear();
         ModContentScope.clear();
         MachineLibrary.rescan();
     }
@@ -734,15 +740,22 @@ public final class SessionManager {
     }
 
     public static void onLeave(ServerPlayer player, BlockPos pos, boolean finishedOnly, byte requestedReturnTarget) {
+        boolean chartEditorTransition = requestedReturnTarget == FnfPayloads.LeaveC2S.RETURN_CHART_EDITOR;
         if (finishedOnly) {
             restorePosition(player);
         } else {
-            Session session = SESSIONS.get(keyOf(player, pos));
+            Session session = findParticipantSession(player, pos);
             if (session == null) {
                 restorePosition(player);
             } else if (session.host == player || session.guest == player) {
                 cancel(session, player, player.getGameProfile().getName() + " left");
             }
+        }
+        if (chartEditorTransition) {
+            // restoreWorld/restorePosition above are synchronous. Sending this last
+            // guarantees the client cannot expose the editor before rollback ends.
+            PacketDistributor.sendToPlayer(player, new FnfPayloads.RollbackCompleteS2C(pos));
+            return;
         }
         // With the old session torn down, recreate only the requested chooser.
         // Custom-menu routing revalidates machine reach, profile, world scope,
@@ -753,6 +766,21 @@ public final class SessionManager {
         } else if (returnTarget == FnfPayloads.LeaveC2S.RETURN_MACHINE_MENU) {
             MachineMenuService.onInteract(player, pos);
         }
+    }
+
+    /**
+     * Normally the machine position and player's current dimension address the
+     * session directly. Fall back to participant identity so a song command that
+     * changed dimension cannot strand its world rollback transaction.
+     */
+    private static Session findParticipantSession(ServerPlayer player, BlockPos pos) {
+        Session direct = SESSIONS.get(keyOf(player, pos));
+        if (direct != null) return direct;
+        for (Session candidate : SESSIONS.values()) {
+            if ((candidate.host == player || candidate.guest == player)
+                    && candidate.key.pos().equals(pos)) return candidate;
+        }
+        return null;
     }
 
     /** Teleports the player back to where they stood before the song, if recorded. */

@@ -3,6 +3,7 @@ package com.fnfmod.client;
 import com.fnfmod.client.gui.GameplayScreen;
 import com.fnfmod.client.gui.SongSelectScreen;
 import com.fnfmod.client.gui.WaitingScreen;
+import com.fnfmod.client.gui.RollbackWaitingScreen;
 import com.fnfmod.client.gui.machine.MachineEditorScreen;
 import com.fnfmod.client.gui.machine.MachineMenuScreen;
 import com.fnfmod.client.gui.machine.HitboxBuilderScreen;
@@ -74,6 +75,8 @@ public final class ClientNetHandler {
             }
         } else if (payload instanceof FnfPayloads.SessionCancelS2C p) {
             ClientSession.onCancel(p);
+        } else if (payload instanceof FnfPayloads.RollbackCompleteS2C p) {
+            if (mc.screen instanceof RollbackWaitingScreen waiting) waiting.complete(p.pos());
         } else if (payload instanceof FnfPayloads.OpenMachineEditorS2C p) {
             mc.setScreen(new MachineEditorScreen(p.pos(), p.profileId()));
         } else if (payload instanceof FnfPayloads.MachineEditorResultS2C p) {

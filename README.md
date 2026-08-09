@@ -2,9 +2,25 @@
 
 A feature-full Friday Night Funkin' engine inside of Minecraft — **NeoForge 1.21.1**.
 
-Current release: **2.2.4bbs**.
+Current release: **2.2.5bbs**.
 
 Documentation: **[Blockified Engine Docs](https://migokc.github.io/Blockified-engine_a-Minecraft-mod-made-with-AI/)**.
+
+### 2.2.5bbs highlights
+
+- Chart Beat Snap now changes subdivision spacing while preserving timeline
+  dimensions, Grid Zoom controls visible fixed-height rows independently, and
+  notes remain aligned and placeable at every zoom level.
+- The chart editor can remember a separate output folder per song, writes chart
+  and event JSON in readable pretty-printed form, and waits for playstate rollback
+  to finish before opening so world, inventory, time, and game mode are restored.
+- Bundled mod worlds gain JSON-only `allowCheats` and `saveOnExit` controls. Setting
+  `saveOnExit` to `false` suppresses world, chunk, entity, player, statistics, and
+  advancement persistence without affecting ordinary worlds.
+- Character and free-camera color dialogs now share the in-game picker with an
+  editable hex field. Settings and directory lists scroll responsively with eased
+  motion across small resolutions and GUI scales, and the active directory is
+  visibly grayed out.
 
 ### 2.2.4bbs highlights
 
@@ -75,7 +91,9 @@ Documentation: **[Blockified Engine Docs](https://migokc.github.io/Blockified-en
 - A bundled world can force the player's settings while it is played: a
   `blockified-options.json` in the world folder shadows any subset of settings keys
   and locks them (grayed out) in-game, then restores the player's own values on exit.
-  The forced values are never written back to `options.json`.
+  The forced values are never written back to `options.json`. Two JSON-only world
+  controls are also supported: `allowCheats` enables/disables player commands, and
+  `saveOnExit: false` runs the world without persisting world or player changes.
 - The solo opponent bot now renders a real BBS character (spawned like Add Character
   performers) instead of a bare armor stand, with sing/miss/idle animations.
 - Note skins support Psych-style flat files named after the skin
@@ -1195,7 +1213,14 @@ restored afterwards.
   **Hey!** uses the mapped BBS `hey` state outside the Psych scene as well.
   **Camera Zoom** remains Blockified Engine's persistent,
   eased zoom; **Add Camera Zoom** is Psych's temporary game/HUD impulse.
-- Snap: 4th–64th. Save writes `config/fnfmod/songs/<file>/<file>.json` (Psych format).
+- Beat Snap supports 4th–64th subdivisions and squishes/stretches boxes without
+  changing the timeline dimensions; Grid Zoom independently adds or removes
+  fixed-height boxes. Under **Edit**, use
+  **Choose Saving Folder...** to remember an output folder for the current song
+  name. Ctrl+S then overwrites that folder's chart JSON and `events.json`. Mappings
+  for every chart live together in `config/fnfmod/chart_editor_save_folders.json`.
+  Clear the mapping to make Ctrl+S open Save As on every save; a one-off choice is
+  not remembered automatically.
 
 ## Gameplay options
 

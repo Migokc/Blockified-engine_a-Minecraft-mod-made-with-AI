@@ -31,6 +31,8 @@ public final class FnfNetworking {
         registrar.playToClient(FnfPayloads.PartnerNoteS2C.TYPE, FnfPayloads.PartnerNoteS2C.CODEC, FnfNetworking::client);
         registrar.playToClient(FnfPayloads.PartnerEndS2C.TYPE, FnfPayloads.PartnerEndS2C.CODEC, FnfNetworking::client);
         registrar.playToClient(FnfPayloads.SessionCancelS2C.TYPE, FnfPayloads.SessionCancelS2C.CODEC, FnfNetworking::client);
+        registrar.playToClient(FnfPayloads.RollbackCompleteS2C.TYPE, FnfPayloads.RollbackCompleteS2C.CODEC,
+                FnfNetworking::client);
         registrar.playToClient(FnfPayloads.OpenMachineEditorS2C.TYPE, FnfPayloads.OpenMachineEditorS2C.CODEC, FnfNetworking::client);
         registrar.playToClient(FnfPayloads.MachineEditorResultS2C.TYPE, FnfPayloads.MachineEditorResultS2C.CODEC, FnfNetworking::client);
         registrar.playToClient(FnfPayloads.OpenMachineMenuS2C.TYPE, FnfPayloads.OpenMachineMenuS2C.CODEC, FnfNetworking::client);

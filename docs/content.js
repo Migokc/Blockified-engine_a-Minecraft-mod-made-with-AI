@@ -20,7 +20,7 @@
 
   const pages = {};
 
-  pages.home = page("Blockified Engine", "Documentation · Guides · Wiki", "Build Friday Night Funkin' songs, stages, machines, and world scenes inside Minecraft.", ["2.2.4bbs", "NeoForge 1.21.1", "Singleplayer + LAN"],
+  pages.home = page("Blockified Engine", "Documentation · Guides · Wiki", "Build Friday Night Funkin' songs, stages, machines, and world scenes inside Minecraft.", ["2.2.5bbs", "NeoForge 1.21.1", "Singleplayer + LAN"],
     `<div class="hero-panel"><span>DOCUMENTATION · GUIDES · WIKI</span><h2>Build with Blockified.</h2><p>Learn by following a guide, look up exact behavior in documentation, or understand systems through the wiki. This site covers Blockified additions and changes without duplicating unchanged Psych Engine material.</p><div class="hero-actions"><a class="button-link" href="#/quick-start">Start here</a><a class="button-link secondary" href="#/animations">Make animations</a><a class="button-link secondary" href="#/lua-overview">Lua API</a></div></div>`,
     section("choose", "Choose how to use this site", `<div class="card-grid category-grid">
       <a class="doc-card category-card guide-card" href="#/quick-start"><span>GUIDES</span><h3>Make something</h3><p>Follow ordered, practical steps from installation to a playable song, complete pack, animation, or custom machine.</p></a>
@@ -195,7 +195,9 @@ end`)}<p><a href="#/machine-lua">Open full machine Lua reference</a></p>`),
     section("location", "Location", `<p>Place worlds under <code>config/fnfmod/mods/My-Mod/worlds/</code>. Blockified resolves the owning pack from the active world.</p>`),
     section("scope", "Asset scope", `<div class="table-wrap"><table><thead><tr><th>Location</th><th>Available content</th></tr></thead><tbody><tr><td>Pack's bundled world</td><td>Only the owning pack</td></tr><tr><td>Ordinary local/LAN world</td><td>All lightweight songs, installed packs, and external directories</td></tr><tr><td>Dedicated server</td><td>Global song library; machine authoring/menu Lua disabled</td></tr></tbody></table></div>`),
     section("reason", "Why", `<p>Bundled worlds stay self-contained and deterministic, while ordinary worlds preserve Blockified's full global library.</p>`),
-    section("world-options", "World-forced settings", `<p>A bundled world can override the player's own settings while it is being played. Put a <code>blockified-options.json</code> in the world folder (<code>config/fnfmod/mods/My-Mod/worlds/My-World/</code>) with any subset of the settings keys — the same keys as the user's <code>options.json</code>.</p>${code("json", `{
+    section("world-options", "World-forced settings", `<p>A bundled world can override the player's own settings while it is being played. Put a <code>blockified-options.json</code> in the world folder (<code>config/fnfmod/mods/My-Mod/worlds/My-World/</code>) with any subset of the user's settings keys, plus the two world-only controls below.</p>${code("json", `{
+  "allowCheats": false,
+  "saveOnExit": true,
   "downscroll": true,
   "noteSkin": "NOTE_assets-future",
   "hudStyle": "fnf",
@@ -204,8 +206,10 @@ end`)}<p><a href="#/machine-lua">Open full machine Lua reference</a></p>`),
 }`)}<div class="api-list">
       ${api("Defined keys", "Shadow the player's value and are locked (grayed out) in the in-game settings while inside that world.")}
       ${api("Undefined keys", "Fall back to the player's own setting, unchanged.")}
+      ${api("allowCheats", "Optional boolean. Enables or disables player command permissions for this bundled world.")}
+      ${api("saveOnExit", "Defaults to true. When false, autosaves and exit saves are suppressed, including world, entity, and player progress.")}
       ${api("Scope", "Only applies inside that bundled world. Normal/LAN worlds and menus use the player's plain settings.")}
-    </div>${callout("Never persisted", "The world's forced values only shadow the player's settings in memory — they are never written back to the user's options.json, and the player's own values return when they leave the world.")}`)
+    </div>${callout("Separate from user options", "World-forced values and world-only controls are read only from this bundled world's blockified-options.json. They are never written to the user's options.json, and the player's own settings return when leaving.")}`)
   );
 
   pages.machines = page("Custom machines", "Documentation · Content", "Reskin the Funkin' machine and replace its selector with a Lua menu.", ["Singleplayer", "LAN", "Lua UI"],

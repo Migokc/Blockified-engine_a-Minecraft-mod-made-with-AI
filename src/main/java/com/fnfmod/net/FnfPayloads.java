@@ -207,6 +207,17 @@ public final class FnfPayloads {
         public Type<? extends CustomPacketPayload> type() { return TYPE; }
     }
 
+    /** Server acknowledgement sent only after an Edit Chart rollback has completed. */
+    public record RollbackCompleteS2C(BlockPos pos) implements CustomPacketPayload {
+        public static final Type<RollbackCompleteS2C> TYPE = new Type<>(FnfMod.id("rollback_complete"));
+        public static final StreamCodec<FriendlyByteBuf, RollbackCompleteS2C> CODEC = StreamCodec.of(
+                (buf, value) -> buf.writeBlockPos(value.pos()),
+                buf -> new RollbackCompleteS2C(buf.readBlockPos()));
+
+        @Override
+        public Type<? extends CustomPacketPayload> type() { return TYPE; }
+    }
+
     public record OpenMachineEditorS2C(BlockPos pos, String profileId) implements CustomPacketPayload {
         public static final Type<OpenMachineEditorS2C> TYPE = new Type<>(FnfMod.id("open_machine_editor"));
         public static final StreamCodec<FriendlyByteBuf, OpenMachineEditorS2C> CODEC = StreamCodec.of(
@@ -484,6 +495,8 @@ public final class FnfPayloads {
         public static final byte RETURN_WORLD = 0;
         public static final byte RETURN_SELECTOR = 1;
         public static final byte RETURN_MACHINE_MENU = 2;
+        /** Internal transition: acknowledge rollback, then let the client open its chart editor. */
+        public static final byte RETURN_CHART_EDITOR = 3;
         public static final Type<LeaveC2S> TYPE = new Type<>(FnfMod.id("leave"));
         public static final StreamCodec<FriendlyByteBuf, LeaveC2S> CODEC = StreamCodec.of(
                 (buf, v) -> {

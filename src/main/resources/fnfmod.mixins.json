@@ -5,7 +5,12 @@
   "minVersion": "0.8",
   "mixins": [
     "EntityPushMixin",
-    "LevelMutationMixin"
+    "LevelMutationMixin",
+    "ModWorldEntityStorageMixin",
+    "ModWorldMinecraftServerMixin",
+    "ModWorldPlayerListMixin",
+    "ModWorldPrimaryLevelDataMixin",
+    "ModWorldServerChunkCacheMixin"
   ],
   "client": [
     "CameraMixin",

@@ -316,6 +316,10 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     private String freeCamColorTarget = "graph";   // "graph" or "border"
     private float pickHue, pickSat, pickBri;
     private int pickDrag;   // 0 none, 1 square, 2 hue bar
+    private int freeCamColorOriginal;
+    private net.minecraft.client.gui.components.EditBox freeCamColorHexBox;
+    private boolean updatingFreeCamColorHex;
+    private int colorCancelX, colorCancelY, colorCancelW, colorCancelH;
     private int colorDoneX, colorDoneY, colorDoneW, colorDoneH;
     private boolean freeCamAddMenu;
     private boolean freeCamExistingMenu;
@@ -2551,8 +2555,12 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                 return true;
             }
             if (freeCamColorPicker) {
-                if (keyCode == GLFW.GLFW_KEY_ESCAPE || keyCode == GLFW.GLFW_KEY_ENTER
-                        || keyCode == GLFW.GLFW_KEY_KP_ENTER) { freeCamColorPicker = false; pickDrag = 0; }
+                if (keyCode == GLFW.GLFW_KEY_ESCAPE) closeFreeCamColorPicker(false);
+                else if (keyCode == GLFW.GLFW_KEY_ENTER || keyCode == GLFW.GLFW_KEY_KP_ENTER) {
+                    closeFreeCamColorPicker(true);
+                } else if (freeCamColorHexBox != null) {
+                    freeCamColorHexBox.keyPressed(keyCode, scanCode, modifiers);
+                }
                 return true;
             }
             // Toggle Blender-like fly/look navigation and cursor grab.
@@ -2803,6 +2811,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         freeCamTextEntry = false;
         freeCamTextBox = null;
         freeCamColorPicker = false;
+        freeCamColorHexBox = null;
         pickDrag = 0;
         freeCamAddMenu = false;
         freeCamExistingMenu = false;
@@ -3155,12 +3164,12 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
 
         GameplayCamera.end();
         PacketDistributor.sendToServer(new FnfPayloads.LeaveC2S(machinePos, false,
-                FnfPayloads.LeaveC2S.RETURN_WORLD));
+                FnfPayloads.LeaveC2S.RETURN_CHART_EDITOR));
         ClientSession.reset();
         if (minecraft.player != null) CharacterAnimations.stop(minecraft.player);
-        // setScreen removes this gameplay screen, which disposes its SongPlayer;
-        // the editor loads its own audio streams from the captured song folder.
-        minecraft.setScreen(editor);
+        // This non-pausing screen lets the integrated server process the leave
+        // packet. It opens the editor only after blocks and player state are back.
+        minecraft.setScreen(new RollbackWaitingScreen(machinePos, editor));
     }
 
     /**
@@ -3327,14 +3336,20 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                 return true;
             }
             if (freeCamColorPicker) {
+                if (freeCamColorHexBox != null) freeCamColorHexBox.mouseClicked(mouseX, mouseY, button);
                 if (button == 0) {
-                    if (mouseX >= colorDoneX && mouseX < colorDoneX + colorDoneW
-                            && mouseY >= colorDoneY && mouseY < colorDoneY + colorDoneH) {
-                        freeCamColorPicker = false;
+                    if (mouseX >= colorCancelX && mouseX < colorCancelX + colorCancelW
+                            && mouseY >= colorCancelY && mouseY < colorCancelY + colorCancelH) {
+                        closeFreeCamColorPicker(false);
                         return true;
                     }
-                    if (mouseX >= pickSqX && mouseX < pickSqX + 72
-                            && mouseY >= pickSqY && mouseY < pickSqY + 72) {
+                    if (mouseX >= colorDoneX && mouseX < colorDoneX + colorDoneW
+                            && mouseY >= colorDoneY && mouseY < colorDoneY + colorDoneH) {
+                        closeFreeCamColorPicker(true);
+                        return true;
+                    }
+                    if (mouseX >= pickSqX && mouseX < pickSqX + 80
+                            && mouseY >= pickSqY && mouseY < pickSqY + 80) {
                         pickDrag = 1; updatePicker(mouseX, mouseY); return true;
                     }
                     if (mouseX >= pickHueBarX && mouseX < pickHueBarX + pickHueBarW
@@ -3402,6 +3417,10 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
 
     @Override
     public boolean charTyped(char codePoint, int modifiers) {
+        if (freeCam && freeCamColorPicker) {
+            if (freeCamColorHexBox != null) freeCamColorHexBox.charTyped(codePoint, modifiers);
+            return true;
+        }
         if (freeCam && freeCamTextEntry) {
             if (freeCamTextBox != null) freeCamTextBox.charTyped(codePoint, modifiers);
             return true;
@@ -3412,12 +3431,13 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
 
     private void updatePicker(double mx, double my) {
         if (pickDrag == 1) {
-            pickSat = (float) Math.max(0, Math.min(1, (mx - pickSqX) / 71.0));
-            pickBri = 1f - (float) Math.max(0, Math.min(1, (my - pickSqY) / 71.0));
+            pickSat = (float) Math.max(0, Math.min(1, (mx - pickSqX) / 79.0));
+            pickBri = 1f - (float) Math.max(0, Math.min(1, (my - pickSqY) / 79.0));
         } else if (pickDrag == 2) {
             pickHue = (float) Math.max(0, Math.min(1, (mx - pickHueBarX) / (pickHueBarW - 1.0)));
         }
         applyPickedColor();
+        updateFreeCamColorHex();
     }
 
     @Override
@@ -4531,7 +4551,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             return;
         }
         // Colour picker / text entry are modal but keep the world visible for live preview.
-        if (freeCamColorPicker) { renderColorPicker(gui); return; }
+        if (freeCamColorPicker) { renderColorPicker(gui, mouseX, mouseY); return; }
         if (freeCamTextEntry) { renderTextEntry(gui, mouseX, mouseY); return; }
 
         // Drive a running transform from the live cursor before drawing.
@@ -4595,35 +4615,45 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         }
     }
 
-    private int pickSqX, pickSqY, pickHueBarX, pickHueBarY, pickHueBarW = 154;
+    private int pickSqX, pickSqY, pickHueBarX, pickHueBarY, pickHueBarW;
 
     /** In-game colour picker (HSB square + hue bar + hex), styled like Note Colors. */
-    private void renderColorPicker(GuiGraphics gui) {
-        int boxW = 176, boxH = 134;
-        int x0 = (width - boxW) / 2, y0 = (height - boxH) / 2;
-        gui.fill(x0, y0, x0 + boxW, y0 + boxH, 0xF0101018);
-        gui.renderOutline(x0, y0, boxW, boxH, 0xFFFFEE66);
-        gui.drawString(font, "Graph colour", x0 + 10, y0 + 8, 0xFFFFEE66, false);
+    private void renderColorPicker(GuiGraphics gui, int mouseX, int mouseY) {
+        int boxW = Math.min(260, Math.max(220, width - 24)), boxH = 176;
+        int x0 = (width - boxW) / 2, y0 = Math.max(8, (height - boxH) / 2);
+        gui.fill(0, 0, width, height, 0xD00A0A10);
+        gui.fill(x0, y0, x0 + boxW, y0 + boxH, 0xFF101018);
+        gui.renderOutline(x0, y0, boxW, boxH, 0xFF6A70FF);
+        String title = "border".equals(freeCamColorTarget) ? "Text border color" : "Graph color";
+        gui.drawCenteredString(font, title, x0 + boxW / 2, y0 + 9, 0xFFFFFFFF);
 
-        int sx = x0 + 10, sy = y0 + 22;
+        int sx = x0 + 12, sy = y0 + 28, squareSize = 80;
         pickSqX = sx; pickSqY = sy;
-        for (int col = 0; col < 72; col++) {
-            int c = java.awt.Color.HSBtoRGB(pickHue, col / 71f, 1f);
-            gui.fill(sx + col, sy, sx + col + 1, sy + 72, 0xFF000000 | (c & 0xFFFFFF));
+        for (int col = 0; col < squareSize; col++) {
+            int c = java.awt.Color.HSBtoRGB(pickHue, col / (squareSize - 1f), 1f);
+            gui.fill(sx + col, sy, sx + col + 1, sy + squareSize, 0xFF000000 | (c & 0xFFFFFF));
         }
-        gui.fillGradient(sx, sy, sx + 72, sy + 72, 0x00000000, 0xFF000000);
-        int cx = sx + (int) (pickSat * 71), cy = sy + (int) ((1 - pickBri) * 71);
+        gui.fillGradient(sx, sy, sx + squareSize, sy + squareSize, 0x00000000, 0xFF000000);
+        int cx = sx + Math.round(pickSat * (squareSize - 1));
+        int cy = sy + Math.round((1 - pickBri) * (squareSize - 1));
         int cur = java.awt.Color.HSBtoRGB(pickHue, pickSat, pickBri) & 0xFFFFFF;
         gui.fill(cx - 2, cy - 2, cx + 3, cy + 3, 0xFFFFFFFF);
         gui.fill(cx - 1, cy - 1, cx + 2, cy + 2, 0xFF000000 | cur);
 
-        // swatch + hex to the right of the square
-        gui.fill(sx + 80, sy, sx + 80 + 66, sy + 40, 0xFF000000 | cur);
-        gui.renderOutline(sx + 80, sy, 66, 40, 0xFF6A7080);
-        gui.drawString(font, String.format("#%06X", cur), sx + 80, sy + 48, 0xFFE0E0E0, false);
+        int rightX = sx + squareSize + 14;
+        int rightWidth = x0 + boxW - 12 - rightX;
+        gui.fill(rightX, sy, rightX + rightWidth, sy + 36, 0xFF000000 | cur);
+        gui.renderOutline(rightX, sy, rightWidth, 36, 0xFF6A7080);
+        gui.drawString(font, "Hex", rightX, sy + 45, 0xFFBBBBBB, false);
+        if (freeCamColorHexBox != null) {
+            freeCamColorHexBox.setX(rightX);
+            freeCamColorHexBox.setY(sy + 56);
+            freeCamColorHexBox.setWidth(rightWidth);
+            freeCamColorHexBox.render(gui, mouseX, mouseY, 0);
+        }
 
-        int hy = sy + 80;
-        pickHueBarX = sx; pickHueBarY = hy;
+        int hy = y0 + 120;
+        pickHueBarX = sx; pickHueBarY = hy; pickHueBarW = boxW - 24;
         for (int col = 0; col < pickHueBarW; col++) {
             int c = java.awt.Color.HSBtoRGB(col / (pickHueBarW - 1f), 1f, 1f);
             gui.fill(sx + col, hy, sx + col + 1, hy + 10, 0xFF000000 | (c & 0xFFFFFF));
@@ -4631,9 +4661,20 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         int hx = sx + (int) (pickHue * (pickHueBarW - 1));
         gui.fill(hx - 1, hy - 1, hx + 2, hy + 11, 0xFFFFFFFF);
 
-        colorDoneX = x0 + 10; colorDoneY = y0 + boxH - 24; colorDoneW = boxW - 20; colorDoneH = 18;
-        boolean hover = false;
-        gui.fill(colorDoneX, colorDoneY, colorDoneX + colorDoneW, colorDoneY + colorDoneH, 0xE0303442);
+        int buttonY = y0 + boxH - 26;
+        int buttonWidth = (boxW - 28) / 2;
+        colorCancelX = x0 + 10; colorCancelY = buttonY; colorCancelW = buttonWidth; colorCancelH = 18;
+        colorDoneX = x0 + 18 + buttonWidth; colorDoneY = buttonY; colorDoneW = buttonWidth; colorDoneH = 18;
+        boolean cancelHover = mouseX >= colorCancelX && mouseX < colorCancelX + colorCancelW
+                && mouseY >= colorCancelY && mouseY < colorCancelY + colorCancelH;
+        boolean doneHover = mouseX >= colorDoneX && mouseX < colorDoneX + colorDoneW
+                && mouseY >= colorDoneY && mouseY < colorDoneY + colorDoneH;
+        gui.fill(colorCancelX, colorCancelY, colorCancelX + colorCancelW, colorCancelY + colorCancelH,
+                cancelHover ? 0xFF505675 : 0xFF303442);
+        gui.renderOutline(colorCancelX, colorCancelY, colorCancelW, colorCancelH, 0xFF6A7080);
+        gui.drawCenteredString(font, "Cancel", colorCancelX + colorCancelW / 2, colorCancelY + 5, 0xFFFFFFFF);
+        gui.fill(colorDoneX, colorDoneY, colorDoneX + colorDoneW, colorDoneY + colorDoneH,
+                doneHover ? 0xFF505675 : 0xFF303442);
         gui.renderOutline(colorDoneX, colorDoneY, colorDoneW, colorDoneH, 0xFF6A7080);
         gui.drawCenteredString(font, "Done", colorDoneX + colorDoneW / 2, colorDoneY + 5, 0xFFFFFFFF);
     }
@@ -5166,10 +5207,43 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     private void beginColorPicker(String target, int initialColor) {
         freeCamColorTarget = target;
         int c = initialColor & 0xFFFFFF;
+        freeCamColorOriginal = c;
         float[] hsb = java.awt.Color.RGBtoHSB((c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF, null);
         pickHue = hsb[0]; pickSat = hsb[1]; pickBri = hsb[2];
+        pickDrag = 0;
+        freeCamColorHexBox = new net.minecraft.client.gui.components.EditBox(
+                font, 0, 0, 80, 16, Component.literal("Hex color"));
+        freeCamColorHexBox.setMaxLength(6);
+        freeCamColorHexBox.setFilter(value -> value.matches("[0-9a-fA-F]{0,6}"));
+        freeCamColorHexBox.setResponder(value -> {
+            if (updatingFreeCamColorHex || !value.matches("[0-9a-fA-F]{6}")) return;
+            int rgb = Integer.parseInt(value, 16);
+            float[] next = java.awt.Color.RGBtoHSB((rgb >> 16) & 255,
+                    (rgb >> 8) & 255, rgb & 255, null);
+            pickHue = next[0]; pickSat = next[1]; pickBri = next[2];
+            applyPickedColor();
+        });
+        updateFreeCamColorHex();
         freeCamObjects.beginColorEdit();
         freeCamColorPicker = true;
+    }
+
+    private void updateFreeCamColorHex() {
+        if (freeCamColorHexBox == null) return;
+        int rgb = java.awt.Color.HSBtoRGB(pickHue, pickSat, pickBri) & 0xFFFFFF;
+        updatingFreeCamColorHex = true;
+        freeCamColorHexBox.setValue(String.format(java.util.Locale.ROOT, "%06X", rgb));
+        updatingFreeCamColorHex = false;
+    }
+
+    private void closeFreeCamColorPicker(boolean save) {
+        if (!save) {
+            if ("border".equals(freeCamColorTarget)) freeCamObjects.setBorderColorLive(freeCamColorOriginal);
+            else freeCamObjects.setColorLive(freeCamColorOriginal);
+        }
+        freeCamColorPicker = false;
+        pickDrag = 0;
+        freeCamColorHexBox = null;
     }
 
     private void applyPickedColor() {
@@ -5930,7 +6004,8 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
 
     @Override
     public boolean isTextInputActive() {
-        return freeCam && freeCamTextEntry;
+        return freeCam && (freeCamTextEntry
+                || freeCamColorPicker && freeCamColorHexBox != null && freeCamColorHexBox.isFocused());
     }
 
     @Override

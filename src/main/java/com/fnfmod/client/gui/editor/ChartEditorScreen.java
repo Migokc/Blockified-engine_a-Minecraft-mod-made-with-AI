@@ -58,10 +58,12 @@ import java.util.concurrent.CompletableFuture;
 public final class ChartEditorScreen extends Screen implements TextInputAwareScreen {
 
     private static final int[] SNAPS = {4, 8, 12, 16, 24, 32, 64};
+    /** Default zoom uses four rows per beat, matching 16/16 Beat Snap. */
+    private static final double BASE_GRID_ZOOM_ROWS = 4.0;
     // 120 makes one 16th-note row exactly as tall as a lane cell is wide at the
     // reference layout, so the default grid reads as squares instead of being
     // vertically squashed (which previously forced a manual Z zoom to correct).
-    /** Zoom adds fixed-size grid rows per beat; it never stretches existing cells. */
+    /** Zoom adds grid rows per beat; Beat Snap alone scales their physical height. */
     private static final int[] GRID_ROWS_PER_BEAT = {1, 2, 3, 4, 6, 8, 12, 16};
     private static final int TAB_Y = 24;
     private static final int CONTROL_TOP = 40;
@@ -994,6 +996,18 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
             undo.active = !undoHistory.isEmpty(); y += 16;
             Button redo = button(x + 4, y, w - 8, "Redo", b -> { redoNotes(); rebuildUi(); });
             redo.active = !redoHistory.isEmpty(); y += 16;
+            Path savingFolder = configuredSavingFolder();
+            Button chooseSavingFolder = button(x + 4, y, w - 8,
+                    savingFolder == null ? "Choose Saving Folder..." : "Change Saving Folder...",
+                    b -> chooseSavingFolder());
+            chooseSavingFolder.setTooltip(Tooltip.create(Component.literal(savingFolder == null
+                    ? "No folder saved for this song. Ctrl+S asks where to save every time."
+                    : "Current: " + savingFolder))); y += 16;
+            Button clearSavingFolder = button(x + 4, y, w - 8, "Clear Saving Folder",
+                    b -> clearSavingFolder());
+            clearSavingFolder.active = savingFolder != null;
+            clearSavingFolder.setTooltip(Tooltip.create(Component.literal(
+                    "Removes this song's saved folder; Ctrl+S will ask every time."))); y += 16;
             button(x + 4, y, w - 8, "Copy Section", b -> copySection(shownSection)); y += 16;
             button(x + 4, y, w - 8, "Paste Section", b -> pasteSection(shownSection)); y += 16;
             Button snapNotes = button(x + 4, y, w - 8, "Snap Notes to Grid", b -> snapNotesToGrid());
@@ -1617,33 +1631,77 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
         String id = sanitizeId(saveId == null || saveId.isBlank() ? chart.title : saveId);
         if (id.isBlank()) id = "unnamed";
         try {
-            String difficultySuffix = loadedDifficulty.equalsIgnoreCase("normal")
-                    ? "" : "-" + sanitizeId(loadedDifficulty);
-            Path suggested = chartSaveFile != null ? chartSaveFile
-                    : SongLibrary.songsDir().resolve(id).resolve(id + difficultySuffix + ".json");
-            if (forceDialog || chartSaveFile == null) {
+            Path savingFolder = configuredSavingFolder();
+            Path file;
+            if (!forceDialog && savingFolder != null) {
+                file = savingFolder.resolve(chartFileName(id));
+            } else {
+                Path suggested = chartSaveFile != null ? chartSaveFile
+                        : SongLibrary.songsDir().resolve(id).resolve(chartFileName(id));
                 var selected = NativeFilePicker.saveFile("Save Blockified/Psych chart",
                         suggested, new String[]{"*.json"}, "FNF chart JSON");
                 if (selected.isEmpty()) {
                     setStatus("Save cancelled");
                     return;
                 }
-                chartSaveFile = ensureJsonExtension(selected.get());
+                file = ensureJsonExtension(selected.get());
             }
-            Path file = chartSaveFile;
+            chartSaveFile = file;
             Path directory = file.getParent();
             if (directory != null) Files.createDirectories(directory);
             Files.writeString(file, PsychChartWriter.write(chart));
+            if (directory != null) {
+                Files.writeString(directory.resolve("events.json"), PsychChartWriter.writeEvents(chart));
+            }
             if (directory != null && directory.startsWith(SongLibrary.songsDir())) {
                 writeOriginalReference(directory, id);
             }
             songId = saveId = id;
             SongLibrary.rescan();
-            setStatus("Saved " + file.toAbsolutePath());
+            setStatus("Saved chart + events to " + file.toAbsolutePath().getParent());
         } catch (Exception e) {
             setStatus("Save failed: " + e.getMessage());
             FnfMod.LOGGER.error("Chart save failed", e);
         }
+    }
+
+    private String chartFileName(String id) {
+        if (chartSaveFile != null && chartSaveFile.getFileName() != null) {
+            String existing = chartSaveFile.getFileName().toString();
+            if (existing.toLowerCase(Locale.ROOT).endsWith(".json")
+                    && !existing.equalsIgnoreCase("events.json")) return existing;
+        }
+        String difficultySuffix = loadedDifficulty.equalsIgnoreCase("normal")
+                ? "" : "-" + sanitizeId(loadedDifficulty);
+        return id + difficultySuffix + ".json";
+    }
+
+    private Path configuredSavingFolder() {
+        return ChartSaveFolderStore.get(chart == null ? "" : chart.title).orElse(null);
+    }
+
+    private void chooseSavingFolder() {
+        commitVisibleFields();
+        NativeFilePicker.selectFolder("Choose saving folder for " + chart.title).ifPresent(folder -> {
+            if (ChartSaveFolderStore.set(chart.title, folder)) {
+                setStatus("Saving folder: " + folder.toAbsolutePath().normalize());
+            } else {
+                setStatus("Could not save the folder setting");
+            }
+            openMenu = TopMenu.NONE;
+            rebuildUi();
+        });
+    }
+
+    private void clearSavingFolder() {
+        commitVisibleFields();
+        if (ChartSaveFolderStore.clear(chart.title)) {
+            setStatus("Saving folder cleared; Ctrl+S will ask every time");
+        } else {
+            setStatus("Could not clear the folder setting");
+        }
+        openMenu = TopMenu.NONE;
+        rebuildUi();
     }
 
     private static Path ensureJsonExtension(Path file) {
@@ -2526,12 +2584,12 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
             }
             case GLFW.GLFW_KEY_Z -> {
                 gridZoomIndex = Math.min(GRID_ROWS_PER_BEAT.length - 1, gridZoomIndex + 1);
-                setStatus("Grid zoom: " + GRID_ROWS_PER_BEAT[gridZoomIndex] + " boxes/beat");
+                setStatus("Grid zoom: " + gridBoxesText() + " boxes/beat");
                 yield true;
             }
             case GLFW.GLFW_KEY_X -> {
                 gridZoomIndex = Math.max(0, gridZoomIndex - 1);
-                setStatus("Grid zoom: " + GRID_ROWS_PER_BEAT[gridZoomIndex] + " boxes/beat");
+                setStatus("Grid zoom: " + gridBoxesText() + " boxes/beat");
                 yield true;
             }
             case GLFW.GLFW_KEY_V -> {
@@ -2633,7 +2691,7 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
                 selectionStartBeat = selectionEndBeat = selectionBeatAtScreenY(mouseY);
                 return true;
             }
-            double clickedBeat = yToBeat(mouseY - cw / 2.0);
+            double clickedBeat = yToBeat(mouseY - gridCellHeight() / 2.0);
             SongChart.Event closest = null;
             double closestPixels = Double.MAX_VALUE;
             for (SongChart.Event event : chart.events) {
@@ -3038,7 +3096,7 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
         for (SongChart.Event event : chart.events) {
             double beat = conductor.beatAt(event.timeMs);
             if (beat < topBeat - 1 || beat > bottomBeat + 1) continue;
-            int eventY = (int) beatToY(beat) + cw / 2;
+            int eventY = (int) Math.round(beatToY(beat) + gridCellHeight() / 2.0);
             int color = selectedEvents.contains(event) || event == selectedEvent
                     ? 0xFFFFFF44 : event.beforeSong ? 0xFF55DDFF : 0xFFFFA000;
             gui.fill(eventX + 3, eventY - 4, gx - 3, eventY + 4, color);
@@ -3049,11 +3107,12 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
             double beat = conductor.beatAt(note.timeMs);
             if (beat < topBeat - 8 || beat > bottomBeat + 1) continue;
             int timeLineY = (int) beatToY(beat);
-            int noteY = timeLineY + cw / 2;
+            int noteY = (int) Math.round(timeLineY + gridCellHeight() / 2.0);
             int column = (note.playerSide ? 4 : 0) + note.lane;
             int x = gx + column * cw;
             if (note.sustainMs > 0) {
-                int endY = (int) beatToY(conductor.beatAt(note.timeMs + note.sustainMs)) + cw / 2;
+                int endY = (int) Math.round(beatToY(conductor.beatAt(
+                        note.timeMs + note.sustainMs)) + gridCellHeight() / 2.0);
                 boolean customHold = noteTextures != null && noteTextures.drawHold(gui,
                         editorNoteTexture(note), note.lane, x + cw / 2f,
                         Math.min(noteY, endY), Math.max(noteY, endY), noteSize, endY < noteY);
@@ -3097,8 +3156,9 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
 
         if (vortex) {
             draw(gui, "VORTEX", gx, top - 10, 0xFFFF66FF);
-            int previewY = playheadY + cw / 2;
-            gui.fill(gx, playheadY, gx + gridWidth, playheadY + cw, 0x22FFFFFF);
+            int previewY = (int) Math.round(playheadY + gridCellHeight() / 2.0);
+            int previewBottom = (int) Math.round(playheadY + gridCellHeight());
+            gui.fill(gx, playheadY, gx + gridWidth, previewBottom, 0x22FFFFFF);
             for (int column = 0; column < 8; column++) {
                 int centerX = gx + column * cw + cw / 2;
                 int lane = column % 4;
@@ -3106,7 +3166,7 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
                         editorChartNoteTexture(), lane, centerX, previewY, noteSize);
                 if (!custom) NoteStyle.drawNote(gui, lane, centerX, previewY, noteSize);
                 draw(gui, String.valueOf(column + 1), gx + column * cw + 2,
-                        previewY + cw / 2 - font.lineHeight, 0xFFFFFFFF);
+                        previewBottom - font.lineHeight, 0xFFFFFFFF);
             }
         }
         if (selectingBox) {
@@ -3251,7 +3311,7 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
         };
         int height = switch (openMenu) {
             case FILE -> 154;
-            case EDIT -> 136;
+            case EDIT -> 196;
             case VIEW -> 120;
             default -> 0;
         };
@@ -3442,18 +3502,28 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
     private int gridBottom() { return Math.max(gridTop() + 32, height - 26); }
     private int centerY() { return (gridTop() + gridBottom()) / 2; }
 
-    /**
-     * Horizontal room changes with GUI scale because the side panels consume
-     * scaled UI units. Apply that exact same factor vertically so the chart
-     * workspace is uniformly scaled instead of becoming tall and narrow.
-     */
+    /** Grid Zoom changes beat height; Beat Snap must never change that dimension. */
     private double effectivePixelsPerBeat() {
         return GRID_ROWS_PER_BEAT[gridZoomIndex] * (double) cellWidth();
     }
 
-    private double gridStepBeats() { return 1.0 / GRID_ROWS_PER_BEAT[gridZoomIndex]; }
+    /**
+     * Snap changes subdivision size inside the fixed beat height. Zoom multiplies
+     * both beat height and subdivision count, so it adds boxes without stretching
+     * them; changing snap alone makes those boxes smaller/larger in-place.
+     */
+    private double gridStepBeats() {
+        return beatSnapStepBeats() * BASE_GRID_ZOOM_ROWS / GRID_ROWS_PER_BEAT[gridZoomIndex];
+    }
 
-    private double snapStepBeats() { return 4.0 / SNAPS[snapIndex]; }
+    private String gridBoxesText() { return trim(1.0 / gridStepBeats()); }
+
+    /** Placement, selection, sustain edits, and the rendered boxes share one step. */
+    private double snapStepBeats() { return gridStepBeats(); }
+
+    private double beatSnapStepBeats() { return 4.0 / SNAPS[snapIndex]; }
+
+    private double gridCellHeight() { return effectivePixelsPerBeat() * gridStepBeats(); }
 
     private float beatToY(double beat) {
         double viewBeat = conductor.beatAt(Math.max(0, visualPositionMs()));
@@ -3470,11 +3540,25 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
         String id = sanitizeId(saveId == null || saveId.isBlank() ? chart.title : saveId);
         if (id.isBlank()) id = "unnamed";
         try {
-            Path directory = SongLibrary.songsDir().resolve(id);
+            Path directory = configuredSavingFolder();
+            if (directory == null) {
+                Path suggested = chartSaveFile != null && chartSaveFile.getParent() != null
+                        ? chartSaveFile.getParent().resolve("events.json")
+                        : SongLibrary.songsDir().resolve(id).resolve("events.json");
+                var selected = NativeFilePicker.saveFile("Save Psych events",
+                        suggested, new String[]{"*.json"}, "FNF events JSON");
+                if (selected.isEmpty()) {
+                    setStatus("Event save cancelled");
+                    return;
+                }
+                Path eventFile = ensureJsonExtension(selected.get());
+                directory = eventFile.getParent();
+                if (directory == null) throw new IllegalArgumentException("Choose a folder for events.json");
+            }
             Files.createDirectories(directory);
             Files.writeString(directory.resolve("events.json"), PsychChartWriter.writeEvents(chart));
-            writeOriginalReference(directory, id);
-            setStatus("Saved events.json");
+            if (directory.startsWith(SongLibrary.songsDir())) writeOriginalReference(directory, id);
+            setStatus("Saved " + directory.resolve("events.json").toAbsolutePath());
             SongLibrary.rescan();
         } catch (Exception e) {
             setStatus("Event save failed: " + e.getMessage());
@@ -3846,11 +3930,11 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
 
     /** Converts the visual center of a note cell into its stable chart beat. */
     private double selectionBeatAtScreenY(double screenY) {
-        return yToBeat(screenY - cellWidth() / 2.0);
+        return yToBeat(screenY - gridCellHeight() / 2.0);
     }
 
     private double selectionScreenY(double beat) {
-        return beatToY(beat) + cellWidth() / 2.0;
+        return beatToY(beat) + gridCellHeight() / 2.0;
     }
 
     private double stepMs() {
