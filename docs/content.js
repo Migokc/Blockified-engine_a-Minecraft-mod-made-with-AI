@@ -20,7 +20,7 @@
 
   const pages = {};
 
-  pages.home = page("Blockified Engine", "Documentation · Guides · Wiki", "Build Friday Night Funkin' songs, stages, machines, and world scenes inside Minecraft.", ["2.2.5bbs", "NeoForge 1.21.1", "Singleplayer + LAN"],
+  pages.home = page("Blockified Engine", "Documentation · Guides · Wiki", "Build Friday Night Funkin' songs, stages, machines, and world scenes inside Minecraft.", ["2.2.6bbs", "NeoForge 1.21.1", "Singleplayer + LAN"],
     `<div class="hero-panel"><span>DOCUMENTATION · GUIDES · WIKI</span><h2>Build with Blockified.</h2><p>Learn by following a guide, look up exact behavior in documentation, or understand systems through the wiki. This site covers Blockified additions and changes without duplicating unchanged Psych Engine material.</p><div class="hero-actions"><a class="button-link" href="#/quick-start">Start here</a><a class="button-link secondary" href="#/animations">Make animations</a><a class="button-link secondary" href="#/lua-overview">Lua API</a></div></div>`,
     section("choose", "Choose how to use this site", `<div class="card-grid category-grid">
       <a class="doc-card category-card guide-card" href="#/quick-start"><span>GUIDES</span><h3>Make something</h3><p>Follow ordered, practical steps from installation to a playable song, complete pack, animation, or custom machine.</p></a>
@@ -221,7 +221,8 @@ end`)}<p><a href="#/machine-lua">Open full machine Lua reference</a></p>`),
     section("texture", "Textures", `<p>The machine definition selects art from the owning mod. Keeping it in the mod makes texture availability follow bundled-world scope.</p>`),
     section("interaction", "Interaction", `<p>Right-click opens the menu. Crouch-right-click with the Funkin' Designer edits or copies configuration. Virtual hitboxes open the same menu.</p>`),
     section("menu", "Lua menu", `<p><code>menu.lua</code> can create controls, images, static sprites, and Sparrow XML animation. It can open built-in screens or start a song directly.</p><a class="button-link" href="#/machine-lua">Machine Lua reference</a>`),
-    section("server", "Server boundary", callout("Singleplayer and LAN", "Custom machine editing and menu Lua are intentionally excluded from dedicated servers."))
+    section("chunk-points", "Chunk loader points", `<p>The Functional Blocks tab includes an invisible, non-colliding <strong>Chunk Loader Point</strong>. Hold the point item or Funkin' Designer to reveal and target it, then right-click to edit its unique tag, enabled state, and 0-12 chunk radius. Its cyan boundary shows the exact square of ticking chunks; disabled points are red.</p><p>Tickets persist across world reloads and overlapping points remain independently owned. Water and lava flow around points instead of replacing them. Use points around distant stage areas instead of modifying camera coordinates. Authoring and persistent loading are singleplayer/LAN-only.</p>${callout("Cost", "A radius loads (2r+1)² ticking chunks. Prefer several small points over unnecessarily large radii.")}`),
+    section("server", "Server boundary", callout("Singleplayer and LAN", "Custom machine editing, menu Lua, and Chunk Loader Points are intentionally excluded from dedicated servers."))
   );
 
   pages["machine-hitboxes"] = page("Virtual machine hitboxes", "Documentation · Content", "Invisible non-colliding regions that act like a machine.", ["Entity hitbox", "Funkin' Designer"],
@@ -338,6 +339,14 @@ dancer:playAnimation('idle')`)),
       ${api("runMinecraftCommand(command)", "Runs a command through Blockified session context.")}
       ${api("runCommand(command)", "Command-execution alias.")}
     </div>`),
+    section("chunk-loader-properties", "Chunk Loader Point properties", `<p>Address a placed point through <code>chunkLoadPoints.&lt;tag&gt;.&lt;property&gt;</code>. Lua changes are server-authoritative and roll back when the song session ends.</p><div class="api-list">
+      ${api("getProperty('chunkLoadPoints.stage.enabled')", "Reads enabled state. Aliases: active and on.")}
+      ${api("setProperty('chunkLoadPoints.stage.enabled', true)", "Enables or disables the point.")}
+      ${api("setProperty('chunkLoadPoints.stage.radius', 4)", "Changes its radius, clamped to 0-12 chunks.")}
+      ${api("setProperty('chunkLoadPoints.stage.tag', 'second_stage')", "Renames it; tags must stay unique in the dimension.")}
+      ${api("getProperty('chunkLoadPoints.stage.x|y|z')", "Reads the block's world coordinates.")}
+    </div>${code("lua", `setProperty('chunkLoadPoints.stage_right.enabled', true)
+setProperty('chunkLoadPoints.stage_right.radius', 4)`)}`),
     section("characters", "Extra characters", `<div class="api-list">
       ${api("addBlockifiedCharacter(tag, definition, x, y, z, rotation, animation, side)", "Creates an extra 2D/BBS world character.")}
       ${api("makeBlockifiedCharacter(...)", "Creation compatibility alias.")}

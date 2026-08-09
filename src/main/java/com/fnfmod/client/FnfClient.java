@@ -68,6 +68,8 @@ public final class FnfClient {
                     com.fnfmod.client.render.FunkinMachineRenderer::new);
             event.registerBlockEntityRenderer(FnfMod.MACHINE_ANCHOR_BLOCK_ENTITY.get(),
                     com.fnfmod.client.render.MachineAnchorRenderer::new);
+            event.registerBlockEntityRenderer(FnfMod.CHUNK_LOADER_POINT_BLOCK_ENTITY.get(),
+                    com.fnfmod.client.render.ChunkLoaderPointRenderer::new);
             event.registerEntityRenderer(FnfMod.MACHINE_HITBOX_ENTITY.get(),
                     com.fnfmod.client.render.MachineHitboxEntityRenderer::new);
         }

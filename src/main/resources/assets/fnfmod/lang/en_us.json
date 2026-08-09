@@ -3,6 +3,8 @@
   "item.fnfmod.funkin_designer": "Funkin' Designer",
   "item.fnfmod.machine_anchor": "Temporary Machine Anchor",
   "block.fnfmod.machine_anchor": "Machine Anchor",
+  "block.fnfmod.chunk_loader_point": "Chunk Loader Point",
+  "item.fnfmod.chunk_loader_point": "Chunk Loader Point",
   "itemGroup.fnfmod": "Funkin' Machine",
   "key.categories.fnfmod": "Funkin' Machine",
   "key.fnfmod.note_left": "FNF Note Left",

@@ -7,6 +7,7 @@ import com.fnfmod.client.gui.RollbackWaitingScreen;
 import com.fnfmod.client.gui.machine.MachineEditorScreen;
 import com.fnfmod.client.gui.machine.MachineMenuScreen;
 import com.fnfmod.client.gui.machine.HitboxBuilderScreen;
+import com.fnfmod.client.gui.machine.ChunkLoaderPointEditorScreen;
 import com.fnfmod.net.FnfPayloads;
 import com.fnfmod.machine.MachineLibrary;
 import com.fnfmod.song.SongLibrary;
@@ -140,6 +141,14 @@ public final class ClientNetHandler {
                 mc.setScreen(null);
             }, Component.literal("Remove virtual Funkin' Machine?"),
                     Component.literal("This removes its hitbox and anchor. Any active song session will stop.")));
+        } else if (payload instanceof FnfPayloads.OpenChunkLoaderEditorS2C p) {
+            mc.setScreen(new ChunkLoaderPointEditorScreen(p.pos(), p.tag(), p.radius(), p.enabled()));
+        } else if (payload instanceof FnfPayloads.ChunkLoaderEditorResultS2C p) {
+            if (mc.screen instanceof ChunkLoaderPointEditorScreen editor) {
+                editor.onServerResult(p.success(), p.message(), p.tag(), p.radius(), p.enabled());
+            } else if (mc.player != null) {
+                mc.player.displayClientMessage(Component.literal(p.message()), true);
+            }
         }
     }
 }

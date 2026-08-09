@@ -3939,6 +3939,21 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
 
     public Object psychLuaGetProperty(String path) {
         if (path == null) return null;
+        ChunkPointProperty chunkPoint = chunkPointProperty(path);
+        if (chunkPoint != null && minecraft.level != null) {
+            com.fnfmod.block.ChunkLoaderPointBlockEntity point =
+                    com.fnfmod.world.ChunkLoaderPointService.findLoaded(minecraft.level, chunkPoint.tag());
+            if (point == null) return null;
+            return switch (chunkPoint.property().toLowerCase(java.util.Locale.ROOT)) {
+                case "enabled", "active", "on" -> point.enabled();
+                case "radius" -> point.radius();
+                case "tag", "id" -> point.pointTag();
+                case "x" -> point.getBlockPos().getX();
+                case "y" -> point.getBlockPos().getY();
+                case "z" -> point.getBlockPos().getZ();
+                default -> null;
+            };
+        }
         switch (path) {
             case "rating.visible", "combo.visible" -> { return showRatingPopups; }
             // Blockified's draggable Rating Position is exposed in the same
@@ -4067,6 +4082,16 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
 
     public boolean psychLuaSetProperty(String path, Object value) {
         if (path == null) return false;
+        ChunkPointProperty chunkPoint = chunkPointProperty(path);
+        if (chunkPoint != null) {
+            String property = chunkPoint.property().toLowerCase(java.util.Locale.ROOT);
+            if (!java.util.Set.of("enabled", "active", "on", "radius", "tag", "id").contains(property)) {
+                return false;
+            }
+            PacketDistributor.sendToServer(new FnfPayloads.ChunkLoaderPropertyC2S(
+                    machinePos, chunkPoint.tag(), property, String.valueOf(value)));
+            return true;
+        }
         switch (path) {
             case "rating.visible" -> { showRatingPopups = noteBool(value, true); return true; }
             case "combo.visible" -> { showRatingPopups = noteBool(value, true); return true; }
@@ -4290,6 +4315,18 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
 
     public boolean psychLuaChangeExtraCharacter(String tag, String definition, String role) {
         return extraCharacters.changeDefinition(tag, definition, role);
+    }
+
+    private record ChunkPointProperty(String tag, String property) {}
+
+    private static ChunkPointProperty chunkPointProperty(String path) {
+        String rest;
+        if (path.startsWith("chunkLoadPoints.")) rest = path.substring("chunkLoadPoints.".length());
+        else if (path.startsWith("chunkLoaderPoints.")) rest = path.substring("chunkLoaderPoints.".length());
+        else return null;
+        int dot = rest.indexOf('.');
+        if (dot <= 0 || dot == rest.length() - 1) return null;
+        return new ChunkPointProperty(rest.substring(0, dot), rest.substring(dot + 1));
     }
 
     public void psychLuaEndSong() { finishSong(false); }

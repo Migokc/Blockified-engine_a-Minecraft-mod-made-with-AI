@@ -1,0 +1,5 @@
+{
+  "variants": {
+    "": { "model": "fnfmod:block/chunk_loader_point" }
+  }
+}

@@ -884,6 +884,22 @@ public final class SessionManager {
     public static void captureBlockBeforeMutation(Level level, BlockPos pos) {
         Session session = activeMutationSession;
         if (session == null || restoringWorld || level.isClientSide()) return;
+        captureBlock(session, level, pos);
+    }
+
+    /** Authorizes and snapshots a chunk-loader property changed by gameplay Lua. */
+    public static boolean captureLuaPointMutation(ServerPlayer player, BlockPos machinePos,
+                                                  ServerLevel level, BlockPos pointPos) {
+        Session session = findParticipantSession(player, machinePos);
+        if (session == null || session.state != State.PLAYING
+                || (session.host != player && session.guest != player)
+                || level != player.serverLevel()) return false;
+        captureBlock(session, level, pointPos);
+        return true;
+    }
+
+    private static void captureBlock(Session session, Level level, BlockPos pos) {
+        if (session == null || restoringWorld || level.isClientSide()) return;
         WorldBlockKey key = new WorldBlockKey(level.dimension(), pos.immutable());
         if (session.changedBlocks.containsKey(key)) return;
         BlockEntity entity = level.getBlockEntity(pos);
@@ -962,12 +978,20 @@ public final class SessionManager {
                 if (level == null) continue;
                 BlockPos pos = entry.getKey().pos();
                 BlockSnapshot snapshot = entry.getValue();
+                BlockEntity before = level.getBlockEntity(pos);
+                int replacedPointRadius = before instanceof com.fnfmod.block.ChunkLoaderPointBlockEntity point
+                        ? point.radius() : 0;
+                boolean replacedPointEnabled = before instanceof com.fnfmod.block.ChunkLoaderPointBlockEntity point
+                        && point.enabled();
                 level.setBlock(pos, snapshot.state(), 3);
                 if (snapshot.blockEntity() != null) {
                     BlockEntity entity = level.getBlockEntity(pos);
                     if (entity != null) {
                         entity.loadWithComponents(snapshot.blockEntity(), level.registryAccess());
                         entity.setChanged();
+                        if (entity instanceof com.fnfmod.block.ChunkLoaderPointBlockEntity point) {
+                            point.reconcileAfterRollback(replacedPointRadius, replacedPointEnabled);
+                        }
                     }
                 }
             }

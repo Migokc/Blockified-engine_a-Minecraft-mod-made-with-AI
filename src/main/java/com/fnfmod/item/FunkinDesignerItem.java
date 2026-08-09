@@ -25,7 +25,9 @@ public final class FunkinDesignerItem extends Item {
         Level level = context.getLevel();
         var block = level.getBlockState(context.getClickedPos()).getBlock();
         if (!level.isClientSide && context.getPlayer() instanceof ServerPlayer player) {
-            if (block instanceof com.fnfmod.block.MachineAnchorBlock) {
+            if (block instanceof com.fnfmod.block.ChunkLoaderPointBlock) {
+                com.fnfmod.world.ChunkLoaderPointService.openEditor(player, context.getClickedPos());
+            } else if (block instanceof com.fnfmod.block.MachineAnchorBlock) {
                 MachineHitboxService.requestRemovalAt(player, context.getClickedPos());
             } else if (block instanceof FunkinMachineBlock) {
                 if (player.isShiftKeyDown()) MachineEditorService.copyOrApply(player, context.getClickedPos());

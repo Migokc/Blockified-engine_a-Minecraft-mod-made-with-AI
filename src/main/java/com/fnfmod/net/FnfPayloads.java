@@ -325,6 +325,42 @@ public final class FnfPayloads {
         @Override public Type<? extends CustomPacketPayload> type() { return TYPE; }
     }
 
+    public record OpenChunkLoaderEditorS2C(BlockPos pos, String tag, int radius, boolean enabled)
+            implements CustomPacketPayload {
+        public static final Type<OpenChunkLoaderEditorS2C> TYPE =
+                new Type<>(FnfMod.id("open_chunk_loader_editor"));
+        public static final StreamCodec<FriendlyByteBuf, OpenChunkLoaderEditorS2C> CODEC = StreamCodec.of(
+                (buf, value) -> {
+                    buf.writeBlockPos(value.pos());
+                    buf.writeUtf(value.tag(), 64);
+                    buf.writeVarInt(value.radius());
+                    buf.writeBoolean(value.enabled());
+                },
+                buf -> new OpenChunkLoaderEditorS2C(buf.readBlockPos(), buf.readUtf(64),
+                        buf.readVarInt(), buf.readBoolean()));
+
+        @Override public Type<? extends CustomPacketPayload> type() { return TYPE; }
+    }
+
+    public record ChunkLoaderEditorResultS2C(boolean success, String message,
+                                              String tag, int radius, boolean enabled)
+            implements CustomPacketPayload {
+        public static final Type<ChunkLoaderEditorResultS2C> TYPE =
+                new Type<>(FnfMod.id("chunk_loader_editor_result"));
+        public static final StreamCodec<FriendlyByteBuf, ChunkLoaderEditorResultS2C> CODEC = StreamCodec.of(
+                (buf, value) -> {
+                    buf.writeBoolean(value.success());
+                    buf.writeUtf(value.message(), 512);
+                    buf.writeUtf(value.tag(), 64);
+                    buf.writeVarInt(value.radius());
+                    buf.writeBoolean(value.enabled());
+                },
+                buf -> new ChunkLoaderEditorResultS2C(buf.readBoolean(), buf.readUtf(512),
+                        buf.readUtf(64), buf.readVarInt(), buf.readBoolean()));
+
+        @Override public Type<? extends CustomPacketPayload> type() { return TYPE; }
+    }
+
     // ------------------------------------------------------------------ C2S
 
     /** playSide (solo only): 0 = player, 1 = opponent, 2 = both. */
@@ -588,6 +624,40 @@ public final class FnfPayloads {
                 },
                 buf -> new MachineDirectPlayC2S(buf.readBlockPos(), buf.readUtf(256),
                         buf.readUtf(128), buf.readBoolean(), buf.readByte(), buf.readByte()));
+
+        @Override public Type<? extends CustomPacketPayload> type() { return TYPE; }
+    }
+
+    public record ChunkLoaderEditC2S(BlockPos pos, String tag, int radius, boolean enabled)
+            implements CustomPacketPayload {
+        public static final Type<ChunkLoaderEditC2S> TYPE = new Type<>(FnfMod.id("chunk_loader_edit"));
+        public static final StreamCodec<FriendlyByteBuf, ChunkLoaderEditC2S> CODEC = StreamCodec.of(
+                (buf, value) -> {
+                    buf.writeBlockPos(value.pos());
+                    buf.writeUtf(value.tag(), 64);
+                    buf.writeVarInt(value.radius());
+                    buf.writeBoolean(value.enabled());
+                },
+                buf -> new ChunkLoaderEditC2S(buf.readBlockPos(), buf.readUtf(64),
+                        buf.readVarInt(), buf.readBoolean()));
+
+        @Override public Type<? extends CustomPacketPayload> type() { return TYPE; }
+    }
+
+    /** Gameplay Lua mutation: chunkLoadPoints.&lt;tag&gt;.(enabled|radius|tag). */
+    public record ChunkLoaderPropertyC2S(BlockPos machinePos, String tag, String property, String value)
+            implements CustomPacketPayload {
+        public static final Type<ChunkLoaderPropertyC2S> TYPE =
+                new Type<>(FnfMod.id("chunk_loader_property"));
+        public static final StreamCodec<FriendlyByteBuf, ChunkLoaderPropertyC2S> CODEC = StreamCodec.of(
+                (buf, payload) -> {
+                    buf.writeBlockPos(payload.machinePos());
+                    buf.writeUtf(payload.tag(), 64);
+                    buf.writeUtf(payload.property(), 16);
+                    buf.writeUtf(payload.value(), 128);
+                },
+                buf -> new ChunkLoaderPropertyC2S(buf.readBlockPos(), buf.readUtf(64),
+                        buf.readUtf(16), buf.readUtf(128)));
 
         @Override public Type<? extends CustomPacketPayload> type() { return TYPE; }
     }

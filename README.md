@@ -2,9 +2,23 @@
 
 A feature-full Friday Night Funkin' engine inside of Minecraft — **NeoForge 1.21.1**.
 
-Current release: **2.2.5bbs**.
+Current release: **2.2.6bbs**.
 
 Documentation: **[Blockified Engine Docs](https://migokc.github.io/Blockified-engine_a-Minecraft-mod-made-with-AI/)**.
+
+### 2.2.6bbs highlights
+
+- New invisible Chunk Loader Point blocks keep configurable square regions loaded
+  without altering gameplay camera coordinates. Hold the point item or Funkin'
+  Designer to reveal their marker and exact chunk boundary.
+- The in-game Designer editor assigns each point a unique tag, a 0-12 chunk
+  radius, and an enabled state. Persistent NeoForge tickets survive world reloads,
+  overlap safely, and release when their owning point is disabled or removed.
+- Gameplay Lua can read and change point tags, radii, enabled states, and world
+  coordinates through `chunkLoadPoints.<tag>.*`; mutations participate in normal
+  song rollback.
+- Chunk Loader Points are protected from flowing water and lava. The feature is
+  scoped to singleplayer and LAN and remains disabled on dedicated servers.
 
 ### 2.2.5bbs highlights
 
@@ -257,6 +271,10 @@ control is disabled until the complete stack is installed.
   machine to edit. Shift-right-click copies a profile, then shift-right-click
   another machine to apply it. Right-click air opens virtual hitbox builder.
   Shift-use in air clears copied profile and unfinished hitbox selection.
+- **Chunk Loader Point block** (Functional Blocks creative tab). It is invisible,
+  non-colliding, and untargetable unless its own item or Funkin' Designer is held.
+  Right-click it with either tool to edit its persistent tag, 0-12 chunk radius,
+  and enabled state.
 - **Lightweight songs or complete mods**: use `config/fnfmod/songs/<song-name>/`
   for basic chart/audio entries, or `config/fnfmod/mods/<mod>/` for full creations.
 - **Play as Both** merges both chart sides into the existing centered four-lane
@@ -635,6 +653,39 @@ use hitbox menus. Temporary anchor disappears immediately after placement. Dropp
 it, moving it into any chest/vessel/container, losing it from player inventory,
 disconnecting, changing dimension, cancelling, or restarting server deletes token
 and invalidates selection. Stale/copied anchor items are automatically removed.
+
+#### Chunk loader points
+
+Place **Chunk Loader Point** blocks anywhere a stage, moving performer, command,
+or gameplay camera may reach. Each enabled point persistently keeps a square of
+ticking chunks loaded around itself; radius 0 loads only its own chunk, radius 2
+loads a 5x5 region, and the safety cap is radius 12. Overlapping points have
+independent tickets, so disabling or breaking one never unloads chunks still
+owned by another point.
+
+Like Minecraft's Light Block, a point has no collision, model, outline, or target
+shape during ordinary play. Hold its block item or Funkin' Designer to reveal a
+cyan outline and the exact chunk boundary; disabled points render red. Normal
+right-click opens its in-game tag/radius/on-off editor. Sneak-right-click while
+holding another point block places that block adjacent instead.
+
+Points work in singleplayer and LAN worlds, restore their tickets after reopening
+the world, and do not alter gameplay camera coordinates. Gameplay Lua can read or
+temporarily modify a tagged point; changes made by a song join the normal rollback
+transaction and return to their pre-song values on finish, quit, loss, or restart:
+
+```lua
+setProperty('chunkLoadPoints.stage_right.enabled', true)
+setProperty('chunkLoadPoints.stage_right.radius', 4)
+setProperty('chunkLoadPoints.stage_right.tag', 'second_stage')
+
+local active = getProperty('chunkLoadPoints.second_stage.enabled')
+local radius = getProperty('chunkLoadPoints.second_stage.radius')
+```
+
+Tags use lowercase letters, numbers, `_`, or `-` and must be unique in that
+dimension. Coordinates are readable as `.x`, `.y`, and `.z`. Persistent chunk
+loading and authoring are disabled on dedicated servers.
 
 ### Blockified BBS character animations
 

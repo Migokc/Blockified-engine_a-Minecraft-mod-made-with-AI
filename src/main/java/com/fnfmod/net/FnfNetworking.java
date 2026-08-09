@@ -41,6 +41,10 @@ public final class FnfNetworking {
         registrar.playToClient(FnfPayloads.HitboxSelectionStateS2C.TYPE, FnfPayloads.HitboxSelectionStateS2C.CODEC, FnfNetworking::client);
         registrar.playToClient(FnfPayloads.ConfirmHitboxRemovalS2C.TYPE,
                 FnfPayloads.ConfirmHitboxRemovalS2C.CODEC, FnfNetworking::client);
+        registrar.playToClient(FnfPayloads.OpenChunkLoaderEditorS2C.TYPE,
+                FnfPayloads.OpenChunkLoaderEditorS2C.CODEC, FnfNetworking::client);
+        registrar.playToClient(FnfPayloads.ChunkLoaderEditorResultS2C.TYPE,
+                FnfPayloads.ChunkLoaderEditorResultS2C.CODEC, FnfNetworking::client);
 
         // server-bound
         registrar.playToServer(FnfPayloads.SelectSongC2S.TYPE, FnfPayloads.SelectSongC2S.CODEC,
@@ -119,6 +123,20 @@ public final class FnfNetworking {
                 (payload, ctx) -> ctx.enqueueWork(() -> {
                     if (ctx.player() instanceof ServerPlayer sp) {
                         com.fnfmod.machine.MachineMenuService.handleDirectPlay(sp, payload);
+                    }
+                }));
+        registrar.playToServer(FnfPayloads.ChunkLoaderEditC2S.TYPE,
+                FnfPayloads.ChunkLoaderEditC2S.CODEC,
+                (payload, ctx) -> ctx.enqueueWork(() -> {
+                    if (ctx.player() instanceof ServerPlayer sp) {
+                        com.fnfmod.world.ChunkLoaderPointService.handleEdit(sp, payload);
+                    }
+                }));
+        registrar.playToServer(FnfPayloads.ChunkLoaderPropertyC2S.TYPE,
+                FnfPayloads.ChunkLoaderPropertyC2S.CODEC,
+                (payload, ctx) -> ctx.enqueueWork(() -> {
+                    if (ctx.player() instanceof ServerPlayer sp) {
+                        com.fnfmod.world.ChunkLoaderPointService.handleLuaProperty(sp, payload);
                     }
                 }));
     }

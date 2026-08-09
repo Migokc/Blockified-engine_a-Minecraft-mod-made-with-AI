@@ -2,7 +2,9 @@ package com.fnfmod;
 
 import com.fnfmod.block.FunkinMachineBlock;
 import com.fnfmod.block.MachineAnchorBlock;
+import com.fnfmod.block.ChunkLoaderPointBlock;
 import com.fnfmod.entity.MachineHitboxEntity;
+import com.fnfmod.world.ChunkLoaderPointService;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.item.BlockItem;
@@ -50,6 +52,10 @@ public class FnfMod {
             () -> new MachineAnchorBlock(BlockBehaviour.Properties.of()
                     .mapColor(MapColor.NONE).noCollission().noOcclusion().strength(-1.0f, 3_600_000f)));
 
+    public static final DeferredBlock<Block> CHUNK_LOADER_POINT = BLOCKS.register("chunk_loader_point",
+            () -> new ChunkLoaderPointBlock(BlockBehaviour.Properties.of()
+                    .mapColor(MapColor.NONE).noCollission().noOcclusion().strength(-1.0f, 3_600_000f)));
+
     public static final DeferredItem<BlockItem> FUNKIN_MACHINE_ITEM =
             ITEMS.registerSimpleBlockItem("funkin_machine", FUNKIN_MACHINE);
 
@@ -61,6 +67,9 @@ public class FnfMod {
     public static final DeferredItem<MachineAnchorItem> MACHINE_ANCHOR_ITEM =
             ITEMS.register("machine_anchor", () -> new MachineAnchorItem(new Item.Properties().stacksTo(1)));
 
+    public static final DeferredItem<BlockItem> CHUNK_LOADER_POINT_ITEM =
+            ITEMS.registerSimpleBlockItem("chunk_loader_point", CHUNK_LOADER_POINT);
+
     public static final DeferredHolder<BlockEntityType<?>, BlockEntityType<com.fnfmod.block.FunkinMachineBlockEntity>>
             FUNKIN_MACHINE_BLOCK_ENTITY = BLOCK_ENTITIES.register("funkin_machine", () ->
                     BlockEntityType.Builder.of(com.fnfmod.block.FunkinMachineBlockEntity::new,
@@ -70,6 +79,10 @@ public class FnfMod {
             MACHINE_ANCHOR_BLOCK_ENTITY = BLOCK_ENTITIES.register("machine_anchor", () ->
                     BlockEntityType.Builder.of(com.fnfmod.block.MachineAnchorBlockEntity::new,
                             MACHINE_ANCHOR.get()).build(null));
+    public static final DeferredHolder<BlockEntityType<?>, BlockEntityType<com.fnfmod.block.ChunkLoaderPointBlockEntity>>
+            CHUNK_LOADER_POINT_BLOCK_ENTITY = BLOCK_ENTITIES.register("chunk_loader_point", () ->
+                    BlockEntityType.Builder.of(com.fnfmod.block.ChunkLoaderPointBlockEntity::new,
+                            CHUNK_LOADER_POINT.get()).build(null));
     public static final DeferredHolder<EntityType<?>, EntityType<MachineHitboxEntity>> MACHINE_HITBOX_ENTITY =
             ENTITY_TYPES.register("machine_hitbox", () -> EntityType.Builder
                     .<MachineHitboxEntity>of(MachineHitboxEntity::new, MobCategory.MISC)
@@ -82,12 +95,14 @@ public class FnfMod {
         BLOCK_ENTITIES.register(modEventBus);
         ENTITY_TYPES.register(modEventBus);
         modEventBus.addListener(this::addCreative);
+        modEventBus.addListener(ChunkLoaderPointService::registerTicketController);
     }
 
     private void addCreative(BuildCreativeModeTabContentsEvent event) {
         if (event.getTabKey() == CreativeModeTabs.FUNCTIONAL_BLOCKS) {
             event.accept(FUNKIN_MACHINE_ITEM.get());
             event.accept(FUNKIN_DESIGNER.get());
+            event.accept(CHUNK_LOADER_POINT_ITEM.get());
         }
     }
 
