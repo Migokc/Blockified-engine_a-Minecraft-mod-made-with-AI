@@ -155,6 +155,9 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
     private final long[] previewFlashUntil = new long[8];
     private int snapIndex = 3;
     private int shownSection = -1;
+    /** Playback may cross sections while a field/slider owns input; rebuild after release instead. */
+    private boolean deferredSectionRefresh;
+    private boolean controlSliderDragging;
     private int hitsoundIndex;
     private boolean vortex;
     private SongChart.Note selectedNote;
@@ -2607,7 +2610,13 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
             }
             return true;
         }
-        if (super.mouseClicked(mouseX, mouseY, button)) return true;
+        if (super.mouseClicked(mouseX, mouseY, button)) {
+            if (button == GLFW.GLFW_MOUSE_BUTTON_LEFT
+                    && getFocused() instanceof net.minecraft.client.gui.components.AbstractSliderButton) {
+                controlSliderDragging = true;
+            }
+            return true;
+        }
         if (openMenu != TopMenu.NONE) {
             openMenu = TopMenu.NONE;
             rebuildUi();
@@ -2735,7 +2744,9 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
             selectingBox = false;
             return true;
         }
-        return super.mouseReleased(mouseX, mouseY, button);
+        boolean handled = super.mouseReleased(mouseX, mouseY, button);
+        if (button == GLFW.GLFW_MOUSE_BUTTON_LEFT) controlSliderDragging = false;
+        return handled;
     }
 
     @Override
@@ -2877,8 +2888,7 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
             return;
         }
 
-        int sectionNow = sectionIndexAt(viewPositionMs);
-        if (sectionNow != shownSection) rebuildUi();
+        refreshSectionUiWhenInputIsIdle();
 
         renderGrid(gui);
         renderControlPanel(gui);
@@ -2891,6 +2901,26 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
 
         for (var renderable : renderables) renderable.render(gui, mouseX, mouseY, partialTick);
         renderInfoWindow(gui);
+    }
+
+    /**
+     * Crossing a section normally rebuilds section-dependent controls. Replacing
+     * the widget tree during input drops EditBox focus and a slider's captured
+     * drag, so playback defers that rebuild until the current interaction ends.
+     */
+    private void refreshSectionUiWhenInputIsIdle() {
+        int sectionNow = sectionIndexAt(viewPositionMs);
+        boolean textEditing = getFocused() instanceof EditBox edit && edit.isFocused();
+        if ((textEditing || controlSliderDragging)
+                && (sectionNow != shownSection || deferredSectionRefresh)) {
+            deferredSectionRefresh = true;
+            return;
+        }
+        if (!deferredSectionRefresh && sectionNow == shownSection) return;
+
+        if (deferredSectionRefresh) commitVisibleFields();
+        deferredSectionRefresh = false;
+        if (sectionNow != shownSection) rebuildUi();
     }
 
     /** Notes-only playback preview: a strumline highway at the current playhead. */
