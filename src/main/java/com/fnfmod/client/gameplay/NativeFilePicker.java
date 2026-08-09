@@ -46,6 +46,26 @@ public final class NativeFilePicker {
         }
     }
 
+    /** Opens native Save As dialog. Existing files require OS confirmation. */
+    public static Optional<Path> saveFile(String title, Path defaultPath,
+                                          String[] patterns, String description) {
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            PointerBuffer filters = null;
+            if (patterns != null && patterns.length > 0) {
+                filters = stack.mallocPointer(patterns.length);
+                for (String pattern : patterns) filters.put(stack.UTF8(pattern));
+                filters.flip();
+            }
+            String initial = defaultPath == null ? "" : defaultPath.toAbsolutePath().toString();
+            String result = TinyFileDialogs.tinyfd_saveFileDialog(
+                    title, initial, filters, description);
+            return result == null || result.isBlank() ? Optional.empty() : Optional.of(Path.of(result));
+        } catch (Throwable error) {
+            FnfMod.LOGGER.warn("Native save dialog unavailable: {}", error.toString());
+            return Optional.empty();
+        }
+    }
+
     /**
      * Selects a folder. On Windows this drives the modern common file dialog in folder
      * mode (the same modern Explorer selector browsers use) via PowerShell, so a folder

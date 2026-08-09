@@ -10,11 +10,16 @@ import com.fnfmod.client.ClientOptions;
 import com.fnfmod.client.audio.SongPlayer;
 import com.fnfmod.client.camera.GameplayCamera;
 import com.fnfmod.client.gameplay.PsychAssetResolver;
+import com.fnfmod.client.gameplay.NativeFilePicker;
+import com.fnfmod.client.anim.CharacterAnimations;
+import com.fnfmod.client.anim.CharacterDefinitionFile;
 import com.fnfmod.client.gui.GameplayScreen;
+import com.fnfmod.client.gui.TextInputAwareScreen;
 import com.fnfmod.client.math.Easing;
 import com.fnfmod.client.render.NoteStyle;
 import com.fnfmod.client.render.PsychNoteTextureCache;
 import com.fnfmod.song.SongEntry;
+import com.fnfmod.song.CharacterVocalResolver;
 import com.fnfmod.song.SongImportService;
 import com.fnfmod.song.SongLibrary;
 import com.fnfmod.gameplay.PlaybackMode;
@@ -42,6 +47,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 
 /**
  * Psych-inspired chart editor for the normalized FNF chart format.
@@ -49,15 +55,14 @@ import java.util.Set;
  * The playhead remains fixed while the chart moves beneath it. The event lane
  * supports Minecraft command events alongside imported engine events.
  */
-public final class ChartEditorScreen extends Screen {
+public final class ChartEditorScreen extends Screen implements TextInputAwareScreen {
 
     private static final int[] SNAPS = {4, 8, 12, 16, 24, 32, 64};
     // 120 makes one 16th-note row exactly as tall as a lane cell is wide at the
     // reference layout, so the default grid reads as squares instead of being
     // vertically squashed (which previously forced a manual Z zoom to correct).
-    private static final double DEFAULT_PIXELS_PER_BEAT = 120.0;
-    /** Cell width at the editor's reference layout; vertical spacing scales with it. */
-    private static final double REFERENCE_CELL_WIDTH = 30.0;
+    /** Zoom adds fixed-size grid rows per beat; it never stretches existing cells. */
+    private static final int[] GRID_ROWS_PER_BEAT = {1, 2, 3, 4, 6, 8, 12, 16};
     private static final int TAB_Y = 24;
     private static final int CONTROL_TOP = 40;
     private static final List<String> BUILTIN_EVENT_TYPES = ChartEventTypes.builtinNames();
@@ -70,6 +75,9 @@ public final class ChartEditorScreen extends Screen {
             "Enter - Playtest Chart (needs a Funkin' Machine)",
             "Shift + Enter - Playtest from Conductor's Time",
             "Space - Stop/Resume song",
+            "M - Toggle editor metronome",
+            "I/O - Set loop in/out; L - Toggle loop",
+            "T - Tap tempo; B - Apply detected/tapped BPM",
             "Alt + Click - Select Note(s)",
             "Shift + Click - Select/Unselect Note(s)",
             "Right Click - Selection Box",
@@ -109,6 +117,7 @@ public final class ChartEditorScreen extends Screen {
     private final Set<SongChart.Note> selectedNotes = new LinkedHashSet<>();
     private final Set<SongChart.Event> selectedEvents = new LinkedHashSet<>();
     private record EditorState(List<SongChart.Note> notes, List<SongChart.Event> events) {}
+    private record MeterSegment(double startBeat, SongChart.TimeSignature signature) {}
     private final Deque<EditorState> undoHistory = new ArrayDeque<>();
     private final Deque<EditorState> redoHistory = new ArrayDeque<>();
 
@@ -130,6 +139,12 @@ public final class ChartEditorScreen extends Screen {
     private final List<String> eventTypes = new ArrayList<>(BUILTIN_EVENT_TYPES);
 
     private double viewPositionMs;
+    /** Visual playhead center; seeks ease here while audio/timing jump immediately. */
+    private double displayPositionMs = Double.NaN;
+    private double viewportTweenFromMs;
+    private long viewportTweenStartNano;
+    private boolean viewportTweenActive;
+    private static final long VIEWPORT_TWEEN_NANOS = 200_000_000L;
     // Silent lead-in for a positive offset: the playhead advances on the wall clock
     // through the pre-song gap before the audio starts, instead of skipping it.
     private long leadInStartNano = -1;
@@ -157,8 +172,37 @@ public final class ChartEditorScreen extends Screen {
     private String eventValue7Draft = "";
     private double eventTimeDraft;
     private boolean eventBeforeSongDraft;
-    private double pixelsPerBeat = DEFAULT_PIXELS_PER_BEAT;
+    private int gridZoomIndex = 3;
     private float playbackRate = 1.0f;
+    private Path chartSaveFile;
+    private volatile EditorWaveform.Data instWaveform;
+    private volatile EditorWaveform.Data playerWaveform;
+    private volatile EditorWaveform.Data opponentWaveform;
+    private CompletableFuture<?> waveformLoad;
+    private boolean loopEnabled;
+    private double loopStartMs = -1;
+    private double loopEndMs = -1;
+    private int preRollBeats = 1;
+    private final Deque<Long> tempoTaps = new ArrayDeque<>();
+    private double tappedBpm;
+    /** 0 normal, 1 mute, 2 solo. */
+    private int instMix, playerMix, opponentMix;
+    private String cachedPlayerColorKey = "";
+    private String cachedOpponentColorKey = "";
+    private int cachedPlayerColor = -1;
+    private int cachedOpponentColor = -1;
+    private boolean instColorPickerOpen;
+    private int instColorPickerOriginal;
+    private float instColorHue, instColorSat, instColorBri;
+    /** 0 none, 1 saturation/brightness square, 2 hue strip. */
+    private int instColorDrag;
+    private EditBox instColorHexField;
+    private boolean updatingInstColorHex;
+    private boolean bookmarkTextDialogOpen;
+    private int bookmarkTextStage;
+    private double bookmarkDraftTime;
+    private String bookmarkDraftName = "";
+    private EditBox bookmarkTextField;
     private boolean helpVisible;
     private boolean eventDocumentationVisible;
     private int eventDocumentationScroll;
@@ -189,10 +233,14 @@ public final class ChartEditorScreen extends Screen {
     private EditBox songBpmField;
     private EditBox songSpeedField;
     private EditBox songOffsetField;
+    private EditBox songTimeNumeratorField;
+    private EditBox songTimeDenominatorField;
     private EditBox playerField;
     private EditBox opponentField;
     private EditBox sectionBpmField;
     private EditBox sectionBeatsField;
+    private EditBox sectionTimeNumeratorField;
+    private EditBox sectionTimeDenominatorField;
     private EditBox noteTimeField;
     private EditBox sustainField;
     private EditBox noteTypeField;
@@ -271,6 +319,10 @@ public final class ChartEditorScreen extends Screen {
         String difficulty = requestedDifficulty == null || requestedDifficulty.isBlank()
                 ? "normal" : requestedDifficulty;
         SongEntry libraryEntry = requestedSongId == null ? null : SongLibrary.get(requestedSongId);
+        if (libraryEntry == null && requestedSongId != null) {
+            libraryEntry = SongLibrary.getSongs().values().stream()
+                    .filter(song -> requestedSongId.equalsIgnoreCase(song.id)).findFirst().orElse(null);
+        }
         if (libraryEntry != null && libraryEntry.fullModLayout) {
             eventDefinitionRoot = libraryEntry.runtimeRoot();
         }
@@ -297,6 +349,8 @@ public final class ChartEditorScreen extends Screen {
                     difficulty = entry.difficulties.contains("normal") ? "normal" : entry.difficulties.get(0);
                 }
                 chart = SongLibrary.loadChart(entry, difficulty);
+                chartSaveFile = entry.chartOverrideFor(difficulty) != null
+                        ? entry.chartOverrideFor(difficulty) : entry.legacyChartFor(difficulty);
             } catch (Exception e) {
                 FnfMod.LOGGER.warn("Editor: failed to load {}: {}", requestedSongId, e.toString());
             }
@@ -342,6 +396,8 @@ public final class ChartEditorScreen extends Screen {
             candidate.load(entry.instFor(loadedDifficulty), entry.voicesFor(loadedDifficulty),
                     entry.voicesPlayerFor(loadedDifficulty), entry.voicesOpponentFor(loadedDifficulty));
             audio = candidate;
+            applyStemMix();
+            loadWaveforms();
         } catch (Exception e) {
             candidate.dispose();
             FnfMod.LOGGER.warn("Editor: audio unavailable: {}", e.toString());
@@ -352,6 +408,23 @@ public final class ChartEditorScreen extends Screen {
         if (audio == null) return;
         audio.dispose();
         audio = null;
+    }
+
+    private void loadWaveforms() {
+        instWaveform = playerWaveform = opponentWaveform = null;
+        if (entry == null) return;
+        Path inst = entry.instFor(loadedDifficulty);
+        Path combined = entry.voicesFor(loadedDifficulty);
+        Path player = entry.voicesPlayerFor(loadedDifficulty);
+        Path opponent = entry.voicesOpponentFor(loadedDifficulty);
+        CompletableFuture<EditorWaveform.Data> instFuture = EditorWaveform.decode(inst);
+        CompletableFuture<EditorWaveform.Data> playerFuture = EditorWaveform.decode(player != null ? player : combined);
+        CompletableFuture<EditorWaveform.Data> opponentFuture = EditorWaveform.decode(opponent);
+        waveformLoad = CompletableFuture.allOf(instFuture, playerFuture, opponentFuture).thenRun(() -> {
+            instWaveform = instFuture.getNow(null);
+            playerWaveform = playerFuture.getNow(null);
+            opponentWaveform = opponentFuture.getNow(null);
+        });
     }
 
     // --------------------------------------------------------------------- UI construction
@@ -377,7 +450,9 @@ public final class ChartEditorScreen extends Screen {
 
     private void clearFieldReferences() {
         songNameField = songBpmField = songSpeedField = songOffsetField = null;
+        songTimeNumeratorField = songTimeDenominatorField = null;
         playerField = opponentField = sectionBpmField = sectionBeatsField = null;
+        sectionTimeNumeratorField = sectionTimeDenominatorField = null;
         noteTimeField = sustainField = noteTypeField = saveIdField = importModNameField = null;
         eventTimeField = eventValue1Field = eventValue2Field = null;
         eventValue3Field = eventValue4Field = eventValue5Field = eventValue7Field = null;
@@ -430,6 +505,11 @@ public final class ChartEditorScreen extends Screen {
         songOffsetField = numberBox("Offset (ms)", x + (third + 4) * 2, y, third, trim(chart.offsetMs), "+later −earlier");
         y += 31;
         int half = (w - 4) / 2;
+        songTimeNumeratorField = numberBox("Meter beats", x, y, half,
+                String.valueOf(chart.startingTimeSignature().numerator()), "e.g. 3");
+        songTimeDenominatorField = numberBox("Beat unit", x + half + 4, y, half,
+                String.valueOf(chart.startingTimeSignature().denominator()), "1, 2, 4, 8, 16, 32");
+        y += 31;
         playerField = labeledBox("Player", x, y, half, chart.player1, "player");
         opponentField = labeledBox("Opponent", x + half + 4, y, half, chart.player2, "opponent");
         y += 31;
@@ -437,6 +517,9 @@ public final class ChartEditorScreen extends Screen {
             chart.needsVoices = !chart.needsVoices;
             b.setMessage(Component.literal("Allow Vocals: " + onOff(chart.needsVoices)));
         });
+        y += 18;
+        button(x, y, w, entry == null || entry.instFor(loadedDifficulty) == null
+                ? "Choose Exact Song Audio..." : "Change Song Audio...", b -> chooseSongAudio());
     }
 
     private void buildSectionTab() {
@@ -473,6 +556,24 @@ public final class ChartEditorScreen extends Screen {
         sectionBpmField.active = section.changeBPM;
         sectionBeatsField = numberBox("Beats per Section", x + half + 4, y, half,
                 trim(section.sectionBeats), "beats");
+        y += 31;
+        SongChart.TimeSignature meter = chart.timeSignatureForSection(shownSection);
+        button(x, y, w, "Change Meter: " + onOff(section.changeTimeSignature), b -> {
+            commitVisibleFields();
+            section.changeTimeSignature = !section.changeTimeSignature;
+            if (section.changeTimeSignature) {
+                section.timeSignatureNumerator = meter.numerator();
+                section.timeSignatureDenominator = meter.denominator();
+            }
+            rebuildUi();
+        });
+        y += 22;
+        sectionTimeNumeratorField = numberBox("Meter beats", x, y, half,
+                String.valueOf(meter.numerator()), "e.g. 7");
+        sectionTimeDenominatorField = numberBox("Beat unit", x + half + 4, y, half,
+                String.valueOf(meter.denominator()), "1, 2, 4, 8, 16, 32");
+        sectionTimeNumeratorField.active = section.changeTimeSignature;
+        sectionTimeDenominatorField.active = section.changeTimeSignature;
         y += 31;
         button(x, y, half, "Copy Section", b -> copySection(shownSection));
         button(x + half + 4, y, half, "Paste Section", b -> pasteSection(shownSection));
@@ -513,9 +614,16 @@ public final class ChartEditorScreen extends Screen {
         int y = 54;
         label("Editor-only playback options", controlX() + controlWidth() / 2, 43, 0xFFDDDDDD, true);
 
-        button(x, y, w, String.format(Locale.ROOT, "Playback Rate: %.1f", playbackRate), b -> {
-            setPlaybackRate(playbackRate >= 5f ? 0.1f : playbackRate + 0.1f);
-            b.setMessage(Component.literal(String.format(Locale.ROOT, "Playback Rate: %.1f", playbackRate)));
+        addRenderableWidget(new net.minecraft.client.gui.components.AbstractSliderButton(
+                x, y, w, 14, Component.empty(), (playbackRate - 0.1) / 4.9) {
+            @Override protected void updateMessage() {
+                setMessage(Component.literal(String.format(Locale.ROOT,
+                        "Playback Rate: %.1fx", playbackRate)));
+            }
+            @Override protected void applyValue() {
+                setPlaybackRate((float) (0.1 + value * 4.9));
+                updateMessage();
+            }
         });
         y += 22;
         button(x, y, w, "Beat Snap: " + snapText(), b -> cycleSnap(hasShiftDown() ? -1 : 1));
@@ -540,6 +648,63 @@ public final class ChartEditorScreen extends Screen {
             ClientOptions.save();
             b.setMessage(Component.literal("Hitsound O: " + onOff(options.editorHitsoundOpponent)));
         });
+        y += 22;
+        button(x, y, w, "Metronome: " + onOff(options.editorMetronome), b -> {
+            setMetronomeEnabled(!options.editorMetronome);
+            b.setMessage(Component.literal("Metronome: " + onOff(options.editorMetronome)));
+        }).setTooltip(Tooltip.create(Component.literal(
+                "Editor only: accented bar click plus regular meter-beat clicks.")));
+        y += 18;
+        addRenderableWidget(new net.minecraft.client.gui.components.AbstractSliderButton(
+                x, y, w, 14, Component.empty(), options.editorMetronomeVolume) {
+            @Override protected void updateMessage() {
+                setMessage(Component.literal("Metronome Volume: "
+                        + Math.round(options.editorMetronomeVolume * 100) + "%"));
+            }
+            @Override protected void applyValue() {
+                options.editorMetronomeVolume = Mth.clamp(value, 0.0, 1.0);
+                ClientOptions.save();
+                updateMessage();
+            }
+        });
+        y += 22;
+        button(x, y, half, "Loop In: " + timeLabel(loopStartMs), b -> {
+            loopStartMs = viewPositionMs;
+            if (loopEndMs >= 0 && loopEndMs <= loopStartMs) loopEndMs = -1;
+            rebuildUi();
+        });
+        button(x + half + 4, y, half, "Loop Out: " + timeLabel(loopEndMs), b -> {
+            loopEndMs = viewPositionMs;
+            if (loopStartMs >= 0 && loopEndMs <= loopStartMs) loopStartMs = -1;
+            rebuildUi();
+        });
+        y += 18;
+        button(x, y, half, "Loop: " + onOff(loopEnabled), b -> {
+            loopEnabled = !loopEnabled;
+            rebuildUi();
+        });
+        button(x + half + 4, y, half, "Pre-roll: " + preRollBeats + " beat(s)", b -> {
+            preRollBeats = Math.floorMod(preRollBeats + (hasShiftDown() ? -1 : 1), 9);
+            rebuildUi();
+        });
+        y += 20;
+        String detected = !tempoTaps.isEmpty() ? tempoTaps.size() + "/3"
+                : tappedBpm > 0 ? String.format(Locale.ROOT, "%.2f", tappedBpm)
+                : instWaveform != null && instWaveform.estimatedBpm() > 0
+                ? String.format(Locale.ROOT, "%.2f", instWaveform.estimatedBpm()) : "--";
+        button(x, y, half, "Tap BPM: " + detected, b -> { tapTempo(); rebuildUi(); });
+        button(x + half + 4, y, half, "Apply BPM", b -> applySuggestedBpm());
+        y += 20;
+        int third = (w - 8) / 3;
+        button(x, y, third, "Inst " + mixLabel(instMix), b -> { instMix = (instMix + 1) % 3; applyStemMix(); rebuildUi(); });
+        button(x + third + 4, y, third, "Player " + mixLabel(playerMix), b -> { playerMix = (playerMix + 1) % 3; applyStemMix(); rebuildUi(); });
+        button(x + (third + 4) * 2, y, third, "Opp " + mixLabel(opponentMix), b -> { opponentMix = (opponentMix + 1) % 3; applyStemMix(); rebuildUi(); });
+        y += 20;
+        button(x, y, third, "+ Bookmark", b -> addBookmark());
+        button(x + third + 4, y, third, "Previous", b -> seekBookmark(-1));
+        button(x + (third + 4) * 2, y, third, "Next", b -> seekBookmark(1));
+        y += 18;
+        button(x, y, w, "Delete nearest bookmark (" + chart.bookmarks.size() + ")", b -> deleteNearestBookmark());
     }
 
     private void buildDataTab() {
@@ -810,7 +975,9 @@ public final class ChartEditorScreen extends Screen {
         if (openMenu == TopMenu.FILE) {
             saveIdField = box(x + 4, y + 3, w - 8, saveId, "chart filename");
             y += 21;
-            button(x + 4, y, w - 8, "Save", b -> saveChart()); y += 16;
+            button(x + 4, y, w - 8, "Save", b -> saveChart(false)); y += 16;
+            button(x + 4, y, w - 8, "Save As...", b -> saveChart(true)); y += 16;
+            button(x + 4, y, w - 8, "Choose Song Audio...", b -> chooseSongAudio()); y += 16;
             Button openEvents = button(x + 4, y, w - 8, "Open Events...", b -> {}); openEvents.active = false; y += 16;
             button(x + 4, y, w - 8, "Save Events...", b -> saveEventsOnly()); y += 16;
             importModNameField = box(x + 4, y + 2, w - 8, importModName, "mod folder (My-Mod)");
@@ -873,7 +1040,19 @@ public final class ChartEditorScreen extends Screen {
             axisGizmo.setTooltip(Tooltip.create(Component.literal(
                     "Shows a world XYZ axis gizmo in the bottom-right while playtesting. "
                             + "Y points up."))); y += 16;
-            Button waveform = button(x + 4, y, w - 8, "Waveform...", b -> {}); waveform.active = false;
+            button(x + 4, y, w - 8, "Waveforms: " + onOff(options.editorWaveforms), b -> {
+                options.editorWaveforms = !options.editorWaveforms;
+                ClientOptions.save();
+                rebuildUi();
+            }); y += 16;
+            button(x + 4, y, w - 8, "Onset Markers: " + onOff(options.editorOnsetMarkers), b -> {
+                options.editorOnsetMarkers = !options.editorOnsetMarkers;
+                ClientOptions.save();
+                rebuildUi();
+            }); y += 16;
+            button(x + 4, y, w - 8,
+                    String.format(Locale.ROOT, "Inst Color: #%06X", options.editorInstWaveformColor & 0xFFFFFF),
+                    b -> openInstColorPicker());
         }
     }
 
@@ -941,6 +1120,10 @@ public final class ChartEditorScreen extends Screen {
         chart.startBpm = parsePositive(songBpmField, chart.startBpm);
         chart.speed = parsePositive(songSpeedField, chart.speed);
         chart.offsetMs = parseNumber(songOffsetField, chart.offsetMs);
+        SongChart.TimeSignature startingMeter = parseTimeSignature(
+                songTimeNumeratorField, songTimeDenominatorField, chart.startingTimeSignature());
+        chart.timeSignatureNumerator = startingMeter.numerator();
+        chart.timeSignatureDenominator = startingMeter.denominator();
         if (playerField != null && !playerField.getValue().isBlank()) chart.player1 = playerField.getValue().trim();
         if (opponentField != null && !opponentField.getValue().isBlank()) chart.player2 = opponentField.getValue().trim();
 
@@ -949,6 +1132,12 @@ public final class ChartEditorScreen extends Screen {
             if (section.changeBPM) section.bpm = parsePositive(sectionBpmField,
                     section.bpm > 0 ? section.bpm : chart.bpmForSection(shownSection));
             section.sectionBeats = Mth.clamp(parsePositive(sectionBeatsField, section.sectionBeats), 0.25, 64.0);
+            if (section.changeTimeSignature) {
+                SongChart.TimeSignature meter = parseTimeSignature(sectionTimeNumeratorField,
+                        sectionTimeDenominatorField, chart.timeSignatureForSection(shownSection));
+                section.timeSignatureNumerator = meter.numerator();
+                section.timeSignatureDenominator = meter.denominator();
+            }
         }
 
         if (noteTypeField != null) {
@@ -1004,6 +1193,23 @@ public final class ChartEditorScreen extends Screen {
         try {
             return Double.parseDouble(field.getValue().trim());
         } catch (NumberFormatException ignored) {
+            return fallback;
+        }
+    }
+
+    private static SongChart.TimeSignature parseTimeSignature(EditBox numeratorField,
+                                                               EditBox denominatorField,
+                                                               SongChart.TimeSignature fallback) {
+        int numerator = parseInteger(numeratorField, fallback.numerator());
+        int denominator = parseInteger(denominatorField, fallback.denominator());
+        return new SongChart.TimeSignature(numerator, denominator);
+    }
+
+    private static int parseInteger(EditBox field, int fallback) {
+        if (field == null) return fallback;
+        try {
+            return (int) Math.round(Double.parseDouble(field.getValue().trim()));
+        } catch (Exception ignored) {
             return fallback;
         }
     }
@@ -1401,25 +1607,99 @@ public final class ChartEditorScreen extends Screen {
         rebuildUi();
     }
 
-    private void saveChart() {
+    private void saveChart() { saveChart(false); }
+
+    private void saveChart(boolean forceDialog) {
         commitVisibleFields();
         String id = sanitizeId(saveId == null || saveId.isBlank() ? chart.title : saveId);
         if (id.isBlank()) id = "unnamed";
         try {
-            Path directory = SongLibrary.songsDir().resolve(id);
-            Files.createDirectories(directory);
             String difficultySuffix = loadedDifficulty.equalsIgnoreCase("normal")
                     ? "" : "-" + sanitizeId(loadedDifficulty);
-            Path file = directory.resolve(id + difficultySuffix + ".json");
+            Path suggested = chartSaveFile != null ? chartSaveFile
+                    : SongLibrary.songsDir().resolve(id).resolve(id + difficultySuffix + ".json");
+            if (forceDialog || chartSaveFile == null) {
+                var selected = NativeFilePicker.saveFile("Save Blockified/Psych chart",
+                        suggested, new String[]{"*.json"}, "FNF chart JSON");
+                if (selected.isEmpty()) {
+                    setStatus("Save cancelled");
+                    return;
+                }
+                chartSaveFile = ensureJsonExtension(selected.get());
+            }
+            Path file = chartSaveFile;
+            Path directory = file.getParent();
+            if (directory != null) Files.createDirectories(directory);
             Files.writeString(file, PsychChartWriter.write(chart));
-            Files.writeString(directory.resolve("events.json"), PsychChartWriter.writeEvents(chart));
-            writeOriginalReference(directory, id);
+            if (directory != null && directory.startsWith(SongLibrary.songsDir())) {
+                writeOriginalReference(directory, id);
+            }
             songId = saveId = id;
             SongLibrary.rescan();
-            setStatus("Saved " + file.getFileName());
+            setStatus("Saved " + file.toAbsolutePath());
         } catch (Exception e) {
             setStatus("Save failed: " + e.getMessage());
             FnfMod.LOGGER.error("Chart save failed", e);
+        }
+    }
+
+    private static Path ensureJsonExtension(Path file) {
+        String name = file.getFileName().toString();
+        if (name.toLowerCase(Locale.ROOT).endsWith(".json")) return file;
+        return file.resolveSibling(name + ".json");
+    }
+
+    private void chooseSongAudio() {
+        NativeFilePicker.openFile("Choose Inst.ogg or a vocal stem",
+                new String[]{"*.ogg"}, "OGG song audio").ifPresent(selected -> {
+            Path folder = selected.toAbsolutePath().normalize().getParent();
+            if (folder == null) return;
+            Path definitionRoot = entry == null ? null
+                    : entry.animationRoot() != null ? entry.animationRoot() : entry.runtimeRoot();
+            SongEntry chosen = new SongEntry();
+            chosen.id = folder.getFileName() == null ? "new-song" : folder.getFileName().toString();
+            chosen.displayName = chosen.id;
+            chosen.folder = folder;
+            chosen.difficulties.add(loadedDifficulty);
+            String selectedName = selected.getFileName().toString().toLowerCase(Locale.ROOT);
+            chosen.instFile = selectedName.startsWith("inst") ? selected : findStem(folder, "inst.ogg");
+            if (chosen.instFile == null) chosen.instFile = findStemPrefix(folder, "inst");
+            if (chosen.instFile == null) chosen.instFile = selected;
+            chosen.voicesFile = findStem(folder, "voices.ogg");
+            chosen.voicesPlayerFile = CharacterVocalResolver.resolve(
+                    folder, definitionRoot, chart.player1, false, "");
+            if (chosen.voicesPlayerFile == null) chosen.voicesPlayerFile = findStem(folder,
+                    "voices-player.ogg", "voices-bf.ogg", "voices-" + chart.player1 + ".ogg");
+            chosen.voicesOpponentFile = CharacterVocalResolver.resolve(
+                    folder, definitionRoot, chart.player2, true, "");
+            if (chosen.voicesOpponentFile == null) chosen.voicesOpponentFile = findStem(folder,
+                    "voices-opponent.ogg", "voices-dad.ogg", "voices-" + chart.player2 + ".ogg");
+            entry = chosen;
+            disposeAudio();
+            ensureAudioLoaded();
+            setStatus("Loaded exact audio folder: " + folder);
+            rebuildUi();
+        });
+    }
+
+    private static Path findStem(Path folder, String... names) {
+        try (var files = Files.list(folder)) {
+            List<Path> all = files.filter(Files::isRegularFile).toList();
+            for (String name : names) {
+                for (Path file : all) if (file.getFileName().toString().equalsIgnoreCase(name)) return file;
+            }
+        } catch (Exception ignored) {}
+        return null;
+    }
+
+    private static Path findStemPrefix(Path folder, String prefix) {
+        try (var files = Files.list(folder)) {
+            return files.filter(Files::isRegularFile).filter(file -> {
+                String name = file.getFileName().toString().toLowerCase(Locale.ROOT);
+                return name.startsWith(prefix.toLowerCase(Locale.ROOT)) && name.endsWith(".ogg");
+            }).sorted().findFirst().orElse(null);
+        } catch (Exception ignored) {
+            return null;
         }
     }
 
@@ -1434,6 +1714,305 @@ public final class ChartEditorScreen extends Screen {
         playbackRate = Math.round(Mth.clamp(rate, 0.1f, 5.0f) * 10f) / 10f;
         if (audio != null) audio.setPlaybackRate(playbackRate);
         setStatus(String.format(Locale.ROOT, "Playback rate: %.1fx", playbackRate));
+    }
+
+    private void setMetronomeEnabled(boolean enabled) {
+        ClientOptions options = ClientOptions.get();
+        options.editorMetronome = enabled;
+        ClientOptions.save();
+        snapshotSchedulerNotes();
+        tickScheduler().seek(viewPositionMs);
+        setStatus("Metronome: " + onOff(enabled));
+    }
+
+    private static String mixLabel(int state) {
+        return state == 1 ? "MUTE" : state == 2 ? "SOLO" : "ON";
+    }
+
+    private static String timeLabel(double timeMs) {
+        if (timeMs < 0) return "--";
+        int total = (int) Math.round(timeMs / 1000.0);
+        return String.format(Locale.ROOT, "%d:%02d", total / 60, total % 60);
+    }
+
+    private void applyStemMix() {
+        if (audio == null) return;
+        boolean anySolo = instMix == 2 || playerMix == 2 || opponentMix == 2;
+        audio.setVolume(SongPlayer.Role.INST, anySolo ? (instMix == 2 ? 1 : 0) : (instMix == 1 ? 0 : 1));
+        float player = anySolo ? (playerMix == 2 ? 1 : 0) : (playerMix == 1 ? 0 : 1);
+        float opponent = anySolo ? (opponentMix == 2 ? 1 : 0) : (opponentMix == 1 ? 0 : 1);
+        audio.setVolume(SongPlayer.Role.VOICES, player);
+        audio.setVolume(SongPlayer.Role.VOICES_PLAYER, player);
+        audio.setVolume(SongPlayer.Role.VOICES_OPPONENT, opponent);
+    }
+
+    private void openInstColorPicker() {
+        ClientOptions options = ClientOptions.get();
+        instColorPickerOriginal = options.editorInstWaveformColor & 0xFFFFFF;
+        float[] hsb = java.awt.Color.RGBtoHSB((instColorPickerOriginal >> 16) & 255,
+                (instColorPickerOriginal >> 8) & 255, instColorPickerOriginal & 255, null);
+        instColorHue = hsb[0];
+        instColorSat = hsb[1];
+        instColorBri = hsb[2];
+        instColorDrag = 0;
+        instColorHexField = new EditBox(font, 0, 0, 80, 16, Component.literal("Hex color"));
+        instColorHexField.setMaxLength(6);
+        instColorHexField.setFilter(value -> value.matches("[0-9a-fA-F]{0,6}"));
+        instColorHexField.setResponder(value -> {
+            if (updatingInstColorHex || !value.matches("[0-9a-fA-F]{6}")) return;
+            int rgb = Integer.parseInt(value, 16);
+            options.editorInstWaveformColor = rgb;
+            float[] next = java.awt.Color.RGBtoHSB((rgb >> 16) & 255, (rgb >> 8) & 255, rgb & 255, null);
+            instColorHue = next[0]; instColorSat = next[1]; instColorBri = next[2];
+        });
+        updateInstColorHex(instColorPickerOriginal);
+        openMenu = TopMenu.NONE;
+        instColorPickerOpen = true;
+    }
+
+    private void updateInstColorHex(int rgb) {
+        if (instColorHexField == null) return;
+        updatingInstColorHex = true;
+        instColorHexField.setValue(String.format(Locale.ROOT, "%06X", rgb & 0xFFFFFF));
+        updatingInstColorHex = false;
+    }
+
+    private void updateInstColorPicker(double mouseX, double mouseY) {
+        int x0 = instPickerX(), y0 = instPickerY();
+        int squareX = x0 + 12, squareY = y0 + 28, squareSize = 80;
+        int hueX = x0 + 12, hueY = y0 + 120, hueWidth = instPickerWidth() - 24;
+        if (instColorDrag == 1) {
+            instColorSat = (float) Mth.clamp((mouseX - squareX) / (squareSize - 1.0), 0, 1);
+            instColorBri = 1f - (float) Mth.clamp((mouseY - squareY) / (squareSize - 1.0), 0, 1);
+        } else if (instColorDrag == 2) {
+            instColorHue = (float) Mth.clamp((mouseX - hueX) / (hueWidth - 1.0), 0, 1);
+        }
+        int rgb = java.awt.Color.HSBtoRGB(instColorHue, instColorSat, instColorBri) & 0xFFFFFF;
+        ClientOptions.get().editorInstWaveformColor = rgb;
+        updateInstColorHex(rgb);
+    }
+
+    private void closeInstColorPicker(boolean save) {
+        if (!save) ClientOptions.get().editorInstWaveformColor = instColorPickerOriginal;
+        else ClientOptions.save();
+        instColorPickerOpen = false;
+        instColorDrag = 0;
+        instColorHexField = null;
+        rebuildUi();
+    }
+
+    private int instPickerWidth() { return Math.min(260, Math.max(220, width - 24)); }
+    private int instPickerHeight() { return 176; }
+    private int instPickerX() { return (width - instPickerWidth()) / 2; }
+    private int instPickerY() { return Math.max(8, (height - instPickerHeight()) / 2); }
+
+    private void renderInstColorPicker(GuiGraphics gui, int mouseX, int mouseY) {
+        gui.fill(0, 0, width, height, 0xF20A0A10);
+        int boxW = instPickerWidth(), boxH = instPickerHeight();
+        int x0 = instPickerX(), y0 = instPickerY();
+        gui.fill(x0, y0, x0 + boxW, y0 + boxH, 0xFF101018);
+        gui.renderOutline(x0, y0, boxW, boxH, 0xFF6A70FF);
+        drawCentered(gui, "Instrumental waveform color", x0 + boxW / 2, y0 + 9, 0xFFFFFFFF);
+
+        int squareX = x0 + 12, squareY = y0 + 28, squareSize = 80;
+        for (int column = 0; column < squareSize; column++) {
+            int color = java.awt.Color.HSBtoRGB(instColorHue, column / (squareSize - 1f), 1f);
+            gui.fill(squareX + column, squareY, squareX + column + 1, squareY + squareSize,
+                    0xFF000000 | (color & 0xFFFFFF));
+        }
+        gui.fillGradient(squareX, squareY, squareX + squareSize, squareY + squareSize,
+                0x00000000, 0xFF000000);
+        int cursorX = squareX + Math.round(instColorSat * (squareSize - 1));
+        int cursorY = squareY + Math.round((1 - instColorBri) * (squareSize - 1));
+        int rgb = ClientOptions.get().editorInstWaveformColor & 0xFFFFFF;
+        gui.fill(cursorX - 2, cursorY - 2, cursorX + 3, cursorY + 3, 0xFFFFFFFF);
+        gui.fill(cursorX - 1, cursorY - 1, cursorX + 2, cursorY + 2, 0xFF000000 | rgb);
+
+        int rightX = squareX + squareSize + 14;
+        int rightWidth = x0 + boxW - 12 - rightX;
+        gui.fill(rightX, squareY, rightX + rightWidth, squareY + 36, 0xFF000000 | rgb);
+        gui.renderOutline(rightX, squareY, rightWidth, 36, 0xFF6A7080);
+        draw(gui, "Hex", rightX, squareY + 45, 0xFFBBBBBB);
+        if (instColorHexField != null) {
+            instColorHexField.setX(rightX);
+            instColorHexField.setY(squareY + 56);
+            instColorHexField.setWidth(rightWidth);
+            instColorHexField.render(gui, mouseX, mouseY, 0);
+        }
+
+        int hueX = x0 + 12, hueY = y0 + 120, hueWidth = boxW - 24;
+        for (int column = 0; column < hueWidth; column++) {
+            int color = java.awt.Color.HSBtoRGB(column / (hueWidth - 1f), 1f, 1f);
+            gui.fill(hueX + column, hueY, hueX + column + 1, hueY + 10,
+                    0xFF000000 | (color & 0xFFFFFF));
+        }
+        int hueCursor = hueX + Math.round(instColorHue * (hueWidth - 1));
+        gui.fill(hueCursor - 1, hueY - 1, hueCursor + 2, hueY + 11, 0xFFFFFFFF);
+
+        int buttonY = y0 + boxH - 26;
+        int buttonWidth = (boxW - 28) / 2;
+        renderModalButton(gui, x0 + 10, buttonY, buttonWidth, "Cancel", mouseX, mouseY);
+        renderModalButton(gui, x0 + 18 + buttonWidth, buttonY, buttonWidth, "Done", mouseX, mouseY);
+    }
+
+    private void renderModalButton(GuiGraphics gui, int x, int y, int width, String text,
+                                   int mouseX, int mouseY) {
+        boolean hover = mouseX >= x && mouseX < x + width && mouseY >= y && mouseY < y + 18;
+        gui.fill(x, y, x + width, y + 18, hover ? 0xFF505675 : 0xFF303442);
+        gui.renderOutline(x, y, width, 18, 0xFF6A7080);
+        drawCentered(gui, text, x + width / 2, y + 5, 0xFFFFFFFF);
+    }
+
+    private void tapTempo() {
+        long now = System.nanoTime();
+        if (!tempoTaps.isEmpty() && now - tempoTaps.peekLast() > 2_000_000_000L) tempoTaps.clear();
+        tempoTaps.addLast(now);
+        if (tempoTaps.size() < 3) {
+            setStatus("Tap BPM: " + tempoTaps.size() + "/3");
+            return;
+        }
+        long first = tempoTaps.peekFirst();
+        long last = tempoTaps.peekLast();
+        double measured = 60_000_000_000.0 * (tempoTaps.size() - 1) / (last - first);
+        tappedBpm = Math.round(measured * 100.0) / 100.0;
+        tempoTaps.clear();
+        setStatus(String.format(Locale.ROOT, "Tapped BPM: %.2f", tappedBpm));
+    }
+
+    private void applySuggestedBpm() {
+        if (!tempoTaps.isEmpty() && tempoTaps.size() < 3) {
+            setStatus("Tap BPM needs 3 taps (" + tempoTaps.size() + "/3)");
+            return;
+        }
+        double bpm = tappedBpm > 0 ? tappedBpm
+                : instWaveform == null ? 0 : instWaveform.estimatedBpm();
+        if (bpm <= 0) { setStatus("Need more taps or decoded onset markers"); return; }
+        chart.startBpm = Math.round(bpm * 100.0) / 100.0;
+        chart.rebuildBpmMap();
+        conductor = new Conductor(chart);
+        setStatus("Applied BPM " + trim(chart.startBpm));
+        rebuildUi();
+    }
+
+    private void addBookmark() {
+        bookmarkDraftTime = viewPositionMs;
+        bookmarkDraftName = "";
+        beginBookmarkText(1, "Bookmark " + (chart.bookmarks.size() + 1));
+    }
+
+    private void beginBookmarkText(int stage, String initial) {
+        bookmarkTextStage = stage;
+        bookmarkTextDialogOpen = true;
+        int boxW = Math.min(220, Math.max(160, width - 24));
+        int x0 = (width - boxW) / 2;
+        int y0 = (height - 56) / 2;
+        bookmarkTextField = new EditBox(font, x0 + 10, y0 + 22,
+                boxW - 20, 16, Component.literal(stage == 1 ? "Bookmark name" : "Bookmark comment"));
+        bookmarkTextField.setMaxLength(256);
+        bookmarkTextField.setValue(initial == null ? "" : initial);
+        bookmarkTextField.setFocused(true);
+        int end = bookmarkTextField.getValue().length();
+        bookmarkTextField.setCursorPosition(end);
+        bookmarkTextField.setHighlightPos(end);
+        openMenu = TopMenu.NONE;
+    }
+
+    private void commitBookmarkText() {
+        String raw = bookmarkTextField == null ? "" : bookmarkTextField.getValue();
+        if (bookmarkTextStage == 1) {
+            bookmarkDraftName = raw.trim();
+            if (bookmarkDraftName.isBlank()) bookmarkDraftName = "Bookmark";
+            beginBookmarkText(2, "");
+            return;
+        }
+        chart.bookmarks.add(new SongChart.Bookmark(
+                bookmarkDraftTime, bookmarkDraftName, raw.trim()));
+        bookmarkTextDialogOpen = false;
+        bookmarkTextField = null;
+        setStatus("Bookmark added at " + timeLabel(bookmarkDraftTime));
+        rebuildUi();
+    }
+
+    private void cancelBookmarkText() {
+        bookmarkTextDialogOpen = false;
+        bookmarkTextField = null;
+        bookmarkDraftName = "";
+        rebuildUi();
+    }
+
+    private void renderBookmarkTextDialog(GuiGraphics gui, int mouseX, int mouseY) {
+        gui.fill(0, 0, width, height, 0xF20A0A10);
+        int boxW = Math.min(220, Math.max(160, width - 24));
+        int boxH = 56;
+        int x0 = (width - boxW) / 2;
+        int y0 = (height - boxH) / 2;
+        gui.fill(x0, y0, x0 + boxW, y0 + boxH, 0xF0101018);
+        gui.renderOutline(x0, y0, boxW, boxH, 0xFFFFEE66);
+        String label = bookmarkTextStage == 1 ? "Bookmark name" : "Bookmark comment (optional)";
+        draw(gui, label, x0 + 10, y0 + 8, 0xFFFFEE66);
+        if (bookmarkTextField != null) {
+            bookmarkTextField.setX(x0 + 10);
+            bookmarkTextField.setY(y0 + 22);
+            bookmarkTextField.setWidth(boxW - 20);
+            bookmarkTextField.render(gui, mouseX, mouseY, 0);
+        }
+        draw(gui, "Enter = OK   ·   Esc = Cancel", x0 + 10, y0 + boxH - 11, 0xFF9AA4B2);
+    }
+
+    private void seekBookmark(int direction) {
+        if (chart.bookmarks.isEmpty()) { setStatus("No bookmarks"); return; }
+        List<SongChart.Bookmark> ordered = chart.bookmarks.stream()
+                .sorted(java.util.Comparator.comparingDouble(mark -> mark.timeMs)).toList();
+        SongChart.Bookmark target = direction > 0
+                ? ordered.stream().filter(mark -> mark.timeMs > viewPositionMs + 1).findFirst().orElse(ordered.get(0))
+                : ordered.reversed().stream().filter(mark -> mark.timeMs < viewPositionMs - 1).findFirst().orElse(ordered.get(ordered.size() - 1));
+        seek(target.timeMs);
+        setStatus(target.name + (target.comment.isBlank() ? "" : ": " + target.comment));
+    }
+
+    private void deleteNearestBookmark() {
+        SongChart.Bookmark nearest = chart.bookmarks.stream().min(java.util.Comparator.comparingDouble(
+                mark -> Math.abs(mark.timeMs - viewPositionMs))).orElse(null);
+        if (nearest == null) { setStatus("No bookmarks"); return; }
+        chart.bookmarks.remove(nearest);
+        setStatus("Deleted bookmark: " + nearest.name);
+        rebuildUi();
+    }
+
+    private void handleLoopPlayback() {
+        if (!loopEnabled || loopStartMs < 0 || loopEndMs <= loopStartMs || !isPlaying()
+                || viewPositionMs < loopEndMs) return;
+        double startBeat = conductor.beatAt(loopStartMs);
+        double restartBeat = Math.max(0, startBeat - preRollBeats);
+        seek(conductor.timeOfBeat(restartBeat));
+    }
+
+    private double visualPositionMs() {
+        return Double.isNaN(displayPositionMs) ? viewPositionMs : displayPositionMs;
+    }
+
+    private void updateViewportTween() {
+        if (Double.isNaN(displayPositionMs)) displayPositionMs = viewPositionMs;
+        if (!viewportTweenActive) {
+            displayPositionMs = viewPositionMs;
+            return;
+        }
+        double progress = (System.nanoTime() - viewportTweenStartNano) / (double) VIEWPORT_TWEEN_NANOS;
+        if (progress >= 1) {
+            displayPositionMs = viewPositionMs;
+            viewportTweenActive = false;
+            return;
+        }
+        double eased = Easing.apply("expoOut", progress);
+        displayPositionMs = viewportTweenFromMs + (viewPositionMs - viewportTweenFromMs) * eased;
+    }
+
+    private void beginViewportTween() {
+        if (Double.isNaN(displayPositionMs)) displayPositionMs = viewPositionMs;
+        viewportTweenFromMs = displayPositionMs;
+        viewportTweenStartNano = System.nanoTime();
+        viewportTweenActive = Math.abs(viewPositionMs - viewportTweenFromMs) > 0.01;
+        if (!viewportTweenActive) displayPositionMs = viewPositionMs;
     }
 
     private void togglePlayback() {
@@ -1578,7 +2157,7 @@ public final class ChartEditorScreen extends Screen {
                 suppliedSongFolder, originalDirectory, sourceMachinePos, sourcePolicy);
         editor.viewPositionMs = Math.max(0, positionMs);
         editor.snapIndex = snapIndex;
-        editor.pixelsPerBeat = pixelsPerBeat;
+        editor.gridZoomIndex = gridZoomIndex;
         editor.playbackRate = playbackRate;
         editor.vortex = vortex;
         return editor;
@@ -1598,8 +2177,10 @@ public final class ChartEditorScreen extends Screen {
     }
 
     private void seek(double timeMs) {
+        updateViewportTween();
         leadInStartNano = -1; // scrubbing leaves any silent lead-in
         viewPositionMs = Math.max(0, timeMs);
+        beginViewportTween();
         if (tickScheduler != null) tickScheduler.seek(viewPositionMs); // don't replay skipped notes
         if (audio != null && audio.isStarted()) audio.seekMs(viewToAudio(viewPositionMs));
         resetHitsoundIndex(viewPositionMs);
@@ -1667,6 +2248,10 @@ public final class ChartEditorScreen extends Screen {
         if (tickScheduler == null) {
             tickScheduler = new com.fnfmod.client.input.EditorTickScheduler(
                     () -> {
+                        if (leadInStartNano >= 0) {
+                            return leadInBaseView + (System.nanoTime() - leadInStartNano)
+                                    / 1_000_000.0 * playbackRate;
+                        }
                         SongPlayer a = audio;
                         return a == null ? viewPositionMs
                                 : a.positionMsAt(System.nanoTime()) + chart.offsetMs;
@@ -1691,6 +2276,76 @@ public final class ChartEditorScreen extends Screen {
             sides[i] = notes.get(i).playerSide;
         }
         tickScheduler().setNotes(times, sides);
+        snapshotMetronomeTicks();
+    }
+
+    private void snapshotMetronomeTicks() {
+        if (!ClientOptions.get().editorMetronome) {
+            tickScheduler().setMetronome(new double[0], new boolean[0], null);
+            return;
+        }
+        double endTime = Math.max(chart.lastNoteTimeMs(), chart.sectionStartMs(chart.sections.size()));
+        if (audio != null) endTime = Math.max(endTime, audioToView(audio.durationMs()));
+        double endBeat = Math.max(0, conductor.beatAt(Math.max(0, endTime))) + 1.0e-6;
+        List<Double> times = new ArrayList<>();
+        List<Boolean> accents = new ArrayList<>();
+        List<MeterSegment> segments = meterSegments();
+        for (int i = 0; i < segments.size(); i++) {
+            MeterSegment segment = segments.get(i);
+            double segmentEnd = i + 1 < segments.size()
+                    ? Math.min(endBeat, segments.get(i + 1).startBeat()) : endBeat;
+            double pulse = segment.signature().pulseBeats();
+            long first = Math.max(0, (long) Math.ceil(-1.0e-7 / pulse));
+            for (long index = first; ; index++) {
+                double beat = segment.startBeat() + index * pulse;
+                if (beat >= segmentEnd - 1.0e-7 || beat > endBeat) break;
+                if (beat < -1.0e-7) continue;
+                times.add(conductor.timeOfBeat(Math.max(0, beat)));
+                accents.add(index % segment.signature().numerator() == 0);
+            }
+        }
+        double[] tickTimes = new double[times.size()];
+        boolean[] tickAccents = new boolean[accents.size()];
+        for (int i = 0; i < times.size(); i++) {
+            tickTimes[i] = times.get(i);
+            tickAccents[i] = accents.get(i);
+        }
+        tickScheduler().setMetronome(tickTimes, tickAccents, accent -> {
+            ClientOptions options = ClientOptions.get();
+            if (options.editorMetronome) {
+                com.fnfmod.client.audio.HitsoundPlayer.playMetronome(accent,
+                        (float) Mth.clamp(options.editorMetronomeVolume, 0.0, 1.0));
+            }
+        });
+    }
+
+    private List<MeterSegment> meterSegments() {
+        List<MeterSegment> out = new ArrayList<>();
+        SongChart.TimeSignature signature = chart.startingTimeSignature();
+        out.add(new MeterSegment(0, signature));
+        double beat = 0;
+        for (SongChart.Section section : chart.sections) {
+            if (section.changeTimeSignature) {
+                signature = new SongChart.TimeSignature(section.timeSignatureNumerator,
+                        section.timeSignatureDenominator);
+                if (Math.abs(beat - out.get(out.size() - 1).startBeat()) < 1.0e-7) {
+                    out.set(out.size() - 1, new MeterSegment(beat, signature));
+                } else {
+                    out.add(new MeterSegment(beat, signature));
+                }
+            }
+            beat += Math.max(0.25, section.sectionBeats);
+        }
+        return out;
+    }
+
+    private SongChart.TimeSignature meterAtBeat(double beat) {
+        SongChart.TimeSignature signature = chart.startingTimeSignature();
+        for (MeterSegment segment : meterSegments()) {
+            if (segment.startBeat() > beat + 1.0e-7) break;
+            signature = segment.signature();
+        }
+        return signature;
     }
 
     /** Pauses the precise scheduler; safe to call when it was never created. */
@@ -1743,6 +2398,21 @@ public final class ChartEditorScreen extends Screen {
 
     @Override
     public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
+        if (instColorPickerOpen) {
+            if (keyCode == GLFW.GLFW_KEY_ESCAPE) closeInstColorPicker(false);
+            else if (keyCode == GLFW.GLFW_KEY_ENTER || keyCode == GLFW.GLFW_KEY_KP_ENTER) {
+                closeInstColorPicker(true);
+            } else if (instColorHexField != null) {
+                instColorHexField.keyPressed(keyCode, scanCode, modifiers);
+            }
+            return true;
+        }
+        if (bookmarkTextDialogOpen) {
+            if (keyCode == GLFW.GLFW_KEY_ENTER || keyCode == GLFW.GLFW_KEY_KP_ENTER) commitBookmarkText();
+            else if (keyCode == GLFW.GLFW_KEY_ESCAPE) cancelBookmarkText();
+            else if (bookmarkTextField != null) bookmarkTextField.keyPressed(keyCode, scanCode, modifiers);
+            return true;
+        }
         if (eventDocumentationVisible) {
             int step = keyCode == GLFW.GLFW_KEY_PAGE_UP || keyCode == GLFW.GLFW_KEY_PAGE_DOWN ? 8 : 1;
             if (keyCode == GLFW.GLFW_KEY_ESCAPE || keyCode == GLFW.GLFW_KEY_F1
@@ -1765,6 +2435,7 @@ public final class ChartEditorScreen extends Screen {
                 case GLFW.GLFW_KEY_ESCAPE, GLFW.GLFW_KEY_ENTER, GLFW.GLFW_KEY_KP_ENTER,
                         GLFW.GLFW_KEY_F12 -> exitPreview();
                 case GLFW.GLFW_KEY_SPACE -> togglePlayback();
+                case GLFW.GLFW_KEY_M -> setMetronomeEnabled(!ClientOptions.get().editorMetronome);
                 case GLFW.GLFW_KEY_LEFT_BRACKET ->
                         setPlaybackRate(altDown() ? 1.0f : playbackRate - 0.1f);
                 case GLFW.GLFW_KEY_RIGHT_BRACKET ->
@@ -1832,6 +2503,16 @@ public final class ChartEditorScreen extends Screen {
             case GLFW.GLFW_KEY_LEFT -> { changeSnap(-1); yield true; }
             case GLFW.GLFW_KEY_RIGHT -> { changeSnap(1); yield true; }
             case GLFW.GLFW_KEY_SPACE -> { togglePlayback(); yield true; }
+            case GLFW.GLFW_KEY_M -> {
+                setMetronomeEnabled(!ClientOptions.get().editorMetronome);
+                if (activeTab == EditorTab.CHARTING) rebuildUi();
+                yield true;
+            }
+            case GLFW.GLFW_KEY_I -> { loopStartMs = viewPositionMs; rebuildUi(); yield true; }
+            case GLFW.GLFW_KEY_O -> { loopEndMs = viewPositionMs; rebuildUi(); yield true; }
+            case GLFW.GLFW_KEY_L -> { loopEnabled = !loopEnabled; rebuildUi(); yield true; }
+            case GLFW.GLFW_KEY_T -> { tapTempo(); if (activeTab == EditorTab.CHARTING) rebuildUi(); yield true; }
+            case GLFW.GLFW_KEY_B -> { applySuggestedBpm(); yield true; }
             case GLFW.GLFW_KEY_R -> {
                 if (isPlaying()) audio.pause();
                 selectedNote = null;
@@ -1841,13 +2522,13 @@ public final class ChartEditorScreen extends Screen {
                 yield true;
             }
             case GLFW.GLFW_KEY_Z -> {
-                pixelsPerBeat = Math.min(300, pixelsPerBeat * 1.25);
-                setStatus("Zoom: " + Math.round(pixelsPerBeat / DEFAULT_PIXELS_PER_BEAT * 100) + "%");
+                gridZoomIndex = Math.min(GRID_ROWS_PER_BEAT.length - 1, gridZoomIndex + 1);
+                setStatus("Grid zoom: " + GRID_ROWS_PER_BEAT[gridZoomIndex] + " boxes/beat");
                 yield true;
             }
             case GLFW.GLFW_KEY_X -> {
-                pixelsPerBeat = Math.max(20, pixelsPerBeat / 1.25);
-                setStatus("Zoom: " + Math.round(pixelsPerBeat / DEFAULT_PIXELS_PER_BEAT * 100) + "%");
+                gridZoomIndex = Math.max(0, gridZoomIndex - 1);
+                setStatus("Grid zoom: " + GRID_ROWS_PER_BEAT[gridZoomIndex] + " boxes/beat");
                 yield true;
             }
             case GLFW.GLFW_KEY_V -> {
@@ -1868,7 +2549,50 @@ public final class ChartEditorScreen extends Screen {
     }
 
     @Override
+    public boolean charTyped(char codePoint, int modifiers) {
+        if (instColorPickerOpen) {
+            if (instColorHexField != null) instColorHexField.charTyped(codePoint, modifiers);
+            return true;
+        }
+        if (bookmarkTextDialogOpen) {
+            if (bookmarkTextField != null) bookmarkTextField.charTyped(codePoint, modifiers);
+            return true;
+        }
+        return super.charTyped(codePoint, modifiers);
+    }
+
+    @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
+        if (instColorPickerOpen) {
+            if (instColorHexField != null) instColorHexField.mouseClicked(mouseX, mouseY, button);
+            if (button != GLFW.GLFW_MOUSE_BUTTON_LEFT) return true;
+            int x0 = instPickerX(), y0 = instPickerY(), boxW = instPickerWidth();
+            int squareX = x0 + 12, squareY = y0 + 28;
+            int hueX = x0 + 12, hueY = y0 + 120, hueWidth = boxW - 24;
+            int buttonY = y0 + instPickerHeight() - 26;
+            int buttonWidth = (boxW - 28) / 2;
+            if (mouseX >= squareX && mouseX < squareX + 80
+                    && mouseY >= squareY && mouseY < squareY + 80) {
+                instColorDrag = 1;
+                updateInstColorPicker(mouseX, mouseY);
+            } else if (mouseX >= hueX && mouseX < hueX + hueWidth
+                    && mouseY >= hueY && mouseY < hueY + 10) {
+                instColorDrag = 2;
+                updateInstColorPicker(mouseX, mouseY);
+            } else if (mouseY >= buttonY && mouseY < buttonY + 18
+                    && mouseX >= x0 + 10 && mouseX < x0 + 10 + buttonWidth) {
+                closeInstColorPicker(false);
+            } else if (mouseY >= buttonY && mouseY < buttonY + 18
+                    && mouseX >= x0 + 18 + buttonWidth
+                    && mouseX < x0 + 18 + buttonWidth * 2) {
+                closeInstColorPicker(true);
+            }
+            return true;
+        }
+        if (bookmarkTextDialogOpen) {
+            if (bookmarkTextField != null) bookmarkTextField.mouseClicked(mouseX, mouseY, button);
+            return true;
+        }
         if (previewMode) return true;
         if (eventDocumentationVisible) {
             if (button == 0) eventDocumentationVisible = false;
@@ -1972,6 +2696,14 @@ public final class ChartEditorScreen extends Screen {
 
     @Override
     public boolean mouseDragged(double mouseX, double mouseY, int button, double dragX, double dragY) {
+        if (instColorPickerOpen) {
+            if (instColorDrag != 0) updateInstColorPicker(mouseX, mouseY);
+            return true;
+        }
+        if (bookmarkTextDialogOpen) {
+            if (bookmarkTextField != null) bookmarkTextField.mouseDragged(mouseX, mouseY, button, dragX, dragY);
+            return true;
+        }
         if (draggingInfo && button == 0) {
             infoX = Mth.clamp((int) Math.round(mouseX - dragOffsetX), 0, Math.max(0, width - infoWidth()));
             infoY = Mth.clamp((int) Math.round(mouseY - dragOffsetY), 22, Math.max(22, height - infoHeight() - 12));
@@ -1987,6 +2719,11 @@ public final class ChartEditorScreen extends Screen {
 
     @Override
     public boolean mouseReleased(double mouseX, double mouseY, int button) {
+        if (instColorPickerOpen) {
+            instColorDrag = 0;
+            return true;
+        }
+        if (bookmarkTextDialogOpen) return true;
         if (draggingInfo && button == 0) {
             draggingInfo = false;
             return true;
@@ -2003,6 +2740,8 @@ public final class ChartEditorScreen extends Screen {
 
     @Override
     public boolean mouseScrolled(double mouseX, double mouseY, double scrollX, double scrollY) {
+        if (instColorPickerOpen) return true;
+        if (bookmarkTextDialogOpen) return true;
         if (previewMode) return true;
         if (eventDocumentationVisible) {
             int direction = scrollY > 0 ? -1 : scrollY < 0 ? 1 : 0;
@@ -2077,29 +2816,47 @@ public final class ChartEditorScreen extends Screen {
     public void render(GuiGraphics gui, int mouseX, int mouseY, float partialTick) {
         renderBackground(gui, mouseX, mouseY, partialTick);
 
+        boolean preciseHitsounds = !ClientOptions.get().hitsound.isEmpty();
+        boolean scheduledTicks = preciseHitsounds || ClientOptions.get().editorMetronome;
         if (leadInStartNano >= 0) {
             double elapsed = (System.nanoTime() - leadInStartNano) / 1_000_000.0 * playbackRate;
             viewPositionMs = Math.max(0, leadInBaseView + elapsed);
-            deactivateScheduler();
-            playCrossedHitsounds(viewPositionMs); // lead-in stays frame-based
+            if (scheduledTicks) {
+                if (!schedulerActive) tickScheduler().seek(viewPositionMs);
+                tickScheduler().setActive(true);
+                schedulerActive = true;
+            } else {
+                deactivateScheduler();
+            }
+            if (!preciseHitsounds) playCrossedHitsounds(viewPositionMs);
             if (viewToAudio(viewPositionMs) >= 0) {
                 leadInStartNano = -1;
                 startAudioAt(viewToAudio(viewPositionMs));
             }
         } else if (isPlaying()) {
             viewPositionMs = audioToView(audio.positionMs());
-            // With a hitsound set, the background scheduler owns tick timing so a
-            // tick lands on its note; otherwise use the frame-based fallback.
-            if (!ClientOptions.get().hitsound.isEmpty()) {
+            // Metronome and configured hitsounds use the high-rate audio-clock
+            // scheduler. Vanilla note-tick fallback remains frame based.
+            if (scheduledTicks) {
                 if (!schedulerActive) tickScheduler().seek(viewPositionMs);
                 tickScheduler().setActive(true);
                 schedulerActive = true;
             } else {
                 deactivateScheduler();
-                playCrossedHitsounds(viewPositionMs);
             }
+            if (!preciseHitsounds) playCrossedHitsounds(viewPositionMs);
         } else {
             deactivateScheduler();
+        }
+        handleLoopPlayback();
+        updateViewportTween();
+        if (instColorPickerOpen) {
+            renderInstColorPicker(gui, mouseX, mouseY);
+            return;
+        }
+        if (bookmarkTextDialogOpen) {
+            renderBookmarkTextDialog(gui, mouseX, mouseY);
+            return;
         }
         if (previewMode) {
             renderPreview(gui);
@@ -2206,7 +2963,7 @@ public final class ChartEditorScreen extends Screen {
         int gridWidth = cw * 8;
         int eventX = gx - cw;
         float noteSize = Math.min(cw - 3, 24);
-        double step = snapStepBeats();
+        double step = gridStepBeats();
 
         gui.fill(eventX, top - cw, gx, top, 0xFFD0D0D0);
         gui.fill(eventX, top, gx, bottom, 0xFFB8B8B8);
@@ -2235,6 +2992,9 @@ public final class ChartEditorScreen extends Screen {
             boolean wholeBeat = Math.abs(beat - Math.round(beat)) < 1.0e-6;
             gui.fill(eventX, y, gx + gridWidth, y + 1, wholeBeat ? 0x66444444 : 0x22444444);
         }
+        renderMeterLines(gui, eventX, gx + gridWidth, top, bottom, topBeat, bottomBeat);
+        renderWaveforms(gui, gx, cw, top, bottom, topBeat, bottomBeat);
+        renderEditorMarkers(gui, eventX, gx + gridWidth, top, bottom, topBeat, bottomBeat);
 
         double bottomTime = conductor.timeOfBeat(Math.max(0, bottomBeat));
         int firstSection = Math.max(0, sectionIndexAt(conductor.timeOfBeat(Math.max(0, topBeat))) - 1);
@@ -2331,9 +3091,123 @@ public final class ChartEditorScreen extends Screen {
         }
     }
 
+    private void renderMeterLines(GuiGraphics gui, int left, int right, int top, int bottom,
+                                  double topBeat, double bottomBeat) {
+        List<MeterSegment> segments = meterSegments();
+        for (int i = 0; i < segments.size(); i++) {
+            MeterSegment segment = segments.get(i);
+            double segmentEnd = i + 1 < segments.size()
+                    ? segments.get(i + 1).startBeat() : bottomBeat + 1;
+            double visibleStart = Math.max(topBeat, segment.startBeat());
+            double visibleEnd = Math.min(bottomBeat, segmentEnd);
+            if (visibleEnd < visibleStart) continue;
+            double pulse = segment.signature().pulseBeats();
+            long first = Math.max(0, (long) Math.ceil(
+                    (visibleStart - segment.startBeat()) / pulse - 1.0e-7));
+            for (long index = first; ; index++) {
+                double beat = segment.startBeat() + index * pulse;
+                if (beat > visibleEnd + 1.0e-7 || beat >= segmentEnd - 1.0e-7) break;
+                int y = (int) beatToY(beat);
+                boolean bar = index % segment.signature().numerator() == 0;
+                gui.fill(left, y, right, y + (bar ? 2 : 1),
+                        bar ? 0xCC8A3FB5 : 0x556E4B82);
+            }
+        }
+    }
+
+    private void renderWaveforms(GuiGraphics gui, int gx, int cw, int top, int bottom,
+                                 double topBeat, double bottomBeat) {
+        ClientOptions options = ClientOptions.get();
+        if (!options.editorWaveforms) return;
+        int playerColor = characterColor(chart.player1, false);
+        int opponentColor = characterColor(chart.player2, true);
+        renderWaveform(gui, instWaveform, gx + 4 * cw, Math.max(3, cw), top, bottom,
+                options.editorInstWaveformColor, options.editorOnsetMarkers);
+        renderWaveform(gui, opponentWaveform, gx + 2 * cw, Math.max(4, 2 * cw - 3), top, bottom,
+                opponentColor, options.editorOnsetMarkers);
+        renderWaveform(gui, playerWaveform, gx + 6 * cw, Math.max(4, 2 * cw - 3), top, bottom,
+                playerColor, options.editorOnsetMarkers);
+    }
+
+    private void renderWaveform(GuiGraphics gui, EditorWaveform.Data data, int centerX, int radius,
+                                int top, int bottom, int rgb, boolean markers) {
+        if (data == null) return;
+        for (int y = top; y < bottom; y += 2) {
+            double viewTime = conductor.timeOfBeat(Math.max(0, yToBeat(y)));
+            float peak = data.peakAt(viewToAudio(viewTime));
+            int half = Math.max(1, Math.round(peak * radius));
+            gui.fill(centerX - half, y, centerX + half + 1, Math.min(bottom, y + 2),
+                    0x52000000 | (rgb & 0xFFFFFF));
+        }
+        if (!markers) return;
+        double topAudio = viewToAudio(conductor.timeOfBeat(Math.max(0, yToBeat(top))));
+        double bottomAudio = viewToAudio(conductor.timeOfBeat(Math.max(0, yToBeat(bottom))));
+        double[] onsets = data.onsetsMs();
+        int onsetIndex = java.util.Arrays.binarySearch(onsets, topAudio);
+        if (onsetIndex < 0) onsetIndex = -onsetIndex - 1;
+        for (int i = onsetIndex; i < onsets.length; i++) {
+            double onset = onsets[i];
+            if (onset > bottomAudio) break;
+            int y = (int) beatToY(conductor.beatAt(audioToView(onset)));
+            gui.fill(centerX - radius, y, centerX + radius + 1, y + 1,
+                    0xA0000000 | (rgb & 0xFFFFFF));
+        }
+    }
+
+    private int characterColor(String character, boolean opponent) {
+        String key = (character == null ? "" : character) + "|"
+                + (entry == null || entry.folder == null ? "" : entry.folder.toAbsolutePath());
+        if (opponent && key.equals(cachedOpponentColorKey) && cachedOpponentColor >= 0) return cachedOpponentColor;
+        if (!opponent && key.equals(cachedPlayerColorKey) && cachedPlayerColor >= 0) return cachedPlayerColor;
+        int resolved = resolveCharacterColor(character, opponent);
+        if (opponent) { cachedOpponentColorKey = key; cachedOpponentColor = resolved; }
+        else { cachedPlayerColorKey = key; cachedPlayerColor = resolved; }
+        return resolved;
+    }
+
+    private int resolveCharacterColor(String character, boolean opponent) {
+        if (entry != null) {
+            for (Path root : java.util.Arrays.asList(entry.runtimeRoot(), entry.animationRoot(), entry.folder)) {
+                if (root == null) continue;
+                for (Path candidate : List.of(root.resolve("characters").resolve(character + ".json"),
+                        root.resolve("animations").resolve(character + ".json"))) {
+                    if (!Files.isRegularFile(candidate)) continue;
+                    int color = CharacterDefinitionFile.load(candidate).healthColor;
+                    if (color >= 0) return color;
+                }
+            }
+        }
+        int blockified = CharacterAnimations.color(CharacterAnimations.modSet(character),
+                opponent ? "opponent" : "player");
+        return blockified >= 0 ? blockified : opponent ? 0xAF66CE : 0x31B0D1;
+    }
+
+    private void renderEditorMarkers(GuiGraphics gui, int left, int right, int top, int bottom,
+                                     double topBeat, double bottomBeat) {
+        if (loopStartMs >= 0) renderTimelineLine(gui, left, right, top, bottom, loopStartMs, 0xFF44DD66, "IN");
+        if (loopEndMs >= 0) renderTimelineLine(gui, left, right, top, bottom, loopEndMs, 0xFFFF6655, "OUT");
+        for (SongChart.Bookmark mark : chart.bookmarks) {
+            double beat = conductor.beatAt(mark.timeMs);
+            if (beat < topBeat || beat > bottomBeat) continue;
+            int y = (int) beatToY(beat);
+            gui.fill(left, y, right, y + 1, 0xCCFFD54A);
+            draw(gui, mark.name, left + 3, y + 2, 0xFFFFE88A);
+        }
+    }
+
+    private void renderTimelineLine(GuiGraphics gui, int left, int right, int top, int bottom,
+                                    double timeMs, int color, String label) {
+        int y = (int) beatToY(conductor.beatAt(timeMs));
+        if (y < top || y > bottom) return;
+        gui.fill(left, y, right, y + 2, color);
+        draw(gui, label, right - font.width(label) - 2, y + 2, color);
+    }
+
     private void renderControlPanel(GuiGraphics gui) {
         int x = controlX();
-        int bottom = activeTab == EditorTab.EVENTS ? height - 26 : Math.min(height - 26, 238);
+        int bottom = activeTab == EditorTab.EVENTS ? height - 26
+                : Math.min(height - 26, activeTab == EditorTab.CHARTING ? 310
+                : activeTab == EditorTab.SECTION ? 270 : 238);
         gui.fill(x, CONTROL_TOP, x + controlWidth(), bottom, 0xE6080808);
     }
 
@@ -2346,7 +3220,7 @@ public final class ChartEditorScreen extends Screen {
             default -> 16;
         };
         int height = switch (openMenu) {
-            case FILE -> 88;
+            case FILE -> 154;
             case EDIT -> 136;
             case VIEW -> 120;
             default -> 0;
@@ -2482,6 +3356,9 @@ public final class ChartEditorScreen extends Screen {
         draw(gui, "Section: " + sectionIndexAt(viewPositionMs), infoX + 8, y, 0xFFFFFFFF); y += 11;
         draw(gui, "Beat: " + (int) Math.floor(beat), infoX + 8, y, 0xFFFFFFFF); y += 11;
         draw(gui, "Step: " + (int) Math.floor(beat * 4), infoX + 8, y, 0xFFFFFFFF); y += 23;
+        SongChart.TimeSignature meter = meterAtBeat(beat);
+        draw(gui, "Meter: " + meter.numerator() + "/" + meter.denominator(),
+                infoX + 8, y, 0xFFFFFFFF); y += 11;
         draw(gui, "Beat Snap: " + snapText(), infoX + 8, y, 0xFFFFFFFF); y += 11;
         draw(gui, "Selected: " + selectedNotes.size() + " N / " + selectedEvents.size() + " E",
                 infoX + 8, y, 0xFFFFFFFF);
@@ -2541,18 +3418,20 @@ public final class ChartEditorScreen extends Screen {
      * workspace is uniformly scaled instead of becoming tall and narrow.
      */
     private double effectivePixelsPerBeat() {
-        return pixelsPerBeat * cellWidth() / REFERENCE_CELL_WIDTH;
+        return GRID_ROWS_PER_BEAT[gridZoomIndex] * (double) cellWidth();
     }
+
+    private double gridStepBeats() { return 1.0 / GRID_ROWS_PER_BEAT[gridZoomIndex]; }
 
     private double snapStepBeats() { return 4.0 / SNAPS[snapIndex]; }
 
     private float beatToY(double beat) {
-        double viewBeat = conductor.beatAt(Math.max(0, viewPositionMs));
+        double viewBeat = conductor.beatAt(Math.max(0, visualPositionMs()));
         return (float) (centerY() + (beat - viewBeat) * effectivePixelsPerBeat());
     }
 
     private double yToBeat(double y) {
-        double viewBeat = conductor.beatAt(Math.max(0, viewPositionMs));
+        double viewBeat = conductor.beatAt(Math.max(0, visualPositionMs()));
         return viewBeat + (y - centerY()) / effectivePixelsPerBeat();
     }
 
@@ -3067,5 +3946,11 @@ public final class ChartEditorScreen extends Screen {
     @Override
     public boolean isPauseScreen() {
         return false;
+    }
+
+    @Override
+    public boolean isTextInputActive() {
+        return instColorPickerOpen || bookmarkTextDialogOpen
+                || (getFocused() instanceof EditBox edit && edit.isFocused());
     }
 }

@@ -74,7 +74,7 @@ import java.util.UUID;
 import java.nio.file.Path;
 
 /** The rhythm gameplay screen. */
-public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.Host {
+public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.Host, TextInputAwareScreen {
 
     private enum Phase { COUNTDOWN, PLAYING, PAUSED, GAMEOVER, RESULTS }
 
@@ -83,7 +83,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
 
     // Psych Engine default judgement windows (ms)
     private static final double SICK = 45, GOOD = 90, BAD = 135, SHIT = 166;
-    private static final double HOLD_RELEASE_GRACE_MS = 300;
+    private static final double HOLD_RELEASE_GRACE_MS = 150;
     private static final String[] DIR_NAMES = {"left", "down", "up", "right"};
     private static final int HUD_WIDTH = PsychCanvas.WIDTH;
     private static final int HUD_HEIGHT = PsychCanvas.HEIGHT;
@@ -5896,6 +5896,11 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         // keeps running physics (and chunks keep churning) while it is unpinned,
         // which desynced its position and the camera when flying near chunk edges.
         return phase == Phase.PAUSED || freeCam;
+    }
+
+    @Override
+    public boolean isTextInputActive() {
+        return freeCam && freeCamTextEntry;
     }
 
     @Override

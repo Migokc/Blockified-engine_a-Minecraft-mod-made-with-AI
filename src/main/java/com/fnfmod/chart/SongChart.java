@@ -11,6 +11,9 @@ import java.util.List;
 public class SongChart {
     public String title = "Unknown";
     public double startBpm = 120.0;
+    /** Editor-only meter. FNF gameplay timing remains quarter-note/BPM based. */
+    public int timeSignatureNumerator = 4;
+    public int timeSignatureDenominator = 4;
     public double speed = 1.0;
     /**
      * Song audio offset in ms. Positive delays the song so it sounds later than
@@ -35,6 +38,8 @@ public class SongChart {
     public final List<Note> notes = new ArrayList<>();
     /** Timeline events loaded from embedded Psych data or a separate events.json. */
     public final List<Event> events = new ArrayList<>();
+    /** Editor annotations. Namespaced on save; ignored by Psych and gameplay. */
+    public final List<Bookmark> bookmarks = new ArrayList<>();
     /** Sections, kept for editor round-trips and legacy saving. */
     public final List<Section> sections = new ArrayList<>();
 
@@ -136,6 +141,52 @@ public class SongChart {
         public double sectionBeats = 4.0;
         public boolean changeBPM = false;
         public double bpm = 0.0;
+        /** Optional editor-only meter change at this section boundary. */
+        public boolean changeTimeSignature = false;
+        public int timeSignatureNumerator = 4;
+        public int timeSignatureDenominator = 4;
+    }
+
+    public record TimeSignature(int numerator, int denominator) {
+        public TimeSignature {
+            numerator = Math.max(1, Math.min(32, numerator));
+            denominator = normalizeDenominator(denominator);
+        }
+
+        private static int normalizeDenominator(int value) {
+            int[] allowed = {1, 2, 4, 8, 16, 32};
+            int nearest = 4;
+            int distance = Integer.MAX_VALUE;
+            for (int candidate : allowed) {
+                int d = Math.abs(candidate - value);
+                if (d < distance) {
+                    nearest = candidate;
+                    distance = d;
+                }
+            }
+            return nearest;
+        }
+
+        /** Length of one notated meter beat in FNF quarter-note beats. */
+        public double pulseBeats() { return 4.0 / denominator; }
+
+        public double barBeats() { return numerator * pulseBeats(); }
+    }
+
+    public TimeSignature startingTimeSignature() {
+        return new TimeSignature(timeSignatureNumerator, timeSignatureDenominator);
+    }
+
+    public TimeSignature timeSignatureForSection(int index) {
+        TimeSignature signature = startingTimeSignature();
+        for (int i = 0; i <= index && i < sections.size(); i++) {
+            Section section = sections.get(i);
+            if (section.changeTimeSignature) {
+                signature = new TimeSignature(section.timeSignatureNumerator,
+                        section.timeSignatureDenominator);
+            }
+        }
+        return signature;
     }
 
     public static class Event {
@@ -188,6 +239,20 @@ public class SongChart {
         public Event copy() {
             return new Event(timeMs, name, value1, value2, value3, value4, value5, value6, value7,
                     beforeSong);
+        }
+    }
+
+    public static class Bookmark {
+        public double timeMs;
+        public String name = "Bookmark";
+        public String comment = "";
+
+        public Bookmark() {}
+
+        public Bookmark(double timeMs, String name, String comment) {
+            this.timeMs = Math.max(0, timeMs);
+            this.name = name == null || name.isBlank() ? "Bookmark" : name.trim();
+            this.comment = comment == null ? "" : comment.trim();
         }
     }
 

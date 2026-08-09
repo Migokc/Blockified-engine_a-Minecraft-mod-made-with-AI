@@ -4,6 +4,7 @@ import com.fnfmod.FnfMod;
 import com.fnfmod.client.anim.CharacterAnimations;
 import com.fnfmod.client.audio.HitsoundPlayer;
 import com.fnfmod.client.gui.GameplayScreen;
+import com.fnfmod.client.gui.MasterVolumeOverlay;
 import com.fnfmod.client.gui.editor.ChartEditorScreen;
 import com.fnfmod.client.render.IconLibrary;
 import com.fnfmod.client.render.NoteStyle;
@@ -23,11 +24,15 @@ import net.neoforged.neoforge.client.event.RegisterClientCommandsEvent;
 import net.neoforged.neoforge.client.event.RegisterKeyMappingsEvent;
 import net.neoforged.neoforge.client.event.EntityRenderersEvent;
 import net.neoforged.neoforge.client.event.RenderGuiLayerEvent;
+import net.neoforged.neoforge.client.event.RenderGuiEvent;
+import net.neoforged.neoforge.client.event.ScreenEvent;
+import net.neoforged.neoforge.client.event.InputEvent;
 import net.neoforged.neoforge.client.event.RenderLevelStageEvent;
 import net.neoforged.neoforge.client.event.ClientPlayerNetworkEvent;
 import net.neoforged.neoforge.client.event.ViewportEvent;
 import net.neoforged.neoforge.client.gui.VanillaGuiLayers;
 import net.neoforged.neoforge.network.PacketDistributor;
+import org.lwjgl.glfw.GLFW;
 
 import static net.minecraft.commands.Commands.argument;
 import static net.minecraft.commands.Commands.literal;
@@ -108,6 +113,57 @@ public final class FnfClient {
                             b -> Minecraft.getInstance().setScreen(
                                     new com.fnfmod.client.gui.ModWorldSelectScreen(select)))
                     .bounds(6, 6, 90, 20).build());
+        }
+
+        /** FNF-style +/- master volume, available globally except in Minecraft's pause screen. */
+        @SubscribeEvent
+        public static void onScreenKeyPressed(ScreenEvent.KeyPressed.Pre event) {
+            if (MasterVolumeOverlay.handleKey(event.getScreen(), event.getKeyCode())) {
+                event.setCanceled(true);
+            }
+        }
+
+        /** Handles +/- while no screen owns keyboard input (ordinary world gameplay). */
+        @SubscribeEvent
+        public static void onKeyInput(InputEvent.Key event) {
+            Minecraft mc = Minecraft.getInstance();
+            if (mc.screen != null || (event.getAction() != GLFW.GLFW_PRESS
+                    && event.getAction() != GLFW.GLFW_REPEAT)) return;
+            MasterVolumeOverlay.handleKey(null, event.getKey());
+        }
+
+        @SubscribeEvent
+        public static void onScreenRender(ScreenEvent.Render.Post event) {
+            MasterVolumeOverlay.render(event.getGuiGraphics(), event.getMouseX(), event.getMouseY(), event.getScreen());
+        }
+
+        @SubscribeEvent
+        public static void onGuiRender(RenderGuiEvent.Post event) {
+            Minecraft mc = Minecraft.getInstance();
+            if (mc.screen == null) {
+                MasterVolumeOverlay.render(event.getGuiGraphics(), Integer.MIN_VALUE, Integer.MIN_VALUE, null);
+            }
+        }
+
+        @SubscribeEvent
+        public static void onScreenMousePressed(ScreenEvent.MouseButtonPressed.Pre event) {
+            if (MasterVolumeOverlay.mousePressed(event.getScreen(), event.getMouseX(), event.getMouseY(), event.getButton())) {
+                event.setCanceled(true);
+            }
+        }
+
+        @SubscribeEvent
+        public static void onScreenMouseDragged(ScreenEvent.MouseDragged.Pre event) {
+            if (MasterVolumeOverlay.mouseDragged(event.getScreen(), event.getMouseX(), event.getMouseY(), event.getMouseButton())) {
+                event.setCanceled(true);
+            }
+        }
+
+        @SubscribeEvent
+        public static void onScreenMouseReleased(ScreenEvent.MouseButtonReleased.Pre event) {
+            if (MasterVolumeOverlay.mouseReleased(event.getScreen(), event.getButton())) {
+                event.setCanceled(true);
+            }
         }
 
         /** FNF-style beat zoom: pinch the FOV while the gameplay camera is active. */

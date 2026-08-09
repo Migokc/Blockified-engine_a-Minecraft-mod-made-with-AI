@@ -5,6 +5,7 @@ import com.fnfmod.client.anim.CharacterAnimations;
 import com.fnfmod.client.gui.editor.ChartEditorScreen;
 import com.fnfmod.client.render.IconLibrary;
 import com.fnfmod.client.render.NoteStyle;
+import com.fnfmod.client.math.Easing;
 import com.fnfmod.net.FnfPayloads;
 import com.fnfmod.song.SongLibrary;
 import net.minecraft.client.gui.GuiGraphics;
@@ -35,6 +36,11 @@ public class SongSelectScreen extends Screen {
     private static final int LAYER = 0x88000000; // same alpha as the list background; stacks darker
 
     private double scrollPx = 0;
+    private double scrollTargetPx;
+    private double scrollFromPx;
+    private long scrollTweenStartNano;
+    private boolean scrollTweenActive;
+    private static final long SCROLL_TWEEN_NANOS = 200_000_000L;
     private boolean draggingThumb = false;
     private EditBox searchBox;
 
@@ -58,7 +64,8 @@ public class SongSelectScreen extends Screen {
                 }
             }
         }
-        scrollPx = 0;
+        scrollPx = scrollTargetPx = scrollFromPx = 0;
+        scrollTweenActive = false;
     }
 
     @Override
@@ -138,6 +145,7 @@ public class SongSelectScreen extends Screen {
     @Override
     public void render(GuiGraphics gui, int mouseX, int mouseY, float partialTick) {
         super.render(gui, mouseX, mouseY, partialTick);
+        updateScrollTween();
         gui.drawCenteredString(font, "Funkin' Machine - Select a Song", width / 2, 15, 0xFFFFFF);
 
         int x = listX(), y = listY(), w = listWidth(), h = listHeight();
@@ -155,6 +163,7 @@ public class SongSelectScreen extends Screen {
         }
 
         scrollPx = Mth.clamp(scrollPx, 0, maxScroll());
+        scrollTargetPx = Mth.clamp(scrollTargetPx, 0, maxScroll());
         int cols = columns();
         int left = gridLeft();
 
@@ -258,6 +267,29 @@ public class SongSelectScreen extends Screen {
         int thumbH = Math.max(16, (int) ((double) h * h / contentHeight()));
         double frac = (mouseY - y - thumbH / 2.0) / (h - thumbH);
         scrollPx = Mth.clamp(frac, 0, 1) * maxScroll();
+        scrollTargetPx = scrollFromPx = scrollPx;
+        scrollTweenActive = false;
+    }
+
+    private void updateScrollTween() {
+        if (!scrollTweenActive) return;
+        double progress = (System.nanoTime() - scrollTweenStartNano) / (double) SCROLL_TWEEN_NANOS;
+        if (progress >= 1) {
+            scrollPx = scrollTargetPx;
+            scrollTweenActive = false;
+            return;
+        }
+        double eased = Easing.apply("expoOut", progress);
+        scrollPx = scrollFromPx + (scrollTargetPx - scrollFromPx) * eased;
+    }
+
+    private void scrollTo(double target) {
+        updateScrollTween();
+        scrollFromPx = scrollPx;
+        scrollTargetPx = Mth.clamp(target, 0, maxScroll());
+        scrollTweenStartNano = System.nanoTime();
+        scrollTweenActive = Math.abs(scrollTargetPx - scrollFromPx) > 0.01;
+        if (!scrollTweenActive) scrollPx = scrollTargetPx;
     }
 
     @Override
@@ -277,7 +309,7 @@ public class SongSelectScreen extends Screen {
 
     @Override
     public boolean mouseScrolled(double mouseX, double mouseY, double scrollX, double scrollY) {
-        scrollPx = Mth.clamp(scrollPx - scrollY * (BOX_H / 2.0), 0, maxScroll());
+        scrollTo(scrollTargetPx - scrollY * (BOX_H / 2.0));
         return true;
     }
 

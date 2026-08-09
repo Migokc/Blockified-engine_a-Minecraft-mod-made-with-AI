@@ -53,6 +53,13 @@ public class ClientOptions {
     /** Chart editor playback hitsounds, per chart side. */
     public boolean editorHitsoundPlayer = false;
     public boolean editorHitsoundOpponent = false;
+    /** Editor-only metronome; never used by gameplay. */
+    public boolean editorMetronome = false;
+    public double editorMetronomeVolume = 0.75;
+    public boolean editorWaveforms = true;
+    public boolean editorOnsetMarkers = true;
+    /** Chart-editor instrumental waveform RGB. */
+    public int editorInstWaveformColor = 0x0000FF;
 
     /** Show the world XYZ axis gizmo (bottom-right) while playtesting from the editor. */
     public boolean editorShowAxisGizmo = false;

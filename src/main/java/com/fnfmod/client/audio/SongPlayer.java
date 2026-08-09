@@ -262,6 +262,15 @@ public class SongPlayer {
         setRoleVolume(Role.VOICES_OPPONENT, volume);
     }
 
+    /** Editor stem mixer. Combined vocals use {@link Role#VOICES}. */
+    public void setVolume(Role role, float volume) {
+        setRoleVolume(role, volume);
+    }
+
+    public boolean hasRole(Role role) {
+        return tracks.stream().anyMatch(track -> track.role == role);
+    }
+
     /** Changes playback speed and pitch for every synchronized stem. */
     public void setPlaybackRate(float rate) {
         playbackRate = Math.max(0.1f, Math.min(5.0f, rate));

@@ -124,6 +124,12 @@ public final class SessionManager {
     private static final Map<UUID, ReturnPoint> RETURN_POINTS = new HashMap<>();
     /** Full player NBT before stage placement: inventory, XP, effects, abilities, etc. */
     private static final Map<UUID, CompoundTag> PLAYER_STATE_BEFORE = new HashMap<>();
+    /** Gamemode is restored after player NBT so loading abilities cannot overwrite it. */
+    private static final Map<UUID, net.minecraft.world.level.GameType> PLAYER_GAME_MODE_BEFORE = new HashMap<>();
+    private record WorldTimeBefore(ResourceKey<Level> dimension, long gameTime,
+                                   long dayTime, boolean daylight) {}
+    /** Final-exit fallback: reapplies world time after every other player/session restore. */
+    private static final Map<UUID, WorldTimeBefore> WORLD_TIME_BEFORE = new HashMap<>();
     /** Real health captured before a vanilla-HUD song, restored afterwards. */
     private static final Map<UUID, Float> HEALTH_BEFORE = new HashMap<>();
     private record FoodBefore(int level, float saturation, float exhaustion) {}
@@ -549,6 +555,8 @@ public final class SessionManager {
         session.startGameModes.clear();
         captureGameMode(session, session.host);
         captureGameMode(session, session.guest);
+        captureExitRollback(session.host, level);
+        captureExitRollback(session.guest, level);
         ArmorStand marker = new ArmorStand(level,
                 machinePos.getX() + 0.5, machinePos.getY() + 0.5, machinePos.getZ() + 0.5);
         marker.setInvisible(true);
@@ -755,6 +763,13 @@ public final class SessionManager {
                         player.getGameProfile().getName(), e.toString());
             }
         }
+        // Must happen after player.load(): its saved abilities/state can otherwise
+        // make a correct earlier setGameMode look as though it never restored.
+        net.minecraft.world.level.GameType gameMode = PLAYER_GAME_MODE_BEFORE.remove(player.getUUID());
+        if (gameMode != null && player.gameMode.getGameModeForPlayer() != gameMode) {
+            player.setGameMode(gameMode);
+        }
+        restoreExitWorldTime(player);
         Boolean inv = INVULN_BEFORE.remove(player.getUUID());
         if (inv != null) {
             try {
@@ -851,6 +866,23 @@ public final class SessionManager {
         }
     }
 
+    private static void captureExitRollback(ServerPlayer player, ServerLevel level) {
+        if (player == null) return;
+        PLAYER_GAME_MODE_BEFORE.putIfAbsent(player.getUUID(), player.gameMode.getGameModeForPlayer());
+        WORLD_TIME_BEFORE.putIfAbsent(player.getUUID(), new WorldTimeBefore(
+                level.dimension(), level.getGameTime(), level.getDayTime(),
+                level.getGameRules().getBoolean(net.minecraft.world.level.GameRules.RULE_DAYLIGHT)));
+    }
+
+    private static void restoreExitWorldTime(ServerPlayer player) {
+        WorldTimeBefore before = WORLD_TIME_BEFORE.remove(player.getUUID());
+        if (before == null || player.getServer() == null) return;
+        ServerLevel level = player.getServer().getLevel(before.dimension());
+        if (level == null) return;
+        long elapsed = Math.max(0, level.getGameTime() - before.gameTime());
+        level.setDayTime(before.dayTime() + (before.daylight() ? elapsed : 0));
+    }
+
     /**
      * Whether the {@code player}/{@code opponent} command role maps to a real player this
      * session (see {@link #prepareCommandTargets}). The human sides get an {@code @a}
@@ -871,10 +903,12 @@ public final class SessionManager {
         // Undo any /time change: set the day time back to what natural progression
         // would have reached, so only the command's jump is removed. No-op if the
         // song never touched time.
-        if (session.startGameTime != null && session.host != null) {
-            ServerLevel level = session.host.serverLevel();
-            long elapsed = Math.max(0, level.getGameTime() - session.startGameTime);
-            level.setDayTime(session.startDayTime + (session.startDaylight ? elapsed : 0));
+        if (session.startGameTime != null && session.host != null && session.host.getServer() != null) {
+            ServerLevel level = session.host.getServer().getLevel(session.key.dim());
+            if (level != null) {
+                long elapsed = Math.max(0, level.getGameTime() - session.startGameTime);
+                level.setDayTime(session.startDayTime + (session.startDaylight ? elapsed : 0));
+            }
             session.startGameTime = null;
         }
         // Undo any /gamemode change a song command applied to a participant, so

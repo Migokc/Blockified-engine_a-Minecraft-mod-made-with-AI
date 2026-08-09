@@ -31,6 +31,10 @@ public final class EditorTickScheduler {
     private volatile double[] times = new double[0];
     private volatile boolean[] sides = new boolean[0];
     private volatile int index;
+    private volatile double[] metronomeTimes = new double[0];
+    private volatile boolean[] metronomeAccents = new boolean[0];
+    private volatile int metronomeIndex;
+    private volatile TickSink metronomeSink;
     private volatile boolean running;
     private volatile boolean active;
     private Thread thread;
@@ -52,6 +56,17 @@ public final class EditorTickScheduler {
         int i = 0;
         while (i < t.length && t[i] < positionMs) i++;
         index = i;
+        double[] meter = metronomeTimes;
+        int m = 0;
+        while (m < meter.length && meter[m] < positionMs) m++;
+        metronomeIndex = m;
+    }
+
+    /** Replaces editor-only metronome ticks. The boolean marks a bar accent. */
+    public synchronized void setMetronome(double[] times, boolean[] accents, TickSink sink) {
+        metronomeTimes = times == null ? new double[0] : times;
+        metronomeAccents = accents == null ? new boolean[0] : accents;
+        metronomeSink = sink;
     }
 
     /** Enables sampling. Starts the thread on first use. */
@@ -99,5 +114,19 @@ public final class EditorTickScheduler {
             i++;
         }
         index = i;
+
+        double[] meter = metronomeTimes;
+        boolean[] accents = metronomeAccents;
+        int m = metronomeIndex;
+        TickSink meterSink = metronomeSink;
+        while (m < meter.length && meter[m] <= pos) {
+            if (meterSink != null) {
+                try {
+                    meterSink.play(m < accents.length && accents[m]);
+                } catch (Throwable ignored) {}
+            }
+            m++;
+        }
+        metronomeIndex = m;
     }
 }

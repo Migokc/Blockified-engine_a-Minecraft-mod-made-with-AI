@@ -506,6 +506,7 @@ public class SongLibrary {
                         });
                     } catch (IOException ignored) {}
                 }
+                resolveCharacterVocals(entry, audioDir, mod);
                 if (entry.instFile == null) {
                     FnfMod.LOGGER.warn("Psych song {} in {} has no Inst.ogg — skipping", id, mod);
                     return;
@@ -698,6 +699,7 @@ public class SongLibrary {
                 }
             }
         }
+        resolveCharacterVocals(entry, audioDir, modRoot != null ? modRoot : dir);
         if (entry.instFile == null) {
             FnfMod.LOGGER.warn("Codename song {} has no Inst.ogg — skipping", entry.id);
             return null;
@@ -853,6 +855,7 @@ public class SongLibrary {
             } catch (Exception ignored) {}
         }
         entry.difficulties.addAll(entry.legacyChartFiles.keySet());
+        resolveCharacterVocals(entry, dir, entry.modRoot != null ? entry.modRoot : dir);
         SongEntry linked = linkChartOverrideToOriginal(dir, entry);
         if (linked != null) return linked;
         if (entry.difficulties.isEmpty()) return null;
@@ -1056,13 +1059,17 @@ public class SongLibrary {
             v.instFile = firstAudio(audio, "inst" + suffix + ".ogg", "inst.ogg");
             v.voicesFile = firstAudio(audio, "voices" + suffix + ".ogg");
             String playerBase = player.replace("-playable", "");
-            v.voicesOpponentFile = firstAudio(audio,
+            v.voicesOpponentFile = CharacterVocalResolver.resolve(
+                    audio, modRoot, opponent, true, suffix);
+            if (v.voicesOpponentFile == null) v.voicesOpponentFile = firstAudio(audio,
                     "voices-" + opponent + suffix + ".ogg",
                     "voices-" + opponent.replace("-playable", "") + suffix + ".ogg",
                     "voices-" + opponent + ".ogg",
                     "voices-dad" + suffix + ".ogg",
                     "voices-opponent" + suffix + ".ogg");
-            v.voicesPlayerFile = firstAudio(audio,
+            v.voicesPlayerFile = CharacterVocalResolver.resolve(
+                    audio, modRoot, player, false, suffix);
+            if (v.voicesPlayerFile == null) v.voicesPlayerFile = firstAudio(audio,
                     "voices-" + player + suffix + ".ogg",
                     "voices-" + playerBase + suffix + ".ogg",
                     "voices-" + player + ".ogg",
@@ -1189,6 +1196,33 @@ public class SongLibrary {
                 entry.voicesFile = f;
             }
         }
+    }
+
+    /** Character JSON vocals_file/vocal-prefix fields override generic filename guessing. */
+    private static void resolveCharacterVocals(SongEntry entry, Path audioDirectory, Path definitionRoot) {
+        if (entry == null || audioDirectory == null || !Files.isDirectory(audioDirectory)) return;
+        String player = "bf", opponent = "dad";
+        boolean foundCharacters = false;
+        for (Path chartFile : entry.legacyChartFiles.values()) {
+            try {
+                JsonObject root = JsonParser.parseString(Files.readString(chartFile)).getAsJsonObject();
+                JsonObject song = root.has("song") && root.get("song").isJsonObject()
+                        ? root.getAsJsonObject("song") : root;
+                if (!LegacyChartParser.looksLikeLegacy(root)) continue;
+                player = LegacyChartParser.optString(song, "player1", player);
+                opponent = LegacyChartParser.optString(song, "player2", opponent);
+                foundCharacters = true;
+                break;
+            } catch (Exception ignored) {}
+        }
+        if (!foundCharacters) return;
+        Map<String, Path> audio = CharacterVocalResolver.indexAudio(audioDirectory);
+        Path playerVoice = CharacterVocalResolver.resolve(audio, definitionRoot, player, false, "");
+        Path opponentVoice = CharacterVocalResolver.resolve(audio, definitionRoot, opponent, true, "");
+        if (playerVoice != null) entry.voicesPlayerFile = playerVoice;
+        if (opponentVoice != null) entry.voicesOpponentFile = opponentVoice;
+        if (entry.voicesFile != null && (entry.voicesFile.equals(playerVoice)
+                || entry.voicesFile.equals(opponentVoice))) entry.voicesFile = null;
     }
 
     /** Loads and parses a chart for the given difficulty. */

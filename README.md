@@ -2,9 +2,30 @@
 
 A feature-full Friday Night Funkin' engine inside of Minecraft — **NeoForge 1.21.1**.
 
-Current release: **2.2.2bbs**.
+Current release: **2.2.3bbs**.
 
 Documentation: **[Blockified Engine Docs](https://migokc.github.io/Blockified-engine_a-Minecraft-mod-made-with-AI/)**.
+
+### 2.2.3bbs highlights
+
+- The chart editor gains authoring-only time signatures, a metronome with volume
+  and playback-rate sliders, zoom-aware colored Inst/player/opponent waveforms,
+  transient markers, loop playback with pre-roll, three-tap BPM measurement,
+  named bookmarks/comments, stem mute/solo, exact audio selection, and a native
+  save-location chooser. These tools do not alter chart gameplay.
+- Psych-compatible character colors (`healthbar_colors`) now tint editor vocal
+  waveforms, and character `vocals_file`/vocal-prefix fields resolve split
+  `Voices-<prefix>.ogg` stems across Psych-family and Blockified layouts.
+- Chart scrolling and song-selection scrolling now ease over 0.2 seconds instead
+  of snapping, chart zoom adds grid rows rather than stretching them, and GUI
+  scale no longer distorts editor layout or virtual-machine hitbox size.
+- FNF-style global master-volume controls use `+`/`-` in gameplay and nearly all
+  screens: a compact mouse-draggable top overlay animates in over 0.3 seconds,
+  plays pitch-scaled vanilla clicks per percentage, ignores text entry, and stays
+  out of Minecraft's pause menu.
+- Final playstate restoration now reapplies participant game modes after player
+  NBT and restores world time from a dimension-aware exit snapshot, covering
+  normal finish, quit, give-up, cancellation, and restart paths reliably.
 
 ### 2.2.2bbs highlights
 

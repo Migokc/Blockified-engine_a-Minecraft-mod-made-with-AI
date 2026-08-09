@@ -40,6 +40,10 @@ public final class CharacterDefinitionFile {
     private final Set<String> removedAnimationNames = new LinkedHashSet<>();
     public String form = "";
     public String icon = "";
+    /** Stem name used by Voices-&lt;value&gt;.ogg; Psych-family alias: vocals_file. */
+    public String vocalsFile = "";
+    /** Psych-compatible healthbar_colors RGB, packed 0xRRGGBB. */
+    public int healthColor = -1;
     public float rotation;
     public float cameraX;
     public float cameraY;
@@ -149,6 +153,14 @@ public final class CharacterDefinitionFile {
     private void saveTo(Path outputFile) throws Exception {
         putString("bbsForm", form);
         putString("icon", icon);
+        putString("vocals_file", vocalsFile);
+        if (healthColor >= 0) {
+            JsonArray color = new JsonArray();
+            color.add((healthColor >> 16) & 255);
+            color.add((healthColor >> 8) & 255);
+            color.add(healthColor & 255);
+            source.add("healthbar_colors", color);
+        } else source.remove("healthbar_colors");
         source.addProperty("rotation", rotation);
         source.addProperty("loopIdle", loopIdle);
         source.add("cameraOffset", vec2(cameraX, cameraY));
@@ -201,6 +213,9 @@ public final class CharacterDefinitionFile {
         form = string(source, "bbsForm");
         if (form.isBlank()) form = string(source, "form");
         icon = string(source, "icon");
+        vocalsFile = firstString(source, "vocals_file", "vocalsFile", "vocal_file", "vocalFile",
+                "vocals_prefix", "vocalsPrefix", "vocal_prefix", "vocalPrefix");
+        healthColor = color(source);
         rotation = number(source.get("rotation"));
         loopIdle = bool(source, "loopIdle") || bool(source, "loopAnimation");
         float[] camera = vec2(source.get("cameraOffset"));
@@ -244,6 +259,14 @@ public final class CharacterDefinitionFile {
         }
     }
 
+    private static String firstString(JsonObject object, String... keys) {
+        for (String key : keys) {
+            String value = string(object, key);
+            if (!value.isBlank()) return value;
+        }
+        return "";
+    }
+
     private static boolean bool(JsonObject object, String key) {
         try {
             if (!object.has(key)) return false;
@@ -262,6 +285,21 @@ public final class CharacterDefinitionFile {
         } catch (Exception ignored) {
             return 0;
         }
+    }
+
+    private static int color(JsonObject object) {
+        for (String key : new String[]{"healthbar_colors", "health_bar_colors", "healthBarColors"}) {
+            try {
+                if (!object.has(key) || !object.get(key).isJsonArray()) continue;
+                JsonArray array = object.getAsJsonArray(key);
+                if (array.size() < 3) continue;
+                int r = Math.max(0, Math.min(255, array.get(0).getAsInt()));
+                int g = Math.max(0, Math.min(255, array.get(1).getAsInt()));
+                int b = Math.max(0, Math.min(255, array.get(2).getAsInt()));
+                return (r << 16) | (g << 8) | b;
+            } catch (Exception ignored) {}
+        }
+        return -1;
     }
 
     private static float[] vec2(JsonElement value) {

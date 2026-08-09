@@ -3,6 +3,7 @@ package com.fnfmod.client.gui;
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.fnfmod.client.anim.CharacterDefinitionFile;
 import com.fnfmod.client.anim.CharacterAnimations;
+import com.fnfmod.client.gameplay.NativeFilePicker;
 import com.fnfmod.character.CharacterDefinitionPaths;
 import com.fnfmod.song.SongLibrary;
 import net.minecraft.client.gui.GuiGraphics;
@@ -46,6 +47,7 @@ public final class CharacterEditorScreen extends Screen {
 
     private EditBox setName;
     private EditBox icon;
+    private EditBox vocalsFile;
     private EditBox rotation;
     private EditBox cameraX;
     private EditBox cameraY;
@@ -88,6 +90,8 @@ public final class CharacterEditorScreen extends Screen {
 
         icon = edit(fieldX, y, fieldWidth, value -> markDirty());
         y += 22;
+        vocalsFile = edit(fieldX, y, fieldWidth, value -> markDirty());
+        y += 22;
         rotation = edit(fieldX, y, fieldWidth, value -> markDirty());
         y += 22;
         cameraX = edit(fieldX, y, half, value -> markDirty());
@@ -115,6 +119,9 @@ public final class CharacterEditorScreen extends Screen {
                 .bounds(left + 166, y, 70, 20).build());
         y += 26;
         loopIdleButton = addRenderableWidget(Button.builder(loopIdleLabel(), button -> toggleLoopIdle())
+                .bounds(left, y, 236, 20).build());
+        y += 26;
+        addRenderableWidget(Button.builder(Component.literal(colorLabel()), button -> chooseColor())
                 .bounds(left, y, 236, 20).build());
         y += 26;
         addRenderableWidget(Button.builder(Component.literal("Bundle BBS Model + Texture"),
@@ -271,6 +278,7 @@ public final class CharacterEditorScreen extends Screen {
         CharacterDefinitionFile definition = current();
         setName.setValue(currentSetName);
         icon.setValue(definition.icon);
+        vocalsFile.setValue(definition.vocalsFile);
         rotation.setValue(decimal(definition.rotation));
         cameraX.setValue(decimal(definition.cameraX));
         cameraY.setValue(decimal(definition.cameraY));
@@ -305,6 +313,7 @@ public final class CharacterEditorScreen extends Screen {
         if (setName == null) return;
         CharacterDefinitionFile definition = current();
         definition.icon = icon.getValue().trim();
+        definition.vocalsFile = vocalsFile.getValue().trim();
         definition.rotation = number(rotation.getValue());
         definition.cameraX = number(cameraX.getValue());
         definition.cameraY = number(cameraY.getValue());
@@ -394,6 +403,28 @@ public final class CharacterEditorScreen extends Screen {
         if (loopIdleButton != null) loopIdleButton.setMessage(loopIdleLabel());
     }
 
+    private String colorLabel() {
+        int color = current() == null ? -1 : current().healthColor;
+        return color < 0 ? "Character Color: unset" : String.format("Character Color: #%06X", color);
+    }
+
+    private void chooseColor() {
+        CharacterDefinitionFile definition = current();
+        if (definition == null) return;
+        NativeFilePicker.pickColor("Character waveform / health color",
+                definition.healthColor < 0 ? (opponent ? 0xAF66CE : 0x31B0D1) : definition.healthColor)
+                .ifPresent(color -> {
+                    definition.healthColor = color;
+                    markDirty();
+                    refreshEditorWidgets();
+                });
+    }
+
+    private void refreshEditorWidgets() {
+        clearWidgets();
+        init();
+    }
+
     /**
      * Copies the selected BBS form's model + texture into this character's own
      * animations/&lt;name&gt;/ folder (converting to folder layout) so the character
@@ -474,18 +505,19 @@ public final class CharacterEditorScreen extends Screen {
     public void render(GuiGraphics gui, int mouseX, int mouseY, float partialTick) {
         gui.fill(0, 0, width, height, 0xFF101014);
         int editorRight = Math.max(206, Math.min(376, width / 2 + 4));
-        gui.fill(8, 26, editorRight, Math.min(height - 34, 270), PANEL);
+        gui.fill(8, 26, editorRight, Math.min(height - 34, 344), PANEL);
         gui.drawCenteredString(font, title, width / 2, 10, 0xFFFFFFFF);
 
         label(gui, "Icon", 16, 89);
-        label(gui, "Rotation", 16, 111);
-        label(gui, "Base cam X / Y", 16, 133);
+        label(gui, "Vocal prefix", 16, 111);
+        label(gui, "Rotation", 16, 133);
+        label(gui, "Base cam X / Y", 16, 155);
         int editorWidth = Math.max(190, Math.min(360, width / 2 - 12));
         int fieldX = 16 + 82;
         int fieldWidth = Math.max(80, editorWidth - 92);
         int half = Math.max(36, (fieldWidth - 4) / 2);
-        label(gui, "Name", fieldX, 143);
-        label(gui, "BBS state", fieldX + half + 4, 143);
+        label(gui, "Name", fieldX, 165);
+        label(gui, "BBS state", fieldX + half + 4, 165);
 
         renderPreview(gui);
         gui.drawString(font, trim(status, Math.max(20, width - 24)), 12, height - 18, 0xFFCCCCCC, false);

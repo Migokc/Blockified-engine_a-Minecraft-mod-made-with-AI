@@ -22,6 +22,10 @@ public final class PsychChartWriter {
         JsonObject song = new JsonObject();
         song.addProperty("song", chart.title);
         song.addProperty("bpm", chart.startBpm);
+        if (chart.timeSignatureNumerator != 4 || chart.timeSignatureDenominator != 4) {
+            song.add("blockifiedTimeSignature", timeSignature(
+                    chart.timeSignatureNumerator, chart.timeSignatureDenominator));
+        }
         song.addProperty("speed", chart.speed);
         song.addProperty("offset", chart.offsetMs);
         song.addProperty("needsVoices", chart.needsVoices);
@@ -38,6 +42,7 @@ public final class PsychChartWriter {
         song.addProperty("validScore", true);
         chart.sortEvents();
         song.add("events", eventArray(chart));
+        if (!chart.bookmarks.isEmpty()) song.add("blockifiedBookmarks", bookmarkArray(chart));
 
         JsonArray sectionsArr = new JsonArray();
         double bpm = chart.startBpm;
@@ -93,6 +98,11 @@ public final class PsychChartWriter {
             sec.addProperty("changeBPM", s.changeBPM);
             if (s.changeBPM && s.bpm > 0) bpm = s.bpm;
             sec.addProperty("bpm", bpm);
+            if (s.changeTimeSignature) {
+                sec.addProperty("blockifiedChangeTimeSignature", true);
+                sec.add("blockifiedTimeSignature", timeSignature(
+                        s.timeSignatureNumerator, s.timeSignatureDenominator));
+            }
             sec.addProperty("typeOfSection", 0);
             sectionsArr.add(sec);
             time += s.sectionBeats * (60000.0 / bpm);
@@ -143,5 +153,25 @@ public final class PsychChartWriter {
             payloads.add(payload);
         }
         return events;
+    }
+
+    private static JsonArray timeSignature(int numerator, int denominator) {
+        SongChart.TimeSignature signature = new SongChart.TimeSignature(numerator, denominator);
+        JsonArray value = new JsonArray();
+        value.add(signature.numerator());
+        value.add(signature.denominator());
+        return value;
+    }
+
+    private static JsonArray bookmarkArray(SongChart chart) {
+        JsonArray array = new JsonArray();
+        chart.bookmarks.stream().sorted(Comparator.comparingDouble(mark -> mark.timeMs)).forEach(mark -> {
+            JsonObject object = new JsonObject();
+            object.addProperty("time", mark.timeMs);
+            object.addProperty("name", mark.name);
+            if (mark.comment != null && !mark.comment.isBlank()) object.addProperty("comment", mark.comment);
+            array.add(object);
+        });
+        return array;
     }
 }

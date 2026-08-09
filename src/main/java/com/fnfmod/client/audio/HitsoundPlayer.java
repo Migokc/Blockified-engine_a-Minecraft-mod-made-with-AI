@@ -37,14 +37,23 @@ public final class HitsoundPlayer {
 
     private static final int POOL_SIZE = 6;
 
-    /** A queued play, or a reload marker when {@code file} is null. */
-    private record Request(Path file, float volume, boolean reload) {}
+    private enum Builtin {
+        BEAT("/assets/fnfmod/sounds/editor/beat.ogg"),
+        FIRST_BEAT("/assets/fnfmod/sounds/editor/firstbeat.ogg");
+
+        final String resource;
+        Builtin(String resource) { this.resource = resource; }
+    }
+
+    /** A queued custom/bundled play, or a custom-hitsound reload marker. */
+    private record Request(Path file, Builtin builtin, float volume, boolean reload) {}
 
     private static final ConcurrentLinkedQueue<Request> QUEUE = new ConcurrentLinkedQueue<>();
     private static volatile Thread thread;
 
     // OpenAL state — touched only by the audio thread, so it needs no locking.
     private static int buffer;
+    private static final int[] builtinBuffers = new int[Builtin.values().length];
     private static Path loadedFile;
     private static int[] sources;
     private static int nextSource;
@@ -61,12 +70,19 @@ public final class HitsoundPlayer {
     /** Plays a note-specific OGG with the supplied per-note gain. Any thread. */
     public static void play(Path file, float volume) {
         if (file == null || volume <= 0) return;
-        enqueue(new Request(file.toAbsolutePath().normalize(), volume, false));
+        enqueue(new Request(file.toAbsolutePath().normalize(), null, volume, false));
+    }
+
+    /** Plays one of the bundled chart-editor metronome clicks. Any thread. */
+    public static void playMetronome(boolean barAccent, float volume) {
+        if (volume <= 0) return;
+        enqueue(new Request(null, barAccent ? Builtin.FIRST_BEAT : Builtin.BEAT,
+                volume, false));
     }
 
     /** Drops the current buffer so the selected file is decoded again on next hit. */
     public static void reload() {
-        enqueue(new Request(null, 0, true));
+        enqueue(new Request(null, null, 0, true));
     }
 
     /** .ogg files directly inside the hitsounds folder. Pure file listing, any thread. */
@@ -106,7 +122,7 @@ public final class HitsoundPlayer {
             while ((request = QUEUE.poll()) != null) {
                 try {
                     if (request.reload) doReload();
-                    else doPlay(request.file, request.volume);
+                    else doPlay(request);
                 } catch (Throwable ignored) {
                     // A sound problem must never take the thread down.
                 }
@@ -115,21 +131,61 @@ public final class HitsoundPlayer {
         }
     }
 
-    private static void doPlay(Path file, float volume) {
-        if (!Files.isRegularFile(file)) return;
-        if (!file.equals(loadedFile)) doReload(file);
-        if (buffer == 0) return;
+    private static void doPlay(Request request) {
+        int selectedBuffer;
+        if (request.builtin != null) {
+            selectedBuffer = builtinBuffers[request.builtin.ordinal()];
+            if (selectedBuffer == 0) {
+                selectedBuffer = loadBuiltin(request.builtin);
+                builtinBuffers[request.builtin.ordinal()] = selectedBuffer;
+            }
+        } else {
+            Path file = request.file;
+            if (file == null || !Files.isRegularFile(file)) return;
+            if (!file.equals(loadedFile)) doReload(file);
+            selectedBuffer = buffer;
+        }
+        if (selectedBuffer == 0) return;
         if (sources == null) {
             sources = new int[POOL_SIZE];
             for (int i = 0; i < POOL_SIZE; i++) sources[i] = AL10.alGenSources();
         }
         int src = sources[nextSource++ % POOL_SIZE];
         AL10.alSourceStop(src);
-        AL10.alSourcei(src, AL10.AL_BUFFER, buffer);
+        AL10.alSourcei(src, AL10.AL_BUFFER, selectedBuffer);
         AL10.alSourcei(src, AL10.AL_SOURCE_RELATIVE, AL10.AL_TRUE);
         float master = Minecraft.getInstance().options.getSoundSourceVolume(SoundSource.MASTER);
-        AL10.alSourcef(src, AL10.AL_GAIN, Math.max(0f, Math.min(1f, volume * master)));
+        AL10.alSourcef(src, AL10.AL_GAIN,
+                Math.max(0f, Math.min(1f, request.volume * master)));
         AL10.alSourcePlay(src);
+    }
+
+    private static int loadBuiltin(Builtin builtin) {
+        ByteBuffer fileData = null;
+        ShortBuffer pcm = null;
+        try (var stream = HitsoundPlayer.class.getResourceAsStream(builtin.resource)) {
+            if (stream == null) return 0;
+            byte[] bytes = stream.readAllBytes();
+            fileData = MemoryUtil.memAlloc(bytes.length);
+            fileData.put(bytes).flip();
+            try (MemoryStack stack = MemoryStack.stackPush()) {
+                IntBuffer channels = stack.mallocInt(1);
+                IntBuffer sampleRate = stack.mallocInt(1);
+                pcm = STBVorbis.stb_vorbis_decode_memory(fileData, channels, sampleRate);
+                if (pcm == null) return 0;
+                int format = channels.get(0) == 2 ? AL10.AL_FORMAT_STEREO16 : AL10.AL_FORMAT_MONO16;
+                int loaded = AL10.alGenBuffers();
+                AL10.alBufferData(loaded, format, pcm, sampleRate.get(0));
+                return loaded;
+            }
+        } catch (Exception error) {
+            FnfMod.LOGGER.warn("Failed to load editor metronome {}: {}",
+                    builtin.resource, error.toString());
+            return 0;
+        } finally {
+            if (pcm != null) org.lwjgl.system.libc.LibCStdlib.free(pcm);
+            if (fileData != null) MemoryUtil.memFree(fileData);
+        }
     }
 
     private static void doReload() {

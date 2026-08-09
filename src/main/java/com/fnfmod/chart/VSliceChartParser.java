@@ -48,6 +48,11 @@ public final class VSliceChartParser {
                         double t = LegacyChartParser.optDouble(tc, "t", 0);
                         double bpm = LegacyChartParser.optDouble(tc, "bpm", 120);
                         chart.bpmChanges.add(new SongChart.BpmChange(Math.max(0, t), bpm));
+                        if (Math.abs(t) < 0.001) {
+                            int[] meter = LegacyChartParser.timeSignature(tc, 4, 4);
+                            chart.timeSignatureNumerator = meter[0];
+                            chart.timeSignatureDenominator = meter[1];
+                        }
                     }
                 }
                 if (meta.has("playData") && meta.get("playData").isJsonObject()) {

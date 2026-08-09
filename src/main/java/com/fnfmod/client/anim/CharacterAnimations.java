@@ -68,12 +68,16 @@ public final class CharacterAnimations {
         float baseCamX, baseCamY;
         boolean hasBaseCamera;
         String icon = "";
+        String vocalsFile = "";
+        int color = -1;
         String bbsForm = "";
         float rotation;
         boolean hasRotation;
         float opponentBaseCamX, opponentBaseCamY;
         boolean hasOpponentBaseCamera;
         String opponentIcon = "";
+        String opponentVocalsFile = "";
+        int opponentColor = -1;
         String opponentBbsForm = "";
         float opponentRotation;
         boolean hasOpponentRotation;
@@ -111,6 +115,8 @@ public final class CharacterAnimations {
             copy.baseCamY = baseCamY;
             copy.hasBaseCamera = hasBaseCamera;
             copy.icon = icon;
+            copy.vocalsFile = vocalsFile;
+            copy.color = color;
             copy.bbsForm = bbsForm;
             copy.rotation = rotation;
             copy.hasRotation = hasRotation;
@@ -118,6 +124,8 @@ public final class CharacterAnimations {
             copy.opponentBaseCamY = opponentBaseCamY;
             copy.hasOpponentBaseCamera = hasOpponentBaseCamera;
             copy.opponentIcon = opponentIcon;
+            copy.opponentVocalsFile = opponentVocalsFile;
+            copy.opponentColor = opponentColor;
             copy.opponentBbsForm = opponentBbsForm;
             copy.opponentRotation = opponentRotation;
             copy.hasOpponentRotation = hasOpponentRotation;
@@ -149,6 +157,8 @@ public final class CharacterAnimations {
                 hasBaseCamera = true;
             }
             if (!higherPriority.icon.isBlank()) icon = higherPriority.icon;
+            if (!higherPriority.vocalsFile.isBlank()) vocalsFile = higherPriority.vocalsFile;
+            if (higherPriority.color >= 0) color = higherPriority.color;
             if (!higherPriority.bbsForm.isBlank()) bbsForm = higherPriority.bbsForm;
             if (higherPriority.hasRotation) {
                 rotation = higherPriority.rotation;
@@ -160,6 +170,8 @@ public final class CharacterAnimations {
                 hasOpponentBaseCamera = true;
             }
             if (!higherPriority.opponentIcon.isBlank()) opponentIcon = higherPriority.opponentIcon;
+            if (!higherPriority.opponentVocalsFile.isBlank()) opponentVocalsFile = higherPriority.opponentVocalsFile;
+            if (higherPriority.opponentColor >= 0) opponentColor = higherPriority.opponentColor;
             if (!higherPriority.opponentBbsForm.isBlank()) opponentBbsForm = higherPriority.opponentBbsForm;
             if (higherPriority.hasOpponentRotation) {
                 opponentRotation = higherPriority.opponentRotation;
@@ -269,6 +281,19 @@ public final class CharacterAnimations {
         if (set == null) return "";
         return "opponent".equals(role) && !set.opponentIcon.isBlank()
                 ? set.opponentIcon : set.icon;
+    }
+
+    public static synchronized int color(String setName, String role) {
+        AnimSet set = resolveSet(setName);
+        if (set == null) return -1;
+        return "opponent".equals(role) && set.opponentColor >= 0 ? set.opponentColor : set.color;
+    }
+
+    public static synchronized String vocalsFile(String setName, String role) {
+        AnimSet set = resolveSet(setName);
+        if (set == null) return "";
+        return "opponent".equals(role) && !set.opponentVocalsFile.isBlank()
+                ? set.opponentVocalsFile : set.vocalsFile;
     }
 
     private static void reloadSongSets() {
@@ -434,6 +459,15 @@ public final class CharacterAnimations {
         if (opponent) set.opponentIcon = icon;
         else set.icon = icon;
 
+        String vocalsFile = readFirstString(json, "vocals_file", "vocalsFile", "vocal_file", "vocalFile",
+                "vocals_prefix", "vocalsPrefix", "vocal_prefix", "vocalPrefix");
+        if (opponent) set.opponentVocalsFile = vocalsFile;
+        else set.vocalsFile = vocalsFile;
+
+        int color = readColor(json);
+        if (opponent) set.opponentColor = color;
+        else set.color = color;
+
         String form = readString(json, "bbsForm");
         if (form.isBlank()) form = readString(json, "form");
         if (opponent) set.opponentBbsForm = form;
@@ -523,6 +557,14 @@ public final class CharacterAnimations {
         }
     }
 
+    private static String readFirstString(JsonObject object, String... keys) {
+        for (String key : keys) {
+            String value = readString(object, key);
+            if (!value.isBlank()) return value;
+        }
+        return "";
+    }
+
     private static boolean readBool(JsonElement value, boolean fallback) {
         try {
             if (value.getAsJsonPrimitive().isBoolean()) return value.getAsBoolean();
@@ -550,6 +592,21 @@ public final class CharacterAnimations {
         } catch (Exception ignored) {
             return 0;
         }
+    }
+
+    private static int readColor(JsonObject json) {
+        for (String key : new String[]{"healthbar_colors", "health_bar_colors", "healthBarColors"}) {
+            try {
+                if (!json.has(key) || !json.get(key).isJsonArray()) continue;
+                JsonArray array = json.getAsJsonArray(key);
+                if (array.size() < 3) continue;
+                int r = Math.max(0, Math.min(255, array.get(0).getAsInt()));
+                int g = Math.max(0, Math.min(255, array.get(1).getAsInt()));
+                int b = Math.max(0, Math.min(255, array.get(2).getAsInt()));
+                return (r << 16) | (g << 8) | b;
+            } catch (Exception ignored) {}
+        }
+        return -1;
     }
 
     public static synchronized float[] baseCameraOffset(String setName) {

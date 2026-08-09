@@ -20,7 +20,7 @@
 
   const pages = {};
 
-  pages.home = page("Blockified Engine", "Documentation · Guides · Wiki", "Build Friday Night Funkin' songs, stages, machines, and world scenes inside Minecraft.", ["2.2.2bbs", "NeoForge 1.21.1", "Singleplayer + LAN"],
+  pages.home = page("Blockified Engine", "Documentation · Guides · Wiki", "Build Friday Night Funkin' songs, stages, machines, and world scenes inside Minecraft.", ["2.2.3bbs", "NeoForge 1.21.1", "Singleplayer + LAN"],
     `<div class="hero-panel"><span>DOCUMENTATION · GUIDES · WIKI</span><h2>Build with Blockified.</h2><p>Learn by following a guide, look up exact behavior in documentation, or understand systems through the wiki. This site covers Blockified additions and changes without duplicating unchanged Psych Engine material.</p><div class="hero-actions"><a class="button-link" href="#/quick-start">Start here</a><a class="button-link secondary" href="#/animations">Make animations</a><a class="button-link secondary" href="#/lua-overview">Lua API</a></div></div>`,
     section("choose", "Choose how to use this site", `<div class="card-grid category-grid">
       <a class="doc-card category-card guide-card" href="#/quick-start"><span>GUIDES</span><h3>Make something</h3><p>Follow ordered, practical steps from installation to a playable song, complete pack, animation, or custom machine.</p></a>
@@ -246,6 +246,8 @@ end`)}<p><a href="#/machine-lua">Open full machine Lua reference</a></p>`),
     section("bbs-prepare", "1. Prepare BBS states", `<p>Create or import a BBS FS form, then give it named states such as <code>idle</code>, <code>singLEFT</code>, <code>singDOWN</code>, <code>singUP</code>, and <code>singRIGHT</code>. Blockified does not create the movement itself; it tells BBS which state to play.</p>`),
     section("bbs-map", "2. Map a BBS character", `<p>Create <code>animations/my-character.json</code> in a complete pack. Add <code>my-character-opp.json</code> only when the opponent needs a different form or mapping.</p>${code("json", `{
   "bbsForm": "My BF form",
+  "vocals_file": "bf",
+  "healthbar_colors": [49, 176, 209],
   "cameraOffset": [0.0, 0.5],
   "animations": {
     "idle": "idle",
@@ -255,7 +257,7 @@ end`)}<p><a href="#/machine-lua">Open full machine Lua reference</a></p>`),
     "right": { "state": "singRIGHT", "cameraOffset": [1.0, 0.0] },
     "attack": "sword-swing"
   }
-}`)}<p>Keys are Blockified animation names used by gameplay, events, and Lua. Values are BBS state IDs. <code>cameraOffset</code> uses blocks: X is screen-right, Y is screen-up.</p>`),
+}`)}<p>Keys are Blockified animation names used by gameplay, events, and Lua. Values are BBS state IDs. <code>cameraOffset</code> uses blocks: X is screen-right, Y is screen-up. Psych-compatible <code>healthbar_colors</code> also colors that role's chart-editor waveform. <code>vocals_file</code> selects <code>Voices-&lt;value&gt;.ogg</code>; aliases such as <code>vocalsFile</code>, <code>vocal_file</code>, and vocal-prefix spellings are accepted.</p>`),
     section("bbs-use", "3. Use and test it", `<ol><li>Select <code>my-character</code> in the Character Editor or character definition.</li><li>Preview each mapping in the Character Editor.</li><li>Use <strong>Play Animation</strong> with <code>attack</code>, or call <code>characterPlayAnim(tag, 'attack')</code>.</li><li>Run <code>/fnf reload animations</code> after editing files externally.</li></ol>${callout("Names are open-ended", "Idle and sing directions drive normal gameplay, but custom names are supported. The JSON key is the name used by events and Lua.")}`),
     section("sparrow", "Make a Sparrow XML animation", `<ol><li>Export one PNG spritesheet plus Adobe Animate/Sparrow XML from a compatible atlas tool.</li><li>Keep PNG and XML together; usually use the same base filename.</li><li>Give related frames a shared prefix, such as <code>idle0000</code>, <code>idle0001</code>, and <code>idle0002</code>.</li><li>Register that prefix in character JSON or Lua, then play the registered animation name.</li></ol>${code("lua", `makeAnimatedLuaSprite('dancer', 'images/dancer', 0, 0)
 addAnimationByPrefix('dancer', 'idle', 'idle', 24, true)
@@ -586,10 +588,14 @@ end`))
     section("report", "Report a gap", `<p>Include the call, minimal Lua, expected upstream behavior, observed behavior, and log.</p>`)
   );
 
-  pages["chart-editor"] = page("Chart editor", "Documentation · Tools", "Edit notes, sustains, sections, events, metadata, and Blockified options.", ["In-game editor"],
+  pages["chart-editor"] = page("Chart editor", "Documentation · Tools", "Edit charts with timing, audio-analysis, navigation, and compatibility tools that do not alter gameplay.", ["In-game editor", "Waveforms", "Metronome"],
     section("open", "Open", api("/fnf editor [song]", "Opens the editor, optionally loading a song.", "Command")),
-    section("scope", "Editing scope", `<p>Edit note placement, sustain length, sections, BPM/timing, event lanes, metadata, note types, skin choices, and Blockified camera/event values.</p>`),
-    section("save", "Saving", `<p>Save into the song chart/data location. Reload after external edits. Back up content before replacing or converting charts.</p>`)
+    section("scope", "Editing scope", `<p>Edit note placement, sustain length, sections, BPM/timing, event lanes, metadata, note types, skin choices, and Blockified camera/event values. Time signatures and editor analysis/playback controls assist authoring; they do not change note judgement or gameplay speed.</p>`),
+    section("audio", "Load the exact song audio", `<p>Choose an <code>Inst.ogg</code> or vocal stem directly from the in-game file picker. The editor identifies that exact song and loads its related chart/stems without requiring a placeholder song folder or library reload first. Modified/cached songs keep their <code>original_directory.txt</code> origin, so assets and saves continue targeting the source content.</p>`),
+    section("waveforms", "Waveforms and onset markers", `<p>Waveforms are independently toggleable and remain aligned while zooming and using the chart offset. Inst renders in the middle and defaults to <code>#0000FF</code>; change it with the in-game color picker. Opponent and player stems render on their matching sides using Psych-compatible character <code>healthbar_colors</code>. A combined <code>Voices.ogg</code> renders on the player side. Optional transient/onset markers expose likely beats without moving notes.</p>`),
+    section("timing", "Meter, metronome, and BPM", `<p>Set song or section time signatures while retaining compatible defaults for imported Psych charts. The metronome uses accented first beats and a volume slider. Tap BPM works in fresh groups of three taps: taps 1–2 collect timing, tap 3 creates a value stored to two decimals, and the next tap starts a new group. Automatic BPM estimation is only a suggestion until applied.</p>`),
+    section("playback", "Playback and navigation", `<ul><li>Playback-rate slider: slow down or speed up editor playback without changing chart gameplay.</li><li>Loop region: set start/end points and replay with configurable beat pre-roll.</li><li>Bookmarks: add an in-game name and optional comment, then jump previous/next.</li><li>Stem controls: mute or solo Inst, player vocals, and opponent vocals.</li><li>Scrolling: song selector and editor movement interpolate for 0.2 seconds with expo-out easing.</li><li>Zoom: adds more fixed-size grid rows instead of stretching existing boxes.</li></ul>`),
+    section("save", "Saving", `<p>Saving opens the native location chooser, like Blockified's other directory/asset selectors. Pick the intended chart/data folder instead of relying on a fixed editor directory. Back up content before replacing or converting charts.</p>`)
   );
 
   pages["free-camera"] = page("Free camera", "Documentation · Tools", "Blender-inspired framing and object editing during authoring.", ["Object editing", "Lua copy/paste"],
@@ -607,6 +613,7 @@ end`))
   pages.commands = page("Commands and recovery", "Documentation · Tools", "Open editors, reload content, and recover from a stuck session.", ["Commands"],
     section("editor", "Editor", api("/fnf editor [song]", "Opens chart editor.", "Command")),
     section("reload", "Reload", `<div class="api-list">${api("/fnf reload all", "Reloads all supported categories.", "Command")}${api("/fnf reload songs", "Reloads song library.", "Command")}${api("/fnf reload skins|splashes|animations|icons|hitsounds|fonts|options|scores", "Reloads one category.", "Command")}</div>`),
+    section("volume", "Global master volume", `<p>Use <code>+</code>/<code>=</code> or numpad <code>+</code> to raise Minecraft master volume by 10%; use <code>-</code> or numpad <code>-</code> to lower it by 10%. A compact top-layer slider animates in over 0.3 seconds and can be dragged wherever the current screen exposes a cursor. Its vanilla click changes pitch from 0.0 at 0% to 2.0 at 100% and plays once per displayed percentage while dragging. Volume shortcuts are disabled during text entry and on Minecraft's pause menu.</p>`),
     section("emergency", "Emergency exit", `<p><code>Ctrl+Shift+Enter</code> leaves a stuck Blockified gameplay/editor state and returns control to Minecraft.</p>`)
   );
 

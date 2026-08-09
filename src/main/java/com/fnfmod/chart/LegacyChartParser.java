@@ -33,6 +33,9 @@ public final class LegacyChartParser {
         SongChart chart = new SongChart();
         chart.title = optString(song, "song", "Unknown");
         chart.startBpm = optDouble(song, "bpm", 120);
+        int[] startingSignature = timeSignature(song, 4, 4);
+        chart.timeSignatureNumerator = startingSignature[0];
+        chart.timeSignatureDenominator = startingSignature[1];
         chart.speed = optDouble(song, "speed", 1.0);
         chart.offsetMs = optDouble(song, "offset", 0);
         chart.needsVoices = optBool(song, "needsVoices", true);
@@ -64,6 +67,12 @@ public final class LegacyChartParser {
             section.gfSection = optBool(sec, "gfSection", false);
             section.changeBPM = optBool(sec, "changeBPM", false);
             section.bpm = optDouble(sec, "bpm", 0);
+            int[] sectionSignature = timeSignature(sec,
+                    chart.timeSignatureNumerator, chart.timeSignatureDenominator);
+            section.changeTimeSignature = optBool(sec, "blockifiedChangeTimeSignature", false)
+                    || hasTimeSignature(sec);
+            section.timeSignatureNumerator = sectionSignature[0];
+            section.timeSignatureDenominator = sectionSignature[1];
             if (sec.has("sectionBeats")) {
                 section.sectionBeats = optDouble(sec, "sectionBeats", 4);
             } else {
@@ -128,9 +137,22 @@ public final class LegacyChartParser {
             chart.bpmChanges.add(0, new SongChart.BpmChange(0, chart.startBpm));
         }
         chart.events.addAll(parseEvents(json));
+        parseBookmarks(song, chart);
         chart.sortEvents();
         chart.sortNotes();
         return chart;
+    }
+
+    private static void parseBookmarks(JsonObject song, SongChart chart) {
+        if (!song.has("blockifiedBookmarks") || !song.get("blockifiedBookmarks").isJsonArray()) return;
+        for (JsonElement element : song.getAsJsonArray("blockifiedBookmarks")) {
+            if (!element.isJsonObject()) continue;
+            JsonObject object = element.getAsJsonObject();
+            double time = optDouble(object, "time", -1);
+            if (time < 0) continue;
+            chart.bookmarks.add(new SongChart.Bookmark(time,
+                    optString(object, "name", "Bookmark"), optString(object, "comment", "")));
+        }
     }
 
     /** Extracts Psych events without attempting to interpret them as gameplay notes. */
@@ -334,6 +356,50 @@ public final class LegacyChartParser {
             return Boolean.parseBoolean(p.getAsString());
         } catch (Exception e) {
             return def;
+        }
+    }
+
+    /** Reads Blockified's namespaced meter plus common interchange aliases. */
+    public static int[] timeSignature(JsonObject object, int defaultNumerator,
+                                      int defaultDenominator) {
+        int numerator = optInt(object, "timeSignatureNumerator",
+                optInt(object, "timeSignatureNum", defaultNumerator));
+        int denominator = optInt(object, "timeSignatureDenominator",
+                optInt(object, "timeSignatureDen", defaultDenominator));
+        JsonElement encoded = object.get("blockifiedTimeSignature");
+        try {
+            if (encoded != null && encoded.isJsonArray()) {
+                JsonArray values = encoded.getAsJsonArray();
+                if (!values.isEmpty()) numerator = values.get(0).getAsInt();
+                if (values.size() > 1) denominator = values.get(1).getAsInt();
+            } else if (encoded != null && encoded.isJsonObject()) {
+                JsonObject value = encoded.getAsJsonObject();
+                numerator = optInt(value, "numerator", numerator);
+                denominator = optInt(value, "denominator", denominator);
+            } else if (encoded != null && encoded.isJsonPrimitive()) {
+                String[] parts = encoded.getAsString().trim().split("/");
+                if (parts.length == 2) {
+                    numerator = Integer.parseInt(parts[0].trim());
+                    denominator = Integer.parseInt(parts[1].trim());
+                }
+            }
+        } catch (Exception ignored) {}
+        SongChart.TimeSignature normalized = new SongChart.TimeSignature(numerator, denominator);
+        return new int[]{normalized.numerator(), normalized.denominator()};
+    }
+
+    public static boolean hasTimeSignature(JsonObject object) {
+        return object.has("blockifiedTimeSignature")
+                || object.has("timeSignatureNumerator") || object.has("timeSignatureDenominator")
+                || object.has("timeSignatureNum") || object.has("timeSignatureDen");
+    }
+
+    private static int optInt(JsonObject object, String key, int fallback) {
+        try {
+            return object.has(key) && object.get(key).isJsonPrimitive()
+                    ? object.get(key).getAsInt() : fallback;
+        } catch (Exception ignored) {
+            return fallback;
         }
     }
 }
