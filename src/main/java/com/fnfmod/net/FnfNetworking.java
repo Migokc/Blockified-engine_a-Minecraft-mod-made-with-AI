@@ -79,7 +79,7 @@ public final class FnfNetworking {
                 }));
         registrar.playToServer(FnfPayloads.ReloadC2S.TYPE, FnfPayloads.ReloadC2S.CODEC,
                 (payload, ctx) -> ctx.enqueueWork(() -> {
-                    if (ctx.player() instanceof ServerPlayer sp) SessionManager.onReloadRequest(sp);
+                    if (ctx.player() instanceof ServerPlayer sp) SessionManager.onReloadRequest(sp, payload);
                 }));
         registrar.playToServer(FnfPayloads.SyncVanillaHudC2S.TYPE, FnfPayloads.SyncVanillaHudC2S.CODEC,
                 (payload, ctx) -> ctx.enqueueWork(() -> {

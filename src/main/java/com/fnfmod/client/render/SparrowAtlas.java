@@ -40,13 +40,16 @@ public class SparrowAtlas implements AutoCloseable {
     private final int texWidth;
     private final int texHeight;
     /** animation prefix -> ordered frames ("purple0000", "purple0001" -> key "purple") */
-    private final Map<String, List<Frame>> animations = new LinkedHashMap<>();
+    private Map<String, List<Frame>> animations = new LinkedHashMap<>();
     /** Every XML frame in source order, used by Psych's prefix/indices APIs. */
-    private final List<Frame> allFrames = new ArrayList<>();
+    private List<Frame> allFrames = new ArrayList<>();
 
     /** kept for CPU recoloring (owned by the DynamicTexture, read-only here) */
     private NativeImage image;
     private DynamicTexture dynamicTexture;
+    /** Shared-cache views release a reference instead of destroying the backing texture. */
+    private Runnable sharedRelease;
+    private boolean closed;
 
     private SparrowAtlas(ResourceLocation textureId, int w, int h) {
         this.textureId = textureId;
@@ -76,6 +79,10 @@ public class SparrowAtlas implements AutoCloseable {
         /** Frees the decoded pixels if this atlas is never finished (e.g. cancelled). */
         public void close() {
             try { image.close(); } catch (Exception ignored) {}
+        }
+
+        public long estimatedBytes() {
+            return Math.max(1L, image.getWidth()) * Math.max(1L, image.getHeight()) * 4L;
         }
     }
 
@@ -203,6 +210,21 @@ public class SparrowAtlas implements AutoCloseable {
         return texHeight;
     }
 
+    public long estimatedBytes() {
+        return Math.max(1L, texWidth) * Math.max(1L, texHeight) * 4L;
+    }
+
+    /** Creates an independently closeable view over one cache-owned atlas. */
+    SparrowAtlas sharedView(Runnable release) {
+        SparrowAtlas view = new SparrowAtlas(textureId, texWidth, texHeight);
+        view.image = image;
+        view.dynamicTexture = dynamicTexture;
+        view.animations = animations;
+        view.allFrames = allFrames;
+        view.sharedRelease = release;
+        return view;
+    }
+
     /** Applies Psych's per-sprite antialiasing flag to this atlas. */
     public void setAntialiasing(boolean enabled) {
         if (dynamicTexture == null) return;
@@ -247,6 +269,16 @@ public class SparrowAtlas implements AutoCloseable {
 
     @Override
     public void close() {
+        if (closed) return;
+        closed = true;
+        if (sharedRelease != null) {
+            Runnable release = sharedRelease;
+            sharedRelease = null;
+            image = null;
+            dynamicTexture = null;
+            release.run();
+            return;
+        }
         if (dynamicTexture != null) {
             Minecraft.getInstance().getTextureManager().release(textureId);
             dynamicTexture = null;

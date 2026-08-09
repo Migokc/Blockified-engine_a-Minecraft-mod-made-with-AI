@@ -6,6 +6,7 @@ import com.fnfmod.client.camera.GameplayCamera;
 import com.fnfmod.client.math.Easing;
 import com.fnfmod.client.render.PsychCanvas;
 import com.fnfmod.client.render.SparrowAtlas;
+import com.fnfmod.client.render.SpriteAtlasCache;
 import com.fnfmod.gameplay.PlaybackPolicy;
 import com.fnfmod.song.SongEntry;
 import com.fnfmod.song.SongLibrary;
@@ -430,7 +431,8 @@ public final class PsychGameplayScene implements AutoCloseable {
             Path png = assets.image(string(data, "image", ""));
             if (png == null) return null;
             Path xml = png.resolveSibling(stripExtension(png.getFileName().toString()) + ".xml");
-            loadedAtlas = SparrowAtlas.load(png, xml);
+            boolean antialiasing = characterAntialiasing(data);
+            loadedAtlas = SpriteAtlasCache.acquire(png, xml, antialiasing);
             if (loadedAtlas == null) return null;
             SparrowAtlas atlas = loadedAtlas;
             Map<String, Animation> animations = readAnimations(data, atlas);
@@ -445,7 +447,7 @@ public final class PsychGameplayScene implements AutoCloseable {
                     stagePosition[0] + position[0], stagePosition[1] + position[1],
                     number(data, "scale", 1), bool(data, "flip_x", false) != playerSide,
                     camera[0], camera[1], number(data, "sing_duration", 4),
-                    (int) number(data, "dance_every", 0), characterAntialiasing(data),
+                    (int) number(data, "dance_every", 0), antialiasing,
                     id.equalsIgnoreCase("gf") || id.toLowerCase(Locale.ROOT).startsWith("gf-"));
             loadedAtlas = null;
             return sprite;

@@ -2,9 +2,25 @@
 
 A feature-full Friday Night Funkin' engine inside of Minecraft — **NeoForge 1.21.1**.
 
-Current release: **2.2.3bbs**.
+Current release: **2.2.4bbs**.
 
 Documentation: **[Blockified Engine Docs](https://migokc.github.io/Blockified-engine_a-Minecraft-mod-made-with-AI/)**.
+
+### 2.2.4bbs highlights
+
+- Song discovery now keeps a compact metadata index and reuses unchanged entries,
+  avoiding repeated chart/audio/directory parsing. Integrated singleplayer/LAN
+  reloads are shared between client and server instead of scanning twice.
+- Initial characters, character-change targets, stage art, and resolvable Lua
+  images are prepared during the waiting screen. Plain PNGs and Sparrow atlases
+  share bounded memory-only caches, reducing first-use stalls without copying
+  graphics into a disk cache.
+- The Psych-style health-bar outline now follows `healthBar.visible` and cannot be
+  more opaque than `healthBar.alpha`, while direct `healthBarBG` controls remain
+  available.
+- Custom rating HUD scripts can read Blockified's configured position through
+  `getProperty('rating.x')` and `getProperty('rating.y')` in the shared 1280x720
+  Lua canvas, including non-FNF HUD styles and different GUI scales.
 
 ### 2.2.3bbs highlights
 
@@ -662,6 +678,25 @@ Song Audio, Events, Lua, Images, Icons, Characters, and Fonts. Existing paths st
 with every category enabled. The choices are stored in
 `config/fnfmod/external_folder_filters.json`; disabling Charts or Song Audio removes
 that path's songs from the playable library.
+
+Directory scans use a persistent metadata index at
+`config/fnfmod/cache/song-library-index-v1.json`. Blockified fingerprints relevant
+chart, audio, character, and icon files by path, size, and modification time, then
+reuses unchanged song metadata instead of parsing every chart again. The index is
+rebuilt automatically after files, directory order, resource filters, or the active
+mod-world scope change. In integrated singleplayer/LAN hosting, a client-initiated
+reload is also shared with the server side of the same game process instead of
+scanning the directories twice. Clearing the song cache removes this index; it is
+created again on the next scan.
+
+Gameplay PNG optimization is memory-only: Blockified discovers initial characters,
+characters named by `Change Character`/`Add Character`, stage graphics, and resolvable
+Lua image references while the pre-song waiting screen is open. PNG decoding and
+Sparrow XML parsing run in the background, then GPU upload finishes before the client
+reports ready. Identical character/Lua/stage graphics share reference-counted textures
+and parsed frames. Unused graphics stay in bounded RAM/VRAM LRU caches (256 MiB for
+atlases and 128 MiB for plain images) and are cleared on disconnect. PNG/XML files are
+never copied into the disk cache.
 
 Supported chart features: notes, sustains, BPM changes, `mustHitSection`,
 `altAnim`, `gfSection`, Psych note types (string or numeric — `Hurt Note` damages you),

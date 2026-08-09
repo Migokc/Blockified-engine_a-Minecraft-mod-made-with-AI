@@ -20,7 +20,7 @@
 
   const pages = {};
 
-  pages.home = page("Blockified Engine", "Documentation · Guides · Wiki", "Build Friday Night Funkin' songs, stages, machines, and world scenes inside Minecraft.", ["2.2.3bbs", "NeoForge 1.21.1", "Singleplayer + LAN"],
+  pages.home = page("Blockified Engine", "Documentation · Guides · Wiki", "Build Friday Night Funkin' songs, stages, machines, and world scenes inside Minecraft.", ["2.2.4bbs", "NeoForge 1.21.1", "Singleplayer + LAN"],
     `<div class="hero-panel"><span>DOCUMENTATION · GUIDES · WIKI</span><h2>Build with Blockified.</h2><p>Learn by following a guide, look up exact behavior in documentation, or understand systems through the wiki. This site covers Blockified additions and changes without duplicating unchanged Psych Engine material.</p><div class="hero-actions"><a class="button-link" href="#/quick-start">Start here</a><a class="button-link secondary" href="#/animations">Make animations</a><a class="button-link secondary" href="#/lua-overview">Lua API</a></div></div>`,
     section("choose", "Choose how to use this site", `<div class="card-grid category-grid">
       <a class="doc-card category-card guide-card" href="#/quick-start"><span>GUIDES</span><h3>Make something</h3><p>Follow ordered, practical steps from installation to a playable song, complete pack, animation, or custom machine.</p></a>
@@ -187,7 +187,8 @@ end`)}<p><a href="#/machine-lua">Open full machine Lua reference</a></p>`),
   worlds/`)),
     section("metadata", "Pack metadata", `<p><code>pack.json</code> identifies the pack. Keep paths relative and case-exact for portability.</p>`),
     section("activation", "World-aware activation", `<p>Inside a bundled mod world, only its owning pack is exposed. In an ordinary world, every installed pack and configured external directory is available.</p>`),
-    section("library", "Song-library behavior", `<p>Ordinary worlds combine lightweight songs, installed packs, and external directories. Bundled worlds isolate the library to the owning pack.</p>`)
+    section("library", "Song-library behavior", `<p>Ordinary worlds combine lightweight songs, installed packs, and external directories. Bundled worlds isolate the library to the owning pack.</p>`),
+    section("cache", "Loading and caches", `<p>Song discovery stores a compact metadata index at <code>config/fnfmod/cache/song-library-index-v1.json</code> and reuses entries whose relevant paths, sizes, and modification times have not changed. Clearing the song cache is safe; Blockified rebuilds it on the next scan. Gameplay prepares known character, stage, and Lua graphics during the waiting screen and keeps decoded PNGs/Sparrow atlases in bounded memory-only caches. Graphics are never copied into the disk cache, and memory caches clear when the client disconnects.</p>`)
   );
 
   pages["mod-worlds"] = page("Bundled worlds", "Documentation · Content", "Tie a Minecraft world to one complete Blockified pack.", ["World-scoped assets"],
@@ -365,6 +366,7 @@ setFlatShading(true)`)}${callout("Unlit, not de-shaded", "This removes world lig
       ${api("setHudStyle(style)", "Overrides the HUD style for this song: 'fnf', 'vanilla', 'default', 'abbreviated', 'numbers', or 'none'. Blockified-only.")}
       ${api("getHudStyle()", "Returns the active HUD style.")}
       ${api("setProperty('rating.visible', false)", "Hides Blockified's built-in rating/combo popups so you can draw your own.")}
+      ${api("getProperty('rating.x') / getProperty('rating.y')", "Reads the player's configured Blockified Rating Position in the fixed 1280x720 Lua HUD canvas.")}
       ${api("setProperty('timeBar.visible', false)", "Hides the magenta time-bar fill.")}
       ${api("setProperty('timeTxt.visible', false)", "Hides the song-title text on the time bar.")}
       ${api("showTimeBar(false)", "Convenience: hides the whole time bar (fill + title) at once.")}

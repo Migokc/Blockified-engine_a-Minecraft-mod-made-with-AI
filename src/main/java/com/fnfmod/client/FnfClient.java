@@ -96,6 +96,8 @@ public final class FnfClient {
             com.fnfmod.client.render.MachineHitboxPreview.clear();
             com.fnfmod.client.render.MachineAtlasCache.clear();
             com.fnfmod.client.render.MachineTextureCache.clear();
+            com.fnfmod.client.render.SpriteAtlasCache.clear();
+            com.fnfmod.client.render.SpriteImageCache.clear();
             ModContentScope.clear();
             SongLibrary.rescan();
             MachineLibrary.rescan();
@@ -312,7 +314,8 @@ public final class FnfClient {
 
         private static void requestServerSongReload() {
             // Server library is authoritative; dedicated servers require op.
-            PacketDistributor.sendToServer(new FnfPayloads.ReloadC2S());
+            PacketDistributor.sendToServer(new FnfPayloads.ReloadC2S(
+                    SongLibrary.processNonce(), SongLibrary.rescanGeneration()));
         }
 
         private static void openEditor(String songId) {

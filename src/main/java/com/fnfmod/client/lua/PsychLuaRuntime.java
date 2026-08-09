@@ -22,6 +22,8 @@ import com.fnfmod.client.render.LuaWorldObjectRenderer;
 import com.fnfmod.client.render.WorldTextTextures;
 import com.fnfmod.client.render.HudLayerOrder;
 import com.fnfmod.client.render.SparrowAtlas;
+import com.fnfmod.client.render.SpriteAtlasCache;
+import com.fnfmod.client.render.SpriteImageCache;
 import com.fnfmod.client.render.PsychCanvas;
 import com.fnfmod.client.render.PsychCameraTransform;
 import com.fnfmod.song.SongEntry;
@@ -58,7 +60,6 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Random;
 import java.util.Set;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 import java.util.stream.Stream;
 
@@ -67,7 +68,6 @@ public final class PsychLuaRuntime implements AutoCloseable {
     /** Psych Engine's logical game canvas, independent of Minecraft GUI scale. */
     public static final int VIRTUAL_WIDTH = PsychCanvas.WIDTH;
     public static final int VIRTUAL_HEIGHT = PsychCanvas.HEIGHT;
-    private static final AtomicInteger NEXT_TEXTURE = new AtomicInteger();
     public static final int FUNCTION_CONTINUE = 0;
     public static final int FUNCTION_STOP = 1;
     public static final int FUNCTION_STOP_LUA = 2;
@@ -117,8 +117,12 @@ public final class PsychLuaRuntime implements AutoCloseable {
         boolean orderExplicit;
         ResourceLocation texture;
         DynamicTexture dynamicTexture;
+        SpriteImageCache.Handle imageHandle;
+        Path imageSource;
         int textureWidth, textureHeight;
         SparrowAtlas atlas;
+        Path atlasPng;
+        Path atlasXml;
         /** Extra sheets merged in by loadMultipleFrames, owned by this object. */
         final List<SparrowAtlas> extraAtlases = new ArrayList<>();
         /** Psych text styling. */
@@ -195,8 +199,6 @@ public final class PsychLuaRuntime implements AutoCloseable {
     private static final int DEBUG_LINE_MAX = 20;
     private final Map<String, LuaObject> objects = new LinkedHashMap<>();
     private final Map<String, LuaValue> sharedVars = new HashMap<>();
-    /** Sheets kept warm by precacheImage; closed with the runtime. */
-    private final Map<String, SparrowAtlas> precached = new LinkedHashMap<>();
     /**
      * Psych custom substate. Members are Lua object tags drawn above everything
      * else while the substate is open; a substate opened with pauseGame holds
@@ -1180,39 +1182,26 @@ public final class PsychLuaRuntime implements AutoCloseable {
     private void loadObjectImage(LuaObject object, String imageName) {
         Path png = resolveImage(imageName);
         if (png == null) return;
-        NativeImage image = null;
-        DynamicTexture texture = null;
-        ResourceLocation id = null;
-        boolean registered = false;
-        try (var input = Files.newInputStream(png)) {
-            image = NativeImage.read(input);
-            texture = new DynamicTexture(image);
-            texture.setFilter(object.antialiasing, false);
-            id = FnfMod.id("psych_lua/" + NEXT_TEXTURE.incrementAndGet());
-            Minecraft.getInstance().getTextureManager().register(id, texture);
-            registered = true;
+        SpriteImageCache.Handle handle = null;
+        try {
+            handle = SpriteImageCache.acquire(png, object.antialiasing);
+            if (handle == null) return;
             disposeGraphic(object);
-            object.dynamicTexture = texture;
-            object.texture = id;
-            object.textureWidth = image.getWidth();
-            object.textureHeight = image.getHeight();
-            object.graphicWidth = image.getWidth();
-            object.graphicHeight = image.getHeight();
+            object.imageHandle = handle;
+            object.imageSource = png;
+            object.dynamicTexture = handle.dynamicTexture();
+            object.texture = handle.textureId();
+            object.textureWidth = handle.width();
+            object.textureHeight = handle.height();
+            object.graphicWidth = handle.width();
+            object.graphicHeight = handle.height();
             if (!object.sizeExplicit) {
-                object.width = image.getWidth();
-                object.height = image.getHeight();
+                object.width = handle.width();
+                object.height = handle.height();
             }
-            registered = false;
-            texture = null;
-            image = null;
+            handle = null;
         } catch (Exception error) {
-            if (registered && id != null) {
-                Minecraft.getInstance().getTextureManager().release(id);
-            } else if (texture != null) {
-                texture.close();
-            } else if (image != null) {
-                image.close();
-            }
+            if (handle != null) handle.close();
             warnOnce("image " + imageName + ": " + compactError(error));
         }
     }
@@ -1234,7 +1223,7 @@ public final class PsychLuaRuntime implements AutoCloseable {
         String filename = png.getFileName().toString();
         int dot = filename.lastIndexOf('.');
         Path xml = png.resolveSibling((dot < 0 ? filename : filename.substring(0, dot)) + ".xml");
-        SparrowAtlas atlas = SparrowAtlas.load(png, xml);
+        SparrowAtlas atlas = SpriteAtlasCache.acquire(png, xml, object.antialiasing);
         if (atlas == null || atlas.allFrames().isEmpty()) {
             if (atlas != null) atlas.close();
             warnOnce("Sparrow XML missing or empty for " + imageName + " (expected " + xml.getFileName() + ")");
@@ -1244,6 +1233,8 @@ public final class PsychLuaRuntime implements AutoCloseable {
         atlas.setAntialiasing(object.antialiasing);
         disposeGraphic(object);
         object.atlas = atlas;
+        object.atlasPng = png;
+        object.atlasXml = xml;
         object.texture = atlas.texture();
         object.textureWidth = atlas.width();
         object.textureHeight = atlas.height();
@@ -1279,7 +1270,7 @@ public final class PsychLuaRuntime implements AutoCloseable {
         if (!loadObjectAtlas(object, images.get(0), "auto")) return false;
 
         for (int i = 1; i < images.size(); i++) {
-            SparrowAtlas extra = loadAtlas(images.get(i));
+            SparrowAtlas extra = loadAtlas(images.get(i), object.antialiasing);
             if (extra == null) {
                 warnOnce("loadMultipleFrames: no Sparrow XML for " + images.get(i));
                 continue;
@@ -1291,13 +1282,13 @@ public final class PsychLuaRuntime implements AutoCloseable {
     }
 
     /** Loads one Sparrow sheet by image name without binding it to an object. */
-    private SparrowAtlas loadAtlas(String imageName) {
+    private SparrowAtlas loadAtlas(String imageName, boolean antialiasing) {
         Path png = resolveImage(imageName);
         if (png == null) return null;
         String filename = png.getFileName().toString();
         int dot = filename.lastIndexOf('.');
         Path xml = png.resolveSibling((dot < 0 ? filename : filename.substring(0, dot)) + ".xml");
-        SparrowAtlas atlas = SparrowAtlas.load(png, xml);
+        SparrowAtlas atlas = SpriteAtlasCache.acquire(png, xml, antialiasing);
         if (atlas != null && atlas.allFrames().isEmpty()) {
             atlas.close();
             return null;
@@ -1341,15 +1332,17 @@ public final class PsychLuaRuntime implements AutoCloseable {
      * upload off the first frame that shows it, which is the whole point of the call.
      */
     private void precacheImage(String imageName) {
-        if (imageName == null || imageName.isBlank() || precached.containsKey(imageName)) return;
-        SparrowAtlas atlas = loadAtlas(imageName);
-        if (atlas != null) {
-            precached.put(imageName, atlas);
+        if (imageName == null || imageName.isBlank()) return;
+        Path png = resolveImage(imageName);
+        if (png == null) {
+            warnOnce("precacheImage: image not found: " + imageName);
             return;
         }
-        // Not an animated sheet; a plain PNG still benefits from being read early.
-        Path png = resolveImage(imageName);
-        if (png == null) warnOnce("precacheImage: image not found: " + imageName);
+        String filename = png.getFileName().toString();
+        int dot = filename.lastIndexOf('.');
+        Path xml = png.resolveSibling((dot < 0 ? filename : filename.substring(0, dot)) + ".xml");
+        if (Files.isRegularFile(xml)) SpriteAtlasCache.warm(png, xml, true);
+        else SpriteImageCache.warm(png, true);
     }
 
     /**
@@ -1516,7 +1509,11 @@ public final class PsychLuaRuntime implements AutoCloseable {
             object.bakedDynamic = null;
             object.bakedKey = null;
         }
-        if (object.dynamicTexture != null) {
+        if (object.imageHandle != null) {
+            object.imageHandle.close();
+            object.imageHandle = null;
+            object.dynamicTexture = null;
+        } else if (object.dynamicTexture != null) {
             if (object.texture != null) {
                 Minecraft.getInstance().getTextureManager().release(object.texture);
             } else {
@@ -1530,6 +1527,9 @@ public final class PsychLuaRuntime implements AutoCloseable {
         }
         for (SparrowAtlas extra : object.extraAtlases) extra.close();
         object.extraAtlases.clear();
+        object.imageSource = null;
+        object.atlasPng = null;
+        object.atlasXml = null;
         object.texture = null;
         object.textureWidth = 0;
         object.textureHeight = 0;
@@ -1856,6 +1856,33 @@ public final class PsychLuaRuntime implements AutoCloseable {
     }
 
     private static void setAntialiasing(LuaObject object, boolean enabled) {
+        if (object.antialiasing == enabled) return;
+        if (object.imageHandle != null && object.imageSource != null) {
+            SpriteImageCache.Handle replacement = SpriteImageCache.acquire(object.imageSource, enabled);
+            if (replacement != null) {
+                object.imageHandle.close();
+                object.imageHandle = replacement;
+                object.dynamicTexture = replacement.dynamicTexture();
+                object.texture = replacement.textureId();
+            }
+        } else if (object.atlas != null && object.atlasPng != null && object.atlasXml != null) {
+            SparrowAtlas replacement = SpriteAtlasCache.acquire(object.atlasPng, object.atlasXml, enabled);
+            if (replacement != null) {
+                ResourceLocation previousTexture = object.atlas.texture();
+                object.atlas.close();
+                object.atlas = replacement;
+                object.texture = replacement.texture();
+                object.textureWidth = replacement.width();
+                object.textureHeight = replacement.height();
+                for (LuaAnimation animation : object.animations.values()) {
+                    if (java.util.Objects.equals(animation.texture, previousTexture)) {
+                        animation.texture = replacement.texture();
+                        animation.textureWidth = replacement.width();
+                        animation.textureHeight = replacement.height();
+                    }
+                }
+            }
+        }
         object.antialiasing = enabled;
         try {
             if (object.dynamicTexture != null) object.dynamicTexture.setFilter(enabled, false);
@@ -2915,8 +2942,6 @@ public final class PsychLuaRuntime implements AutoCloseable {
         call("onDestroy");
         closed = true;
         for (LuaObject object : objects.values()) disposeGraphic(object);
-        for (SparrowAtlas atlas : precached.values()) atlas.close();
-        precached.clear();
         soundPlayer.close();
         fontLoader.close();
         scripts.clear(); scriptSnapshot = null; objects.clear(); timers.clear(); tweens.clear(); sharedVars.clear();

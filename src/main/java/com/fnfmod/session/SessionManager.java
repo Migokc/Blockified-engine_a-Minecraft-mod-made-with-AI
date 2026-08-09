@@ -703,12 +703,15 @@ public final class SessionManager {
         }
     }
 
-    public static void onReloadRequest(ServerPlayer player) {
+    public static void onReloadRequest(ServerPlayer player, FnfPayloads.ReloadC2S payload) {
         boolean dedicated = player.getServer() != null && player.getServer().isDedicatedServer();
         boolean rescanned = false;
         // ops can always rescan; on integrated/LAN servers anyone may (it's the host's folder)
         if (player.hasPermissions(2) || !dedicated) {
-            SongLibrary.rescan();
+            boolean sameProcessScan = payload != null
+                    && payload.processNonce() == SongLibrary.processNonce()
+                    && payload.generation() == SongLibrary.rescanGeneration();
+            if (!sameProcessScan) SongLibrary.rescan();
             rescanned = true;
         }
 

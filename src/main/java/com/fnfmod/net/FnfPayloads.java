@@ -446,10 +446,19 @@ public final class FnfPayloads {
         public Type<? extends CustomPacketPayload> type() { return TYPE; }
     }
 
-    /** Asks the server to rescan its song library (requires op on dedicated servers). */
-    public record ReloadC2S() implements CustomPacketPayload {
+    /**
+     * Asks the server to rescan its song library (requires op on dedicated servers).
+     * The process/generation pair lets an integrated server reuse the client scan
+     * that just ran in the same JVM instead of scanning the same directories twice.
+     */
+    public record ReloadC2S(long processNonce, int generation) implements CustomPacketPayload {
         public static final Type<ReloadC2S> TYPE = new Type<>(FnfMod.id("reload"));
-        public static final StreamCodec<FriendlyByteBuf, ReloadC2S> CODEC = StreamCodec.unit(new ReloadC2S());
+        public static final StreamCodec<FriendlyByteBuf, ReloadC2S> CODEC = StreamCodec.of(
+                (buf, value) -> {
+                    buf.writeLong(value.processNonce());
+                    buf.writeVarInt(value.generation());
+                },
+                buf -> new ReloadC2S(buf.readLong(), buf.readVarInt()));
 
         @Override
         public Type<? extends CustomPacketPayload> type() { return TYPE; }

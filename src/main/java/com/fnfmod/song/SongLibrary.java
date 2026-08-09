@@ -20,7 +20,9 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.stream.Stream;
 
 /**
@@ -119,9 +121,15 @@ public class SongLibrary {
 
     /** Bumped on every rescan so client caches (IconLibrary) can auto-refresh. */
     private static int rescanGen;
+    /** Identifies this JVM so integrated-server reloads are not repeated. */
+    private static final long PROCESS_NONCE = ThreadLocalRandom.current().nextLong();
 
     public static synchronized int rescanGeneration() {
         return rescanGen;
+    }
+
+    public static long processNonce() {
+        return PROCESS_NONCE;
     }
 
     private static boolean migrated;
@@ -187,7 +195,44 @@ public class SongLibrary {
     }
 
     public static synchronized void rescan() {
+        long started = System.nanoTime();
         ensureFolders();
+        List<String> externalFolders = ModContentScope.mode() == ModContentScope.Mode.ALL
+                ? getExternalFolders() : List.of();
+        Map<String, EnumSet<ExternalContent>> externalContent = new LinkedHashMap<>();
+        List<Path> fingerprintRoots = new ArrayList<>();
+        StringBuilder fingerprintConfig = new StringBuilder("mode=").append(ModContentScope.mode());
+        if (!ModContentScope.isModWorld()) fingerprintRoots.add(songsDir());
+        if (!ModContentScope.isModWorld()) addOriginalDirectoryRoots(fingerprintRoots);
+        if (ModContentScope.mode() == ModContentScope.Mode.MOD_WORLD) {
+            ModContentScope.activeMod().ifPresent(active -> {
+                fingerprintConfig.append("\nactive=").append(active.id()).append('|')
+                        .append(active.root().toAbsolutePath().normalize());
+                fingerprintRoots.add(active.root());
+            });
+        } else if (ModContentScope.mode() == ModContentScope.Mode.ALL) {
+            fingerprintRoots.add(modsDir());
+            for (String folder : externalFolders) {
+                EnumSet<ExternalContent> content = getExternalFolderContent(folder);
+                externalContent.put(folder, content);
+                fingerprintConfig.append("\nexternal=").append(folder).append('|').append(content);
+                try {
+                    fingerprintRoots.add(Path.of(folder));
+                } catch (Exception ignored) {}
+            }
+        }
+        String fingerprint = SongLibraryIndex.fingerprint(fingerprintConfig.toString(), fingerprintRoots);
+        SongLibraryIndex.Snapshot cached = SongLibraryIndex.load(
+                SongLibraryIndex.file(cacheDir()), fingerprint);
+        if (cached != null) {
+            songs = cached.songs();
+            extraIcons = cached.icons();
+            rescanGen++;
+            FnfMod.LOGGER.info("FNF song library: {} song(s), {} extra icon(s), cached in {} ms",
+                    songs.size(), extraIcons.size(), elapsedMillis(started));
+            return;
+        }
+
         Map<String, SongEntry> found = new LinkedHashMap<>();
         Map<String, Path> icons = new LinkedHashMap<>();
         // A bundled mod world is intentionally isolated to its owning pack.
@@ -208,9 +253,10 @@ public class SongLibrary {
             ModContentScope.activeMod().ifPresent(active -> scanPsychRoot(active.root(), found, icons));
         } else if (ModContentScope.mode() == ModContentScope.Mode.ALL) {
             scanModsDir(found, icons);
-            for (String folder : getExternalFolders()) {
+            for (String folder : externalFolders) {
                 try {
-                    EnumSet<ExternalContent> content = getExternalFolderContent(folder);
+                    EnumSet<ExternalContent> content = Objects.requireNonNullElseGet(
+                            externalContent.get(folder), SongLibrary::allExternalContent);
                     scanPsychRoot(Path.of(folder), found, icons, content);
                 } catch (Exception e) {
                     FnfMod.LOGGER.warn("Failed to scan external folder {}: {}", folder, e.toString());
@@ -228,7 +274,32 @@ public class SongLibrary {
         songs = found;
         extraIcons = icons;
         rescanGen++;
-        FnfMod.LOGGER.info("FNF song library: {} song(s), {} extra icon(s)", songs.size(), icons.size());
+        SongLibraryIndex.save(SongLibraryIndex.file(cacheDir()), fingerprint, songs, icons);
+        FnfMod.LOGGER.info("FNF song library: {} song(s), {} extra icon(s), rebuilt in {} ms",
+                songs.size(), icons.size(), elapsedMillis(started));
+    }
+
+    private static long elapsedMillis(long started) {
+        return Math.max(0L, (System.nanoTime() - started) / 1_000_000L);
+    }
+
+    /** Referenced source packs also invalidate the index when their inherited assets change. */
+    private static void addOriginalDirectoryRoots(List<Path> roots) {
+        if (!Files.isDirectory(songsDir())) return;
+        try (Stream<Path> directories = Files.list(songsDir())) {
+            directories.filter(Files::isDirectory).sorted().forEach(directory -> {
+                Path reference = directory.resolve(ORIGINAL_DIRECTORY_FILE);
+                if (!Files.isRegularFile(reference)) return;
+                try {
+                    List<String> lines = Files.readAllLines(reference);
+                    if (lines.isEmpty() || lines.get(0).isBlank()) return;
+                    Path source = Path.of(lines.get(0).trim());
+                    if (!source.isAbsolute()) source = directory.resolve(source);
+                    source = source.toAbsolutePath().normalize();
+                    if (Files.isDirectory(source) && !roots.contains(source)) roots.add(source);
+                } catch (Exception ignored) {}
+            });
+        } catch (IOException ignored) {}
     }
 
     /** Resolves a song's opponent icon to a file within its own mod (falls back to a bare name). */

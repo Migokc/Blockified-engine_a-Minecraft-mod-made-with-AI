@@ -8,6 +8,7 @@ import com.fnfmod.chart.SongChart;
 import com.fnfmod.client.anim.CharacterAnimations;
 import com.fnfmod.client.audio.SongPlayer;
 import com.fnfmod.client.gameplay.SongWarnings;
+import com.fnfmod.client.gameplay.GameplayAssetPreloader;
 import com.fnfmod.client.gui.GameplayScreen;
 import com.fnfmod.client.gui.WaitingScreen;
 import com.fnfmod.client.render.WarningFlag;
@@ -286,6 +287,38 @@ public final class ClientSession {
                     chart.needsVoices ? entry.voicesPlayerFor(difficulty) : null,
                     chart.needsVoices ? entry.voicesOpponentFor(difficulty) : null);
 
+            long preloadGeneration = generation;
+            SongChart preloadChart = chart;
+            Path preloadFolder = resolvedFolder;
+            String preloadSongId = songId;
+            com.fnfmod.gameplay.PlaybackPolicy preloadPolicy =
+                    new com.fnfmod.gameplay.PlaybackPolicy(playbackMode, songAssets);
+            Minecraft.getInstance().setScreen(new WaitingScreen(Component.literal("Preparing graphics...")));
+            CompletableFuture.supplyAsync(() -> GameplayAssetPreloader.prepare(
+                    preloadChart, preloadSongId, preloadFolder, entry, preloadPolicy))
+                    .whenComplete((plan, preloadError) -> Minecraft.getInstance().execute(() -> {
+                        if (preloadGeneration != generation) return;
+                        if (preloadError != null) {
+                            FnfMod.LOGGER.warn("Could not preload gameplay graphics for {}: {}",
+                                    preloadSongId, preloadError.toString());
+                        } else if (plan != null) {
+                            try {
+                                plan.warm();
+                            } catch (Throwable uploadError) {
+                                FnfMod.LOGGER.warn("Could not finish preloading gameplay graphics for {}: {}",
+                                        preloadSongId, uploadError.toString());
+                            }
+                        }
+                        finishReady(entry);
+                    }));
+        } catch (Exception e) {
+            FnfMod.LOGGER.error("Failed to load song {}", songId, e);
+            fail("Failed to load song: " + e.getMessage());
+        }
+    }
+
+    private static void finishReady(SongEntry entry) {
+        try {
             Path animationRoot = songAssets ? entry.animationRoot() : null;
             CharacterAnimations.useSongFolder(animationRoot, chart.player1, chart.player2);
             String animationSet = ClientOptions.get().animationSet;
@@ -305,8 +338,8 @@ public final class ClientSession {
             Minecraft.getInstance().setScreen(new WaitingScreen(Component.literal(
                     duet ? "Waiting for the other player..." : "Get ready...")));
         } catch (Exception e) {
-            FnfMod.LOGGER.error("Failed to load song {}", songId, e);
-            fail("Failed to load song: " + e.getMessage());
+            FnfMod.LOGGER.error("Failed to prepare song {}", songId, e);
+            fail("Failed to prepare song: " + e.getMessage());
         }
     }
 

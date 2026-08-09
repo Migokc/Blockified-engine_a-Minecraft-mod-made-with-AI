@@ -1,28 +1,23 @@
 package com.fnfmod.client.gameplay;
 
 import com.fnfmod.FnfMod;
-import com.mojang.blaze3d.platform.NativeImage;
 import com.mojang.blaze3d.systems.RenderSystem;
+import com.fnfmod.client.render.SpriteImageCache;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
-import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.renderer.texture.DynamicTexture;
 import net.minecraft.resources.ResourceLocation;
 
-import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
-import java.util.concurrent.atomic.AtomicInteger;
 
 /** Static visual objects declared by Psych 1.0 stage JSON files. */
 final class PsychStageScene implements AutoCloseable {
-    private static final AtomicInteger NEXT_TEXTURE = new AtomicInteger();
-
     static final class Element implements AutoCloseable {
         final String type;
         final double x, y, scaleX, scaleY, scrollX, scrollY, alpha, angle;
@@ -30,6 +25,7 @@ final class PsychStageScene implements AutoCloseable {
         final int color;
         final ResourceLocation texture;
         final DynamicTexture dynamicTexture;
+        final SpriteImageCache.Handle imageHandle;
         final int width, height;
 
         private Element(String type) {
@@ -42,6 +38,7 @@ final class PsychStageScene implements AutoCloseable {
             color = 0xFFFFFFFF;
             texture = null;
             dynamicTexture = null;
+            imageHandle = null;
             width = height = 0;
         }
 
@@ -60,16 +57,12 @@ final class PsychStageScene implements AutoCloseable {
             flipX = bool(object, "flipX", false);
             flipY = bool(object, "flipY", false);
             color = color(string(object, "color", "FFFFFF"));
-            NativeImage nativeImage;
-            try (InputStream input = Files.newInputStream(image)) {
-                nativeImage = NativeImage.read(input);
-            }
-            width = nativeImage.getWidth();
-            height = nativeImage.getHeight();
-            dynamicTexture = new DynamicTexture(nativeImage);
-            dynamicTexture.setFilter(bool(object, "antialiasing", true), false);
-            texture = FnfMod.id("psych_stage/" + NEXT_TEXTURE.incrementAndGet());
-            Minecraft.getInstance().getTextureManager().register(texture, dynamicTexture);
+            imageHandle = SpriteImageCache.acquire(image, bool(object, "antialiasing", true));
+            if (imageHandle == null) throw new IllegalStateException("image could not be loaded");
+            width = imageHandle.width();
+            height = imageHandle.height();
+            dynamicTexture = imageHandle.dynamicTexture();
+            texture = imageHandle.textureId();
         }
 
         static Element role(String role) { return new Element(role); }
@@ -101,7 +94,7 @@ final class PsychStageScene implements AutoCloseable {
         }
 
         @Override public void close() {
-            if (texture != null) Minecraft.getInstance().getTextureManager().release(texture);
+            if (imageHandle != null) imageHandle.close();
         }
     }
 

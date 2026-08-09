@@ -3921,6 +3921,11 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         if (path == null) return null;
         switch (path) {
             case "rating.visible", "combo.visible" -> { return showRatingPopups; }
+            // Blockified's draggable Rating Position is exposed in the same
+            // 1280x720 canvas used by Lua HUD sprites. Custom rating scripts can
+            // therefore follow the player's setting at every GUI scale.
+            case "rating.x" -> { return ratingPopupCanvasX(); }
+            case "rating.y" -> { return ratingPopupCanvasY(); }
             case "timeBar.visible", "timeBarBG.visible" -> { return showTimeBar; }
             case "timeTxt.visible", "timeText.visible" -> { return showTimeText; }
             default -> { }
@@ -5640,12 +5645,16 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         int plColor = fnfHud.playerColor >= 0 ? fnfHud.playerColor
                 : colorOr(com.fnfmod.client.render.IconLibrary.barColor(playerIcon), 0x33CC33);
 
-        if (fnfHud.backgroundVisible && fnfHud.backgroundAlpha > 0) {
+        // healthBarBG is the black outline/backing of healthBar. Keep its own
+        // script controls, but never let it remain visible or more opaque than
+        // the bar it belongs to.
+        double effectiveBackgroundAlpha = Math.min(fnfHud.backgroundAlpha, fnfHud.barAlpha);
+        if (fnfHud.barVisible && fnfHud.backgroundVisible && effectiveBackgroundAlpha > 0) {
             int bx = (int) Math.round(fnfHud.backgroundX);
             int by = (int) Math.round(fnfHud.backgroundY);
             gui.fill(bx, by, bx + Math.max(1, (int) Math.round(fnfHud.backgroundWidth)),
                     by + Math.max(1, (int) Math.round(fnfHud.backgroundHeight)),
-                    argb(0x000000, fnfHud.backgroundAlpha));
+                    argb(0x000000, effectiveBackgroundAlpha));
         }
         if (fnfHud.barVisible && fnfHud.barAlpha > 0) {
             gui.fill(barX, barY, split, barY + barH, argb(oppColor, fnfHud.barAlpha));
@@ -5719,12 +5728,8 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         }
 
         // rating popups (position from the user's Rating Position setting, or default)
-        var opts = ClientOptions.get();
-        float baseX = opts.ratingX >= 0 ? (float) (opts.ratingX * layoutWidth)
-                : (playBoth || opts.middlescroll ? layoutWidth * 0.75f
-                : myStrumsCenterX() * layoutWidth / HUD_WIDTH);
-        float baseY = opts.ratingY >= 0 ? (float) (opts.ratingY * layoutHeight)
-                : layoutHeight * 0.4f;
+        float baseX = ratingPopupLayoutX();
+        float baseY = ratingPopupLayoutY();
         long now = System.currentTimeMillis();
         popups.removeIf(p -> now - p.bornMs > 700);
         // A script drawing its own rating can hide Blockified's popups.
@@ -5742,6 +5747,31 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             gui.drawCenteredString(font, p.text, 0, 0, color);
             gui.pose().popPose();
         }
+    }
+
+    private float ratingPopupLayoutX() {
+        int layoutWidth = hudLayoutWidth();
+        var opts = ClientOptions.get();
+        return opts.ratingX >= 0 ? (float) (opts.ratingX * layoutWidth)
+                : (playBoth || opts.middlescroll ? layoutWidth * 0.75f
+                : myStrumsCenterX() * layoutWidth / HUD_WIDTH);
+    }
+
+    private float ratingPopupLayoutY() {
+        int layoutHeight = hudLayoutHeight();
+        var opts = ClientOptions.get();
+        return opts.ratingY >= 0 ? (float) (opts.ratingY * layoutHeight)
+                : layoutHeight * 0.4f;
+    }
+
+    private double ratingPopupCanvasX() {
+        double x = ratingPopupLayoutX();
+        return "fnf".equals(effectiveHudStyle()) ? x : screenToCanvasX(x);
+    }
+
+    private double ratingPopupCanvasY() {
+        double y = ratingPopupLayoutY();
+        return "fnf".equals(effectiveHudStyle()) ? y : screenToCanvasY(y);
     }
 
     private String blockifiedAnimationIcon(String role) {

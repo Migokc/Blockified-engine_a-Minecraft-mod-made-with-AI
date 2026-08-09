@@ -1,10 +1,8 @@
 package com.fnfmod.client.gui;
 
 import com.fnfmod.client.ClientSession;
-import com.fnfmod.client.anim.CharacterAnimations;
 import com.fnfmod.client.gui.editor.ChartEditorScreen;
 import com.fnfmod.client.render.IconLibrary;
-import com.fnfmod.client.render.NoteStyle;
 import com.fnfmod.client.math.Easing;
 import com.fnfmod.net.FnfPayloads;
 import com.fnfmod.song.SongLibrary;
@@ -95,9 +93,8 @@ public class SongSelectScreen extends Screen {
         addRenderableWidget(Button.builder(Component.literal("Reload Songs"), b -> {
             SongLibrary.rescan();
             IconLibrary.rescan();
-            CharacterAnimations.reload();
-            NoteStyle.reload();
-            PacketDistributor.sendToServer(new FnfPayloads.ReloadC2S());
+            PacketDistributor.sendToServer(new FnfPayloads.ReloadC2S(
+                    SongLibrary.processNonce(), SongLibrary.rescanGeneration()));
         }).bounds(right, 106, 100, 20).build());
 
         addRenderableWidget(Button.builder(Component.literal("Close"), b -> {

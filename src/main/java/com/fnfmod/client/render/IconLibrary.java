@@ -55,10 +55,7 @@ public final class IconLibrary {
 
     public static synchronized void rescan() {
         lastGen = SongLibrary.rescanGeneration();
-        releaseLoadedTextures();
-        sources.clear();
-        loaded.clear();
-        byPath.clear();
+        Map<String, Source> nextSources = new LinkedHashMap<>();
 
         Path dir = SongLibrary.iconsDir();
         Map<String, Path> pngs = new LinkedHashMap<>();   // stem -> png
@@ -94,20 +91,36 @@ public final class IconLibrary {
                 s.png = png;
                 s.barColor = color;
                 String entry = stem(json.getFileName().toString()).toLowerCase(Locale.ROOT);
-                sources.put(entry, s);
+                nextSources.put(entry, s);
                 if (color >= 0) pngColor.put(png, color);
             } catch (Exception ignored) {}
         }
 
         // remaining pngs become bare entries, inheriting any color a character json gave them
         for (var e : pngs.entrySet()) {
-            if (!sources.containsKey(e.getKey())) {
+            if (!nextSources.containsKey(e.getKey())) {
                 Source s = new Source();
                 s.png = e.getValue();
                 s.barColor = pngColor.getOrDefault(e.getValue(), -1);
-                sources.put(e.getKey(), s);
+                nextSources.put(e.getKey(), s);
             }
         }
+        if (sameSources(sources, nextSources)) return;
+        releaseLoadedTextures();
+        sources.clear();
+        sources.putAll(nextSources);
+        loaded.clear();
+        byPath.clear();
+    }
+
+    private static boolean sameSources(Map<String, Source> left, Map<String, Source> right) {
+        if (!left.keySet().equals(right.keySet())) return false;
+        for (var entry : left.entrySet()) {
+            Source other = right.get(entry.getKey());
+            if (other == null || !java.util.Objects.equals(entry.getValue().png, other.png)
+                    || entry.getValue().barColor != other.barColor) return false;
+        }
+        return true;
     }
 
     private static void releaseLoadedTextures() {
