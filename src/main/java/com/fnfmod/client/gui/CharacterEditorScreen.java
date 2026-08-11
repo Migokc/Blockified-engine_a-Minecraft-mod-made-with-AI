@@ -1194,7 +1194,9 @@ public final class CharacterEditorScreen extends Screen implements TextInputAwar
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
         if (loadDialogOpen) {
-            if (loadSearchField != null) loadSearchField.mouseClicked(mouseX, mouseY, button);
+            if (loadSearchField != null && loadSearchField.mouseClicked(mouseX, mouseY, button)) {
+                setFocused(loadSearchField);
+            }
             if (button != GLFW.GLFW_MOUSE_BUTTON_LEFT) return true;
             int x0 = loadDialogX(), y0 = loadDialogY();
             int boxW = loadDialogWidth(), boxH = loadDialogHeight();
@@ -1231,8 +1233,23 @@ public final class CharacterEditorScreen extends Screen implements TextInputAwar
             }
             return true;
         }
-        if (!colorPickerOpen) return super.mouseClicked(mouseX, mouseY, button);
-        if (colorHexField != null) colorHexField.mouseClicked(mouseX, mouseY, button);
+        if (!colorPickerOpen) {
+            boolean handled = super.mouseClicked(mouseX, mouseY, button);
+            // AbstractContainerEventHandler focuses the clicked opener after its
+            // onPress callback returns. Reclaim focus here so modal fields opened
+            // by that callback can accept text immediately.
+            if (loadDialogOpen && loadSearchField != null) {
+                setFocused(loadSearchField);
+                loadSearchField.setFocused(true);
+            } else if (colorPickerOpen && colorHexField != null) {
+                setFocused(colorHexField);
+                colorHexField.setFocused(true);
+            }
+            return handled;
+        }
+        if (colorHexField != null && colorHexField.mouseClicked(mouseX, mouseY, button)) {
+            setFocused(colorHexField);
+        }
         if (button != GLFW.GLFW_MOUSE_BUTTON_LEFT) return true;
         int x0 = colorPickerX(), y0 = colorPickerY(), boxW = colorPickerWidth();
         int squareX = x0 + 12, squareY = y0 + 28;

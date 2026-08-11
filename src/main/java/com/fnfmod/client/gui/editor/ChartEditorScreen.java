@@ -1942,6 +1942,8 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
         updateInstColorHex(instColorPickerOriginal);
         openMenu = TopMenu.NONE;
         instColorPickerOpen = true;
+        setFocused(instColorHexField);
+        instColorHexField.setFocused(true);
     }
 
     private void updateInstColorHex(int rgb) {
@@ -2084,6 +2086,7 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
                 boxW - 20, 16, Component.literal(stage == 1 ? "Bookmark name" : "Bookmark comment"));
         bookmarkTextField.setMaxLength(256);
         bookmarkTextField.setValue(initial == null ? "" : initial);
+        setFocused(bookmarkTextField);
         bookmarkTextField.setFocused(true);
         int end = bookmarkTextField.getValue().length();
         bookmarkTextField.setCursorPosition(end);
@@ -2752,7 +2755,10 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
             return true;
         }
         if (instColorPickerOpen) {
-            if (instColorHexField != null) instColorHexField.mouseClicked(mouseX, mouseY, button);
+            if (instColorHexField != null
+                    && instColorHexField.mouseClicked(mouseX, mouseY, button)) {
+                setFocused(instColorHexField);
+            }
             if (button != GLFW.GLFW_MOUSE_BUTTON_LEFT) return true;
             int x0 = instPickerX(), y0 = instPickerY(), boxW = instPickerWidth();
             int squareX = x0 + 12, squareY = y0 + 28;
@@ -2778,7 +2784,10 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
             return true;
         }
         if (bookmarkTextDialogOpen) {
-            if (bookmarkTextField != null) bookmarkTextField.mouseClicked(mouseX, mouseY, button);
+            if (bookmarkTextField != null
+                    && bookmarkTextField.mouseClicked(mouseX, mouseY, button)) {
+                setFocused(bookmarkTextField);
+            }
             return true;
         }
         if (previewMode) return true;
@@ -2796,6 +2805,15 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
             return true;
         }
         if (super.mouseClicked(mouseX, mouseY, button)) {
+            // Minecraft focuses the clicked opener after its callback. Modal
+            // fields created by that callback must reclaim focus afterwards.
+            if (instColorPickerOpen && instColorHexField != null) {
+                setFocused(instColorHexField);
+                instColorHexField.setFocused(true);
+            } else if (bookmarkTextDialogOpen && bookmarkTextField != null) {
+                setFocused(bookmarkTextField);
+                bookmarkTextField.setFocused(true);
+            }
             if (button == GLFW.GLFW_MOUSE_BUTTON_LEFT
                     && getFocused() instanceof net.minecraft.client.gui.components.AbstractSliderButton) {
                 controlSliderDragging = true;
