@@ -73,7 +73,8 @@ public final class FreeCamObjects {
     public enum Source {
         EDITOR,
         LUA_RUNTIME,
-        EXTRA_CHARACTER
+        EXTRA_CHARACTER,
+        MAIN_CHARACTER
     }
 
     /** One placed object. Public fields keep the later transform tools and export simple. */
@@ -86,7 +87,7 @@ public final class FreeCamObjects {
         private long syncedFingerprint = Long.MIN_VALUE;
         public double x, y, z;              // world-camera pixels from the speakers centre
         public double rotX, rotY, rotZ;     // degrees (pitch, yaw, roll)
-        public double scaleX = 1, scaleY = 1;
+        public double scaleX = 1, scaleY = 1, scaleZ = 1;
         public double alpha = 1;
         public int color = 0xFFFFFF;
         public boolean visible = true;
@@ -134,7 +135,7 @@ public final class FreeCamObjects {
             c.sourceTag = sourceTag;
             c.x = x; c.y = y; c.z = z;
             c.rotX = rotX; c.rotY = rotY; c.rotZ = rotZ;
-            c.scaleX = scaleX; c.scaleY = scaleY;
+            c.scaleX = scaleX; c.scaleY = scaleY; c.scaleZ = scaleZ;
             c.alpha = alpha; c.color = color;
             c.visible = visible;
             c.billboard = billboard; c.lighting = lighting;
@@ -183,7 +184,7 @@ public final class FreeCamObjects {
     private boolean trackball;   // double-tap R: free camera-relative rotate
     private String numericInput = "";
     private double startMouseX, startMouseY;
-    private double bX, bY, bZ, bRotX, bRotY, bRotZ, bScaleX, bScaleY;
+    private double bX, bY, bZ, bRotX, bRotY, bRotZ, bScaleX, bScaleY, bScaleZ;
 
     // --- face-snap drag (centre cube) ---
     private boolean snapDragging;
@@ -280,7 +281,7 @@ public final class FreeCamObjects {
         h = fp(h, o.anim3d); h = fp(h, o.borderStyle); h = fp(h, o.textAlign);
         h = fp(h, o.x); h = fp(h, o.y); h = fp(h, o.z);
         h = fp(h, o.rotX); h = fp(h, o.rotY); h = fp(h, o.rotZ);
-        h = fp(h, o.scaleX); h = fp(h, o.scaleY); h = fp(h, o.alpha);
+        h = fp(h, o.scaleX); h = fp(h, o.scaleY); h = fp(h, o.scaleZ); h = fp(h, o.alpha);
         h = fp(h, o.width); h = fp(h, o.height); h = fp(h, o.borderSize);
         h = fp(h, o.color); h = fp(h, o.borderColor); h = fp(h, o.textSize); h = fp(h, o.fps);
         h = fp(h, o.visible); h = fp(h, o.billboard); h = fp(h, o.lighting);
@@ -599,7 +600,7 @@ public final class FreeCamObjects {
         startMouseY = mouseY;
         bX = o.x; bY = o.y; bZ = o.z;
         bRotX = o.rotX; bRotY = o.rotY; bRotZ = o.rotZ;
-        bScaleX = o.scaleX; bScaleY = o.scaleY;
+        bScaleX = o.scaleX; bScaleY = o.scaleY; bScaleZ = o.scaleZ;
     }
 
     /** X/Y/Z axis lock; shift makes it a plane lock (all axes but this one), not for rotate. */
@@ -685,7 +686,7 @@ public final class FreeCamObjects {
         if (o != null) {
             o.x = bX; o.y = bY; o.z = bZ;
             o.rotX = bRotX; o.rotY = bRotY; o.rotZ = bRotZ;
-            o.scaleX = bScaleX; o.scaleY = bScaleY;
+            o.scaleX = bScaleX; o.scaleY = bScaleY; o.scaleZ = bScaleZ;
         }
         resetTransform();   // discard the pending snapshot; nothing committed
     }
@@ -752,9 +753,9 @@ public final class FreeCamObjects {
     /** Blender-style Alt+S requested by the editor: restores unit scale. */
     public boolean resetScale() {
         Obj o = prepareTransformReset();
-        if (o == null || (o.scaleX == 1 && o.scaleY == 1)) return false;
+        if (o == null || (o.scaleX == 1 && o.scaleY == 1 && o.scaleZ == 1)) return false;
         pushUndo();
-        o.scaleX = 1; o.scaleY = 1;
+        o.scaleX = 1; o.scaleY = 1; o.scaleZ = 1;
         return true;
     }
 
@@ -857,18 +858,29 @@ public final class FreeCamObjects {
             case SCALE -> {
                 double factor = numeric ? entered : Math.max(0.05, 1 + rawDx * 0.005 * p);
                 if (snap && !numeric) factor = Math.max(0.05, Math.round(factor * 10) / 10.0);
-                boolean setX, setY;
-                if (axis == 0 || axis == 3) { setX = true; setY = true; }
-                else if (axis == 1) { setX = !plane; setY = plane; }
-                else { setX = plane; setY = !plane; }
+                boolean threeD = o.type == Type.CHARACTER_3D;
+                boolean setX, setY, setZ;
+                if (!threeD) {
+                    if (axis == 0 || axis == 3) { setX = true; setY = true; }
+                    else if (axis == 1) { setX = !plane; setY = plane; }
+                    else { setX = plane; setY = !plane; }
+                    setZ = false;
+                } else if (axis == 0) {
+                    setX = setY = setZ = true;
+                } else {
+                    setX = plane ? axis != 1 : axis == 1;
+                    setY = plane ? axis != 2 : axis == 2;
+                    setZ = plane ? axis != 3 : axis == 3;
+                }
                 if (setX) o.scaleX = round(bScaleX * factor);
                 if (setY) o.scaleY = round(bScaleY * factor);
+                if (setZ) o.scaleZ = round(bScaleZ * factor);
             }
             case ROTATE -> {
                 double sens = precise ? 0.15 : 0.5;
-                if (o.type == Type.CHARACTER_3D) {
-                    // BBS performers expose stage-local yaw, not sprite-plane roll.
-                    // Make plain R useful instead of changing a value their renderer ignores.
+                if (o.type == Type.CHARACTER_3D && axis == 0 && !trackball) {
+                    // Plain R keeps the established BBS yaw behavior. Explicit X/Z
+                    // constraints and trackball mode can now tilt the rendered form.
                     double v = bRotY + (numeric ? entered : rawDx * sens);
                     o.rotY = round(snap && !numeric ? snap(v, 15) : v);
                 } else if (trackball) {
@@ -937,6 +949,27 @@ public final class FreeCamObjects {
         String t = o.tag;
         String q = "'" + t + "'";
         sb.append("-- ").append(o.type.label).append(" '").append(t).append("' (world camera)\n");
+
+        // Main performers already exist; copying emits edits instead of a duplicate.
+        if (o.source == Source.MAIN_CHARACTER) {
+            if (rot) {
+                if (o.rotX != 0) sb.append("setProperty('").append(t).append(".rotation.x', ")
+                        .append(n(o.rotX)).append(")\n");
+                if (o.rotY != 0) sb.append("setProperty('").append(t).append(".rotation.y', ")
+                        .append(n(o.rotY)).append(")\n");
+                if (o.rotZ != 0) sb.append("setProperty('").append(t).append(".rotation.z', ")
+                        .append(n(o.rotZ)).append(")\n");
+            }
+            if (scale) {
+                if (o.scaleX != 1) sb.append("setProperty('").append(t).append(".scale.x', ")
+                        .append(n(o.scaleX)).append(")\n");
+                if (o.scaleY != 1) sb.append("setProperty('").append(t).append(".scale.y', ")
+                        .append(n(o.scaleY)).append(")\n");
+                if (o.scaleZ != 1) sb.append("setProperty('").append(t).append(".scale.z', ")
+                        .append(n(o.scaleZ)).append(")\n");
+            }
+            return sb.toString();
+        }
 
         switch (o.type) {
             case SPRITE, SPRITESHEET -> {
@@ -1037,8 +1070,21 @@ public final class FreeCamObjects {
                 sb.append("addBlockifiedCharacter(").append(q).append(", '").append(def).append("', ")
                         .append(n(bx)).append(", ").append(n(by)).append(", ").append(n(bz)).append(", ")
                         .append(n(yaw)).append(", '").append(initial).append("', 'opponent')\n");
+                if (rot && o.rotX != 0) {
+                    sb.append("setProperty('").append(t).append(".rotation.x', ")
+                            .append(n(o.rotX)).append(")\n");
+                }
                 if (rot && o.rotZ != 0) {
-                    sb.append("setProperty('").append(t).append(".angle', ").append(n(o.rotZ)).append(")\n");
+                    sb.append("setProperty('").append(t).append(".rotation.z', ")
+                            .append(n(o.rotZ)).append(")\n");
+                }
+                if (scale) {
+                    if (o.scaleX != 1) sb.append("setProperty('").append(t).append(".scale.x', ")
+                            .append(n(o.scaleX)).append(")\n");
+                    if (o.scaleY != 1) sb.append("setProperty('").append(t).append(".scale.y', ")
+                            .append(n(o.scaleY)).append(")\n");
+                    if (o.scaleZ != 1) sb.append("setProperty('").append(t).append(".scale.z', ")
+                            .append(n(o.scaleZ)).append(")\n");
                 }
             }
         }
@@ -1180,8 +1226,12 @@ public final class FreeCamObjects {
                             case "y" -> o.y = number(args, 1, o.y);
                             case "z" -> o.z = number(args, 1, o.z);
                             case "angle" -> o.rotZ = number(args, 1, o.rotZ);
+                            case "rotation.x", "rotationX", "angleX" -> o.rotX = number(args, 1, o.rotX);
+                            case "rotation.y", "rotationY", "angleY", "rotation" -> o.rotY = number(args, 1, o.rotY);
+                            case "rotation.z", "rotationZ", "angleZ" -> o.rotZ = number(args, 1, o.rotZ);
                             case "scale.x" -> { o.scaleX = number(args, 1, o.scaleX); characterScaleX = true; }
                             case "scale.y" -> { o.scaleY = number(args, 1, o.scaleY); characterScaleY = true; }
+                            case "scale.z" -> o.scaleZ = number(args, 1, o.scaleZ);
                             case "alpha" -> o.alpha = bounded(number(args, 1, o.alpha), 0, 1);
                             case "color" -> o.color = color(arg(args, 1), o.color);
                             case "billboard" -> o.billboard = bool(args, 1, o.billboard);
@@ -1422,10 +1472,23 @@ public final class FreeCamObjects {
                 if (!livePerformers.contains(o.tag)) {
                     boolean ok = roster.create(o.tag, o.characterDef,
                             charX(o), charY(o), charZ(o), (float) o.rotY, o.anim3d, "player");
-                    if (ok) { livePerformers.add(o.tag); performerAnim.put(o.tag, o.anim3d); }
+                    if (ok) {
+                        roster.setRotationX(o.tag, o.rotX);
+                        roster.setRotationZ(o.tag, o.rotZ);
+                        roster.setScaleX(o.tag, o.scaleX);
+                        roster.setScaleY(o.tag, o.scaleY);
+                        roster.setScaleZ(o.tag, o.scaleZ);
+                        livePerformers.add(o.tag);
+                        performerAnim.put(o.tag, o.anim3d);
+                    }
                 } else {
                     roster.setPosition(o.tag, charX(o), charY(o), charZ(o));
                     roster.setRotation(o.tag, o.rotY);
+                    roster.setRotationX(o.tag, o.rotX);
+                    roster.setRotationZ(o.tag, o.rotZ);
+                    roster.setScaleX(o.tag, o.scaleX);
+                    roster.setScaleY(o.tag, o.scaleY);
+                    roster.setScaleZ(o.tag, o.scaleZ);
                     if (!java.util.Objects.equals(performerAnim.get(o.tag), o.anim3d)) {
                         roster.play(o.tag, o.anim3d);
                         performerAnim.put(o.tag, o.anim3d);

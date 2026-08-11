@@ -1,8 +1,10 @@
 package com.fnfmod.client.gui;
 
 import com.mojang.blaze3d.systems.RenderSystem;
+import com.fnfmod.client.FnfKeys;
 import com.fnfmod.client.anim.CharacterDefinitionFile;
 import com.fnfmod.client.anim.CharacterAnimations;
+import com.fnfmod.client.math.Easing;
 import com.fnfmod.character.CharacterDefinitionPaths;
 import com.fnfmod.song.SongLibrary;
 import net.minecraft.client.gui.GuiGraphics;
@@ -24,9 +26,23 @@ import java.util.List;
 import java.util.Locale;
 
 /** Visual editor for named Blockified character JSON definitions and BBS states. */
-public final class CharacterEditorScreen extends Screen {
+public final class CharacterEditorScreen extends Screen implements TextInputAwareScreen {
     private static final int PANEL = 0xE0181820;
     private static final int FIELD_H = 18;
+    private static final int DIALOG_ROW_HEIGHT = 18;
+    private static final long DIALOG_SCROLL_TWEEN_NANOS = 200_000_000L;
+    private static final long DIALOG_PREVIEW_BEAT_NANOS = 500_000_000L;
+    private static final String CURRENT_FORM_OPTION = "<Current BBS form>";
+    private static final String INHERIT_FORM_OPTION = "<Inherit player form>";
+
+    private enum EditorTab {
+        CHARACTER("Character"), MODEL("Model"), ANIMATIONS("Animations");
+
+        final String label;
+        EditorTab(String label) { this.label = label; }
+    }
+
+    private enum SelectionKind { CHARACTER, ANIMATION, FORM }
 
     private final Screen parent;
     private final List<String> actions = new ArrayList<>(List.of(CharacterAnimations.ACTIONS));
@@ -43,7 +59,14 @@ public final class CharacterEditorScreen extends Screen {
     private boolean loadingFields;
     private boolean playerDirty;
     private boolean opponentDirty;
+    private String loadedPlayerForm = "";
+    private String loadedOpponentForm = "";
+    private boolean playerFormChanged;
+    private boolean opponentFormChanged;
+    private boolean loadedFormPrepared;
     private String status = "";
+    private String draftSetName = "default";
+    private EditorTab activeTab = EditorTab.CHARACTER;
 
     private EditBox setName;
     private EditBox icon;
@@ -55,7 +78,6 @@ public final class CharacterEditorScreen extends Screen {
     private EditBox state;
     private EditBox actionCameraX;
     private EditBox actionCameraY;
-    private Button setButton;
     private Button roleButton;
     private Button formButton;
     private Button actionButton;
@@ -70,6 +92,20 @@ public final class CharacterEditorScreen extends Screen {
     private int colorDrag;
     private EditBox colorHexField;
     private boolean updatingColorHex;
+    private boolean loadDialogOpen;
+    private SelectionKind loadDialogKind = SelectionKind.CHARACTER;
+    private EditBox loadSearchField;
+    private int loadDialogSelected;
+    private double loadDialogScrollPx;
+    private double loadDialogScrollTargetPx;
+    private double loadDialogScrollFromPx;
+    private long loadDialogScrollTweenStart;
+    private boolean loadDialogScrollTweenActive;
+    private String dialogSelectedAnimation = "";
+    private String dialogPreviewAnimation = "";
+    private int dialogIdleBeat;
+    private long dialogNextIdlePreview;
+    private long dialogReturnToSelection;
 
     public CharacterEditorScreen(Screen parent) {
         super(Component.literal("Blockified Character Editor"));
@@ -80,67 +116,102 @@ public final class CharacterEditorScreen extends Screen {
 
     @Override
     protected void init() {
-        int left = 16;
-        int editorWidth = Math.max(190, Math.min(360, width / 2 - 12));
-        int fieldX = left + 82;
-        int fieldWidth = Math.max(80, editorWidth - 92);
-        int half = Math.max(36, (fieldWidth - 4) / 2);
-        int y = 34;
-
-        setButton = addRenderableWidget(Button.builder(setLabel(), button -> cycleSet(hasShiftDown() ? -1 : 1))
-                .bounds(left, y, 78, 20).build());
-        setName = edit(fieldX, y + 1, fieldWidth, value -> markDirty());
-        y += 24;
+        clearFieldReferences();
+        int x = optionsX();
+        int panelWidth = optionsWidth();
+        int tabWidth = Math.max(1, (panelWidth - 4) / EditorTab.values().length);
+        int tabX = x;
+        for (EditorTab tab : EditorTab.values()) {
+            Button button = addRenderableWidget(Button.builder(Component.literal(tab.label), ignored -> switchTab(tab))
+                    .bounds(tabX, 26, tabWidth, 20).build());
+            button.active = tab != activeTab;
+            tabX += tabWidth + 2;
+        }
 
         roleButton = addRenderableWidget(Button.builder(roleLabel(), button -> switchRole())
-                .bounds(left, y, 78, 20).build());
-        formButton = addRenderableWidget(Button.builder(formLabel(), button -> cycleForm(hasShiftDown() ? -1 : 1))
-                .bounds(fieldX, y, fieldWidth, 20).build());
-        y += 26;
+                .bounds(x, 48, panelWidth, 20).build());
+        switch (activeTab) {
+            case CHARACTER -> buildCharacterTab(x, panelWidth);
+            case MODEL -> buildModelTab(x, panelWidth);
+            case ANIMATIONS -> buildAnimationsTab(x, panelWidth);
+        }
 
-        icon = edit(fieldX, y, fieldWidth, value -> markDirty());
-        y += 22;
-        vocalsFile = edit(fieldX, y, fieldWidth, value -> markDirty());
-        y += 22;
-        rotation = edit(fieldX, y, fieldWidth, value -> markDirty());
-        y += 22;
-        cameraX = edit(fieldX, y, half, value -> markDirty());
-        cameraY = edit(fieldX + half + 4, y, half, value -> markDirty());
-        y += 28;
-
-        actionButton = addRenderableWidget(Button.builder(actionLabel(), button -> cycleAction(hasShiftDown() ? -1 : 1))
-                .bounds(left, y, 78, 20).build());
-        actionName = edit(fieldX, y + 1, half, value -> markDirty());
-        state = edit(fieldX + half + 4, y + 1, half, value -> markDirty());
-        y += 24;
-        addRenderableWidget(Button.builder(Component.literal("+"), button -> addCustomAnimation())
-                .bounds(left, y, 37, 20).build());
-        addRenderableWidget(Button.builder(Component.literal("-"), button -> removeCustomAnimation())
-                .bounds(left + 41, y, 37, 20).build());
-        actionCameraX = edit(fieldX, y, half, value -> markDirty());
-        actionCameraY = edit(fieldX + half + 4, y, half, value -> markDirty());
-        y += 26;
-
-        addRenderableWidget(Button.builder(Component.literal("Preview State"), button -> preview())
-                .bounds(left, y, 100, 20).build());
+        int actionY = height - 26;
+        int actionWidth = Math.max(1, (panelWidth - 6) / 4);
+        addRenderableWidget(Button.builder(Component.literal("Load..."), button -> openLoadDialog())
+                .bounds(x, actionY, actionWidth, 20).build());
         addRenderableWidget(Button.builder(Component.literal("New"), button -> newSet())
-                .bounds(left + 104, y, 58, 20).build());
+                .bounds(x + actionWidth + 2, actionY, actionWidth, 20).build());
         addRenderableWidget(Button.builder(Component.literal("Save"), button -> save())
-                .bounds(left + 166, y, 70, 20).build());
-        y += 26;
-        loopIdleButton = addRenderableWidget(Button.builder(loopIdleLabel(), button -> toggleLoopIdle())
-                .bounds(left, y, 236, 20).build());
-        y += 26;
-        colorButton = addRenderableWidget(Button.builder(Component.literal(colorLabel()), button -> chooseColor())
-                .bounds(left, y, 236, 20).build());
-        y += 26;
-        addRenderableWidget(Button.builder(Component.literal("Bundle BBS Model + Texture"),
-                        button -> bundleAssets())
-                .bounds(left, y, 236, 20).build());
-
+                .bounds(x + (actionWidth + 2) * 2, actionY, actionWidth, 20).build());
         addRenderableWidget(Button.builder(Component.literal("Back"), button -> onClose())
-                .bounds(width - 86, height - 26, 76, 20).build());
+                .bounds(x + (actionWidth + 2) * 3, actionY,
+                        panelWidth - (actionWidth + 2) * 3, 20).build());
         fillFields();
+        prepareLoadedForm();
+    }
+
+    private void buildCharacterTab(int x, int panelWidth) {
+        setName = edit(x, 84, panelWidth, value -> { draftSetName = value; markDirty(); });
+        icon = edit(x, 116, panelWidth, value -> { if (!loadingFields) current().icon = value.trim(); markDirty(); });
+        vocalsFile = edit(x, 148, panelWidth,
+                value -> { if (!loadingFields) current().vocalsFile = value.trim(); markDirty(); });
+        colorButton = addRenderableWidget(Button.builder(Component.literal(colorLabel()), button -> chooseColor())
+                .bounds(x, 172, panelWidth, 20).build());
+    }
+
+    private void buildModelTab(int x, int panelWidth) {
+        formButton = addRenderableWidget(Button.builder(formLabel(), button -> openSelectionDialog(SelectionKind.FORM))
+                .bounds(x, 84, panelWidth, 20).build());
+        rotation = edit(x, 118, panelWidth,
+                value -> { if (!loadingFields) current().rotation = number(value); markDirty(); });
+        int half = Math.max(24, (panelWidth - 4) / 2);
+        cameraX = edit(x, 150, half,
+                value -> { if (!loadingFields) current().cameraX = number(value); markDirty(); });
+        cameraY = edit(x + half + 4, 150, panelWidth - half - 4,
+                value -> { if (!loadingFields) current().cameraY = number(value); markDirty(); });
+        addRenderableWidget(Button.builder(Component.literal("Preview State"), button -> preview())
+                .bounds(x, 174, panelWidth, 20).build());
+    }
+
+    private void buildAnimationsTab(int x, int panelWidth) {
+        actionButton = addRenderableWidget(Button.builder(actionLabel(), button -> openSelectionDialog(SelectionKind.ANIMATION))
+                .bounds(x, 74, panelWidth, 20).build());
+        int half = Math.max(24, (panelWidth - 4) / 2);
+        actionName = edit(x, 110, half, value -> markDirty());
+        state = edit(x + half + 4, 110, panelWidth - half - 4,
+                value -> { if (!loadingFields) current().action(currentActionName()).state = value.trim(); markDirty(); });
+        actionCameraX = edit(x, 144, half,
+                value -> { if (!loadingFields) current().action(currentActionName()).cameraX = number(value); markDirty(); });
+        actionCameraY = edit(x + half + 4, 144, panelWidth - half - 4,
+                value -> { if (!loadingFields) current().action(currentActionName()).cameraY = number(value); markDirty(); });
+        int small = Math.max(20, (panelWidth - 104) / 2);
+        addRenderableWidget(Button.builder(Component.literal("+ Add"), button -> addCustomAnimation())
+                .bounds(x, 168, small, 20).build());
+        addRenderableWidget(Button.builder(Component.literal("- Remove"), button -> removeCustomAnimation())
+                .bounds(x + small + 2, 168, small, 20).build());
+        addRenderableWidget(Button.builder(Component.literal("Preview"), button -> preview())
+                .bounds(x + small * 2 + 4, 168, panelWidth - small * 2 - 4, 20).build());
+        loopIdleButton = addRenderableWidget(Button.builder(loopIdleLabel(), button -> toggleLoopIdle())
+                .bounds(x, 192, panelWidth, 20).build());
+    }
+
+    private void switchTab(EditorTab tab) {
+        if (tab == activeTab) return;
+        captureFields();
+        activeTab = tab;
+        rebuildUi();
+    }
+
+    private void rebuildUi() {
+        clearWidgets();
+        init();
+    }
+
+    private void clearFieldReferences() {
+        setName = icon = vocalsFile = rotation = cameraX = cameraY = null;
+        actionName = state = actionCameraX = actionCameraY = null;
+        roleButton = formButton = actionButton = loopIdleButton = colorButton = null;
     }
 
     private EditBox edit(int x, int y, int width, java.util.function.Consumer<String> responder) {
@@ -161,6 +232,12 @@ public final class CharacterEditorScreen extends Screen {
 
         forms.clear();
         forms.addAll(CharacterAnimations.listBbsForms());
+        addFormChoice(playerDefinition == null ? "" : playerDefinition.form);
+        addFormChoice(opponentDefinition == null ? "" : opponentDefinition.form);
+    }
+
+    private void addFormChoice(String form) {
+        if (form != null && !form.isBlank() && indexOfIgnoreCase(forms, form) < 0) forms.add(form);
     }
 
     private void loadSet(int index) {
@@ -168,14 +245,22 @@ public final class CharacterEditorScreen extends Screen {
         setIndex = Math.floorMod(index, sets.size());
         String name = sets.get(setIndex);
         currentSetName = name;
+        draftSetName = name;
         Path playerFile = definitionFile(name, false);
         Path opponentFile = definitionFile(name, true);
         playerDefinition = CharacterDefinitionFile.load(playerFile);
         opponentDefinition = CharacterDefinitionFile.load(opponentFile);
+        loadedPlayerForm = playerDefinition.form;
+        loadedOpponentForm = opponentDefinition.form;
+        playerFormChanged = opponentFormChanged = false;
+        loadedFormPrepared = false;
+        addFormChoice(loadedPlayerForm);
+        addFormChoice(loadedOpponentForm);
         rebuildActions("idle");
         playerDirty = opponentDirty = false;
         status = "Editing " + playerFile.getFileName();
-        if (setName != null) fillFields();
+        fillFields();
+        prepareLoadedForm();
     }
 
     private Path definitionFile(String rawName, boolean opponent) {
@@ -193,55 +278,30 @@ public final class CharacterEditorScreen extends Screen {
         return SongLibrary.animationsDir().resolve(name + suffix + ".json").normalize();
     }
 
-    private void cycleSet(int direction) {
-        captureFields();
-        loadSet(setIndex + direction);
-    }
-
     private void newSet() {
         captureFields();
         String name = uniqueName("new-character");
         currentSetName = name;
+        draftSetName = name;
         playerDefinition = CharacterDefinitionFile.load(definitionFile(name, false));
         opponentDefinition = CharacterDefinitionFile.load(definitionFile(name, true));
         rebuildActions("idle");
         playerDirty = true;
         opponentDirty = false;
         status = "New character: choose a BBS form and save";
-        loadingFields = true;
-        setName.setValue(currentSetName);
-        loadingFields = false;
         opponent = false;
-        fillFields();
+        activeTab = EditorTab.CHARACTER;
+        rebuildUi();
     }
 
     private void switchRole() {
         String selected = currentActionName();
         captureFields();
         opponent = !opponent;
+        loadedFormPrepared = false;
         rebuildActions(selected);
         fillFields();
-    }
-
-    private void cycleForm(int direction) {
-        if (forms.isEmpty()) {
-            status = "No BBS forms found";
-            return;
-        }
-        String current = current().form;
-        int found = indexOfIgnoreCase(forms, current);
-        formIndex = Math.floorMod((found < 0 ? 0 : found) + direction, forms.size());
-        current().form = forms.get(formIndex);
-        markDirty();
-        if (formButton != null) formButton.setMessage(formLabel());
-        preview();
-    }
-
-    private void cycleAction(int direction) {
-        captureFields();
-        actionIndex = Math.floorMod(actionIndex + direction, actions.size());
-        fillActionFields();
-        preview();
+        prepareLoadedForm();
     }
 
     private void addCustomAnimation() {
@@ -283,34 +343,36 @@ public final class CharacterEditorScreen extends Screen {
     }
 
     private void fillFields() {
-        if (setName == null) return;
+        if (current() == null) return;
         loadingFields = true;
         CharacterDefinitionFile definition = current();
-        setName.setValue(currentSetName);
-        icon.setValue(definition.icon);
-        vocalsFile.setValue(definition.vocalsFile);
-        rotation.setValue(decimal(definition.rotation));
-        cameraX.setValue(decimal(definition.cameraX));
-        cameraY.setValue(decimal(definition.cameraY));
+        if (setName != null) setName.setValue(draftSetName);
+        if (icon != null) icon.setValue(definition.icon);
+        if (vocalsFile != null) vocalsFile.setValue(definition.vocalsFile);
+        if (rotation != null) rotation.setValue(decimal(definition.rotation));
+        if (cameraX != null) cameraX.setValue(decimal(definition.cameraX));
+        if (cameraY != null) cameraY.setValue(decimal(definition.cameraY));
         formIndex = indexOfIgnoreCase(forms, definition.form);
         fillActionFields();
         loadingFields = false;
-        setButton.setMessage(setLabel());
-        roleButton.setMessage(roleLabel());
-        formButton.setMessage(formLabel());
-        actionButton.setMessage(actionLabel());
+        if (roleButton != null) roleButton.setMessage(roleLabel());
+        if (formButton != null) formButton.setMessage(formLabel());
+        if (actionButton != null) actionButton.setMessage(actionLabel());
         if (loopIdleButton != null) loopIdleButton.setMessage(loopIdleLabel());
+        if (colorButton != null) colorButton.setMessage(Component.literal(colorLabel()));
     }
 
     private void fillActionFields() {
         String name = currentActionName();
         CharacterDefinitionFile.Action action = current().action(name);
         loadingFields = true;
-        actionName.setValue(name);
-        actionName.setEditable(!current().isPreset(name));
-        state.setValue(action.state);
-        actionCameraX.setValue(decimal(action.cameraX));
-        actionCameraY.setValue(decimal(action.cameraY));
+        if (actionName != null) {
+            actionName.setValue(name);
+            actionName.setEditable(!current().isPreset(name));
+        }
+        if (state != null) state.setValue(action.state);
+        if (actionCameraX != null) actionCameraX.setValue(decimal(action.cameraX));
+        if (actionCameraY != null) actionCameraY.setValue(decimal(action.cameraY));
         loadingFields = false;
         if (actionButton != null) actionButton.setMessage(actionLabel());
     }
@@ -320,19 +382,20 @@ public final class CharacterEditorScreen extends Screen {
     }
 
     private void captureFields(boolean commitAnimationName) {
-        if (setName == null) return;
         CharacterDefinitionFile definition = current();
-        definition.icon = icon.getValue().trim();
-        definition.vocalsFile = vocalsFile.getValue().trim();
-        definition.rotation = number(rotation.getValue());
-        definition.cameraX = number(cameraX.getValue());
-        definition.cameraY = number(cameraY.getValue());
+        if (definition == null) return;
+        if (setName != null) draftSetName = setName.getValue();
+        if (icon != null) definition.icon = icon.getValue().trim();
+        if (vocalsFile != null) definition.vocalsFile = vocalsFile.getValue().trim();
+        if (rotation != null) definition.rotation = number(rotation.getValue());
+        if (cameraX != null) definition.cameraX = number(cameraX.getValue());
+        if (cameraY != null) definition.cameraY = number(cameraY.getValue());
         String selectedName = currentActionName();
         CharacterDefinitionFile.Action action = definition.action(selectedName);
-        action.state = state.getValue().trim();
-        action.cameraX = number(actionCameraX.getValue());
-        action.cameraY = number(actionCameraY.getValue());
-        if (commitAnimationName && !definition.isPreset(selectedName)) {
+        if (state != null) action.state = state.getValue().trim();
+        if (actionCameraX != null) action.cameraX = number(actionCameraX.getValue());
+        if (actionCameraY != null) action.cameraY = number(actionCameraY.getValue());
+        if (commitAnimationName && actionName != null && !definition.isPreset(selectedName)) {
             String requestedName = actionName.getValue().trim();
             String renamed = definition.renameAnimation(selectedName, requestedName);
             if (renamed != null && !renamed.equals(selectedName)) {
@@ -350,11 +413,14 @@ public final class CharacterEditorScreen extends Screen {
 
     private void preview() {
         captureFields();
-        if (minecraft == null || minecraft.player == null) return;
+        previewAction(currentActionName(), true);
+    }
+
+    private boolean previewAction(String selectedAction, boolean updateStatus) {
+        if (minecraft == null || minecraft.player == null) return false;
         CharacterDefinitionFile definition = current();
         CharacterDefinitionFile fallback = playerDefinition;
         String form = definition.form.isBlank() && opponent ? fallback.form : definition.form;
-        String selectedAction = currentActionName();
         CharacterDefinitionFile.Action action = definition.action(selectedAction);
         String stateName = action.state;
         if (stateName.isBlank() && opponent) {
@@ -362,37 +428,113 @@ public final class CharacterEditorScreen extends Screen {
             if (inherited != null) stateName = inherited.state;
         }
         if (stateName.isBlank()) stateName = selectedAction;
-        boolean played = CharacterAnimations.preview(minecraft.player, form, stateName);
-        status = played ? "Previewing " + stateName : "State not found on the selected BBS form";
+        boolean played = CharacterAnimations.preview(minecraft.player, form,
+                bundledDefinitionForCurrentRole(), stateName);
+        if (updateStatus) {
+            status = played ? "Previewing " + stateName : "State not found on the selected BBS form";
+        }
+        return played;
+    }
+
+    private Path bundledDefinitionForCurrentRole() {
+        if (!opponent) return playerFormChanged ? null : playerDefinition.file();
+        if (current().form.isBlank()) return playerFormChanged ? null : playerDefinition.file();
+        return opponentFormChanged ? null : opponentDefinition.file();
+    }
+
+    private void prepareLoadedForm() {
+        if (loadedFormPrepared || minecraft == null || minecraft.player == null || current() == null) return;
+        String form = current().form;
+        if (form.isBlank() && opponent) form = playerDefinition.form;
+        if (form.isBlank()) return;
+        loadedFormPrepared = CharacterAnimations.preparePreview(
+                minecraft.player, form, bundledDefinitionForCurrentRole());
     }
 
     private void save() {
         captureFields();
-        String name = safeName(setName.getValue());
+        String name = safeName(draftSetName);
         if (name.isBlank()) {
-            status = "Enter a character set name";
+            status = "Enter a character name";
             return;
         }
-        boolean renamed = !name.equalsIgnoreCase(currentSetName);
-        Path playerOutput = renamed ? canonicalFile(name, false) : playerDefinition.file();
-        Path opponentOutput = renamed ? canonicalFile(name, true) : opponentDefinition.file();
         try {
-            if (playerDirty || renamed || (!opponentDirty && !Files.exists(playerDefinition.file()))) {
-                playerDefinition.saveAs(playerOutput);
+            boolean bundledPlayer = false;
+            boolean bundledOpponent = false;
+            boolean custom = !CharacterAnimations.DEFAULT_SET.equalsIgnoreCase(name);
+            boolean hasOpponent = opponentIsUsed();
+
+            if (custom) {
+                Path folder = SongLibrary.animationsDir().resolve(name).normalize();
+                Files.createDirectories(folder);
+                playerDefinition.saveAs(folder, false);
+                if (hasOpponent) opponentDefinition.saveAs(folder, true);
+                else {
+                    Files.deleteIfExists(folder.resolve("character-opp.json"));
+                    Files.deleteIfExists(folder.resolve("character-opp.form.json"));
+                }
+                Files.deleteIfExists(canonicalFile(name, false));
+                Files.deleteIfExists(canonicalFile(name, true));
+
+                if (!playerDefinition.form.isBlank()) {
+                    bundledPlayer = CharacterAnimations.bundleForm(playerDefinition.form, folder, "character");
+                }
+                if (hasOpponent && !opponentDefinition.form.isBlank()
+                        && !opponentDefinition.form.equalsIgnoreCase(playerDefinition.form)) {
+                    bundledOpponent = CharacterAnimations.bundleForm(
+                            opponentDefinition.form, folder, "character-opp");
+                }
+            } else {
+                playerDefinition.saveAs(canonicalFile(name, false));
+                if (hasOpponent) opponentDefinition.saveAs(canonicalFile(name, true));
+                else Files.deleteIfExists(canonicalFile(name, true));
             }
-            if (opponentDirty || renamed && Files.exists(opponentDefinition.file())) {
-                opponentDefinition.saveAs(opponentOutput);
-            }
+
             CharacterAnimations.reload();
             refreshChoices();
             setIndex = Math.max(0, indexOfIgnoreCase(sets, name));
-            currentSetName = name;
-            playerDirty = opponentDirty = false;
-            status = "Saved " + playerOutput.getFileName();
-            if (setButton != null) setButton.setMessage(setLabel());
+            loadSet(setIndex);
+            if (!custom) {
+                status = "Saved default character JSON (default assets are not replaced)";
+            } else if (playerDefinition.form.isBlank()) {
+                status = "Saved animations/" + name + "; no player BBS form was selected to bundle";
+            } else if (!bundledPlayer) {
+                status = "Saved animations/" + name + "; player BBS assets were unavailable";
+            } else if (hasOpponent && !opponentDefinition.form.isBlank()
+                    && !opponentDefinition.form.equalsIgnoreCase(playerDefinition.form)
+                    && !bundledOpponent) {
+                status = "Saved and bundled player; opponent BBS assets were unavailable";
+            } else {
+                status = "Saved self-contained character to animations/" + name;
+            }
         } catch (Exception error) {
             status = "Save failed: " + error.getMessage();
         }
+    }
+
+    /**
+     * Opponent data is optional. Persist it whenever it contains a meaningful
+     * opponent override, regardless of whether character-opp.json existed when
+     * the editor was opened.
+     */
+    private boolean opponentIsUsed() {
+        if (opponentDefinition == null) return false;
+        if (!opponentDefinition.form.isBlank() || !opponentDefinition.icon.isBlank()
+                || !opponentDefinition.vocalsFile.isBlank() || opponentDefinition.healthColor >= 0
+                || opponentDefinition.loopIdle || nonZero(opponentDefinition.rotation)
+                || nonZero(opponentDefinition.cameraX) || nonZero(opponentDefinition.cameraY)) {
+            return true;
+        }
+        for (String name : opponentDefinition.animationNames()) {
+            CharacterDefinitionFile.Action action = opponentDefinition.findAction(name);
+            if (action != null && (!action.state.isBlank()
+                    || nonZero(action.cameraX) || nonZero(action.cameraY))) return true;
+        }
+        return false;
+    }
+
+    private static boolean nonZero(float value) {
+        return Math.abs(value) > 0.0001F;
     }
 
     private void markDirty() {
@@ -484,60 +626,8 @@ public final class CharacterEditorScreen extends Screen {
     private int colorPickerX() { return (width - colorPickerWidth()) / 2; }
     private int colorPickerY() { return Math.max(8, (height - colorPickerHeight()) / 2); }
 
-    /**
-     * Copies the selected BBS form's model + texture into this character's own
-     * animations/&lt;name&gt;/ folder (converting to folder layout) so the character
-     * is self-contained and can be shared without a separate BBS export.
-     */
-    private void bundleAssets() {
-        captureFields();
-        String base = safeName(setName.getValue());
-        if (base.isBlank()) {
-            status = "Enter a character name first";
-            return;
-        }
-        if (CharacterAnimations.DEFAULT_SET.equalsIgnoreCase(base)) {
-            status = "Give the character a non-default name first";
-            return;
-        }
-        String form = current() == null ? "" : current().form;
-        if (form == null || form.isBlank()) {
-            status = "Pick a BBS form to bundle";
-            return;
-        }
-        try {
-            Path folder = SongLibrary.animationsDir().resolve(base).normalize();
-            Files.createDirectories(folder);
-            playerDefinition.saveAs(folder, false);
-            if (!opponentDefinition.form.isBlank() || Files.exists(opponentDefinition.file())) {
-                opponentDefinition.saveAs(folder, true);
-            }
-            Files.deleteIfExists(SongLibrary.animationsDir().resolve(base + ".json"));
-            Files.deleteIfExists(SongLibrary.animationsDir().resolve(base + "-opp.json"));
-
-            boolean ok = CharacterAnimations.bundleForm(form, folder, "character");
-            if (!opponentDefinition.form.isBlank()
-                    && !opponentDefinition.form.equalsIgnoreCase(playerDefinition.form)) {
-                CharacterAnimations.bundleForm(opponentDefinition.form, folder, "character-opp");
-            }
-
-            CharacterAnimations.reload();
-            refreshChoices();
-            setIndex = Math.max(0, indexOfIgnoreCase(sets, base));
-            loadSet(setIndex);
-            status = ok ? "Bundled model + texture into animations/" + base + " (self-contained)"
-                    : "Saved folder, but the BBS form/assets were unavailable to bundle";
-        } catch (Exception error) {
-            status = "Bundle failed: " + error.getMessage();
-        }
-    }
-
     private CharacterDefinitionFile current() {
         return opponent ? opponentDefinition : playerDefinition;
-    }
-
-    private Component setLabel() {
-        return Component.literal("Set " + (setIndex + 1) + "/" + Math.max(1, sets.size()));
     }
 
     private Component roleLabel() {
@@ -551,7 +641,8 @@ public final class CharacterEditorScreen extends Screen {
     }
 
     private Component actionLabel() {
-        return Component.literal("Anim " + (actionIndex + 1) + "/" + Math.max(1, actions.size()));
+        return Component.literal(trim("Anim " + (actionIndex + 1) + "/" + Math.max(1, actions.size())
+                + ": " + currentActionName(), 34));
     }
 
     private String currentActionName() {
@@ -560,28 +651,437 @@ public final class CharacterEditorScreen extends Screen {
         return actions.get(actionIndex);
     }
 
+    private int previewRight() {
+        return Math.max(184, Math.min(width - 224, Math.round(width * 0.46f)));
+    }
+
+    private int optionsX() { return previewRight() + 8; }
+
+    private int optionsWidth() { return Math.max(1, width - optionsX() - 8); }
+
+    private void openLoadDialog() {
+        openSelectionDialog(SelectionKind.CHARACTER);
+    }
+
+    private void openSelectionDialog(SelectionKind kind) {
+        captureFields();
+        if (kind == SelectionKind.CHARACTER || kind == SelectionKind.FORM) refreshChoices();
+        if (kind == SelectionKind.ANIMATION) rebuildActions(currentActionName());
+        loadDialogKind = kind;
+        loadDialogOpen = true;
+        List<String> all = filteredDialogItems("");
+        String selected = switch (kind) {
+            case CHARACTER -> currentSetName;
+            case ANIMATION -> currentActionName();
+            case FORM -> current().form.isBlank()
+                    ? (opponent ? INHERIT_FORM_OPTION : CURRENT_FORM_OPTION) : current().form;
+        };
+        loadDialogSelected = Math.max(0, indexOfIgnoreCase(all, selected));
+        resetDialogScroll(true);
+        loadSearchField = new EditBox(font, 0, 0, 100, FIELD_H,
+                Component.literal("Search " + dialogItemName() + "s"));
+        loadSearchField.setMaxLength(128);
+        loadSearchField.setResponder(value -> {
+            loadDialogSelected = 0;
+            resetDialogScroll(false);
+        });
+        setFocused(loadSearchField);
+        loadSearchField.setFocused(true);
+        if (kind == SelectionKind.ANIMATION && !all.isEmpty()) {
+            previewDialogAnimation(all.get(loadDialogSelected), false);
+        } else {
+            dialogSelectedAnimation = dialogPreviewAnimation = "";
+            dialogNextIdlePreview = dialogReturnToSelection = 0;
+        }
+    }
+
+    private void closeLoadDialog() {
+        loadDialogOpen = false;
+        if (loadSearchField != null) loadSearchField.setFocused(false);
+        loadSearchField = null;
+        setFocused(null);
+    }
+
+    private void cancelLoadDialog() {
+        boolean restoreAnimation = loadDialogKind == SelectionKind.ANIMATION;
+        closeLoadDialog();
+        if (restoreAnimation) previewAction(currentActionName(), true);
+    }
+
+    private List<String> dialogItems() {
+        return switch (loadDialogKind) {
+            case CHARACTER -> List.copyOf(sets);
+            case ANIMATION -> List.copyOf(actions);
+            case FORM -> {
+                ArrayList<String> available = new ArrayList<>();
+                available.add(opponent ? INHERIT_FORM_OPTION : CURRENT_FORM_OPTION);
+                available.addAll(forms);
+                yield available;
+            }
+        };
+    }
+
+    private List<String> filteredDialogItems(String query) {
+        String wanted = query == null ? "" : query.trim().toLowerCase(Locale.ROOT);
+        List<String> available = dialogItems();
+        if (wanted.isBlank()) return available;
+        return available.stream().filter(name -> name.toLowerCase(Locale.ROOT).contains(wanted)).toList();
+    }
+
+    private List<String> filteredDialogItems() {
+        return filteredDialogItems(loadSearchField == null ? "" : loadSearchField.getValue());
+    }
+
+    private String dialogItemName() {
+        return switch (loadDialogKind) {
+            case CHARACTER -> "character";
+            case ANIMATION -> "animation";
+            case FORM -> "form";
+        };
+    }
+
+    private String dialogTitle() {
+        return switch (loadDialogKind) {
+            case CHARACTER -> "Load Character";
+            case ANIMATION -> "Select Animation";
+            case FORM -> "Select BBS Form";
+        };
+    }
+
+    private int loadDialogWidth() {
+        return loadDialogKind == SelectionKind.ANIMATION
+                ? Math.min(620, Math.max(300, width - 32))
+                : Math.min(380, Math.max(250, width - 32));
+    }
+
+    private int loadDialogHeight() { return Math.min(310, Math.max(180, height - 32)); }
+
+    private int loadDialogX() { return (width - loadDialogWidth()) / 2; }
+
+    private int loadDialogY() { return Math.max(8, (height - loadDialogHeight()) / 2); }
+
+    private int loadDialogListRight(int x0, int boxW) {
+        return loadDialogKind == SelectionKind.ANIMATION
+                ? x0 + Math.max(138, (boxW - 24) * 45 / 100)
+                : x0 + boxW - 12;
+    }
+
+    private int loadDialogVisibleRows() { return Math.max(1, (loadDialogHeight() - 96) / 18); }
+
+    private int loadDialogListHeight() { return loadDialogVisibleRows() * DIALOG_ROW_HEIGHT; }
+
+    private double loadDialogMaxScroll() {
+        return Math.max(0, filteredDialogItems().size() * (double) DIALOG_ROW_HEIGHT
+                - loadDialogListHeight());
+    }
+
+    private void resetDialogScroll(boolean centerSelection) {
+        double target = centerSelection
+                ? loadDialogSelected * (double) DIALOG_ROW_HEIGHT
+                    - (loadDialogListHeight() - DIALOG_ROW_HEIGHT) / 2.0
+                : 0;
+        loadDialogScrollPx = loadDialogScrollTargetPx = loadDialogScrollFromPx =
+                Mth.clamp(target, 0, loadDialogMaxScroll());
+        loadDialogScrollTweenActive = false;
+    }
+
+    private void updateDialogScrollTween() {
+        if (!loadDialogScrollTweenActive) return;
+        double progress = (System.nanoTime() - loadDialogScrollTweenStart)
+                / (double) DIALOG_SCROLL_TWEEN_NANOS;
+        if (progress >= 1) {
+            loadDialogScrollPx = loadDialogScrollTargetPx;
+            loadDialogScrollTweenActive = false;
+            return;
+        }
+        double eased = Easing.apply("expoOut", progress);
+        loadDialogScrollPx = loadDialogScrollFromPx
+                + (loadDialogScrollTargetPx - loadDialogScrollFromPx) * eased;
+    }
+
+    private void scrollDialogTo(double target) {
+        target = Mth.clamp(target, 0, loadDialogMaxScroll());
+        if (Math.abs(target - loadDialogScrollTargetPx) < 0.01) return;
+        updateDialogScrollTween();
+        loadDialogScrollFromPx = loadDialogScrollPx;
+        loadDialogScrollTargetPx = target;
+        loadDialogScrollTweenStart = System.nanoTime();
+        loadDialogScrollTweenActive = Math.abs(loadDialogScrollTargetPx - loadDialogScrollFromPx) > 0.01;
+        if (!loadDialogScrollTweenActive) loadDialogScrollPx = loadDialogScrollTargetPx;
+    }
+
+    private void clampLoadDialogSelection() {
+        List<String> filtered = filteredDialogItems();
+        if (filtered.isEmpty()) {
+            loadDialogSelected = 0;
+            resetDialogScroll(false);
+            return;
+        }
+        loadDialogSelected = Mth.clamp(loadDialogSelected, 0, filtered.size() - 1);
+        double top = loadDialogSelected * (double) DIALOG_ROW_HEIGHT;
+        double target = loadDialogScrollTargetPx;
+        if (top < target) target = top;
+        else if (top + DIALOG_ROW_HEIGHT > target + loadDialogListHeight()) {
+            target = top + DIALOG_ROW_HEIGHT - loadDialogListHeight();
+        }
+        scrollDialogTo(target);
+    }
+
+    private void confirmLoadDialog() {
+        List<String> filtered = filteredDialogItems();
+        if (filtered.isEmpty()) return;
+        clampLoadDialogSelection();
+        String selected = filtered.get(loadDialogSelected);
+        SelectionKind kind = loadDialogKind;
+        closeLoadDialog();
+        switch (kind) {
+            case CHARACTER -> {
+                int index = indexOfIgnoreCase(sets, selected);
+                if (index >= 0) {
+                    loadSet(index);
+                    rebuildUi();
+                }
+            }
+            case ANIMATION -> {
+                int index = indexOfIgnoreCase(actions, selected);
+                if (index >= 0) {
+                    actionIndex = index;
+                    fillActionFields();
+                    preview();
+                }
+            }
+            case FORM -> selectForm(selected);
+        }
+    }
+
+    private void selectForm(String selected) {
+        String form = selected.equals(CURRENT_FORM_OPTION) || selected.equals(INHERIT_FORM_OPTION)
+                ? "" : selected;
+        current().form = form;
+        formIndex = indexOfIgnoreCase(forms, form);
+        if (opponent) opponentFormChanged = !form.equalsIgnoreCase(loadedOpponentForm);
+        else playerFormChanged = !form.equalsIgnoreCase(loadedPlayerForm);
+        loadedFormPrepared = false;
+        markDirty();
+        if (formButton != null) formButton.setMessage(formLabel());
+        preview();
+    }
+
+    private void previewHighlightedAnimation() {
+        if (loadDialogKind != SelectionKind.ANIMATION) return;
+        List<String> filtered = filteredDialogItems();
+        if (filtered.isEmpty()) return;
+        loadDialogSelected = Mth.clamp(loadDialogSelected, 0, filtered.size() - 1);
+        previewDialogAnimation(filtered.get(loadDialogSelected), false);
+    }
+
+    private void previewDialogAnimation(String animation, boolean temporary) {
+        if (animation == null || animation.isBlank()) return;
+        long now = System.nanoTime();
+        if (!temporary) dialogSelectedAnimation = animation;
+        if (!temporary && isIdleAnimation(animation) && !current().loopIdle
+                && hasConfiguredAction("idle") && hasConfiguredAction("idle2")) {
+            dialogIdleBeat = "idle2".equalsIgnoreCase(animation) ? 1 : 0;
+            previewNextDialogIdle();
+            dialogReturnToSelection = 0;
+            dialogNextIdlePreview = now + DIALOG_PREVIEW_BEAT_NANOS;
+            return;
+        }
+        dialogPreviewAnimation = animation;
+        previewAction(animation, false);
+        dialogReturnToSelection = temporary ? now + DIALOG_PREVIEW_BEAT_NANOS : 0;
+        dialogNextIdlePreview = !temporary && isIdleAnimation(animation) && !current().loopIdle
+                ? now + DIALOG_PREVIEW_BEAT_NANOS : 0;
+    }
+
+    private void updateDialogAnimationPreview() {
+        if (!loadDialogOpen || loadDialogKind != SelectionKind.ANIMATION) return;
+        long now = System.nanoTime();
+        if (dialogReturnToSelection > 0 && now >= dialogReturnToSelection) {
+            dialogReturnToSelection = 0;
+            previewDialogAnimation(dialogSelectedAnimation, false);
+            return;
+        }
+        if (dialogNextIdlePreview > 0 && now >= dialogNextIdlePreview) {
+            if (isIdleAnimation(dialogSelectedAnimation)
+                    && hasConfiguredAction("idle") && hasConfiguredAction("idle2")) {
+                previewNextDialogIdle();
+            } else {
+                previewAction(dialogSelectedAnimation, false);
+            }
+            dialogNextIdlePreview = now + DIALOG_PREVIEW_BEAT_NANOS;
+        }
+    }
+
+    private void previewNextDialogIdle() {
+        String animation = (dialogIdleBeat++ & 1) == 1 ? "idle2" : "idle";
+        dialogPreviewAnimation = animation;
+        previewAction(animation, false);
+    }
+
+    private boolean hasConfiguredAction(String animation) {
+        CharacterDefinitionFile.Action action = current().findAction(animation);
+        return action != null && action.state != null && !action.state.isBlank();
+    }
+
+    private static boolean isIdleAnimation(String animation) {
+        return "idle".equalsIgnoreCase(animation) || "idle2".equalsIgnoreCase(animation);
+    }
+
     @Override
     public void render(GuiGraphics gui, int mouseX, int mouseY, float partialTick) {
+        if (loadDialogOpen) {
+            gui.pose().pushPose();
+            gui.pose().translate(0, 0, 1000);
+            renderLoadDialog(gui, mouseX, mouseY);
+            gui.pose().popPose();
+            return;
+        }
+        if (colorPickerOpen) {
+            gui.pose().pushPose();
+            gui.pose().translate(0, 0, 1000);
+            renderColorPicker(gui, mouseX, mouseY);
+            gui.pose().popPose();
+            return;
+        }
         gui.fill(0, 0, width, height, 0xFF101014);
-        int editorRight = Math.max(206, Math.min(376, width / 2 + 4));
-        gui.fill(8, 26, editorRight, Math.min(height - 34, 344), PANEL);
+        int rightPanelX = optionsX() - 4;
+        gui.fill(rightPanelX, 24, width - 4, height - 32, PANEL);
         gui.drawCenteredString(font, title, width / 2, 10, 0xFFFFFFFF);
 
-        label(gui, "Icon", 16, 89);
-        label(gui, "Vocal prefix", 16, 111);
-        label(gui, "Rotation", 16, 133);
-        label(gui, "Base cam X / Y", 16, 155);
-        int editorWidth = Math.max(190, Math.min(360, width / 2 - 12));
-        int fieldX = 16 + 82;
-        int fieldWidth = Math.max(80, editorWidth - 92);
-        int half = Math.max(36, (fieldWidth - 4) / 2);
-        label(gui, "Name", fieldX, 165);
-        label(gui, "BBS state", fieldX + half + 4, 165);
+        int x = optionsX();
+        int panelWidth = optionsWidth();
+        int half = Math.max(24, (panelWidth - 4) / 2);
+        switch (activeTab) {
+            case CHARACTER -> {
+                label(gui, "Character name", x, 74);
+                label(gui, "Health icon", x, 106);
+                label(gui, "Vocal prefix", x, 138);
+            }
+            case MODEL -> {
+                label(gui, "BBS form", x, 74);
+                label(gui, "Base rotation", x, 108);
+                label(gui, "Base camera X", x, 140);
+                label(gui, "Base camera Y", x + half + 4, 140);
+            }
+            case ANIMATIONS -> {
+                label(gui, "Animation name", x, 100);
+                label(gui, "BBS state", x + half + 4, 100);
+                label(gui, "Camera X", x, 134);
+                label(gui, "Camera Y", x + half + 4, 134);
+            }
+        }
 
         renderPreview(gui);
-        gui.drawString(font, trim(status, Math.max(20, width - 24)), 12, height - 18, 0xFFCCCCCC, false);
+        gui.drawString(font, trim(status, Math.max(16, previewRight() / 6)), 12,
+                height - 18, 0xFFCCCCCC, false);
         super.render(gui, mouseX, mouseY, partialTick);
-        if (colorPickerOpen) renderColorPicker(gui, mouseX, mouseY);
+    }
+
+    private void renderLoadDialog(GuiGraphics gui, int mouseX, int mouseY) {
+        gui.fill(0, 0, width, height, 0xF20A0A10);
+        int boxW = loadDialogWidth(), boxH = loadDialogHeight();
+        int x0 = loadDialogX(), y0 = loadDialogY();
+        int listRight = loadDialogListRight(x0, boxW);
+        gui.fill(x0, y0, x0 + boxW, y0 + boxH, 0xFF101018);
+        gui.renderOutline(x0, y0, boxW, boxH, 0xFF6A70FF);
+        gui.drawCenteredString(font, dialogTitle(), x0 + boxW / 2, y0 + 9, 0xFFFFFFFF);
+
+        if (loadSearchField != null) {
+            loadSearchField.setX(x0 + 12);
+            loadSearchField.setY(y0 + 26);
+            loadSearchField.setWidth(listRight - x0 - 16);
+            loadSearchField.render(gui, mouseX, mouseY, 0);
+        }
+
+        List<String> filtered = filteredDialogItems();
+        clampLoadDialogSelection();
+        updateDialogScrollTween();
+        int listTop = y0 + 50;
+        int listHeight = loadDialogListHeight();
+        int first = Math.max(0, (int) Math.floor(loadDialogScrollPx / DIALOG_ROW_HEIGHT));
+        double rowOffset = loadDialogScrollPx - first * (double) DIALOG_ROW_HEIGHT;
+        int drawnRows = loadDialogVisibleRows() + 2;
+        gui.enableScissor(x0 + 12, listTop, listRight, listTop + listHeight);
+        for (int row = 0; row < drawnRows; row++) {
+            int index = first + row;
+            if (index >= filtered.size()) break;
+            int rowY = listTop + row * DIALOG_ROW_HEIGHT - (int) Math.round(rowOffset);
+            boolean selected = index == loadDialogSelected;
+            boolean hovered = mouseX >= x0 + 12 && mouseX < listRight
+                    && mouseY >= Math.max(rowY, listTop)
+                    && mouseY < Math.min(rowY + DIALOG_ROW_HEIGHT - 1, listTop + listHeight);
+            gui.fill(x0 + 12, rowY, listRight, rowY + DIALOG_ROW_HEIGHT - 1,
+                    selected ? 0xFF4B5070 : hovered ? 0xFF303442 : 0xFF20202A);
+            gui.drawString(font, filtered.get(index), x0 + 17, rowY + 4,
+                    selected ? 0xFFFFFFFF : 0xFFCCCCCC, false);
+        }
+        gui.disableScissor();
+        if (filtered.isEmpty()) {
+            gui.drawCenteredString(font, "No matching " + dialogItemName() + "s", x0 + boxW / 2,
+                    listTop + 8, 0xFFAAAAAA);
+        }
+
+        double maxScroll = loadDialogMaxScroll();
+        if (maxScroll > 0) {
+            int trackX = listRight - 3;
+            int thumbHeight = Math.max(12, (int) Math.round(listHeight
+                    * (listHeight / (filtered.size() * (double) DIALOG_ROW_HEIGHT))));
+            int thumbY = listTop + (int) Math.round((listHeight - thumbHeight)
+                    * (loadDialogScrollPx / maxScroll));
+            gui.fill(trackX, listTop, trackX + 2, listTop + listHeight, 0xFF252733);
+            gui.fill(trackX, thumbY, trackX + 2, thumbY + thumbHeight, 0xFF8A90C0);
+        }
+        if (loadDialogKind == SelectionKind.ANIMATION) {
+            updateDialogAnimationPreview();
+            renderAnimationDialogPreview(gui, listRight + 7, y0 + 26,
+                    x0 + boxW - 12, y0 + boxH - 35);
+        }
+
+        int buttonY = y0 + boxH - 27;
+        int buttonWidth = (boxW - 28) / 2;
+        renderColorButton(gui, x0 + 10, buttonY, buttonWidth, "Cancel", mouseX, mouseY);
+        renderColorButton(gui, x0 + 18 + buttonWidth, buttonY,
+                buttonWidth, loadDialogKind == SelectionKind.CHARACTER ? "Load" : "Select", mouseX, mouseY);
+    }
+
+    private void renderAnimationDialogPreview(GuiGraphics gui, int left, int top, int right, int bottom) {
+        if (right - left < 70 || bottom - top < 80) return;
+        gui.fill(left, top, right, bottom, 0xFF161720);
+        gui.renderOutline(left, top, right - left, bottom - top, 0xFF454A68);
+        String animation = dialogPreviewAnimation.isBlank()
+                ? dialogSelectedAnimation : dialogPreviewAnimation;
+        gui.drawCenteredString(font, trim(animation, Math.max(8, (right - left) / 7)),
+                (left + right) / 2, top + 7, 0xFFFFFFFF);
+
+        CharacterDefinitionFile definition = current();
+        CharacterDefinitionFile.Action action = definition.findAction(animation);
+        float actionX = action == null ? 0 : action.cameraX;
+        float actionY = action == null ? 0 : action.cameraY;
+        int previewBottom = bottom - 22;
+        int centerX = (left + right) / 2;
+        int centerY = (top + previewBottom) / 2 + 16;
+        int shiftX = Math.round(-(definition.cameraX + actionX) * 12);
+        int shiftY = Math.round((definition.cameraY + actionY) * 12);
+        gui.fill(centerX - 7, centerY, centerX + 8, centerY + 1, 0xAAFF4444);
+        gui.fill(centerX, centerY - 7, centerX + 1, centerY + 8, 0xAAFF4444);
+        if (minecraft != null && minecraft.player != null) {
+            int scale = Mth.clamp((previewBottom - top) / 3, 30, 82);
+            renderFixedCharacter(gui, left + 3, top + 18, right - 3, previewBottom,
+                    centerX + shiftX, centerY + shiftY, scale, definition.rotation,
+                    minecraft.player);
+        }
+        gui.drawCenteredString(font, notePreviewHint(), (left + right) / 2,
+                bottom - 16, 0xFFAAAEC5);
+    }
+
+    private String notePreviewHint() {
+        StringBuilder keys = new StringBuilder();
+        for (int i = 0; i < FnfKeys.NOTE_KEYS.length; i++) {
+            if (i > 0) keys.append('/');
+            keys.append(FnfKeys.NOTE_KEYS[i].getTranslatedKeyMessage().getString());
+        }
+        return trim(keys + ": preview directions", 38);
     }
 
     private void renderColorPicker(GuiGraphics gui, int mouseX, int mouseY) {
@@ -645,6 +1145,25 @@ public final class CharacterEditorScreen extends Screen {
 
     @Override
     public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
+        if (loadDialogOpen) {
+            boolean typingSearch = loadSearchField != null && loadSearchField.isFocused();
+            int previewLane = loadDialogKind == SelectionKind.ANIMATION && !typingSearch
+                    ? FnfKeys.laneForKey(keyCode, scanCode) : -1;
+            if (keyCode == GLFW.GLFW_KEY_ESCAPE) cancelLoadDialog();
+            else if (previewLane >= 0) {
+                previewDialogAnimation(new String[]{"left", "down", "up", "right"}[previewLane], true);
+            }
+            else if (keyCode == GLFW.GLFW_KEY_ENTER || keyCode == GLFW.GLFW_KEY_KP_ENTER) {
+                confirmLoadDialog();
+            } else if (keyCode == GLFW.GLFW_KEY_UP || keyCode == GLFW.GLFW_KEY_DOWN) {
+                loadDialogSelected += keyCode == GLFW.GLFW_KEY_UP ? -1 : 1;
+                clampLoadDialogSelection();
+                previewHighlightedAnimation();
+            } else if (typingSearch) {
+                loadSearchField.keyPressed(keyCode, scanCode, modifiers);
+            }
+            return true;
+        }
         if (colorPickerOpen) {
             if (keyCode == GLFW.GLFW_KEY_ESCAPE) closeColorPicker(false);
             else if (keyCode == GLFW.GLFW_KEY_ENTER || keyCode == GLFW.GLFW_KEY_KP_ENTER) {
@@ -659,6 +1178,12 @@ public final class CharacterEditorScreen extends Screen {
 
     @Override
     public boolean charTyped(char codePoint, int modifiers) {
+        if (loadDialogOpen) {
+            if (loadSearchField != null && loadSearchField.isFocused()) {
+                loadSearchField.charTyped(codePoint, modifiers);
+            }
+            return true;
+        }
         if (colorPickerOpen) {
             if (colorHexField != null) colorHexField.charTyped(codePoint, modifiers);
             return true;
@@ -668,6 +1193,44 @@ public final class CharacterEditorScreen extends Screen {
 
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
+        if (loadDialogOpen) {
+            if (loadSearchField != null) loadSearchField.mouseClicked(mouseX, mouseY, button);
+            if (button != GLFW.GLFW_MOUSE_BUTTON_LEFT) return true;
+            int x0 = loadDialogX(), y0 = loadDialogY();
+            int boxW = loadDialogWidth(), boxH = loadDialogHeight();
+            int listRight = loadDialogListRight(x0, boxW);
+            int listTop = y0 + 50;
+            if (mouseX >= x0 + 12 && mouseX < listRight
+                    && mouseY >= listTop && mouseY < listTop + loadDialogListHeight()) {
+                loadSearchField.setFocused(false);
+                setFocused(null);
+                updateDialogScrollTween();
+                int index = (int) Math.floor((mouseY - listTop + loadDialogScrollPx)
+                        / DIALOG_ROW_HEIGHT);
+                if (index >= 0 && index < filteredDialogItems().size()) {
+                    loadDialogSelected = index;
+                    previewHighlightedAnimation();
+                }
+                return true;
+            }
+            if (loadDialogKind == SelectionKind.ANIMATION && mouseX >= listRight
+                    && mouseX < x0 + boxW && mouseY >= y0 + 24 && mouseY < y0 + boxH - 32) {
+                loadSearchField.setFocused(false);
+                setFocused(null);
+                return true;
+            }
+            int buttonY = y0 + boxH - 27;
+            int buttonWidth = (boxW - 28) / 2;
+            if (mouseY >= buttonY && mouseY < buttonY + 18
+                    && mouseX >= x0 + 10 && mouseX < x0 + 10 + buttonWidth) {
+                cancelLoadDialog();
+            } else if (mouseY >= buttonY && mouseY < buttonY + 18
+                    && mouseX >= x0 + 18 + buttonWidth
+                    && mouseX < x0 + 18 + buttonWidth * 2) {
+                confirmLoadDialog();
+            }
+            return true;
+        }
         if (!colorPickerOpen) return super.mouseClicked(mouseX, mouseY, button);
         if (colorHexField != null) colorHexField.mouseClicked(mouseX, mouseY, button);
         if (button != GLFW.GLFW_MOUSE_BUTTON_LEFT) return true;
@@ -697,6 +1260,7 @@ public final class CharacterEditorScreen extends Screen {
 
     @Override
     public boolean mouseDragged(double mouseX, double mouseY, int button, double dragX, double dragY) {
+        if (loadDialogOpen) return true;
         if (colorPickerOpen) {
             if (colorDrag != 0) updateColorPicker(mouseX, mouseY);
             return true;
@@ -706,11 +1270,34 @@ public final class CharacterEditorScreen extends Screen {
 
     @Override
     public boolean mouseReleased(double mouseX, double mouseY, int button) {
+        if (loadDialogOpen) return true;
         if (colorPickerOpen) {
             colorDrag = 0;
             return true;
         }
         return super.mouseReleased(mouseX, mouseY, button);
+    }
+
+    @Override
+    public boolean mouseScrolled(double mouseX, double mouseY, double scrollX, double scrollY) {
+        if (loadDialogOpen) {
+            if (scrollY != 0) {
+                loadDialogSelected += scrollY > 0 ? -1 : 1;
+                clampLoadDialogSelection();
+                previewHighlightedAnimation();
+            }
+            return true;
+        }
+        if (colorPickerOpen) return true;
+        if (scrollY != 0 && actionButton != null && actionButton.visible
+                && actionButton.isMouseOver(mouseX, mouseY)) {
+            captureFields();
+            actionIndex = Math.floorMod(actionIndex + (scrollY > 0 ? -1 : 1), actions.size());
+            fillActionFields();
+            preview();
+            return true;
+        }
+        return super.mouseScrolled(mouseX, mouseY, scrollX, scrollY);
     }
 
     /**
@@ -724,10 +1311,10 @@ public final class CharacterEditorScreen extends Screen {
     }
 
     private void renderPreview(GuiGraphics gui) {
-        int left = Math.max(218, Math.min(390, width / 2 + 12));
-        int right = width - 12;
-        int top = 30;
-        int bottom = height - 34;
+        int left = 8;
+        int right = previewRight() - 4;
+        int top = 26;
+        int bottom = height - 32;
         if (right - left < 80 || bottom - top < 100) return;
         gui.fill(left, top, right, bottom, PANEL);
         gui.drawCenteredString(font, "BBS Form Preview", (left + right) / 2, top + 7, 0xFFFFFFFF);
@@ -826,6 +1413,12 @@ public final class CharacterEditorScreen extends Screen {
     @Override
     public boolean isPauseScreen() {
         return false;
+    }
+
+    @Override
+    public boolean isTextInputActive() {
+        return loadDialogOpen || colorPickerOpen
+                || (getFocused() instanceof EditBox edit && edit.isFocused());
     }
 
     private String uniqueName(String base) {

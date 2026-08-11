@@ -146,6 +146,16 @@ final class BbsFsAnimationBridge {
         return initialized ? available : init();
     }
 
+    static synchronized boolean hasActiveForm(Player player) {
+        if (!isAvailable() || player == null) return false;
+        try {
+            Object morph = morphGet.invoke(null, player);
+            return morph != null && morphGetForm.invoke(morph) != null;
+        } catch (Throwable error) {
+            return false;
+        }
+    }
+
     static synchronized List<String> listForms() {
         if (!isAvailable()) return List.of();
         refreshForms();

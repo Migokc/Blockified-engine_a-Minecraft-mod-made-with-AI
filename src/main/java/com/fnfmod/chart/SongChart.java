@@ -11,7 +11,7 @@ import java.util.List;
 public class SongChart {
     public String title = "Unknown";
     public double startBpm = 120.0;
-    /** Editor-only meter. FNF gameplay timing remains quarter-note/BPM based. */
+    /** Musical meter. Note timing remains quarter-note/BPM based for engine compatibility. */
     public int timeSignatureNumerator = 4;
     public int timeSignatureDenominator = 4;
     public double speed = 1.0;
@@ -34,6 +34,8 @@ public class SongChart {
     public String noteSplashTexture = "";
 
     public final List<BpmChange> bpmChanges = new ArrayList<>();
+    /** Exact timed meter changes used by formats such as V-Slice. */
+    public final List<MeterChange> meterChanges = new ArrayList<>();
     /** All notes, sorted by time. */
     public final List<Note> notes = new ArrayList<>();
     /** Timeline events loaded from embedded Psych data or a separate events.json. */
@@ -141,7 +143,7 @@ public class SongChart {
         public double sectionBeats = 4.0;
         public boolean changeBPM = false;
         public double bpm = 0.0;
-        /** Optional editor-only meter change at this section boundary. */
+        /** Optional gameplay/editor meter change at this section boundary. */
         public boolean changeTimeSignature = false;
         public int timeSignatureNumerator = 4;
         public int timeSignatureDenominator = 4;
@@ -263,6 +265,15 @@ public class SongChart {
         public BpmChange(double timeMs, double bpm) {
             this.timeMs = timeMs;
             this.bpm = bpm;
+        }
+    }
+
+    public record MeterChange(double timeMs, int numerator, int denominator) {
+        public MeterChange {
+            timeMs = Math.max(0, Double.isFinite(timeMs) ? timeMs : 0);
+            TimeSignature normalized = new TimeSignature(numerator, denominator);
+            numerator = normalized.numerator();
+            denominator = normalized.denominator();
         }
     }
 

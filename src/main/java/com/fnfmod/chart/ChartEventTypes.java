@@ -213,7 +213,8 @@ public final class ChartEventTypes {
                     "Value 1: X rotation (pitch) in degrees.",
                     "Value 2: Y rotation (yaw) in degrees.",
                     "Value 3: Z rotation (roll) in degrees.",
-                    "Value 4: Easing. Leave all rotation values empty to return to the normal camera rotation.");
+                    "Value 4: Easing. Leave all rotation values empty to return to the normal camera rotation.",
+                    "Value 5: Rotation duration in seconds. Empty uses the original 0.5s duration.");
             case ALT_IDLE_ANIMATION -> String.join("\n",
                     "Adds a suffix to a character's idle animation name; for example, -alt selects idle-alt.",
                     "Value 1: Character: Dad, BF, or GF.",
@@ -343,6 +344,7 @@ public final class ChartEventTypes {
     public static String value5Hint(String name) {
         if (is(name, ADD_CHARACTER)) return "animation,player/opponent";
         if (is(name, TWEEN_CHARACTER)) return "target rotation (deg)";
+        if (isCameraRotation3d(name)) return "rotation duration (s); blank = 0.5";
         return isCameraFollowPos(name) ? "default or override" : "value 5";
     }
 

@@ -33,8 +33,10 @@ public class ClientOptions {
     /** Rating popup position, as a fraction of the screen (-1 = use default). */
     public double ratingX = -1;
     public double ratingY = -1;
-    /** none = disabled; default = song-defined set; otherwise named global/song set. */
+    /** Local player: none = disabled; default = song-defined set; otherwise a named set. */
     public String animationSet = "none";
+    /** Solo opponent/bot selection. Null migrates old configs to animationSet. */
+    public String opponentAnimationSet;
     /** Solo mode side: 0 = player, 1 = opponent, 2 = both. */
     public int playAs = 0;
     /** default = chart arrowSkin/splashSkin; none = procedural; otherwise skins/&lt;name&gt;. */
@@ -146,6 +148,10 @@ public class ClientOptions {
             o.showSongWarnings = null;
         }
         if (o.songWarnings == null || o.songWarnings.isBlank()) o.songWarnings = "on";
+        if (o.animationSet == null || o.animationSet.isBlank()) o.animationSet = "none";
+        if (o.opponentAnimationSet == null || o.opponentAnimationSet.isBlank()) {
+            o.opponentAnimationSet = o.animationSet;
+        }
         if (o.noteSkin == null || o.noteSkin.isBlank()) o.noteSkin = NOTE_SKIN_DEFAULT;
         if (o.noteColorBase == null || o.noteColorBase.length != 4) o.noteColorBase = defaultBase();
         if (o.noteColorOutline == null || o.noteColorOutline.length != 4) o.noteColorOutline = defaultOutline();
@@ -168,6 +174,12 @@ public class ClientOptions {
         } catch (Exception e) {
             FnfMod.LOGGER.warn("Bad world blockified-options.json {}: {}", file, e.toString());
             return;
+        }
+        // Before opponentAnimationSet existed, animationSet controlled both solo
+        // sides. Keep old mod-world configs equivalent while allowing new ones to
+        // override either selector independently.
+        if (override.has("animationSet") && !override.has("opponentAnimationSet")) {
+            override.add("opponentAnimationSet", override.get("animationSet").deepCopy());
         }
         JsonObject baseJson = GSON.toJsonTree(get()).getAsJsonObject();
         Map<String, JsonElement> originals = new LinkedHashMap<>();

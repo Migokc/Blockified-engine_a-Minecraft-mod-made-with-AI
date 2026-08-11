@@ -57,6 +57,7 @@ public final class CharacterAnimations {
     public static final String[] ACTIONS = {"idle", "idle2", "left", "down", "up", "right", "miss", "hey"};
     public static final String NONE_SET = CharacterDefinitionPaths.NONE;
     public static final String DEFAULT_SET = CharacterDefinitionPaths.DEFAULT;
+    private static final String ASSET_PATH_FILE = "assets_path.txt";
 
     public static final class AnimEntry {
         public String state = "";
@@ -254,6 +255,27 @@ public final class CharacterAnimations {
         return available && BbsFsAnimationBridge.play(player, form, state);
     }
 
+    /**
+     * Editor preview that prefers the definition's bundled form when present.
+     * This lets a loaded self-contained character work even when its form is not
+     * installed in BBS's normal config folder.
+     */
+    public static synchronized boolean preview(Player player, String form,
+                                               Path definitionFile, String state) {
+        if (!available) return false;
+        Path bundled = bundledFormFor(definitionFile);
+        if (bundled != null) BbsFsAnimationBridge.registerAssetPack(bundled.getParent());
+        return BbsFsAnimationBridge.play(player, form, bundled, state);
+    }
+
+    /** Loads/applies an editor character's bundled form before a state is previewed. */
+    public static synchronized boolean preparePreview(Player player, String form, Path definitionFile) {
+        if (!available) return false;
+        Path bundled = bundledFormFor(definitionFile);
+        if (bundled != null) BbsFsAnimationBridge.registerAssetPack(bundled.getParent());
+        return BbsFsAnimationBridge.prepare(player, form, bundled);
+    }
+
     /** Restores the form worn before a character preview or song. */
     public static void stopPreview() {
         BbsFsAnimationBridge.restoreAll();
@@ -397,8 +419,88 @@ public final class CharacterAnimations {
         if (bundled != null) {
             if (opponent) set.opponentFormFile = bundled;
             else set.formFile = bundled;
+            // BBS checks registered packs in insertion order. Keep the existing
+            // per-definition folder first, then use the shared tree as fallback.
             BbsFsAnimationBridge.registerAssetPack(bundled.getParent());
+            Path sharedAssets = sharedAssetFolder(file);
+            if (sharedAssets != null) BbsFsAnimationBridge.registerAssetPack(sharedAssets);
         }
+    }
+
+    /**
+     * Reads an optional {@code assets_path.txt} stored inside an old-style
+     * {@code animations/<name>/} definition. Its first non-comment line is a
+     * Lua-style path relative to the owning mod root (for example
+     * {@code animations/shared_assets}). Flat definitions may use the unambiguous
+     * sibling form {@code <name>.assets_path.txt}.
+     */
+    private static Path sharedAssetFolder(Path defFile) {
+        Path pointer = assetPathFileFor(defFile);
+        if (pointer == null || !Files.isRegularFile(pointer)) return null;
+
+        try {
+            String value = Files.readAllLines(pointer).stream()
+                    .map(line -> line.replace("\uFEFF", "").trim())
+                    .filter(line -> !line.isEmpty())
+                    .filter(line -> !line.startsWith("#") && !line.startsWith("//") && !line.startsWith("--"))
+                    .findFirst()
+                    .orElse("");
+            if (value.isEmpty()) {
+                FnfMod.LOGGER.warn("Animation asset path file {} is empty", pointer);
+                return null;
+            }
+
+            Path relative = Path.of(value.replace('\\', '/'));
+            if (relative.isAbsolute()) {
+                FnfMod.LOGGER.warn("Animation asset path in {} must be relative to its mod root: {}", pointer, value);
+                return null;
+            }
+
+            Path owner = animationOwnerRoot(defFile);
+            if (owner == null) {
+                FnfMod.LOGGER.warn("Could not determine the mod root for animation asset path {}", pointer);
+                return null;
+            }
+            Path realOwner = owner.toRealPath();
+            Path resolved = owner.resolve(relative).normalize();
+            if (!Files.isDirectory(resolved)) {
+                FnfMod.LOGGER.warn("Animation asset folder from {} does not exist: {}", pointer, resolved);
+                return null;
+            }
+            Path realResolved = resolved.toRealPath();
+            if (!realResolved.startsWith(realOwner)) {
+                FnfMod.LOGGER.warn("Animation asset path in {} leaves its mod root: {}", pointer, value);
+                return null;
+            }
+            return realResolved;
+        } catch (Exception error) {
+            FnfMod.LOGGER.warn("Bad animation asset path file {}: {}", pointer, error.toString());
+            return null;
+        }
+    }
+
+    private static Path assetPathFileFor(Path defFile) {
+        if (defFile == null || defFile.getParent() == null) return null;
+        String fileName = defFile.getFileName().toString();
+        if (fileName.equalsIgnoreCase("character.json") || fileName.equalsIgnoreCase("character-opp.json")) {
+            return defFile.getParent().resolve(ASSET_PATH_FILE);
+        }
+        String base = fileName.toLowerCase(java.util.Locale.ROOT).endsWith(".json")
+                ? fileName.substring(0, fileName.length() - 5) : fileName;
+        if (base.toLowerCase(java.util.Locale.ROOT).endsWith("-opp")) {
+            base = base.substring(0, base.length() - 4);
+        }
+        return defFile.getParent().resolve(base + ".assets_path.txt");
+    }
+
+    private static Path animationOwnerRoot(Path defFile) {
+        Path normalized = defFile.toAbsolutePath().normalize();
+        if (activeSongFolder != null) {
+            Path modRoot = activeSongFolder.toAbsolutePath().normalize();
+            if (normalized.startsWith(modRoot.resolve("animations"))) return modRoot;
+        }
+        Path globalAnimations = SongLibrary.animationsDir().toAbsolutePath().normalize();
+        return normalized.startsWith(globalAnimations) ? globalAnimations.getParent() : null;
     }
 
     /** A sibling {@code <name>.form.json} or folder {@code form.json} bundles the model + texture. */
@@ -671,6 +773,11 @@ public final class CharacterAnimations {
     /** Whether a performer is currently forced to a non-default (e.g. full-bright) lighting. */
     public static boolean isLightingForced(Player player) {
         return BbsFsAnimationBridge.isLightingForced(player);
+    }
+
+    /** True when BBS is currently rendering this player through a form. */
+    public static boolean hasActiveBbsForm(Player player) {
+        return BbsFsAnimationBridge.hasActiveForm(player);
     }
 
     /** Releases one client-side performer while leaving the active cast intact. */

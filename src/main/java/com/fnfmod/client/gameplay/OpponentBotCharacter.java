@@ -1,6 +1,7 @@
 package com.fnfmod.client.gameplay;
 
 import com.fnfmod.client.anim.CharacterAnimations;
+import com.fnfmod.client.render.PerformerRotation;
 import com.mojang.authlib.GameProfile;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.player.RemotePlayer;
@@ -24,6 +25,8 @@ public final class OpponentBotCharacter {
     private final RemotePlayer entity;
     private final String set;
     private final String role;
+    private long lastSingMs;
+    private long lastStatePlayMs;
 
     private OpponentBotCharacter(RemotePlayer entity, String set, String role) {
         this.entity = entity;
@@ -58,7 +61,10 @@ public final class OpponentBotCharacter {
     public void follow(Entity stand) {
         if (stand == null) return;
         entity.setPos(stand.getX(), stand.getY(), stand.getZ());
-        float yaw = stand.getYRot();
+        // The armor stand owns stage facing; the selected role's JSON adds its
+        // own visual yaw. In particular, character-opp.json must not inherit the
+        // player's rotation merely because both performers use the same form.
+        float yaw = stand.getYRot() + CharacterAnimations.rotation(set, role);
         entity.setYRot(yaw);
         entity.setYHeadRot(yaw);
         entity.setYBodyRot(yaw);
@@ -66,24 +72,50 @@ public final class OpponentBotCharacter {
     }
 
     /** Plays a sing/miss/hey animation on the opponent bot. */
-    public void play(String action) {
-        CharacterAnimations.play(entity, set, role, action);
+    public boolean play(String action) {
+        return playState(action, true);
     }
 
-    /** Beat idle; skipped for loopIdle characters (BBS keeps their main state running). */
-    public void idle() {
-        if (!CharacterAnimations.loopIdle(set, role)) {
-            CharacterAnimations.play(entity, set, role, "idle");
-        }
+    /** Replays a sustain sing at the same bounded cadence used by the local performer. */
+    public void hold(String action, long replayMs) {
+        long now = System.currentTimeMillis();
+        if (now - lastStatePlayMs >= Math.max(1, replayMs)) playState(action, true);
+    }
+
+    /**
+     * Beat idle with role-specific idle/idle2 alternation. A recent note animation
+     * wins until its normal one-beat sing duration expires.
+     */
+    public void idle(int beat, double singHoldMs) {
+        if (CharacterAnimations.loopIdle(set, role)
+                || System.currentTimeMillis() - lastSingMs <= singHoldMs) return;
+        boolean hasSecondIdle = CharacterAnimations.hasAction(set, role, "idle2");
+        if (!hasSecondIdle && (beat & 1) == 1) return;
+        String action = hasSecondIdle && (beat & 1) == 1 ? "idle2" : "idle";
+        if (!playState(action, false) && !"idle".equals(action)) playState("idle", false);
+    }
+
+    private boolean playState(String action, boolean sing) {
+        if (CharacterAnimations.play(entity, set, role, action) == null) return false;
+        long now = System.currentTimeMillis();
+        lastStatePlayMs = now;
+        if (sing) lastSingMs = now;
+        return true;
     }
 
     public String role() {
         return role;
     }
 
+    /** Client-side player carrying the visible BBS form. */
+    public RemotePlayer player() {
+        return entity;
+    }
+
     /** Removes the character and un-hides the armor stand. */
     public void remove(Entity stand) {
         if (stand != null) stand.setInvisible(false);
+        PerformerRotation.clear(entity);
         CharacterAnimations.release(entity);
         if (entity.level() instanceof ClientLevel level && level.getEntity(entity.getId()) != null) {
             level.removeEntity(entity.getId(), Entity.RemovalReason.DISCARDED);

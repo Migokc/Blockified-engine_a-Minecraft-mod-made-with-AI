@@ -321,7 +321,12 @@ public final class ClientSession {
         try {
             Path animationRoot = songAssets ? entry.animationRoot() : null;
             CharacterAnimations.useSongFolder(animationRoot, chart.player1, chart.player2);
-            String animationSet = ClientOptions.get().animationSet;
+            // Animation choices belong to the chart role, not to whichever human
+            // happens to control it. A player joining/choosing Dad therefore sends
+            // the Opponent Anims selection to the server.
+            String animationSet = opponentSide
+                    ? ClientOptions.get().opponentAnimationSet
+                    : ClientOptions.get().animationSet;
             Direction facing = Direction.NORTH;
             if (Minecraft.getInstance().level != null) {
                 BlockState state = Minecraft.getInstance().level.getBlockState(activePos);

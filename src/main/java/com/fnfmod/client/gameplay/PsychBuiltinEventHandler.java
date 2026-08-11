@@ -17,7 +17,8 @@ public final class PsychBuiltinEventHandler {
         void eventCameraFollow(Double x, Double y, Double z, String easing,
                                boolean overrideMovement, boolean cameraRelative, boolean extended,
                                Double durationSeconds);
-        void eventCameraRotation(Double pitch, Double yaw, Double roll, String easing);
+        void eventCameraRotation(Double pitch, Double yaw, Double roll, String easing,
+                                 Double durationSeconds);
         void eventAltIdle(String target, String suffix);
         void eventScreenShake(double gameDuration, double gameIntensity,
                               double hudDuration, double hudIntensity);
@@ -67,7 +68,8 @@ public final class PsychBuiltinEventHandler {
                     extended, optionalNumber(text(event.value7)));
         } else if (ChartEventTypes.is(name, ChartEventTypes.CAMERA_ROTATION_3D)) {
             host.eventCameraRotation(optionalNumber(value1), optionalNumber(value2),
-                    optionalNumber(text(event.value3)), text(event.value4));
+                    optionalNumber(text(event.value3)), text(event.value4),
+                    optionalNumber(text(event.value5)));
         } else if (ChartEventTypes.is(name, ChartEventTypes.ALT_IDLE_ANIMATION)) {
             host.eventAltIdle(characterTarget(value1), value2);
         } else if (ChartEventTypes.is(name, ChartEventTypes.SCREEN_SHAKE)) {

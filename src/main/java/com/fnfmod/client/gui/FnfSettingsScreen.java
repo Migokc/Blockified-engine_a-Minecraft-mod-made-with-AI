@@ -111,7 +111,7 @@ public class FnfSettingsScreen extends Screen {
     private int pageContentBottom() {
         return switch (category == null ? "categories" : category) {
             case "categories" -> 50 + 5 * 26 + 20;
-            case "visuals" -> 50 + 6 * 26 + 20;
+            case "visuals" -> 50 + 7 * 26 + 20;
             case "gameplay" -> 50 + 8 * 26 + 20;
             case "colors" -> 50 + 3 * 26 + 78 + 28;
             case "delay" -> 50 + 26 + 20;
@@ -644,12 +644,13 @@ public class FnfSettingsScreen extends Screen {
                 })).bounds(x, rowY(1), w, 20).build());
         splashBtn.active = !NoteStyle.skinHasOwnSplash() && !ClientOptions.isLocked("splashSkin");
 
-        lockIf(addRenderableWidget(Button.builder(animsLabel(), b ->
-                cycle(CharacterAnimations.listSets(), ClientOptions.get().animationSet, false, next -> {
-                    ClientOptions.get().animationSet = next;
-                    ClientOptions.save();
-                    b.setMessage(animsLabel());
-                })).bounds(x, rowY(2), w, 20).build()), "animationSet");
+        lockIf(addRenderableWidget(Button.builder(animsLabel(false), b ->
+                minecraft.setScreen(new AnimationSetPickerScreen(this, false)))
+                .bounds(x, rowY(2), w, 20).build()), "animationSet");
+
+        lockIf(addRenderableWidget(Button.builder(animsLabel(true), b ->
+                minecraft.setScreen(new AnimationSetPickerScreen(this, true)))
+                .bounds(x, rowY(3), w, 20).build()), "opponentAnimationSet");
 
         lockIf(addRenderableWidget(Button.builder(hudStyleLabel(), b ->
                 cycle(List.of("default", "abbreviated", "numbers", "vanilla", "fnf"),
@@ -657,25 +658,25 @@ public class FnfSettingsScreen extends Screen {
                             ClientOptions.get().hudStyle = next;
                             ClientOptions.save();
                             b.setMessage(hudStyleLabel());
-                        })).bounds(x, rowY(3), w, 20).build()), "hudStyle");
+                        })).bounds(x, rowY(4), w, 20).build()), "hudStyle");
 
         // icon selectors open a searchable list
         lockIf(addRenderableWidget(Button.builder(iconLabel(true),
                 b -> minecraft.setScreen(new IconPickerScreen(this, true)))
-                .bounds(x, rowY(4), w, 20).build()), "playerIcon");
+                .bounds(x, rowY(5), w, 20).build()), "playerIcon");
         lockIf(addRenderableWidget(Button.builder(iconLabel(false),
                 b -> minecraft.setScreen(new IconPickerScreen(this, false)))
-                .bounds(x, rowY(5), w, 20).build()), "botIcon");
+                .bounds(x, rowY(6), w, 20).build()), "botIcon");
         addRenderableWidget(Button.builder(Component.literal("Rating Position..."),
                 b -> minecraft.setScreen(new RatingPositionScreen(this)))
-                .bounds(x, rowY(6), w, 20).build());
+                .bounds(x, rowY(7), w, 20).build());
     }
 
     private Component iconLabel(boolean player) {
         String cur = player ? ClientOptions.get().playerIcon : ClientOptions.get().botIcon;
         String shown = ClientOptions.SONG_ICON.equals(cur) ? "Default (song)"
                 : cur == null || cur.isEmpty() ? "None" : cur;
-        return Component.literal((player ? "Player Icon: " : "Bot Icon: ") + shown);
+        return Component.literal((player ? "Player Icon: " : "Opponent Icon: ") + shown);
     }
 
     private Component hudStyleLabel() {
@@ -907,12 +908,13 @@ public class FnfSettingsScreen extends Screen {
         return Component.literal("Note Skin: " + shown);
     }
 
-    private Component animsLabel() {
-        String selected = ClientOptions.get().animationSet;
+    private Component animsLabel(boolean opponent) {
+        String selected = opponent ? ClientOptions.get().opponentAnimationSet
+                : ClientOptions.get().animationSet;
         String shown = CharacterAnimations.NONE_SET.equalsIgnoreCase(selected) ? "None"
                 : CharacterAnimations.DEFAULT_SET.equalsIgnoreCase(selected) ? "Default (song)"
                 : selected + ".json";
-        return Component.literal("Animations: " + shown);
+        return Component.literal((opponent ? "Opponent Anims: " : "Player Anims: ") + shown);
     }
 
     private Component scrollSpeedLabel() {

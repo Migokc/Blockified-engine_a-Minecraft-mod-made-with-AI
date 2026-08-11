@@ -5,6 +5,7 @@ import com.fnfmod.client.gameplay.WorldCharacter;
 import com.fnfmod.client.math.Easing;
 import com.fnfmod.client.render.LuaWorldObject;
 import com.fnfmod.client.render.LuaWorldObjectRenderer;
+import com.fnfmod.client.render.PerformerRotation;
 import com.fnfmod.client.render.SparrowAtlas;
 import com.fnfmod.gameplay.PerformerCollisions;
 import com.fnfmod.gameplay.PerformerPin;
@@ -48,8 +49,12 @@ public final class ExtraCharacterRoster implements AutoCloseable {
         String role;
         double x, y, z;
         float rotation;
-        /** Extra local pitch/yaw used by 2D world characters; rotation remains their roll. */
+        /** Local pitch/yaw; rotation is compatibility yaw for BBS and roll for 2D. */
         double rotationX, rotationY;
+        /** BBS-only roll; 2D characters continue using rotation as their roll. */
+        double rotationZ;
+        /** Render-only scale for BBS forms; 2D characters keep their WorldCharacter scale. */
+        double scaleX = 1, scaleY = 1, scaleZ = 1;
         boolean visible = true;
 
         // Smooth position/rotation tween state (client-side, event or Lua driven).
@@ -72,7 +77,7 @@ public final class ExtraCharacterRoster implements AutoCloseable {
             String tag, String definition, String role, boolean character2D,
             double x, double y, double z,
             double rotationX, double rotationY, double rotationZ, boolean visible,
-            double width, double height, double scaleX, double scaleY,
+            double width, double height, double scaleX, double scaleY, double scaleZ,
             double alpha, int color, boolean billboard, boolean lighting,
             boolean seeThrough, boolean antialiasing, String animation,
             List<String> animations) {}
@@ -178,11 +183,13 @@ public final class ExtraCharacterRoster implements AutoCloseable {
      * Returns every performer to its idle pose on the beat. loopIdle definitions
      * are skipped for the reason above; BBS keeps their idle running by itself.
      */
-    public void danceAll() {
+    public void danceAll(int beat) {
         for (Entry entry : entries.values()) {
             if (entry.world2d != null) continue;   // 2D characters dance via beat()
             if (CharacterAnimations.loopIdle(entry.definition, entry.role)) continue;
-            play(entry.tag, "idle");
+            boolean second = CharacterAnimations.hasAction(entry.definition, entry.role, "idle2")
+                    && (beat & 1) == 1;
+            if (!play(entry.tag, second ? "idle2" : "idle") && second) play(entry.tag, "idle");
         }
     }
 
@@ -198,6 +205,7 @@ public final class ExtraCharacterRoster implements AutoCloseable {
         if (entry == null) return false;
         if (entry.world2d != null) { entry.world2d.close(); return true; }
         // Drop the per-entity overrides so a recycled id cannot inherit them.
+        PerformerRotation.clear(entry.entity);
         PerformerCollisions.setEnabled(entry.entity.getId(), true);
         PerformerShadows.setEnabled(entry.entity.getId(), true);
         CharacterAnimations.release(entry.entity);
@@ -221,12 +229,14 @@ public final class ExtraCharacterRoster implements AutoCloseable {
             result.add(new EditableCharacter(
                     entry.tag, entry.definition, entry.role, wc != null,
                     entry.x, entry.y, entry.z,
-                    wc == null ? 0 : entry.rotationX,
+                    entry.rotationX,
                     wc == null ? entry.rotation : entry.rotationY,
-                    wc == null ? 0 : entry.rotation,
+                    wc == null ? entry.rotationZ : entry.rotation,
                     entry.visible,
                     wc == null ? 48 : wc.refW(), wc == null ? 96 : wc.refH(),
-                    wc == null ? 1 : wc.scaleX(), wc == null ? 1 : wc.scaleY(),
+                    wc == null ? entry.scaleX : wc.scaleX(),
+                    wc == null ? entry.scaleY : wc.scaleY(),
+                    wc == null ? entry.scaleZ : 1,
                     wc == null ? 1 : wc.alpha(), wc == null ? 0xFFFFFF : wc.color(),
                     wc == null || wc.billboard(), wc == null || wc.lighting(),
                     wc != null && wc.seeThrough(), wc == null || wc.antialiasing(),
@@ -267,8 +277,13 @@ public final class ExtraCharacterRoster implements AutoCloseable {
                 entry.world2d.play(edit.animation(), true);
             }
         } else {
-            // Minecraft/BBS performers support a stage-local yaw.
+            // Keep legacy yaw on the entity; pitch and roll are BBS render offsets.
+            setRotationX(entry.tag, edit.rotationX());
             setRotation(entry.tag, edit.rotationY());
+            setRotationZ(entry.tag, edit.rotationZ());
+            setScaleX(entry.tag, edit.scaleX());
+            setScaleY(entry.tag, edit.scaleY());
+            setScaleZ(entry.tag, edit.scaleZ());
         }
         return true;
     }
@@ -415,6 +430,31 @@ public final class ExtraCharacterRoster implements AutoCloseable {
         return true;
     }
 
+    public boolean setRotationX(String tag, double value) {
+        Entry entry = entries.get(key(tag));
+        if (entry == null) return false;
+        entry.rotationX = finite(value);
+        updateTransform(entry);
+        return true;
+    }
+
+    public boolean setRotationY(String tag, double value) {
+        Entry entry = entries.get(key(tag));
+        if (entry == null) return false;
+        if (entry.world2d == null) return setRotation(tag, value);
+        entry.rotationY = finite(value);
+        return true;
+    }
+
+    public boolean setRotationZ(String tag, double value) {
+        Entry entry = entries.get(key(tag));
+        if (entry == null) return false;
+        if (entry.world2d != null) entry.rotation = (float) finite(value);
+        else entry.rotationZ = finite(value);
+        updateTransform(entry);
+        return true;
+    }
+
     public boolean setVisible(String tag, boolean visible) {
         Entry entry = entries.get(key(tag));
         if (entry == null) return false;
@@ -501,7 +541,7 @@ public final class ExtraCharacterRoster implements AutoCloseable {
         return true;
     }
 
-    // --- 2D character visual properties (no-op for 3D BBS performers) ---
+    // --- Character visual properties; XYZ scale is also supported by BBS forms. ---
 
     public boolean is2D(String tag) { Entry e = entries.get(key(tag)); return e != null && e.world2d != null; }
 
@@ -519,14 +559,26 @@ public final class ExtraCharacterRoster implements AutoCloseable {
 
     public boolean setScaleX(String tag, double v) {
         Entry e = entries.get(key(tag));
-        if (e == null || e.world2d == null) return false;
-        e.world2d.setScaleX(v); return true;
+        if (e == null) return false;
+        if (e.world2d != null) e.world2d.setScaleX(v);
+        else { e.scaleX = finiteOr(v, 1); updateTransform(e); }
+        return true;
     }
 
     public boolean setScaleY(String tag, double v) {
         Entry e = entries.get(key(tag));
-        if (e == null || e.world2d == null) return false;
-        e.world2d.setScaleY(v); return true;
+        if (e == null) return false;
+        if (e.world2d != null) e.world2d.setScaleY(v);
+        else { e.scaleY = finiteOr(v, 1); updateTransform(e); }
+        return true;
+    }
+
+    public boolean setScaleZ(String tag, double v) {
+        Entry e = entries.get(key(tag));
+        if (e == null || e.world2d != null) return false;
+        e.scaleZ = finiteOr(v, 1);
+        updateTransform(e);
+        return true;
     }
 
     public boolean setFlipX(String tag, boolean v) {
@@ -566,14 +618,24 @@ public final class ExtraCharacterRoster implements AutoCloseable {
 
     public double alpha(String tag) { Entry e = entries.get(key(tag)); return e != null && e.world2d != null ? e.world2d.alpha() : 1; }
     public int color(String tag) { Entry e = entries.get(key(tag)); return e != null && e.world2d != null ? e.world2d.color() : 0xFFFFFF; }
-    public double scaleX(String tag) { Entry e = entries.get(key(tag)); return e != null && e.world2d != null ? e.world2d.scaleX() : 1; }
-    public double scaleY(String tag) { Entry e = entries.get(key(tag)); return e != null && e.world2d != null ? e.world2d.scaleY() : 1; }
+    public double scaleX(String tag) { Entry e = entries.get(key(tag)); return e == null ? 1 : e.world2d != null ? e.world2d.scaleX() : e.scaleX; }
+    public double scaleY(String tag) { Entry e = entries.get(key(tag)); return e == null ? 1 : e.world2d != null ? e.world2d.scaleY() : e.scaleY; }
+    public double scaleZ(String tag) { Entry e = entries.get(key(tag)); return e == null || e.world2d != null ? 1 : e.scaleZ; }
     public boolean flipX(String tag) { Entry e = entries.get(key(tag)); return e != null && e.world2d != null && e.world2d.flipX(); }
 
     public double x(String tag) { Entry e = entries.get(key(tag)); return e == null ? 0 : e.x; }
     public double y(String tag) { Entry e = entries.get(key(tag)); return e == null ? 0 : e.y; }
     public double z(String tag) { Entry e = entries.get(key(tag)); return e == null ? 0 : e.z; }
     public double rotation(String tag) { Entry e = entries.get(key(tag)); return e == null ? 0 : e.rotation; }
+    public double rotationX(String tag) { Entry e = entries.get(key(tag)); return e == null ? 0 : e.rotationX; }
+    public double rotationY(String tag) {
+        Entry e = entries.get(key(tag));
+        return e == null ? 0 : e.world2d == null ? e.rotation : e.rotationY;
+    }
+    public double rotationZ(String tag) {
+        Entry e = entries.get(key(tag));
+        return e == null ? 0 : e.world2d == null ? e.rotationZ : e.rotation;
+    }
     public boolean visible(String tag) { Entry e = entries.get(key(tag)); return e != null && e.visible; }
 
     private void updateTransform(Entry entry) {
@@ -596,6 +658,8 @@ public final class ExtraCharacterRoster implements AutoCloseable {
         entry.entity.setYRot(yaw);
         entry.entity.setYHeadRot(yaw);
         entry.entity.setYBodyRot(yaw);
+        PerformerRotation.set(entry.entity, entry.rotationX, entry.rotationZ,
+                entry.scaleX, entry.scaleY, entry.scaleZ);
         entry.entity.setInvisible(!entry.visible);
     }
 
@@ -620,5 +684,9 @@ public final class ExtraCharacterRoster implements AutoCloseable {
 
     private static double finite(double value) {
         return Double.isFinite(value) ? value : 0;
+    }
+
+    private static double finiteOr(double value, double fallback) {
+        return Double.isFinite(value) ? value : fallback;
     }
 }

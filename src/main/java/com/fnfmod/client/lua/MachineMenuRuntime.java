@@ -4,6 +4,7 @@ import com.fnfmod.FnfMod;
 import com.fnfmod.client.audio.PsychSoundPlayer;
 import com.fnfmod.client.render.MachineAtlasCache;
 import com.fnfmod.client.render.MachineTextureCache;
+import com.fnfmod.client.render.MissingAssetTexture;
 import com.fnfmod.client.render.PsychCanvas;
 import com.fnfmod.client.render.SparrowAtlas;
 import com.fnfmod.gameplay.PlaybackMode;
@@ -1208,9 +1209,15 @@ public final class MachineMenuRuntime implements AutoCloseable {
     private void renderImage(GuiGraphics gui, LuaTable data, int centerX, int centerY,
                              int width, int height) {
         try {
-            Path file = resolveAsset(data.get("path").optjstring(""));
+            String requestedPath = data.get("path").optjstring("");
+            Path file = resolveAsset(requestedPath);
             ResourceLocation texture = MachineTextureCache.get(file);
-            if (texture == null) return;
+            boolean missing = texture == null && !requestedPath.isBlank();
+            if (texture == null && !missing) return;
+            if (missing) {
+                renderMissingAsset(gui, data, centerX, centerY, width, height);
+                return;
+            }
             MachineTextureCache.setAntialiasing(file, data.get("antialiasing").optboolean(true));
             beginSpriteColor(gui, data);
             gui.pose().pushPose();
@@ -1233,7 +1240,13 @@ public final class MachineMenuRuntime implements AutoCloseable {
                                       int centerX, int centerY, int width, int height) {
         AnimatedState state = animatedStates.get(id);
         SparrowAtlas atlas = state == null ? null : atlasFor(state);
-        if (atlas == null || state.prefix.isBlank()) return;
+        if (atlas == null) {
+            if (state != null && !data.get("path").optjstring("").isBlank()) {
+                renderMissingAsset(gui, data, centerX, centerY, width, height);
+            }
+            return;
+        }
+        if (state.prefix.isBlank()) return;
         List<SparrowAtlas.Frame> frames = animationFrames(atlas, state.prefix);
         if (frames.isEmpty()) return;
         SparrowAtlas.Frame frame = frames.get(Math.max(0, Math.min(frames.size() - 1, state.frame)));
@@ -1262,6 +1275,28 @@ public final class MachineMenuRuntime implements AutoCloseable {
             SparrowAtlas.tintR = oldR;
             SparrowAtlas.tintG = oldG;
             SparrowAtlas.tintB = oldB;
+        }
+    }
+
+    private static void renderMissingAsset(GuiGraphics gui, LuaTable data,
+                                           int centerX, int centerY, int width, int height) {
+        float alpha = (float) Math.max(0, Math.min(1, data.get("alpha").optdouble(1)));
+        gui.flush();
+        gui.setColor(1, 1, 1, alpha);
+        gui.pose().pushPose();
+        try {
+            gui.pose().translate(centerX, centerY, 0);
+            gui.pose().mulPose(com.mojang.math.Axis.ZP.rotationDegrees(
+                    (float) data.get("angle").optdouble(0)));
+            gui.pose().scale(data.get("flipX").optboolean(false) ? -1 : 1,
+                    data.get("flipY").optboolean(false) ? -1 : 1, 1);
+            gui.blit(MissingAssetTexture.texture(), -width / 2, -height / 2,
+                    width, height, 0, 0,
+                    MissingAssetTexture.width(), MissingAssetTexture.height(),
+                    MissingAssetTexture.width(), MissingAssetTexture.height());
+        } finally {
+            gui.pose().popPose();
+            endSpriteColor(gui);
         }
     }
 
@@ -1376,7 +1411,7 @@ public final class MachineMenuRuntime implements AutoCloseable {
             return LuaValue.NIL;
         }));
         globals.set("enableMenuBlur", function(args -> {
-            takeMenuBlur(Math.max(1, args.arg(1).optdouble(defaultMenuBlur())));
+            takeMenuBlur(Math.max(1, args.arg(1).optdouble(enabledMenuBlurDefault())));
             return LuaValue.NIL;
         }));
         globals.set("disableMenuBlur", function(args -> {
@@ -1390,13 +1425,13 @@ public final class MachineMenuRuntime implements AutoCloseable {
             return LuaValue.NIL;
         }));
         globals.set("getMenuBlur", function(args ->
-                LuaValue.valueOf(menuBlurControlled ? menuBlurValue : defaultMenuBlur())));
+                LuaValue.valueOf(menuBlurControlled ? menuBlurValue : configuredMenuBlur())));
         globals.set("doTweenMenuBlur", function(args -> {
             String tag = args.arg(1).optjstring("");
             double target = Math.max(0, args.arg(2).optdouble(0));
             double seconds = Math.max(0, Math.min(3600, args.arg(3).optdouble(1)));
             String ease = args.arg(4).optjstring("linear");
-            menuBlurFrom = menuBlurControlled ? menuBlurValue : defaultMenuBlur();
+            menuBlurFrom = menuBlurControlled ? menuBlurValue : configuredMenuBlur();
             menuBlurTo = target;
             menuBlurStartNanos = System.nanoTime();
             menuBlurDurationNanos = Math.max(1_000_000L, (long) (seconds * 1_000_000_000L));
@@ -1416,10 +1451,16 @@ public final class MachineMenuRuntime implements AutoCloseable {
         menuBlurValue = value;
     }
 
-    private static double defaultMenuBlur() {
+    /** The player's live accessibility option, including 0 (Off). */
+    private static double configuredMenuBlur() {
         Minecraft minecraft = Minecraft.getInstance();
-        double option = minecraft == null ? 0 : minecraft.options.getMenuBackgroundBlurriness();
-        return option >= 1 ? option : 8;
+        return minecraft == null ? 0 : Math.max(0, minecraft.options.getMenuBackgroundBlurriness());
+    }
+
+    /** A visible default for enableMenuBlur() when the player currently has blur disabled. */
+    private static double enabledMenuBlurDefault() {
+        double configured = configuredMenuBlur();
+        return configured >= 1 ? configured : 8;
     }
 
     /** True once a script has taken over the menu blur; the screen then uses {@link #currentMenuBlur()}. */

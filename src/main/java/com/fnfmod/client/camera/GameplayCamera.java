@@ -72,6 +72,8 @@ public final class GameplayCamera {
     private static final double CAMERA_EVENT_DURATION_MS = 500.0;
     /** Follow-pos move duration; the shared default until an event supplies one. */
     private static double positionEventDurationMs = CAMERA_EVENT_DURATION_MS;
+    /** Rotation duration; blank/invalid event values retain the historical 0.5s. */
+    private static double rotationEventDurationMs = CAMERA_EVENT_DURATION_MS;
     private static long gameShakeEnd, hudShakeEnd;
     private static float gameShakeIntensity, hudShakeIntensity;
     // persistent event zoom, tweened to a target over a fixed short transition
@@ -347,6 +349,7 @@ public final class GameplayCamera {
         positionEventDurationMs = CAMERA_EVENT_DURATION_MS;
         rotationEventFrom = rotationEventCurrent = rotationEventTarget = Vec3.ZERO;
         rotationEventStart = 0;
+        rotationEventDurationMs = CAMERA_EVENT_DURATION_MS;
         gameShakeEnd = hudShakeEnd = 0;
         gameShakeIntensity = hudShakeIntensity = 0;
         CameraOverlay.reset();
@@ -401,6 +404,7 @@ public final class GameplayCamera {
         positionEventDurationMs = CAMERA_EVENT_DURATION_MS;
         rotationEventFrom = rotationEventCurrent = rotationEventTarget = Vec3.ZERO;
         rotationEventStart = 0;
+        rotationEventDurationMs = CAMERA_EVENT_DURATION_MS;
         gameShakeEnd = hudShakeEnd = 0;
         gameShakeIntensity = hudShakeIntensity = 0;
         CameraOverlay.reset();
@@ -586,12 +590,15 @@ public final class GameplayCamera {
     }
 
     /** X=pitch, Y=yaw, Z=roll. Empty XYZ eases back to normal rotation. */
-    public static void rotateTo(Double pitch, Double yaw, Double roll, String easing) {
+    public static void rotateTo(Double pitch, Double yaw, Double roll, String easing,
+                                Double durationSeconds) {
         if (!active) return;
         updateRotationEvent(GameplayClock.now());
         rotationEventFrom = rotationEventCurrent;
         rotationEventTarget = new Vec3(finite(pitch), finite(yaw), finite(roll));
         rotationEventEase = normalizeCameraEase(easing);
+        rotationEventDurationMs = durationSeconds != null && durationSeconds > 0
+                ? durationSeconds * 1000.0 : CAMERA_EVENT_DURATION_MS;
         rotationEventStart = GameplayClock.now();
     }
 
@@ -626,7 +633,7 @@ public final class GameplayCamera {
 
     private static void updateRotationEvent(long nowMs) {
         if (rotationEventStart == 0) return;
-        double t = (nowMs - rotationEventStart) / CAMERA_EVENT_DURATION_MS;
+        double t = (nowMs - rotationEventStart) / rotationEventDurationMs;
         if (t >= 1) {
             rotationEventCurrent = rotationEventTarget;
             rotationEventStart = 0;

@@ -257,6 +257,34 @@ public class SparrowAtlas implements AutoCloseable {
         return allFrames.stream().filter(frame -> frame.name.startsWith(prefix)).toList();
     }
 
+    /**
+     * Resolves HaxeFlixel/Psych {@code addByIndices}: each value names the numeric
+     * suffix immediately after the prefix. It is not an offset into every broad
+     * prefix match. Missing numbers are deliberately skipped, matching Flixel.
+     */
+    public List<Frame> framesByIndices(String prefix, List<Integer> indices) {
+        if (prefix == null || indices == null || indices.isEmpty()) return List.of();
+        Map<Integer, Frame> numbered = new LinkedHashMap<>();
+        for (Frame frame : allFrames) {
+            if (frame.name == null || !frame.name.startsWith(prefix)) continue;
+            int at = prefix.length();
+            if (at >= frame.name.length() || !Character.isDigit(frame.name.charAt(at))) continue;
+            long value = 0;
+            while (at < frame.name.length() && Character.isDigit(frame.name.charAt(at))) {
+                value = value * 10 + frame.name.charAt(at++) - '0';
+                if (value > Integer.MAX_VALUE) break;
+            }
+            if (value <= Integer.MAX_VALUE) numbered.putIfAbsent((int) value, frame);
+        }
+        List<Frame> result = new ArrayList<>(indices.size());
+        for (Integer index : indices) {
+            if (index == null) continue;
+            Frame frame = numbered.get(index);
+            if (frame != null) result.add(frame);
+        }
+        return List.copyOf(result);
+    }
+
     public List<Frame> allFrames() {
         return List.copyOf(allFrames);
     }

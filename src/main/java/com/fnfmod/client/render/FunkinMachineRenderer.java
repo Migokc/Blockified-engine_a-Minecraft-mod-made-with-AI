@@ -33,8 +33,9 @@ public final class FunkinMachineRenderer implements BlockEntityRenderer<FunkinMa
                 ? machine.getBlockState().getValue(FunkinMachineBlock.FACING) : Direction.NORTH;
         for (Direction face : Direction.values()) {
             Path file = definition.texture(faceName(face, front));
+            if (file == null) continue;
             ResourceLocation texture = MachineTextureCache.get(file);
-            if (texture == null) continue;
+            if (texture == null) texture = MissingAssetTexture.texture();
             VertexConsumer vertices = buffers.getBuffer(RenderType.entityCutoutNoCull(texture));
             quad(vertices, poseStack.last(), face, packedLight, packedOverlay);
         }

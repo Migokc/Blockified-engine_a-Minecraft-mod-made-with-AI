@@ -304,10 +304,7 @@ public final class WorldCharacter implements AutoCloseable {
 
     private static List<SparrowAtlas.Frame> frames(SparrowAtlas atlas, String prefix, List<Integer> indices) {
         if (indices != null && !indices.isEmpty()) {
-            List<SparrowAtlas.Frame> all = atlas.framesByPrefix(prefix);
-            List<SparrowAtlas.Frame> picked = new ArrayList<>();
-            for (int i : indices) if (i >= 0 && i < all.size()) picked.add(all.get(i));
-            if (!picked.isEmpty()) return picked;
+            return new ArrayList<>(atlas.framesByIndices(prefix, indices));
         }
         return new ArrayList<>(atlas.framesByPrefix(prefix));
     }

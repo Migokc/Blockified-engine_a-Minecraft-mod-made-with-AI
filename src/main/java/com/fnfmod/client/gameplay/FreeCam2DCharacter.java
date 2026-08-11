@@ -115,10 +115,7 @@ public final class FreeCam2DCharacter implements AutoCloseable {
 
     private static List<SparrowAtlas.Frame> resolveFrames(SparrowAtlas atlas, String prefix, List<Integer> indices) {
         if (indices != null && !indices.isEmpty()) {
-            List<SparrowAtlas.Frame> all = atlas.framesByPrefix(prefix);
-            List<SparrowAtlas.Frame> picked = new ArrayList<>();
-            for (int i : indices) if (i >= 0 && i < all.size()) picked.add(all.get(i));
-            if (!picked.isEmpty()) return picked;
+            return atlas.framesByIndices(prefix, indices);
         }
         return atlas.framesByPrefix(prefix);
     }

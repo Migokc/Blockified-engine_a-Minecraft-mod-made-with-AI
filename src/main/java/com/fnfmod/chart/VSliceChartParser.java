@@ -42,18 +42,37 @@ public final class VSliceChartParser {
                 JsonObject meta = JsonParser.parseString(metadataJson).getAsJsonObject();
                 chart.title = LegacyChartParser.optString(meta, "songName", "Unknown");
                 if (meta.has("timeChanges") && meta.get("timeChanges").isJsonArray()) {
+                    int previousNumerator = 4;
+                    int previousDenominator = 4;
                     for (JsonElement el : meta.getAsJsonArray("timeChanges")) {
                         if (!el.isJsonObject()) continue;
                         JsonObject tc = el.getAsJsonObject();
                         double t = LegacyChartParser.optDouble(tc, "t", 0);
                         double bpm = LegacyChartParser.optDouble(tc, "bpm", 120);
                         chart.bpmChanges.add(new SongChart.BpmChange(Math.max(0, t), bpm));
+                        // V-Slice stores meter as compact n/d fields. Preserve
+                        // exact timed changes instead of forcing them onto the
+                        // synthetic four-beat sections used by the legacy editor.
+                        int compactNumerator = (int) LegacyChartParser.optDouble(
+                                tc, "n", previousNumerator);
+                        int compactDenominator = (int) LegacyChartParser.optDouble(
+                                tc, "d", previousDenominator);
+                        int[] meter = LegacyChartParser.timeSignature(
+                                tc, compactNumerator, compactDenominator);
                         if (Math.abs(t) < 0.001) {
-                            int[] meter = LegacyChartParser.timeSignature(tc, 4, 4);
                             chart.timeSignatureNumerator = meter[0];
                             chart.timeSignatureDenominator = meter[1];
                         }
+                        if (chart.meterChanges.isEmpty()
+                                || meter[0] != previousNumerator
+                                || meter[1] != previousDenominator) {
+                            chart.meterChanges.add(new SongChart.MeterChange(t, meter[0], meter[1]));
+                        }
+                        previousNumerator = meter[0];
+                        previousDenominator = meter[1];
                     }
+                    chart.meterChanges.sort(java.util.Comparator.comparingDouble(
+                            SongChart.MeterChange::timeMs));
                 }
                 if (meta.has("playData") && meta.get("playData").isJsonObject()) {
                     JsonObject pd = meta.getAsJsonObject("playData");

@@ -9,6 +9,7 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.Base64;
+import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
 
@@ -30,6 +31,21 @@ public final class NativeFilePicker {
      * empty means any file. Returns the chosen path, or empty if cancelled/unavailable.
      */
     public static Optional<Path> openFile(String title, String[] patterns, String description) {
+        List<Path> selected = openFiles(title, patterns, description, false);
+        return selected.isEmpty() ? Optional.empty() : Optional.of(selected.get(0));
+    }
+
+    /**
+     * Opens the OS file-open dialog with multi-selection enabled. TinyFD returns
+     * multiple paths separated by {@code |}; that character is invalid in Windows
+     * filenames and is the delimiter TinyFD documents for every platform.
+     */
+    public static List<Path> openFiles(String title, String[] patterns, String description) {
+        return openFiles(title, patterns, description, true);
+    }
+
+    private static List<Path> openFiles(String title, String[] patterns, String description,
+                                        boolean multiple) {
         try (MemoryStack stack = MemoryStack.stackPush()) {
             PointerBuffer filters = null;
             if (patterns != null && patterns.length > 0) {
@@ -38,11 +54,15 @@ public final class NativeFilePicker {
                 filters.flip();
             }
             String result = TinyFileDialogs.tinyfd_openFileDialog(
-                    title, "", filters, description, false);
-            return result == null || result.isBlank() ? Optional.empty() : Optional.of(Path.of(result));
+                    title, "", filters, description, multiple);
+            if (result == null || result.isBlank()) return List.of();
+            return java.util.Arrays.stream(result.split("\\|", -1))
+                    .filter(path -> !path.isBlank())
+                    .map(Path::of)
+                    .toList();
         } catch (Throwable error) {
             FnfMod.LOGGER.warn("Native file dialog unavailable: {}", error.toString());
-            return Optional.empty();
+            return List.of();
         }
     }
 

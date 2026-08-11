@@ -53,6 +53,7 @@ import com.fnfmod.client.render.NonFnfHudState;
 import com.fnfmod.client.render.PsychHudState;
 import com.fnfmod.client.render.PsychNoteTextureCache;
 import com.fnfmod.client.render.FreeCamCameraMarker;
+import com.fnfmod.client.render.PerformerRotation;
 import com.fnfmod.net.FnfPayloads;
 import com.fnfmod.song.SongEntry;
 import com.fnfmod.song.SongLibrary;
@@ -78,6 +79,15 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
 
     private enum Phase { COUNTDOWN, PLAYING, PAUSED, GAMEOVER, RESULTS }
 
+    /** One signature region in logical quarter-note beat space. */
+    private record MeterSegment(double startBeat, SongChart.TimeSignature signature,
+                                long firstPulse, long firstMeasure) {}
+
+    /** Current written beat/bar position. beatInMeasure and measure are zero-based. */
+    private record MeterPosition(SongChart.TimeSignature signature, int segment,
+                                 long pulse, long measure, int beatInMeasure,
+                                 double pulseProgress) {}
+
     /** Which side(s) the local player controls. BOTH is solo-only. */
     public enum PlayMode { PLAYER, OPPONENT, BOTH }
 
@@ -93,6 +103,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     private static final float PSYCH_NOTE_WIDTH = 112f;
     /** Blockified default presentation is 90% of Psych's native note size. */
     private static final float DEFAULT_NOTE_SIZE = PSYCH_NOTE_WIDTH * 0.9f;
+    private static final long CURSOR_IDLE_NANOS = 2_000_000_000L;
 
     private final BlockPos machinePos;
     private final SongChart chart;
@@ -168,6 +179,9 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     private final int[] otherLaneIndex = new int[4];
 
     private Phase phase = Phase.COUNTDOWN;
+    /** PlayState cursor inactivity timer; Windows fades through alpha cursors. */
+    private final GameplayCursorFade gameplayCursorFade = new GameplayCursorFade();
+    private long gameplayCursorLastActivityNanos;
     private double songPos;
     private int totalMyNotes;
 
@@ -246,7 +260,9 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     private record CoverEnd(int lane, float x, float y, long bornMs) {}
     private final List<CoverEnd> coverEnds = new ArrayList<>();
     private static final double SPLASH_FPS = 24.0;
-    private int lastBeat = -1;
+    private final List<MeterSegment> meterSegments;
+    private int lastMeterSegment = -1;
+    private long lastMeterPulse = Long.MIN_VALUE;
     private int eventIndex;
     private boolean preSongEventsProcessed;
     /**
@@ -382,6 +398,8 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         super(Component.literal("FNF"));
         this.machinePos = machinePos;
         this.chart = chart;
+        this.conductor = new Conductor(chart);
+        this.meterSegments = buildMeterSegments(chart, conductor);
         this.songPlayer = songPlayer;
         this.extraCharacters = new ExtraCharacterRoster(machinePos);
         // A definition that resolves to a Psych character JSON spawns a real 2D character.
@@ -407,7 +425,6 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         this.songExitTarget = FnfPayloads.LeaveC2S.normalizeReturnTarget(
                 ClientSession.pendingSongExitTarget);
         this.startAtEpochMs = startAtEpochMs;
-        this.conductor = new Conductor(chart);
         applySongNoteTextures(chart);
         this.originalLuaNotes = chart.notes.stream().map(SongChart.Note::copy).toList();
         this.runtimeSongId = ClientSession.songId;
@@ -417,24 +434,28 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         this.playbackPolicy = new PlaybackPolicy(ClientSession.playbackMode, ClientSession.songAssets);
         CharacterAnimations.useSongFolder(playbackPolicy.songAssets() && runtimeSongEntry != null
                 ? runtimeSongEntry.animationRoot() : null, chart.player1, chart.player2);
-        // A full mod pack defines its performers through the chart's player IDs,
-        // not the shared global animation-set option (which stays "none" unless the
-        // player picked a config/fnfmod/animations character). Use the chart
-        // character so the mod's own bundled character — and its sing states and
-        // Change Character events — actually resolve instead of "none".
-        String resolvedAnimSet = ClientOptions.get().animationSet;
+        // Default (song) resolves the definition named by this chart role. None
+        // remains disabled and an explicitly selected global definition remains
+        // selected, including inside complete mod packs.
+        String resolvedAnimSet = myChartSideIsPlayer
+                ? ClientOptions.get().animationSet
+                : ClientOptions.get().opponentAnimationSet;
         String localCharacter = myChartSideIsPlayer ? chart.player1 : chart.player2;
         if (playbackPolicy.songAssets() && runtimeSongEntry != null
+                && CharacterAnimations.DEFAULT_SET.equalsIgnoreCase(resolvedAnimSet)
                 && localCharacter != null && !localCharacter.isBlank()) {
             resolvedAnimSet = CharacterAnimations.modSet(localCharacter);
         }
         this.myAnimSet = resolvedAnimSet;
         this.initialMyAnimSet = resolvedAnimSet;
-        // The solo bot plays the other side's character; resolve it like myAnimSet.
+        // The solo bot plays the other chart role, so it uses that role's setting.
         this.opponentBotRole = partnerRole();
         String botCharacter = myChartSideIsPlayer ? chart.player2 : chart.player1;
-        String botSet = ClientOptions.get().animationSet;
+        String botSet = myChartSideIsPlayer
+                ? ClientOptions.get().opponentAnimationSet
+                : ClientOptions.get().animationSet;
         if (playbackPolicy.songAssets() && runtimeSongEntry != null
+                && CharacterAnimations.DEFAULT_SET.equalsIgnoreCase(botSet)
                 && botCharacter != null && !botCharacter.isBlank()) {
             botSet = CharacterAnimations.modSet(botCharacter);
         }
@@ -679,7 +700,8 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                 return bot == null || bot.isRemoved() ? botSpot : bot.position().add(0, 1.0, 0);
             };
         }
-        float[] partnerBase = CharacterAnimations.baseCameraOffset(partnerAnimSet, partnerRole());
+        String otherSet = partnerId == null ? opponentBotSet : partnerAnimSet;
+        float[] partnerBase = CharacterAnimations.baseCameraOffset(otherSet, partnerRole());
         GameplayCamera.begin(anchor, facing.toYRot(), mePos,
                 myChartSideIsPlayer ? mePos : otherPos,
                 myChartSideIsPlayer ? otherPos : mePos,
@@ -687,7 +709,91 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                 myChartSideIsPlayer ? partnerBase : myBase, playbackPolicy.mode());
     }
 
-    // ------------------------------------------------------------------ timing
+    // ------------------------------------------------------------------ meter / timing
+
+    private static List<MeterSegment> buildMeterSegments(SongChart chart, Conductor conductor) {
+        List<MeterSegment> segments = new ArrayList<>();
+        SongChart.TimeSignature signature = chart.startingTimeSignature();
+        segments.add(new MeterSegment(0, signature, 0, 0));
+
+        // V-Slice metadata can place meter changes at exact song times. Prefer
+        // those over its synthetic editor sections so gameplay keeps the source
+        // chart's real bar boundaries.
+        if (!chart.meterChanges.isEmpty()) {
+            for (SongChart.MeterChange change : chart.meterChanges) {
+                appendMeterSegment(segments, conductor.beatAt(change.timeMs()),
+                        new SongChart.TimeSignature(change.numerator(), change.denominator()));
+            }
+            return List.copyOf(segments);
+        }
+
+        double beat = 0;
+
+        for (SongChart.Section section : chart.sections) {
+            if (section.changeTimeSignature) {
+                SongChart.TimeSignature changed = new SongChart.TimeSignature(
+                        section.timeSignatureNumerator, section.timeSignatureDenominator);
+                appendMeterSegment(segments, beat, changed);
+            }
+            beat += Math.max(0.25, section.sectionBeats);
+        }
+        return List.copyOf(segments);
+    }
+
+    private static void appendMeterSegment(List<MeterSegment> segments, double rawBeat,
+                                           SongChart.TimeSignature signature) {
+        double beat = Math.max(0, Double.isFinite(rawBeat) ? rawBeat : 0);
+        MeterSegment previous = segments.get(segments.size() - 1);
+        if (beat + 1.0e-7 < previous.startBeat) return;
+        if (Math.abs(beat - previous.startBeat) < 1.0e-7) {
+            segments.set(segments.size() - 1, new MeterSegment(
+                    beat, signature, previous.firstPulse, previous.firstMeasure));
+            return;
+        }
+        if (signature.equals(previous.signature)) return;
+        double duration = beat - previous.startBeat;
+        long firstPulse = previous.firstPulse
+                + pulsesBefore(duration, previous.signature.pulseBeats());
+        long firstMeasure = previous.firstMeasure
+                + pulsesBefore(duration, previous.signature.barBeats());
+        segments.add(new MeterSegment(beat, signature, firstPulse, firstMeasure));
+    }
+
+    /** Number of pulse starts in [0,duration), including the one at zero. */
+    private static long pulsesBefore(double duration, double pulseLength) {
+        if (!Double.isFinite(duration) || duration <= 0 || pulseLength <= 0) return 0;
+        return Math.max(0, (long) Math.ceil(duration / pulseLength - 1.0e-7));
+    }
+
+    private MeterPosition meterAtBeat(double rawBeat) {
+        double beat = Math.max(0, Double.isFinite(rawBeat) ? rawBeat : 0);
+        int low = 0;
+        int high = meterSegments.size() - 1;
+        while (low < high) {
+            int middle = (low + high + 1) >>> 1;
+            if (meterSegments.get(middle).startBeat <= beat + 1.0e-7) low = middle;
+            else high = middle - 1;
+        }
+
+        MeterSegment segment = meterSegments.get(low);
+        SongChart.TimeSignature signature = segment.signature;
+        double pulseLength = signature.pulseBeats();
+        double local = Math.max(0, beat - segment.startBeat);
+        double exactPulse = local / pulseLength;
+        long localPulse = Math.max(0, (long) Math.floor(exactPulse + 1.0e-7));
+        long localMeasure = localPulse / signature.numerator();
+        int beatInMeasure = (int) (localPulse % signature.numerator());
+        double progress = exactPulse - Math.floor(exactPulse);
+        if (progress < 1.0e-7 || progress > 1.0 - 1.0e-7) progress = 0;
+        return new MeterPosition(signature, low,
+                segment.firstPulse + localPulse,
+                segment.firstMeasure + localMeasure,
+                beatInMeasure, Math.max(0, Math.min(1, progress)));
+    }
+
+    private MeterPosition currentMeter() {
+        return meterAtBeat(conductor.beatAt(Math.max(0, songPos)));
+    }
 
     private void updateSongPos() {
         if (phase == Phase.PAUSED || phase == Phase.GAMEOVER) return;
@@ -778,7 +884,27 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     @Override
     protected void init() {
         super.init();
+        markGameplayCursorActive();
         muteVanillaMusic();
+    }
+
+    private void markGameplayCursorActive() {
+        gameplayCursorLastActivityNanos = System.nanoTime();
+        if (minecraft == null || freeCamMove) return;
+        gameplayCursorFade.restore(minecraft.getWindow().getWindow());
+    }
+
+    private void updateGameplayCursor() {
+        if (minecraft == null || resourcesDisposed || freeCamMove) return;
+        if (phase == Phase.PAUSED) {
+            gameplayCursorFade.restore(minecraft.getWindow().getWindow());
+            return;
+        }
+        long now = System.nanoTime();
+        if (gameplayCursorLastActivityNanos == 0) gameplayCursorLastActivityNanos = now;
+        long inactive = Math.max(0, now - gameplayCursorLastActivityNanos);
+        gameplayCursorFade.setOpacity(minecraft.getWindow().getWindow(),
+                inactive <= CURSOR_IDLE_NANOS ? 1 : 0);
     }
 
     private void applyPsychCameraDefaults() {
@@ -831,6 +957,9 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                 luaRuntime.onEventPushed(event.name, event.value1, event.value2, event.timeMs);
             }
         }
+        // Spawn/morph the solo opponent during the count-in, before the first
+        // note scan. Creating it afterward could lose a song's time-zero sing.
+        if (phase == Phase.COUNTDOWN || phase == Phase.PLAYING) updateOpponentBot();
         // Morph the performers during the count-in. applyForm is a no-op once the
         // form is already on, so retrying each frame just covers a partner or bot
         // whose entity has not streamed in yet.
@@ -930,7 +1059,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                     }
                 } else if (laneHeld[lane]) {
                     hold.releasedMs = -1; // holding (or resumed within grace)
-                    fireSustainGoodNoteHits(hold);
+                    fireSustainNoteHits(hold);
                     health = Math.min(2f, health + (float) (hold.data.hitHealth * dtMs / 1000.0));
                     strumFlashFor(hold)[lane] = Math.max(strumFlashFor(hold)[lane], 40);
                     // loop the sing animation while the note is held
@@ -965,8 +1094,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             }
         }
 
-        // bot plays the other side in solo (unless the player is playing both sides)
-        updateOpponentBot();
+        // Bot plays the other side in solo (unless the player is playing both sides).
         if (!duet && !playBoth) {
             for (int lane = 0; lane < 4; lane++) {
                 List<GameNote> list = otherLanes[lane];
@@ -978,7 +1106,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                                 animatePsychHold(n.data, lane,
                                         n.data.playerSide ? "boyfriend" : "dad");
                             }
-                            fireSustainOpponentNoteHits(n);
+                            fireSustainNoteHits(n);
                             break;
                         }
                         n.nextSustainCallbackMs = Double.NaN;
@@ -990,15 +1118,13 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                         if (n.data.blockHit && songPos - n.data.timeMs <= SHIT) break;
                         if (!n.data.ignoreNote && !n.data.blockHit) {
                             int noteIndex = n.chartIndex;
-                            boolean runDefault = luaRuntime == null || luaRuntime.onOpponentNoteHitPre(
-                                    noteIndex, lane, n.data.noteType, n.data.sustainMs > 30);
+                            boolean runDefault = luaNoteHitPre(noteIndex, n.data);
                             if (!runDefault) break;
                             n.hit = true;
                             otherStrumFlash[lane] = Math.max(120, n.data.sustainMs);
                             if (!n.data.noAnimation) animatePsychNote(n.data, lane, false,
                                     n.data.playerSide ? "boyfriend" : "dad");
-                            if (luaRuntime != null) luaRuntime.onOpponentNoteHit(
-                                    noteIndex, lane, n.data.noteType, n.data.sustainMs > 30);
+                            luaNoteHit(noteIndex, n.data, n.data.sustainMs > 30);
                             startSustainCallbacks(n);
                         } else {
                             n.hit = true;
@@ -1028,35 +1154,40 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             }
         }
 
-        // idle bounce on beat (idle/idle2 alternate when both exist)
-        int beat = (int) Math.floor(conductor.beatAt(Math.max(0, songPos)));
-        if (beat != lastBeat) {
-            lastBeat = beat;
-            long nowMs = System.currentTimeMillis();
-            // FNF beat zoom: bump every measure (4 beats)
-            if (phase == Phase.PLAYING && beat >= 0 && beat % 4 == 0) {
+        // Built-in musical bops use the written meter pulse. Quarter-note BPM
+        // timing, notes, curBeat and onBeatHit remain Psych-compatible.
+        MeterPosition meter = currentMeter();
+        if (phase == Phase.PLAYING && (meter.segment != lastMeterSegment
+                || meter.pulse != lastMeterPulse)) {
+            lastMeterSegment = meter.segment;
+            lastMeterPulse = meter.pulse;
+            int pulse = (int) Math.min(Integer.MAX_VALUE, meter.pulse);
+            // Camera zoom accents the first written beat of every measure.
+            if (meter.beatInMeasure == 0) {
                 GameplayCamera.bumpZoom(playbackPolicy.usesPsychCamera() ? 0.015f : 0.03f);
             }
-            if (phase == Phase.PLAYING && psychScene != null) psychScene.beat(beat);
-            if (phase == Phase.PLAYING) {
-                // loopIdle characters are driven by their BBS "main" state, which
-                // setForm starts and each sing returns to on its own. Re-triggering
-                // idle would expire that looping state, so leave it to BBS.
-                double singHold = singHoldMs();
-                if (nowMs - lastSingMs > singHold && minecraft.player != null
-                        && !CharacterAnimations.loopIdle(myAnimSet, myRole())) {
-                    playIdle(minecraft.player, myAnimSet, myRole(), beat);
+            if (psychScene != null) psychScene.beat(pulse);
+            // loopIdle characters are driven by their BBS "main" state, which
+            // setForm starts and each sing returns to on its own. Re-triggering
+            // idle would expire that looping state, so leave it to BBS.
+            double singHold = singHoldMs();
+            long nowMs = System.currentTimeMillis();
+            if (nowMs - lastSingMs > singHold && minecraft.player != null
+                    && !CharacterAnimations.loopIdle(myAnimSet, myRole())) {
+                playIdle(minecraft.player, myAnimSet, myRole(), pulse);
+            }
+            if (partnerId != null && minecraft.level != null && nowMs - partnerLastSingMs > singHold
+                    && !CharacterAnimations.loopIdle(partnerAnimSet, partnerRole())) {
+                Player partner = minecraft.level.getPlayerByUUID(partnerId);
+                if (partner != null) {
+                    playIdle(partner, partnerAnimSet, partnerRole(), pulse);
                 }
-                if (partnerId != null && minecraft.level != null && nowMs - partnerLastSingMs > singHold
-                        && !CharacterAnimations.loopIdle(partnerAnimSet, partnerRole())) {
-                    Player partner = minecraft.level.getPlayerByUUID(partnerId);
-                    if (partner != null) playIdle(partner, partnerAnimSet, partnerRole(), beat);
-                }
-                // Chart-added performers get the same beat idle. loopIdle ones are
-                // skipped inside danceAll, exactly like the two above.
-                extraCharacters.danceAll();
-                extraCharacters.beat(beat, 1);
-                if (opponentBot != null) opponentBot.idle();
+            }
+            // Chart-added 2D and 3D performers use the same written pulse.
+            extraCharacters.danceAll(pulse);
+            extraCharacters.beat(pulse, 1);
+            if (opponentBot != null) {
+                opponentBot.idle(pulse, singHold);
             }
         }
 
@@ -1184,8 +1315,9 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     }
 
     @Override
-    public void eventCameraRotation(Double pitch, Double yaw, Double roll, String easing) {
-        GameplayCamera.rotateTo(pitch, yaw, roll, easing);
+    public void eventCameraRotation(Double pitch, Double yaw, Double roll, String easing,
+                                    Double durationSeconds) {
+        GameplayCamera.rotateTo(pitch, yaw, roll, easing, durationSeconds);
     }
 
     @Override
@@ -1216,8 +1348,14 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         } else if (partnerControlsRole(target)) {
             if (!CharacterAnimations.isDisabled(partnerAnimSet)) partnerAnimSet = animationDefinition;
         }
+        boolean soloBotTarget = partnerId == null
+                && opponentBotRole.equals(botRoleFor(target));
+        boolean rebuildOpponentBot = soloBotTarget
+                && !CharacterAnimations.isDisabled(opponentBotSet);
+        if (rebuildOpponentBot) opponentBotSet = animationDefinition;
         String activeSet = localControlsRole(target) ? myAnimSet
-                : partnerControlsRole(target) ? partnerAnimSet : animationDefinition;
+                : partnerControlsRole(target) ? partnerAnimSet
+                : soloBotTarget ? opponentBotSet : animationDefinition;
         GameplayCamera.setBaseOffset(target.equals("boyfriend"),
                 CharacterAnimations.baseCameraOffset(activeSet,
                         target.equals("dad") ? "opponent" : "player"));
@@ -1232,8 +1370,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             }
             // Solo opponent bot follows Change Character too: rebuild with the new
             // character (or fall back to the armor stand if it has no BBS form).
-            if (opponentBotRole.equals(botRoleFor(target))) {
-                opponentBotSet = animationDefinition;
+            if (rebuildOpponentBot) {
                 if (opponentBot != null) {
                     opponentBot.remove(minecraft.level == null ? null : minecraft.level.getEntity(botEntityId));
                     opponentBot = null; // updateOpponentBot() re-creates it next tick
@@ -1504,7 +1641,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
 
     private void playIdle(Player p, String set, String role, int beat) {
         String suffix = "player".equals(role) ? playerIdleSuffix : opponentIdleSuffix;
-        boolean hasSecondIdle = CharacterAnimations.hasAction(set, "idle2");
+        boolean hasSecondIdle = CharacterAnimations.hasAction(set, role, "idle2");
         // Minecraft animation sets have two canonical idle slots. Non-empty
         // Psych alt-idle suffix selects slot 2 as their Legacy/Minecraft variant.
         if (!hasSecondIdle && (beat & 1) == 1) return;
@@ -1556,6 +1693,10 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         private double toX, toY, toZ, toRotation;
         private boolean tweenRotation;
         double x, y, z, rotation;
+        /** Lua/free-camera BBS pitch and roll; yaw remains the existing rotation field. */
+        double rotationX, rotationZ;
+        /** Render-only BBS scale; it deliberately does not change the entity hitbox. */
+        double scaleX = 1, scaleY = 1, scaleZ = 1;
         // The performer's resting world position/yaw, i.e. exactly where the song
         // teleported it. 0,0,0 maps here, so the transform offset is honored for free.
         double homeX, homeY, homeZ;
@@ -1626,6 +1767,11 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         void setOffsetRotation(double value) {
             active = false; rotation = finite(value); tweenRotation = true;
         }
+        void setOffsetRotationX(double value) { rotationX = finite(value); }
+        void setOffsetRotationZ(double value) { rotationZ = finite(value); }
+        void setScaleX(double value) { scaleX = finiteOr(value, 1); }
+        void setScaleY(double value) { scaleY = finiteOr(value, 1); }
+        void setScaleZ(double value) { scaleZ = finiteOr(value, 1); }
 
         boolean rotates() { return tweenRotation || rotation != 0; }
 
@@ -1635,7 +1781,8 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
 
         void reset() {
             active = false;
-            x = y = z = rotation = 0;
+            x = y = z = rotation = rotationX = rotationZ = 0;
+            scaleX = scaleY = scaleZ = 1;
             tweenRotation = false;
             homeKnown = false;
             appliedKnown = false;
@@ -1643,6 +1790,10 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
 
         private static double finite(double value) {
             return Double.isFinite(value) ? value : 0;
+        }
+
+        private static double finiteOr(double value, double fallback) {
+            return Double.isFinite(value) ? value : fallback;
         }
     }
 
@@ -1668,6 +1819,8 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         if (minecraft.level == null) return;
         Entity entity = performerEntity(playerSide);
         if (entity == null || entity.isRemoved()) return;
+        PerformerRotation.set(performerVisualPlayer(playerSide), tween.rotationX, tween.rotationZ,
+                tween.scaleX, tween.scaleY, tween.scaleZ);
 
         // While no offset is applied, keep learning the performer's real resting
         // spot (its teleport position, transform included). This is what 0,0,0
@@ -1688,6 +1841,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         if (tween.movedExternally(entity.getX(), entity.getY(), entity.getZ(),
                 EXTERNAL_TELEPORT_BLOCKS)) {
             tween.reset();
+            PerformerRotation.clear(performerVisualPlayer(playerSide));
             tween.captureHome(entity.getX(), entity.getY(), entity.getZ(), entity.getYRot());
             return;
         }
@@ -1728,6 +1882,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                 }
             }
         }
+        PerformerRotation.clear(performerVisualPlayer(playerSide));
         tween.reset();
     }
 
@@ -1860,6 +2015,14 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         }
         return minecraft.level == null || botEntityId < 0 ? null
                 : minecraft.level.getEntity(botEntityId);
+    }
+
+    /** Player actually rendered for a chart side; solo bots visually replace their stand. */
+    private Player performerVisualPlayer(boolean playerSide) {
+        Entity entity = performerEntity(playerSide);
+        if (entity instanceof Player player) return player;
+        if (playerSide != myChartSideIsPlayer && opponentBot != null) return opponentBot.player();
+        return null;
     }
 
     private static boolean isWorldPixelProperty(String property) {
@@ -2118,8 +2281,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             return;
         }
         int bestIndex = best.chartIndex;
-        if (luaRuntime != null && !luaRuntime.onGoodNoteHitPre(
-                bestIndex, best.data.lane, best.data.noteType, best.data.sustainMs > 30)) {
+        if (!luaNoteHitPre(bestIndex, best.data)) {
             return;
         }
         if (best.data.hitCausesMiss || "Hurt Note".equals(best.data.noteType)) {
@@ -2156,8 +2318,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             if (Math.abs(n.data.timeMs - best.data.timeMs) <= stackMs
                     && !n.data.hitCausesMiss && !"Hurt Note".equals(n.data.noteType)) {
                 int noteIndex = n.chartIndex;
-                if (luaRuntime == null || luaRuntime.onGoodNoteHitPre(
-                        noteIndex, n.data.lane, n.data.noteType, n.data.sustainMs > 30)) {
+                if (luaNoteHitPre(noteIndex, n.data)) {
                     creditHit(n, judgement);
                     // Animate the stacked note's own character too. Otherwise an
                     // overlapping note merged into this press (e.g. a dad note stacked
@@ -2205,8 +2366,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             activeHolds[n.data.lane].add(n);
             startSustainCallbacks(n);
         }
-        if (luaRuntime != null) luaRuntime.onGoodNoteHit(
-                n.chartIndex, n.data.lane, n.data.noteType, n.data.sustainMs > 30);
+        luaNoteHit(n.chartIndex, n.data, n.data.sustainMs > 30);
 
         // FNF splashes only fire on sick hits
         int customSplashVariants = customNoteTextures.splashVariants(n.data.noteSplashTexture, n.data.lane);
@@ -2288,27 +2448,32 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         note.nextSustainCallbackMs = from + sustainCallbackInterval(from);
     }
 
-    private void fireSustainGoodNoteHits(GameNote note) {
-        if (luaRuntime == null || !Double.isFinite(note.nextSustainCallbackMs)) return;
-        int index = note.chartIndex;
-        int guard = 0;
-        while (songPos >= note.nextSustainCallbackMs
-                && note.nextSustainCallbackMs < note.endMs() && guard++ < 64) {
-            double firedAt = note.nextSustainCallbackMs;
-            luaRuntime.onGoodNoteHit(index, note.data.lane, note.data.noteType, true);
-            note.nextSustainCallbackMs = firedAt + sustainCallbackInterval(firedAt);
-        }
-        skipExcessSustainCallbacks(note);
+    /**
+     * Psych callback names describe chart characters, not input ownership:
+     * boyfriend/player notes use goodNoteHit and dad/opponent notes use
+     * opponentNoteHit even when Play as Opponent swaps who controls them.
+     */
+    private boolean luaNoteHitPre(int index, SongChart.Note note) {
+        if (luaRuntime == null) return true;
+        return note.playerSide
+                ? luaRuntime.onGoodNoteHitPre(index, note.lane, note.noteType, note.sustainMs > 30)
+                : luaRuntime.onOpponentNoteHitPre(index, note.lane, note.noteType, note.sustainMs > 30);
     }
 
-    private void fireSustainOpponentNoteHits(GameNote note) {
+    private void luaNoteHit(int index, SongChart.Note note, boolean sustain) {
+        if (luaRuntime == null) return;
+        if (note.playerSide) luaRuntime.onGoodNoteHit(index, note.lane, note.noteType, sustain);
+        else luaRuntime.onOpponentNoteHit(index, note.lane, note.noteType, sustain);
+    }
+
+    private void fireSustainNoteHits(GameNote note) {
         if (luaRuntime == null || !Double.isFinite(note.nextSustainCallbackMs)) return;
         int index = note.chartIndex;
         int guard = 0;
         while (songPos >= note.nextSustainCallbackMs
                 && note.nextSustainCallbackMs < note.endMs() && guard++ < 64) {
             double firedAt = note.nextSustainCallbackMs;
-            luaRuntime.onOpponentNoteHit(index, note.data.lane, note.data.noteType, true);
+            luaNoteHit(index, note.data, true);
             note.nextSustainCallbackMs = firedAt + sustainCallbackInterval(firedAt);
         }
         skipExcessSustainCallbacks(note);
@@ -2338,7 +2503,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         int index = note.chartIndex;
         if (luaRuntime != null) {
             luaRuntime.onNoteMiss(index, note.data.lane, note.data.noteType, note.data.sustainMs > 30);
-            luaRuntime.onGoodNoteHit(index, note.data.lane, note.data.noteType, note.data.sustainMs > 30);
+            luaNoteHit(index, note.data, note.data.sustainMs > 30);
         }
         recalculateRating(true);
         checkDeath();
@@ -2883,7 +3048,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             o.rotY = edit.rotationY();
             o.rotZ = edit.rotationZ();
             o.width = edit.width(); o.height = edit.height();
-            o.scaleX = edit.scaleX(); o.scaleY = edit.scaleY();
+            o.scaleX = edit.scaleX(); o.scaleY = edit.scaleY(); o.scaleZ = edit.scaleZ();
             o.alpha = edit.alpha(); o.color = edit.color(); o.visible = edit.visible();
             o.billboard = edit.billboard(); o.lighting = edit.lighting();
             o.seeThrough = edit.seeThrough(); o.antialiasing = edit.antialiasing();
@@ -2891,6 +3056,8 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             o.availableAnimations = edit.animations();
             freeCamObjects.markLinkedClean(o);
         }
+        linkMainFreeCamCharacter(true, "boyfriend");
+        linkMainFreeCamCharacter(false, "dad");
         freeCamMessage = "Linked " + freeCamObjects.linkedCount() + " existing world object(s)";
         freeCamMessageUntil = System.currentTimeMillis() + 3000;
     }
@@ -2922,11 +3089,79 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                 extraCharacters.applyCharacterEdit(new ExtraCharacterRoster.EditableCharacter(
                         o.sourceTag, o.characterDef, o.characterRole, twoD,
                         x, y, z, o.rotX, o.rotY, o.rotZ, o.visible,
-                        o.width, o.height, o.scaleX, o.scaleY,
+                        o.width, o.height, o.scaleX, o.scaleY, o.scaleZ,
                         o.alpha, o.color, o.billboard, o.lighting,
                         o.seeThrough, o.antialiasing, o.anim3d, o.availableAnimations));
+            } else if (o.source == FreeCamObjects.Source.MAIN_CHARACTER) {
+                applyMainFreeCamCharacter(o);
             }
         });
+    }
+
+    private void linkMainFreeCamCharacter(boolean playerSide, String tag) {
+        if (playbackPolicy == null || playbackPolicy.usesPsychCamera()) return;
+        Player visual = performerVisualPlayer(playerSide);
+        if (visual == null || !CharacterAnimations.hasActiveBbsForm(visual)) return;
+        FreeCamObjects.Obj o = freeCamObjects.link(FreeCamObjects.Type.CHARACTER_3D,
+                FreeCamObjects.Source.MAIN_CHARACTER, tag);
+        if (o == null) return;
+        String role = playerSide ? "player" : "opponent";
+        o.characterRole = role;
+        o.characterDef = performerSet(playerSide);
+        Double worldX = performerWorldPixel(visual, "worldX");
+        Double worldY = performerWorldPixel(visual, "worldY");
+        Double worldZ = performerWorldPixel(visual, "worldZ");
+        o.x = worldX == null ? 0 : worldX;
+        o.y = worldY == null ? 0 : worldY;
+        o.z = worldZ == null ? 0 : worldZ;
+        PerformerTween tween = playerSide ? playerPerformerTween : opponentPerformerTween;
+        o.rotX = tween.rotationX;
+        o.rotY = tween.rotation;
+        o.rotZ = tween.rotationZ;
+        o.scaleX = tween.scaleX;
+        o.scaleY = tween.scaleY;
+        o.scaleZ = tween.scaleZ;
+        o.width = 48;
+        o.height = 96;
+        o.billboard = false;
+        o.anim3d = "idle";
+        o.availableAnimations = CharacterAnimations.actionNames(o.characterDef, role);
+        freeCamObjects.markLinkedClean(o);
+    }
+
+    private void applyMainFreeCamCharacter(FreeCamObjects.Obj o) {
+        boolean playerSide = o.sourceTag.equalsIgnoreCase("boyfriend")
+                || o.sourceTag.equalsIgnoreCase("bf") || o.sourceTag.equalsIgnoreCase("player");
+        Entity entity = performerEntity(playerSide);
+        if (entity == null) return;
+        PerformerTween tween = playerSide ? playerPerformerTween : opponentPerformerTween;
+        if (!tween.homeKnown) {
+            tween.captureHome(entity.getX(), entity.getY(), entity.getZ(), entity.getYRot());
+        }
+        Direction facing = StageOrientation.facing();
+        Direction right = facing.getCounterClockWise();
+        double targetX = machinePos.getX() + 0.5
+                + right.getStepX() * o.x / 64.0 + facing.getStepX() * o.z / 64.0;
+        double targetY = machinePos.getY() + 0.5 - o.y / 64.0;
+        double targetZ = machinePos.getZ() + 0.5
+                + right.getStepZ() * o.x / 64.0 + facing.getStepZ() * o.z / 64.0;
+        double dx = targetX - tween.homeX;
+        double dz = targetZ - tween.homeZ;
+        tween.setOffsetX(dx * right.getStepX() + dz * right.getStepZ());
+        tween.setOffsetY(targetY - tween.homeY);
+        tween.setOffsetZ(dx * facing.getStepX() + dz * facing.getStepZ());
+        tween.setOffsetRotationX(o.rotX);
+        tween.setOffsetRotation(o.rotY);
+        tween.setOffsetRotationZ(o.rotZ);
+        tween.setScaleX(o.scaleX);
+        tween.setScaleY(o.scaleY);
+        tween.setScaleZ(o.scaleZ);
+    }
+
+    private String performerSet(boolean playerSide) {
+        if (playerSide == myChartSideIsPlayer) return myAnimSet;
+        if (partnerId != null) return partnerAnimSet;
+        return opponentBotSet == null ? CharacterAnimations.DEFAULT_SET : opponentBotSet;
     }
 
     /** Grabs/releases the cursor for spectator look while keeping this screen open. */
@@ -2950,6 +3185,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             GLFW.glfwSetInputMode(window, GLFW.GLFW_CURSOR, GLFW.GLFW_CURSOR_DISABLED);
         } else {
             GLFW.glfwSetInputMode(window, GLFW.GLFW_CURSOR, GLFW.GLFW_CURSOR_NORMAL);
+            markGameplayCursorActive();
         }
     }
 
@@ -3084,6 +3320,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     private void pauseSong() {
         if (luaRuntime != null && !luaRuntime.onPause()) return;
         phase = Phase.PAUSED;
+        markGameplayCursorActive();
         pausedAtMs = System.currentTimeMillis();
         pauseSelection = 0;
         songPlayer.pause();
@@ -3101,6 +3338,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             startAtEpochMs += System.currentTimeMillis() - pausedAtMs;
         }
         phase = songPlayer.isStarted() ? Phase.PLAYING : Phase.COUNTDOWN;
+        markGameplayCursorActive();
         lastFrameNano = System.nanoTime();
         noteInput.clear(); // discard anything queued while paused
         if (luaRuntime != null) luaRuntime.onResume();
@@ -3326,7 +3564,14 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     }
 
     @Override
+    public void mouseMoved(double mouseX, double mouseY) {
+        markGameplayCursorActive();
+        super.mouseMoved(mouseX, mouseY);
+    }
+
+    @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
+        markGameplayCursorActive();
         if (freeCam) {
             // The help modal swallows the next click to dismiss it.
             if (freeCamHelp) { freeCamHelp = false; return true; }
@@ -3442,6 +3687,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
 
     @Override
     public boolean mouseDragged(double mouseX, double mouseY, int button, double dragX, double dragY) {
+        markGameplayCursorActive();
         if (freeCam && freeCamColorPicker && pickDrag != 0) {
             updatePicker(mouseX, mouseY);
             return true;
@@ -3466,6 +3712,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
 
     @Override
     public boolean mouseReleased(double mouseX, double mouseY, int button) {
+        markGameplayCursorActive();
         if (freeCam && pickDrag != 0) { pickDrag = 0; return true; }
         if (freeCam && button == 0 && freeCamObjects.isSnapDragging()) {
             freeCamObjects.endSnapDrag();
@@ -3505,6 +3752,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
 
     @Override
     public boolean mouseScrolled(double mouseX, double mouseY, double scrollX, double scrollY) {
+        markGameplayCursorActive();
         if (freeCam) {
             // Fly/look mode follows Blender's fly navigation: wheel adjusts travel speed.
             if (freeCamMove) {
@@ -3583,7 +3831,9 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         }
         boolean playerSide = mine == myChartSideIsPlayer;
         if (ClientOptions.get().middlescroll) {
-            if (playerSide) {
+            // Middlescroll follows input ownership, not chart character role:
+            // the locally controlled strums stay centered when playing Dad.
+            if (mine) {
                 return 468f + lane * spacing;
             }
             return lane < 2
@@ -3628,12 +3878,28 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     public double psychLuaSongLength() { return songPlayer.durationMs(); }
     public double psychLuaSongPosition() { return songPos; }
     public double psychLuaBeat() { return conductor.beatAt(Math.max(0, songPos)); }
+    public int psychLuaMeterBeat() {
+        return (int) Math.min(Integer.MAX_VALUE, currentMeter().pulse);
+    }
+    public int psychLuaBeatInMeasure() { return currentMeter().beatInMeasure; }
+    public int psychLuaMeasure() {
+        return (int) Math.min(Integer.MAX_VALUE, currentMeter().measure);
+    }
+    public int psychLuaTimeSignatureNumerator() { return currentMeter().signature.numerator(); }
+    public int psychLuaTimeSignatureDenominator() { return currentMeter().signature.denominator(); }
     public int psychLuaSection() { return Math.max(0, camSection); }
     public boolean psychLuaSongStarted() { return songPlayer.isStarted(); }
     public int psychLuaScore() { return score; }
     public int psychLuaMisses() { return misses; }
     public int psychLuaCombo() { return combo; }
-    public double psychLuaHealth() { return health; }
+    /**
+     * Psych's health value belongs to the BF/player chart role. Internally we
+     * keep local-player health so the same fail-state code works on either
+     * side, therefore opponent play needs the complementary value.
+     */
+    public double psychLuaHealth() {
+        return myChartSideIsPlayer || playBoth ? health : 2.0 - health;
+    }
     public boolean psychLuaMustHit() {
         int section = Math.max(0, Math.min(psychLuaSection(), secFocusPlayer.length - 1));
         return secFocusPlayer[section];
@@ -3656,7 +3922,10 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         if (extraCharacters.exists(role)) return extraCharacters.y(role);
         return psychScene == null ? 0 : psychScene.midpointY(role);
     }
-    public void psychLuaSetHealth(double value) { health = (float) Math.max(0, Math.min(2, value)); }
+    public void psychLuaSetHealth(double value) {
+        float roleHealth = (float) Math.max(0, Math.min(2, value));
+        health = myChartSideIsPlayer || playBoth ? roleHealth : 2f - roleHealth;
+    }
     public void psychLuaAddMisses(int value) { misses = Math.max(0, misses + value); }
     public void psychLuaSetMisses(int value) { misses = Math.max(0, value); }
 
@@ -3898,7 +4167,8 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         }
         // Drive the solo opponent bot character when the note is on its side.
         if (opponentBot != null && opponentBot.role().equals(botRoleFor(role))) {
-            opponentBot.play(hey ? "hey" : miss ? "miss" : DIR_NAMES[lane]);
+            String suffix = note == null || note.animSuffix == null ? "" : note.animSuffix;
+            opponentBot.play(hey ? "hey" : miss ? "miss" + suffix : DIR_NAMES[lane] + suffix);
         }
     }
 
@@ -3909,11 +4179,14 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     }
 
     private void animatePsychHold(SongChart.Note note, int lane, String fallbackRole) {
-        if (psychScene == null) return;
         String role = note != null && note.gfNote ? "gf"
                 : note == null ? fallbackRole
                 : note.playerSide ? "boyfriend" : "dad";
-        psychScene.hold(role, lane, note == null ? "" : note.animSuffix);
+        String suffix = note == null || note.animSuffix == null ? "" : note.animSuffix;
+        if (psychScene != null) psychScene.hold(role, lane, suffix);
+        if (opponentBot != null && opponentBot.role().equals(botRoleFor(role))) {
+            opponentBot.hold(DIR_NAMES[lane] + suffix, BBS_HOLD_LOOP_MS);
+        }
     }
 
     private void endPsychHold(SongChart.Note note) {
@@ -3973,8 +4246,10 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                 case "x" -> extraCharacters.x(tag);
                 case "y" -> extraCharacters.y(tag);
                 case "z" -> extraCharacters.z(tag);
+                case "rotation.x", "rotationX", "angleX" -> extraCharacters.rotationX(tag);
                 case "angle", "rotation", "rotation.y", "rotationY", "angleY" ->
                         extraCharacters.rotation(tag);
+                case "rotation.z", "rotationZ", "angleZ" -> extraCharacters.rotationZ(tag);
                 case "visible" -> extraCharacters.visible(tag);
                 case "grav", "gravity" -> extraCharacters.gravity(tag);
                 case "collision", "collisions", "solid" -> extraCharacters.collision(tag);
@@ -3983,6 +4258,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                 case "color" -> extraCharacters.color(tag);
                 case "scale.x", "scaleX" -> extraCharacters.scaleX(tag);
                 case "scale.y", "scaleY" -> extraCharacters.scaleY(tag);
+                case "scale.z", "scaleZ" -> extraCharacters.scaleZ(tag);
                 case "flipx", "flipX", "flip_x" -> extraCharacters.flipX(tag);
                 case "billboard", "worldBillboard", "alwaysFaceCamera" -> extraCharacters.billboard(tag);
                 case "lighting", "worldLighting", "affectedByLighting" -> extraCharacters.lighting(tag);
@@ -4028,7 +4304,12 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                     case "x" -> performer.x;
                     case "y" -> performer.y;
                     case "z" -> performer.z;
+                    case "rotation.x", "rotationX", "angleX" -> performer.rotationX;
                     case "angle", "rotation", "rotation.y", "rotationY", "angleY" -> performer.rotation;
+                    case "rotation.z", "rotationZ", "angleZ" -> performer.rotationZ;
+                    case "scale.x", "scaleX" -> performer.scaleX;
+                    case "scale.y", "scaleY" -> performer.scaleY;
+                    case "scale.z", "scaleZ" -> performer.scaleZ;
                     default -> null;
                 };
             }
@@ -4038,7 +4319,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             if (path.equals("healthBar.leftBar.color")) return fnfOpponentBarColor();
             if (path.equals("healthBar.rightBar.color")) return fnfPlayerBarColor();
             Object hudValue = fnfHud.property(path,
-                    Math.max(0, Math.min(100, health * 50.0)), fnfScoreText());
+                    Math.max(0, Math.min(100, psychLuaHealth() * 50.0)), fnfScoreText());
             if (hudValue != null) return hudValue;
         } else {
             Object hudValue = textHud.property(path, defaultHudBarX(), defaultHudBarY(),
@@ -4047,7 +4328,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             if (hudValue != null) return hudValue;
         }
         return switch (path) {
-            case "health" -> (double) health;
+            case "health" -> psychLuaHealth();
             case "fov" -> psychLuaGetFov();
             case "songScore", "score" -> score;
             case "songMisses", "misses" -> misses;
@@ -4058,6 +4339,11 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             case "mustHitSection" -> psychLuaMustHit();
             case "gfSection" -> psychLuaGfSection();
             case "curSection" -> psychLuaSection();
+            case "curMeterBeat" -> psychLuaMeterBeat();
+            case "curBeatInMeasure" -> psychLuaBeatInMeasure();
+            case "curMeasure" -> psychLuaMeasure();
+            case "timeSignatureNumerator" -> psychLuaTimeSignatureNumerator();
+            case "timeSignatureDenominator" -> psychLuaTimeSignatureDenominator();
             case "defaultCamZoom" -> psychScene == null ? 1.0 : (double) psychScene.defaultZoom();
             case "camFollow.x" -> psychScene == null ? psychLuaGameCameraX() : psychScene.targetCameraX();
             case "camFollow.y" -> psychScene == null ? psychLuaGameCameraY() : psychScene.targetCameraY();
@@ -4107,18 +4393,23 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                 case "x" -> extraCharacters.setX(tag, noteNumber(value, extraCharacters.x(tag)));
                 case "y" -> extraCharacters.setY(tag, noteNumber(value, extraCharacters.y(tag)));
                 case "z" -> extraCharacters.setZ(tag, noteNumber(value, extraCharacters.z(tag)));
+                case "rotation.x", "rotationX", "angleX" ->
+                        extraCharacters.setRotationX(tag, noteNumber(value, extraCharacters.rotationX(tag)));
                 case "angle", "rotation", "rotation.y", "rotationY", "angleY" ->
                         extraCharacters.setRotation(tag, noteNumber(value, extraCharacters.rotation(tag)));
+                case "rotation.z", "rotationZ", "angleZ" ->
+                        extraCharacters.setRotationZ(tag, noteNumber(value, extraCharacters.rotationZ(tag)));
                 case "visible" -> extraCharacters.setVisible(tag, noteBool(value, true));
                 case "grav", "gravity" -> extraCharacters.setGravity(tag, noteBool(value, true));
                 case "collision", "collisions", "solid" ->
                         extraCharacters.setCollision(tag, noteBool(value, true));
                 case "shadow", "shadows" -> extraCharacters.setShadow(tag, noteBool(value, true));
-                // 2D-character visuals (ignored for 3D performers).
+                // 2D visuals plus BBS XYZ render scale.
                 case "alpha" -> extraCharacters.setAlpha(tag, noteNumber(value, extraCharacters.alpha(tag)));
                 case "color" -> extraCharacters.setColor(tag, (int) (long) noteNumber(value, 0xFFFFFF));
                 case "scale.x", "scaleX" -> extraCharacters.setScaleX(tag, noteNumber(value, extraCharacters.scaleX(tag)));
                 case "scale.y", "scaleY" -> extraCharacters.setScaleY(tag, noteNumber(value, extraCharacters.scaleY(tag)));
+                case "scale.z", "scaleZ" -> extraCharacters.setScaleZ(tag, noteNumber(value, extraCharacters.scaleZ(tag)));
                 case "flipx", "flipX", "flip_x" -> extraCharacters.setFlipX(tag, noteBool(value, false));
                 case "billboard", "worldBillboard", "alwaysFaceCamera" ->
                         extraCharacters.setBillboard(tag, noteBool(value, true));
@@ -4169,8 +4460,15 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                     case "x" -> performer.setOffsetX(noteNumber(value, performer.x));
                     case "y" -> performer.setOffsetY(noteNumber(value, performer.y));
                     case "z" -> performer.setOffsetZ(noteNumber(value, performer.z));
+                    case "rotation.x", "rotationX", "angleX" ->
+                            performer.setOffsetRotationX(noteNumber(value, performer.rotationX));
                     case "angle", "rotation", "rotation.y", "rotationY", "angleY" ->
                             performer.setOffsetRotation(noteNumber(value, performer.rotation));
+                    case "rotation.z", "rotationZ", "angleZ" ->
+                            performer.setOffsetRotationZ(noteNumber(value, performer.rotationZ));
+                    case "scale.x", "scaleX" -> performer.setScaleX(noteNumber(value, performer.scaleX));
+                    case "scale.y", "scaleY" -> performer.setScaleY(noteNumber(value, performer.scaleY));
+                    case "scale.z", "scaleZ" -> performer.setScaleZ(noteNumber(value, performer.scaleZ));
                     default -> { return false; }
                 }
                 return true;
@@ -4371,6 +4669,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
 
     @Override
     public void render(GuiGraphics gui, int mouseX, int mouseY, float partialTick) {
+        updateGameplayCursor();
         logic();
         // Hide-GUI: draw only the free-cam menu; notes/HUD and the vanilla hotbar (via
         // hideGui) are gone, while the world and placed objects still render in the level pass.
@@ -5477,10 +5776,12 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     /**
      * Lazily gives the solo opponent bot a real BBS character (a client-only RemotePlayer
      * that follows the server armor stand and hides it). Falls back to the plain stand when
-     * the character has no BBS form. No-op in duet/both or when there is no bot stand.
+     * the character has no BBS form. No-op in duet or when there is no bot stand.
+     * BOTH still uses its combined gameplay layout, but keeps this ordinary
+     * opponent performer so Dad's existing note/hold/idle animation path works.
      */
     private void updateOpponentBot() {
-        if (duet || playBoth || botEntityId < 0 || opponentBotSet == null
+        if (duet || botEntityId < 0 || opponentBotSet == null
                 || !(minecraft.level instanceof net.minecraft.client.multiplayer.ClientLevel level)) return;
         net.minecraft.world.entity.Entity stand = level.getEntity(botEntityId);
         if (stand == null) return;
@@ -5731,7 +6032,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         int barY = (int) Math.round(fnfHud.barY);
         int barH = Math.max(1, (int) Math.round(fnfHud.barHeight));
 
-        float frac = Math.min(1f, Math.max(0f, health / 2f));
+        float frac = Math.min(1f, Math.max(0f, (float) (psychLuaHealth() / 2.0)));
         int split = barX + (int) (barW * (1 - frac));
 
         String animationPlayerIcon = blockifiedAnimationIcon("boyfriend");
@@ -5772,8 +6073,9 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             gui.fill(split, barY, barX + barW, barY + barH, argb(plColor, fnfHud.barAlpha));
         }
 
-        float beatFrac = (float) (conductor.beatAt(Math.max(0, songPos)) % 1.0);
-        if (beatFrac < 0) beatFrac += 1;
+        // Health icons bop on the written meter pulse (eighths in 6/8,
+        // half-notes in 2/2) instead of assuming every beat is a quarter note.
+        float beatFrac = (float) currentMeter().pulseProgress;
         float t = Math.min(1f, beatFrac * 2f);
         float outCirc = (float) Math.sqrt(1f - (t - 1f) * (t - 1f));
         float bop = (1f - outCirc) * 0.30f;
@@ -6047,6 +6349,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
 
     @Override
     public void removed() {
+        if (minecraft != null) gameplayCursorFade.restore(minecraft.getWindow().getWindow());
         if (openingMinecraftPause) {
             openingMinecraftPause = false;
             super.removed();
@@ -6083,6 +6386,8 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         WarningFlag.clear();
         if (rawInput != null) { rawInput.stop(); rawInput = null; }
         if (luaRuntime != null) luaRuntime.close();
+        PerformerRotation.clear(performerVisualPlayer(true));
+        PerformerRotation.clear(performerVisualPlayer(false));
         extraCharacters.close();
         if (opponentBot != null) {
             opponentBot.remove(minecraft.level == null ? null : minecraft.level.getEntity(botEntityId));
@@ -6093,6 +6398,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         NoteStyle.useSongSkin(null, null, null);
         if (psychScene != null) psychScene.close();
         if (freeCamMove) setFreeCamMove(false);
+        gameplayCursorFade.close();
         freeCam = false;
         restoreHideGui();
         freeCamObjects.clear();

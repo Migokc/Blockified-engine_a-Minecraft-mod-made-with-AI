@@ -2,9 +2,36 @@
 
 A feature-full Friday Night Funkin' engine inside of Minecraft — **NeoForge 1.21.1**.
 
-Current release: **2.2.6bbs**.
+Current release: **2.2.8bbs**.
 
 Documentation: **[Blockified Engine Docs](https://migokc.github.io/Blockified-engine_a-Minecraft-mod-made-with-AI/)**.
+
+### 2.2.8bbs highlights
+
+- The Character Editor now uses tabbed Character, Model, and Animations pages,
+  keeps its live form preview on the left, loads characters and bundled BBS forms
+  through searchable in-game lists, and saves player plus any used opponent JSON
+  together. Saving a custom character also bundles its selected model and texture.
+- Player and Opponent animation settings now open searchable selectors with a
+  live preview on the right. Configured note keys preview directions, dual idles
+  alternate at 120 BPM, native looping idles remain native, and the Character
+  Editor animation button can be cycled directly with the mouse wheel.
+- Chart audio import accepts multiple selected files, recognizes common Inst and
+  voice names, renames only the saved copies, and converts common audio formats
+  to OGG through FFmpeg. Ctrl+S uses the assigned folder or the normal song-folder
+  layout without a dialog; Save As chooses and remembers a folder, with a frontmost
+  warning when a remembered folder no longer exists.
+- Active BBS forms now support Lua/free-camera pitch, yaw, roll, and independent
+  X/Y/Z visual scaling for main and extra characters. Folder character definitions
+  can additionally share a mod-local asset tree through `assets_path.txt`.
+- Time signatures now drive written-beat character/icon bops, measure camera
+  accents, and new meter-aware Lua values/callbacks while preserving compatible
+  quarter-note BPM and note timing. Opponent/Both play modes retain chart-role Lua,
+  scoring, animation, icon, vocals, and performer behavior.
+- Camera Rotation 3D gains a duration value; `getMenuBlur()` reports the player's
+  real configured value; volume keys are rebindable and work in pause menus; the
+  playstate cursor fades without replacing the OS cursor; and missing graphics use
+  a crisp no-antialiasing placeholder instead of a white square.
 
 ### 2.2.6bbs highlights
 
@@ -54,11 +81,13 @@ Documentation: **[Blockified Engine Docs](https://migokc.github.io/Blockified-en
 
 ### 2.2.3bbs highlights
 
-- The chart editor gains authoring-only time signatures, a metronome with volume
+- The chart editor gains song/section time signatures, a metronome with volume
   and playback-rate sliders, zoom-aware colored Inst/player/opponent waveforms,
   transient markers, loop playback with pre-roll, three-tap BPM measurement,
   named bookmarks/comments, stem mute/solo, exact audio selection, and a native
-  save-location chooser. These tools do not alter chart gameplay.
+  save-location chooser. Meter now drives gameplay measure accents and written-beat
+  character/HUD bops without changing Psych-compatible note or BPM timing; the
+  remaining analysis/playback tools do not alter gameplay.
 - Psych-compatible character colors (`healthbar_colors`) now tint editor vocal
   waveforms, and character `vocals_file`/vocal-prefix fields resolve split
   `Voices-<prefix>.ogg` stems across Psych-family and Blockified layouts.
@@ -280,7 +309,9 @@ control is disabled until the complete stack is installed.
 - **Play as Both** merges both chart sides into the existing centered four-lane
   layout, while stage placement, performers, camera focus, and animation routing
   remain visually identical to **Play as Player**.
-- **4 keybinds** (default `D F J K`) — rebindable in *Options → Controls → Funkin' Machine*.
+- **Note and volume keybinds** — Left, Down, Up, Right default to `D F J K`;
+  Volume Up/Down default to `+` and `-`. All are rebindable in
+  *Options → Controls → Blockified Engine*.
 - **Multiplayer**: the first player to click the machine picks the song ("Play VS"), the second player to click joins as the opponent side. On servers, only songs installed **on the server** are playable — the server streams the chart + audio to players who don't have them (cached in `config/fnfmod/cache/`).
 - **Chart editor**: `/fnf editor [song]` or the button in the song menu. Saves Psych Engine format.
 - **Character editor**: open it from the song menu to create/edit named character
@@ -303,7 +334,8 @@ After selecting a song, the **Look** button chooses its presentation profile:
   `original_directory.txt` points to a complete pack.
 - **FNF** uses a fixed 1280x720 game canvas, Psych character JSON/Sparrow
   animations, Lua stage foreground/background insertion, the FNF HUD, Psych-style
-  section focus, camera follow, separate game/HUD zoom, and measure bumps. Psych
+  section focus, camera follow, separate game/HUD zoom, and time-signature-aware
+  measure bumps. Psych
   stage JSON positions and camera offsets are applied to boyfriend, opponent, and
   girlfriend/speakers; the chart's `gfVersion` selects the third performer. Static
   stage JSON objects and stage Lua from Psych's `stages/`, global `scripts/`, and
@@ -717,6 +749,24 @@ object, Blockified uses the JSON key as the BBS state ID. In the character edito
 use **+** and **-** beside the animation camera fields to add or remove custom
 entries; custom names, BBS state IDs, offsets, and previews are editable there.
 
+Folder-style definitions can share a single BBS asset tree instead of copying
+the same models and textures into every animation folder. Add
+`assets_path.txt` beside `character.json`; its first non-comment line is a path
+relative to the complete mod root, using the same forward-slash style as Lua:
+
+```text
+animations/anim_assets/idk
+```
+
+For example, `animations/Earrings/assets_path.txt` can point at
+`animations/anim_assets/idk`, whose contents may include `models/`, texture
+folders, and every other file referenced as `assets:...` by
+`character.form.json`. The normal assets stored inside `animations/Earrings`
+still work and override shared files with the same path. Existing definitions
+without this text file are unchanged. The path must stay inside its owning mod.
+Flat `animations/name.json` definitions can use the sibling file
+`animations/name.assets_path.txt`.
+
 Songs can also create any number of named, client-side BBS performers. The chart
 editor's **Add Character** event accepts a tag, character definition, local
 `X,Y,Z` position, yaw offset, and initial `animation,side`; **Remove Character**
@@ -731,8 +781,26 @@ characterPlayAnim('backup', 'hey', true)
 doTweenX('backupMove', 'backup', 2, 1.0, 'sineInOut')
 setProperty('backup.z', -1)
 setProperty('backup.angle', 45)
+setProperty('backup.rotation.x', 20)
+setProperty('backup.rotation.z', -10)
+setProperty('backup.scale.x', 1.25)
+setProperty('backup.scale.y', 0.8)
+setProperty('backup.scale.z', 1.5)
 removeBlockifiedCharacter('backup')
 ```
+
+When a BBS form is active, Lua and free cam can tilt both extra characters and
+the main `boyfriend`/`dad` performers on all three axes. `rotation.x` is pitch
+and `rotation.z` is roll. The existing `rotation`, `rotation.y`, `angle`,
+`setBlockifiedCharacterRotation`, and Add/Tween Character rotation values keep
+their original yaw behavior. In free cam, plain **R** therefore still changes
+yaw; use **R X**, **R Z**, or trackball rotation for the new axes. These X/Z
+values are render-only and do not rotate player physics, movement, or camera.
+Active BBS forms also support independent `scale.x`, `scale.y`, and `scale.z`
+on extra characters and the main performers. Plain **S** in free cam scales all
+three axes uniformly; **S X**, **S Y**, and **S Z** constrain one axis, while
+Shift plus an axis scales the other two. **Alt+S** restores unit scale. BBS scale
+is render-only and does not resize the Minecraft entity or its collision box.
 
 `makeBlockifiedCharacter` aliases the add call. Dedicated helpers include
 `blockifiedCharacterExists`, `setBlockifiedCharacterPosition`,
@@ -813,6 +881,13 @@ Callbacks that Psych lets a script cancel honor `Function_Stop` here too: return
 it from `onGameOver` cancels the death, from `onKeyPressPre` swallows the input,
 and from `onRecalculateRating` skips the score update.
 
+Psych note callbacks keep their chart-character meaning in every play mode:
+`goodNoteHit` is a BF/player-role note and `opponentNoteHit` is a Dad/opponent-role
+note. When **Play as Opponent** is selected, the user therefore controls the notes
+that call `opponentNoteHit`; BF notes continue to call `goodNoteHit`. `mustPress`,
+`playerStrums`, `opponentStrums`, `boyfriend`, `dad`, and `mustHitSection` retain
+the same chart-role meaning. Lua `health` and `healthBar.percent` also remain BF-role
+values, while scoring, misses, input, and the fail state follow the side being played.
 All 106 documented Psych script variables are exposed, and the live ones —
 `curBeat`, `curStep`, `curSection`, `mustHitSection`, `altAnim`, `gfSection`,
 `score`, `misses`, `hits`, `combo`, `rating`, `ratingName`, `ratingFC`,
@@ -1125,7 +1200,8 @@ the form/action buttons cycle BBS forms and FNF actions. **Preview State** plays
 currently entered BBS state on the model, while the red cross shows the selected
 base plus action camera offset. **Save** writes the same JSON format documented below.
 
-The animation setting has two built-in choices:
+The separate **Player Anims** and **Opponent Anims** settings have two built-in
+choices:
 
 - **None** disables BBS character animation control.
 - **Default (song)** uses the active chart's character IDs. For example, a chart
@@ -1133,9 +1209,13 @@ The animation setting has two built-in choices:
   `animations/bf.json` and `animations/dad.json`. Global `default.json` (or the
   legacy global `character.json`) is the fallback.
 
-The **Animations** selector lists only character JSON definitions found directly
+Both animation selectors list only character JSON definitions found directly
 in `config/fnfmod/mods/animations/`. It never lists raw BBS forms or definitions from
-installed mods. `idle2` remains opt-in through a JSON definition; when mapped,
+installed mods. **Player Anims** always controls the chart's BF/player role and
+**Opponent Anims** always controls the Dad/opponent role. When playing as the
+opponent, the local Minecraft performer therefore uses Opponent Anims and the
+solo BF bot uses Player Anims. The same role mapping is sent correctly in
+multiplayer. `idle2` remains opt-in through a JSON definition; when mapped,
 `idle` and `idle2` alternate every beat. Existing playerAnimator/Emotecraft
 animation files are not compatible with BBS FS and are ignored.
 
@@ -1145,8 +1225,8 @@ user-selectable mapping. A complete pack can privately provide
 pack's chart and **Change Character** events but cannot be selected in Settings.
 The old `animations/<name>/character.json` layout is still read for compatibility,
 but new files and Character Editor saves use the named-file layout.
-Pick yours with the **"Anims:"** button in the Funkin' Machine menu — in VS mode
-each player uses their own set. Selecting **None** remains an explicit opt-out, so
+Pick each chart role in the Visual settings. In VS mode the BF participant uses
+Player Anims and the Dad participant uses Opponent Anims. Selecting **None** remains an explicit opt-out, so
 Change Character does not enable BBS control after the user disables it.
 
 A definition selects a BBS form and maps
@@ -1250,8 +1330,9 @@ restored afterwards.
   used. Value 3 enables Minecraft 3D movement (`X = camera-right`, `Y = up`,
   `Z = camera-forward`), Value 4 selects easing, and Value 5 can override normal
   and Lua focus movement. Empty extra values retain normal Psych behavior.
-- **Camera Rotation 3D** uses Values 1/2/3 for additive pitch/yaw/roll and Value 4
-  for easing. Leave all three rotations empty to return to the normal view.
+- **Camera Rotation 3D** uses Values 1/2/3 for additive pitch/yaw/roll, Value 4
+  for easing, and Value 5 for duration in seconds (blank keeps the original 0.5s).
+  Leave all three rotations empty to return to the normal view.
 - Every Blockified easing control has a separate **in / out / inOut** selector.
   Supported curves are Smooth, Sine, Cubic, Quint, Circ, Elastic, Quad, Quart,
   Expo, Back, Bounce, Linear, and Constant.
@@ -1270,8 +1351,10 @@ restored afterwards.
   **Choose Saving Folder...** to remember an output folder for the current song
   name. Ctrl+S then overwrites that folder's chart JSON and `events.json`. Mappings
   for every chart live together in `config/fnfmod/chart_editor_save_folders.json`.
-  Clear the mapping to make Ctrl+S open Save As on every save; a one-off choice is
-  not remembered automatically.
+  With no mapping, Ctrl+S writes the normal song-name folder (and
+  `original_directory.txt` when required) without opening a dialog. **Save As**
+  chooses and remembers another folder. If a remembered folder disappears, the
+  editor warns on open, clears it, and returns Ctrl+S to the normal folder.
 
 ## Gameplay options
 

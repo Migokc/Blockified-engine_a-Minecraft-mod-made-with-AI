@@ -19,7 +19,6 @@ import com.fnfmod.client.math.Easing;
 import com.fnfmod.client.render.NoteStyle;
 import com.fnfmod.client.render.PsychNoteTextureCache;
 import com.fnfmod.song.SongEntry;
-import com.fnfmod.song.CharacterVocalResolver;
 import com.fnfmod.song.SongImportService;
 import com.fnfmod.song.SongLibrary;
 import com.fnfmod.gameplay.PlaybackMode;
@@ -116,6 +115,10 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
     private final List<SongChart.Note> noteClipboard = new ArrayList<>();
     private final List<SongChart.Event> eventClipboard = new ArrayList<>();
     private boolean seededCameraShot;
+    /** Check a stored saving folder only once instead of repeating on GUI resizes. */
+    private boolean saveFolderValidated;
+    /** Missing assigned folder shown as a true foreground modal on editor open. */
+    private Path missingSavingFolderWarning;
     private final Set<SongChart.Note> selectedNotes = new LinkedHashSet<>();
     private final Set<SongChart.Event> selectedEvents = new LinkedHashSet<>();
     private record EditorState(List<SongChart.Note> notes, List<SongChart.Event> events) {}
@@ -126,6 +129,9 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
     private SongChart chart;
     private Conductor conductor;
     private SongEntry entry;
+    private Path pendingAudioFolder;
+    private final List<Path> temporaryAudioFolders = new ArrayList<>();
+    private boolean audioImportRunning;
     private SongPlayer audio;
     private com.fnfmod.client.input.EditorTickScheduler tickScheduler;
     private boolean schedulerActive;
@@ -317,6 +323,7 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
             setStatus("Camera shot ready to paste (Ctrl+V)");
         }
         rebuildUi();
+        validateSavingFolderOnOpen();
     }
 
     private void loadChart() {
@@ -829,7 +836,7 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
                 eventValue7Field = eventValueBox("Value 7", x, y + 207, w,
                         eventValue7Draft, ChartEventTypes.value7Hint(eventTypeDraft));
                 actionsY = y + 234;
-            } else if (tweenCharacter) {
+            } else if (tweenCharacter || cameraRotation) {
                 eventValue5Field = eventValueBox("Value 5", x, y + 153, w,
                         eventValue5Draft, ChartEventTypes.value5Hint(eventTypeDraft));
                 actionsY = y + 180;
@@ -1001,13 +1008,13 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
                     savingFolder == null ? "Choose Saving Folder..." : "Change Saving Folder...",
                     b -> chooseSavingFolder());
             chooseSavingFolder.setTooltip(Tooltip.create(Component.literal(savingFolder == null
-                    ? "No folder saved for this song. Ctrl+S asks where to save every time."
+                    ? "No folder assigned. Ctrl+S saves to the default song folder."
                     : "Current: " + savingFolder))); y += 16;
             Button clearSavingFolder = button(x + 4, y, w - 8, "Clear Saving Folder",
                     b -> clearSavingFolder());
             clearSavingFolder.active = savingFolder != null;
             clearSavingFolder.setTooltip(Tooltip.create(Component.literal(
-                    "Removes this song's saved folder; Ctrl+S will ask every time."))); y += 16;
+                    "Removes this song's assigned folder; Ctrl+S uses the default song folder."))); y += 16;
             button(x + 4, y, w - 8, "Copy Section", b -> copySection(shownSection)); y += 16;
             button(x + 4, y, w - 8, "Paste Section", b -> pasteSection(shownSection)); y += 16;
             Button snapNotes = button(x + 4, y, w - 8, "Snap Notes to Grid", b -> snapNotesToGrid());
@@ -1628,37 +1635,44 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
 
     private void saveChart(boolean forceDialog) {
         commitVisibleFields();
+        if (audioImportRunning) {
+            setStatus("Wait for song audio conversion to finish before saving");
+            return;
+        }
         String id = sanitizeId(saveId == null || saveId.isBlank() ? chart.title : saveId);
         if (id.isBlank()) id = "unnamed";
         try {
-            Path savingFolder = configuredSavingFolder();
-            Path file;
-            if (!forceDialog && savingFolder != null) {
-                file = savingFolder.resolve(chartFileName(id));
-            } else {
-                Path suggested = chartSaveFile != null ? chartSaveFile
-                        : SongLibrary.songsDir().resolve(id).resolve(chartFileName(id));
-                var selected = NativeFilePicker.saveFile("Save Blockified/Psych chart",
-                        suggested, new String[]{"*.json"}, "FNF chart JSON");
+            Path directory;
+            boolean useDefaultFolder = false;
+            boolean assignmentSaved = true;
+            if (forceDialog) {
+                var selected = NativeFilePicker.selectFolder("Save chart for " + chart.title + " in folder");
                 if (selected.isEmpty()) {
                     setStatus("Save cancelled");
                     return;
                 }
-                file = ensureJsonExtension(selected.get());
+                directory = selected.get().toAbsolutePath().normalize();
+                assignmentSaved = ChartSaveFolderStore.set(chart.title, directory);
+            } else {
+                Path assigned = configuredSavingFolder();
+                useDefaultFolder = assigned == null;
+                directory = useDefaultFolder ? SongLibrary.songsDir().resolve(id) : assigned;
             }
+            String fileName = useDefaultFolder ? defaultChartFileName(id) : chartFileName(id);
+            Path file = directory.resolve(fileName);
             chartSaveFile = file;
-            Path directory = file.getParent();
-            if (directory != null) Files.createDirectories(directory);
+            Files.createDirectories(directory);
+            int importedAudio = savePendingAudio(directory);
             Files.writeString(file, PsychChartWriter.write(chart));
-            if (directory != null) {
-                Files.writeString(directory.resolve("events.json"), PsychChartWriter.writeEvents(chart));
-            }
-            if (directory != null && directory.startsWith(SongLibrary.songsDir())) {
+            Files.writeString(directory.resolve("events.json"), PsychChartWriter.writeEvents(chart));
+            if (directory.startsWith(SongLibrary.songsDir())) {
                 writeOriginalReference(directory, id);
             }
             songId = saveId = id;
             SongLibrary.rescan();
-            setStatus("Saved chart + events to " + file.toAbsolutePath().getParent());
+            setStatus("Saved chart + events to " + directory.toAbsolutePath()
+                    + (importedAudio == 0 ? "" : " (and " + importedAudio + " audio stem(s))")
+                    + (assignmentSaved ? "" : " (folder assignment could not be remembered)"));
         } catch (Exception e) {
             setStatus("Save failed: " + e.getMessage());
             FnfMod.LOGGER.error("Chart save failed", e);
@@ -1671,13 +1685,38 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
             if (existing.toLowerCase(Locale.ROOT).endsWith(".json")
                     && !existing.equalsIgnoreCase("events.json")) return existing;
         }
+        return defaultChartFileName(id);
+    }
+
+    private String defaultChartFileName(String id) {
         String difficultySuffix = loadedDifficulty.equalsIgnoreCase("normal")
                 ? "" : "-" + sanitizeId(loadedDifficulty);
         return id + difficultySuffix + ".json";
     }
 
     private Path configuredSavingFolder() {
-        return ChartSaveFolderStore.get(chart == null ? "" : chart.title).orElse(null);
+        return ChartSaveFolderStore.get(chart == null ? "" : chart.title)
+                .filter(Files::isDirectory)
+                .orElse(null);
+    }
+
+    private void validateSavingFolderOnOpen() {
+        if (saveFolderValidated || chart == null) return;
+        saveFolderValidated = true;
+        var configured = ChartSaveFolderStore.get(chart.title);
+        if (configured.isEmpty() || Files.isDirectory(configured.get())) return;
+
+        Path missing = configured.get();
+        boolean cleared = ChartSaveFolderStore.clear(chart.title);
+        missingSavingFolderWarning = missing;
+        setStatus("Saving folder no longer exists: " + missing
+                + (cleared ? "; Ctrl+S will use the default song folder"
+                : "; use Save As to replace it"));
+        rebuildUi();
+    }
+
+    private void dismissMissingSavingFolderWarning() {
+        missingSavingFolderWarning = null;
     }
 
     private void chooseSavingFolder() {
@@ -1696,7 +1735,7 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
     private void clearSavingFolder() {
         commitVisibleFields();
         if (ChartSaveFolderStore.clear(chart.title)) {
-            setStatus("Saving folder cleared; Ctrl+S will ask every time");
+            setStatus("Saving folder cleared; Ctrl+S will use the default song folder");
         } else {
             setStatus("Could not clear the folder setting");
         }
@@ -1711,57 +1750,131 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
     }
 
     private void chooseSongAudio() {
-        NativeFilePicker.openFile("Choose Inst.ogg or a vocal stem",
-                new String[]{"*.ogg"}, "OGG song audio").ifPresent(selected -> {
-            Path folder = selected.toAbsolutePath().normalize().getParent();
-            if (folder == null) return;
-            Path definitionRoot = entry == null ? null
-                    : entry.animationRoot() != null ? entry.animationRoot() : entry.runtimeRoot();
-            SongEntry chosen = new SongEntry();
-            chosen.id = folder.getFileName() == null ? "new-song" : folder.getFileName().toString();
-            chosen.displayName = chosen.id;
-            chosen.folder = folder;
-            chosen.difficulties.add(loadedDifficulty);
-            String selectedName = selected.getFileName().toString().toLowerCase(Locale.ROOT);
-            chosen.instFile = selectedName.startsWith("inst") ? selected : findStem(folder, "inst.ogg");
-            if (chosen.instFile == null) chosen.instFile = findStemPrefix(folder, "inst");
-            if (chosen.instFile == null) chosen.instFile = selected;
-            chosen.voicesFile = findStem(folder, "voices.ogg");
-            chosen.voicesPlayerFile = CharacterVocalResolver.resolve(
-                    folder, definitionRoot, chart.player1, false, "");
-            if (chosen.voicesPlayerFile == null) chosen.voicesPlayerFile = findStem(folder,
-                    "voices-player.ogg", "voices-bf.ogg", "voices-" + chart.player1 + ".ogg");
-            chosen.voicesOpponentFile = CharacterVocalResolver.resolve(
-                    folder, definitionRoot, chart.player2, true, "");
-            if (chosen.voicesOpponentFile == null) chosen.voicesOpponentFile = findStem(folder,
-                    "voices-opponent.ogg", "voices-dad.ogg", "voices-" + chart.player2 + ".ogg");
-            entry = chosen;
-            disposeAudio();
-            ensureAudioLoaded();
-            setStatus("Loaded exact audio folder: " + folder);
-            rebuildUi();
+        if (audioImportRunning) {
+            setStatus("Song audio is already being converted");
+            return;
+        }
+        List<Path> selected = NativeFilePicker.openFiles("Choose Inst and vocal stems",
+                new String[]{"*.ogg", "*.oga", "*.wav", "*.mp3", "*.flac", "*.m4a", "*.aac",
+                        "*.wma", "*.aif", "*.aiff", "*.opus"},
+                "Supported song audio");
+        if (selected.isEmpty()) return;
+
+        audioImportRunning = true;
+        setStatus("Importing " + selected.size() + " audio file(s)...");
+        var client = minecraft;
+        CompletableFuture.supplyAsync(() -> {
+            try {
+                return ChartAudioImport.prepare(selected, chart.player1, chart.player2);
+            } catch (Exception error) {
+                throw new java.util.concurrent.CompletionException(error);
+            }
+        }).whenComplete((result, failure) -> {
+            if (client == null) {
+                if (result != null) ChartAudioImport.delete(result.stagingFolder());
+                return;
+            }
+            client.execute(() -> finishSongAudioImport(result, failure));
         });
     }
 
-    private static Path findStem(Path folder, String... names) {
-        try (var files = Files.list(folder)) {
-            List<Path> all = files.filter(Files::isRegularFile).toList();
-            for (String name : names) {
-                for (Path file : all) if (file.getFileName().toString().equalsIgnoreCase(name)) return file;
-            }
-        } catch (Exception ignored) {}
-        return null;
+    private void finishSongAudioImport(ChartAudioImport.Result result, Throwable failure) {
+        audioImportRunning = false;
+        if (minecraft == null || minecraft.screen != this) {
+            if (result != null) ChartAudioImport.delete(result.stagingFolder());
+            return;
+        }
+        if (failure != null || result == null) {
+            Throwable cause = failure;
+            while (cause != null && cause.getCause() != null) cause = cause.getCause();
+            setStatus("Audio import failed: " + (cause == null || cause.getMessage() == null
+                    ? "unknown conversion error" : cause.getMessage()));
+            rebuildUi();
+            return;
+        }
+
+        disposeAudio();
+        if (entry == null) {
+            entry = new SongEntry();
+            entry.id = sanitizeId(chart.title);
+            if (entry.id.isBlank()) entry.id = "new-song";
+            entry.displayName = chart.title;
+            entry.folder = result.stagingFolder();
+            entry.difficulties.add(loadedDifficulty);
+        }
+        for (ChartAudioImport.Stem stem : ChartAudioImport.Stem.values()) {
+            Path file = result.stem(stem);
+            if (file != null) setEntryAudioStem(stem, file);
+        }
+        pendingAudioFolder = result.stagingFolder();
+        temporaryAudioFolders.add(result.stagingFolder());
+        ensureAudioLoaded();
+
+        String details = result.convertedCount() == 0 ? ""
+                : "; converted " + result.convertedCount() + " to OGG";
+        if (result.discardedCount() > 0) details += "; discarded " + result.discardedCount();
+        if (entry.instFor(loadedDifficulty) == null) details += "; no Inst stem selected";
+        setStatus("Prepared " + result.stems().size() + " audio stem(s)" + details
+                + ". They will be copied with the chart on Save");
+        rebuildUi();
     }
 
-    private static Path findStemPrefix(Path folder, String prefix) {
-        try (var files = Files.list(folder)) {
-            return files.filter(Files::isRegularFile).filter(file -> {
-                String name = file.getFileName().toString().toLowerCase(Locale.ROOT);
-                return name.startsWith(prefix.toLowerCase(Locale.ROOT)) && name.endsWith(".ogg");
-            }).sorted().findFirst().orElse(null);
-        } catch (Exception ignored) {
-            return null;
+    private void setEntryAudioStem(ChartAudioImport.Stem stem, Path file) {
+        SongEntry.VSliceVariation variation = null;
+        if (entry.isVslice()) {
+            variation = entry.variationFor(loadedDifficulty);
+            if (variation == null) {
+                variation = new SongEntry.VSliceVariation();
+                entry.vsliceVariations.put(loadedDifficulty, variation);
+            }
         }
+        if (variation != null) {
+            switch (stem) {
+                case INST -> variation.instFile = file;
+                case VOICES -> variation.voicesFile = file;
+                case PLAYER -> variation.voicesPlayerFile = file;
+                case OPPONENT -> variation.voicesOpponentFile = file;
+            }
+            return;
+        }
+        switch (stem) {
+            case INST -> entry.instFile = file;
+            case VOICES -> entry.voicesFile = file;
+            case PLAYER -> entry.voicesPlayerFile = file;
+            case OPPONENT -> entry.voicesOpponentFile = file;
+        }
+    }
+
+    private int savePendingAudio(Path directory) throws Exception {
+        if (pendingAudioFolder == null || entry == null) return 0;
+        int saved = 0;
+        for (ChartAudioImport.Stem stem : ChartAudioImport.Stem.values()) {
+            Path source = entryAudioStem(stem);
+            if (!isTemporaryAudio(source)) continue;
+            Path destination = directory.resolve(stem.fileName);
+            Files.copy(source, destination, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            setEntryAudioStem(stem, destination);
+            saved++;
+        }
+        if (isTemporaryAudio(entry.folder)) entry.folder = directory;
+        pendingAudioFolder = null;
+        return saved;
+    }
+
+    private boolean isTemporaryAudio(Path file) {
+        if (file == null) return false;
+        Path normalized = file.toAbsolutePath().normalize();
+        return temporaryAudioFolders.stream().anyMatch(folder ->
+                normalized.startsWith(folder.toAbsolutePath().normalize()));
+    }
+
+    private Path entryAudioStem(ChartAudioImport.Stem stem) {
+        return switch (stem) {
+            case INST -> entry.instFor(loadedDifficulty);
+            case VOICES -> entry.voicesFor(loadedDifficulty);
+            case PLAYER -> entry.voicesPlayerFor(loadedDifficulty);
+            case OPPONENT -> entry.voicesOpponentFor(loadedDifficulty);
+        };
     }
 
     // --------------------------------------------------------------------- Playback
@@ -2459,6 +2572,13 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
 
     @Override
     public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
+        if (missingSavingFolderWarning != null) {
+            if (keyCode == GLFW.GLFW_KEY_ESCAPE || keyCode == GLFW.GLFW_KEY_ENTER
+                    || keyCode == GLFW.GLFW_KEY_KP_ENTER || keyCode == GLFW.GLFW_KEY_SPACE) {
+                dismissMissingSavingFolderWarning();
+            }
+            return true;
+        }
         if (instColorPickerOpen) {
             if (keyCode == GLFW.GLFW_KEY_ESCAPE) closeInstColorPicker(false);
             else if (keyCode == GLFW.GLFW_KEY_ENTER || keyCode == GLFW.GLFW_KEY_KP_ENTER) {
@@ -2611,6 +2731,7 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
 
     @Override
     public boolean charTyped(char codePoint, int modifiers) {
+        if (missingSavingFolderWarning != null) return true;
         if (instColorPickerOpen) {
             if (instColorHexField != null) instColorHexField.charTyped(codePoint, modifiers);
             return true;
@@ -2624,6 +2745,12 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
 
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
+        if (missingSavingFolderWarning != null) {
+            if (button == GLFW.GLFW_MOUSE_BUTTON_LEFT && warningButtonHovered(mouseX, mouseY)) {
+                dismissMissingSavingFolderWarning();
+            }
+            return true;
+        }
         if (instColorPickerOpen) {
             if (instColorHexField != null) instColorHexField.mouseClicked(mouseX, mouseY, button);
             if (button != GLFW.GLFW_MOUSE_BUTTON_LEFT) return true;
@@ -2763,6 +2890,7 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
 
     @Override
     public boolean mouseDragged(double mouseX, double mouseY, int button, double dragX, double dragY) {
+        if (missingSavingFolderWarning != null) return true;
         if (instColorPickerOpen) {
             if (instColorDrag != 0) updateInstColorPicker(mouseX, mouseY);
             return true;
@@ -2786,6 +2914,7 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
 
     @Override
     public boolean mouseReleased(double mouseX, double mouseY, int button) {
+        if (missingSavingFolderWarning != null) return true;
         if (instColorPickerOpen) {
             instColorDrag = 0;
             return true;
@@ -2809,6 +2938,7 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
 
     @Override
     public boolean mouseScrolled(double mouseX, double mouseY, double scrollX, double scrollY) {
+        if (missingSavingFolderWarning != null) return true;
         if (instColorPickerOpen) return true;
         if (bookmarkTextDialogOpen) return true;
         if (previewMode) return true;
@@ -2885,6 +3015,14 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
     public void render(GuiGraphics gui, int mouseX, int mouseY, float partialTick) {
         renderBackground(gui, mouseX, mouseY, partialTick);
 
+        if (missingSavingFolderWarning != null) {
+            gui.pose().pushPose();
+            gui.pose().translate(0, 0, 1000);
+            renderMissingSavingFolderWarning(gui, mouseX, mouseY);
+            gui.pose().popPose();
+            return;
+        }
+
         boolean preciseHitsounds = !ClientOptions.get().hitsound.isEmpty();
         boolean scheduledTicks = preciseHitsounds || ClientOptions.get().editorMetronome;
         if (leadInStartNano >= 0) {
@@ -2959,6 +3097,67 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
 
         for (var renderable : renderables) renderable.render(gui, mouseX, mouseY, partialTick);
         renderInfoWindow(gui);
+    }
+
+    private void renderMissingSavingFolderWarning(GuiGraphics gui, int mouseX, int mouseY) {
+        gui.fill(0, 0, width, height, 0xF20A0A10);
+        int boxW = Math.min(440, Math.max(240, width - 32));
+        int textW = boxW - 24;
+        List<FormattedCharSequence> missingLines = font.split(
+                Component.literal(missingSavingFolderWarning.toAbsolutePath().normalize().toString()), textW);
+        String id = sanitizeId(saveId == null || saveId.isBlank() ? chart.title : saveId);
+        if (id.isBlank()) id = "unnamed";
+        Path fallback = SongLibrary.songsDir().resolve(id).toAbsolutePath().normalize();
+        List<FormattedCharSequence> fallbackLines = font.split(Component.literal(fallback.toString()), textW);
+        int boxH = 91 + (missingLines.size() + fallbackLines.size()) * 10;
+        int x0 = (width - boxW) / 2;
+        int y0 = Math.max(8, (height - boxH) / 2);
+
+        gui.fill(x0, y0, x0 + boxW, y0 + boxH, 0xFF15151D);
+        gui.renderOutline(x0, y0, boxW, boxH, 0xFFFFA43A);
+        gui.drawCenteredString(font, "Saving folder missing", x0 + boxW / 2, y0 + 11, 0xFFFFB34F);
+        int textY = y0 + 30;
+        gui.drawString(font, "The assigned chart folder no longer exists:", x0 + 12, textY,
+                0xFFE0E0E0, false);
+        textY += 12;
+        for (FormattedCharSequence line : missingLines) {
+            gui.drawString(font, line, x0 + 12, textY, 0xFFFF8C8C, false);
+            textY += 10;
+        }
+        textY += 3;
+        gui.drawString(font, "Ctrl+S will save without a dialog to:", x0 + 12, textY,
+                0xFFE0E0E0, false);
+        textY += 12;
+        for (FormattedCharSequence line : fallbackLines) {
+            gui.drawString(font, line, x0 + 12, textY, 0xFF9FD3FF, false);
+            textY += 10;
+        }
+
+        int buttonX = x0 + (boxW - 120) / 2;
+        int buttonY = y0 + boxH - 27;
+        boolean hovered = warningButtonHovered(mouseX, mouseY);
+        gui.fill(buttonX, buttonY, buttonX + 120, buttonY + 18,
+                hovered ? 0xFF5B607E : 0xFF353948);
+        gui.renderOutline(buttonX, buttonY, 120, 18, 0xFF7C82A5);
+        gui.drawCenteredString(font, "Continue", buttonX + 60, buttonY + 5, 0xFFFFFFFF);
+    }
+
+    private boolean warningButtonHovered(double mouseX, double mouseY) {
+        int boxW = Math.min(440, Math.max(240, width - 32));
+        int textW = boxW - 24;
+        int missingLines = font.split(Component.literal(
+                missingSavingFolderWarning.toAbsolutePath().normalize().toString()), textW).size();
+        String id = sanitizeId(saveId == null || saveId.isBlank() ? chart.title : saveId);
+        if (id.isBlank()) id = "unnamed";
+        int fallbackLines = font.split(Component.literal(SongLibrary.songsDir().resolve(id)
+                .toAbsolutePath().normalize().toString()), textW).size();
+        int boxH = 91 + (missingLines + fallbackLines) * 10;
+        int x0 = (width - boxW) / 2;
+        int y0 = Math.max(8, (height - boxH) / 2);
+        int buttonX = x0 + (boxW - 120) / 2;
+        int buttonY = y0 + boxH - 27;
+        return mouseX >= buttonX && mouseX < buttonX + 120
+                && mouseY >= buttonY && mouseY < buttonY + 18;
     }
 
     /**
@@ -4032,6 +4231,9 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
         disposeScheduler();
         disposeAudio();
         disposeNoteTextures();
+        for (Path folder : temporaryAudioFolders) ChartAudioImport.delete(folder);
+        temporaryAudioFolders.clear();
+        pendingAudioFolder = null;
         super.onClose();
     }
 
@@ -4064,7 +4266,7 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
 
     @Override
     public boolean isTextInputActive() {
-        return instColorPickerOpen || bookmarkTextDialogOpen
+        return missingSavingFolderWarning != null || instColorPickerOpen || bookmarkTextDialogOpen
                 || (getFocused() instanceof EditBox edit && edit.isFocused());
     }
 }

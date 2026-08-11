@@ -45,7 +45,7 @@ public final class FnfClient {
     public static final class ModBus {
         @SubscribeEvent
         public static void onRegisterKeys(RegisterKeyMappingsEvent event) {
-            for (var key : FnfKeys.NOTE_KEYS) event.register(key);
+            for (var key : FnfKeys.ALL_KEYS) event.register(key);
         }
 
         @SubscribeEvent
@@ -119,10 +119,10 @@ public final class FnfClient {
                     .bounds(6, 6, 90, 20).build());
         }
 
-        /** FNF-style +/- master volume, available globally except in Minecraft's pause screen. */
+        /** FNF-style, rebindable master volume available globally, including pause screens. */
         @SubscribeEvent
         public static void onScreenKeyPressed(ScreenEvent.KeyPressed.Pre event) {
-            if (MasterVolumeOverlay.handleKey(event.getScreen(), event.getKeyCode())) {
+            if (MasterVolumeOverlay.handleKey(event.getScreen(), event.getKeyCode(), event.getScanCode())) {
                 event.setCanceled(true);
             }
         }
@@ -133,7 +133,17 @@ public final class FnfClient {
             Minecraft mc = Minecraft.getInstance();
             if (mc.screen != null || (event.getAction() != GLFW.GLFW_PRESS
                     && event.getAction() != GLFW.GLFW_REPEAT)) return;
-            MasterVolumeOverlay.handleKey(null, event.getKey());
+            MasterVolumeOverlay.handleKey(null, event.getKey(), event.getScanCode());
+        }
+
+        /** Lets Minecraft Controls bind either volume action to a mouse button too. */
+        @SubscribeEvent
+        public static void onMouseButtonInput(InputEvent.MouseButton.Pre event) {
+            if (event.getAction() != GLFW.GLFW_PRESS) return;
+            Minecraft mc = Minecraft.getInstance();
+            if (MasterVolumeOverlay.handleMouseBinding(mc.screen, event.getButton())) {
+                event.setCanceled(true);
+            }
         }
 
         @SubscribeEvent

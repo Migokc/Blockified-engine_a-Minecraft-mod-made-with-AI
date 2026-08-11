@@ -466,16 +466,17 @@ public final class PsychGameplayScene implements AutoCloseable {
             if (!element.isJsonObject()) continue;
             JsonObject anim = element.getAsJsonObject();
             String name = string(anim, "anim", "");
-            List<SparrowAtlas.Frame> frames = new ArrayList<>(atlas.framesByPrefix(
-                    string(anim, "name", name)));
+            String prefix = string(anim, "name", name);
+            List<SparrowAtlas.Frame> frames;
             if (anim.has("indices") && anim.get("indices").isJsonArray()
                     && !anim.getAsJsonArray("indices").isEmpty()) {
-                List<SparrowAtlas.Frame> indexed = new ArrayList<>();
+                List<Integer> indices = new ArrayList<>();
                 for (JsonElement index : anim.getAsJsonArray("indices")) {
-                    int i = index.getAsInt();
-                    if (i >= 0 && i < frames.size()) indexed.add(frames.get(i));
+                    try { indices.add(index.getAsInt()); } catch (Exception ignored) {}
                 }
-                frames = indexed;
+                frames = new ArrayList<>(atlas.framesByIndices(prefix, indices));
+            } else {
+                frames = new ArrayList<>(atlas.framesByPrefix(prefix));
             }
             if (name.isBlank() || frames.isEmpty()) continue;
             double[] offsets = pair(anim, "offsets", 0, 0);

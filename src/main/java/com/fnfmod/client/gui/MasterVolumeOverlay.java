@@ -1,9 +1,9 @@
 package com.fnfmod.client.gui;
 
+import com.fnfmod.client.FnfKeys;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.EditBox;
-import net.minecraft.client.gui.screens.PauseScreen;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.resources.sounds.SimpleSoundInstance;
 import net.minecraft.sounds.SoundEvents;
@@ -27,13 +27,26 @@ public final class MasterVolumeOverlay {
 
     private MasterVolumeOverlay() {}
 
-    public static boolean handleKey(Screen screen, int keyCode) {
+    public static boolean handleKey(Screen screen, int keyCode, int scanCode) {
         if (!allowed(screen) || isTyping(screen)) return false;
-        int direction = switch (keyCode) {
-            case GLFW.GLFW_KEY_EQUAL, GLFW.GLFW_KEY_KP_ADD -> 1;
-            case GLFW.GLFW_KEY_MINUS, GLFW.GLFW_KEY_KP_SUBTRACT -> -1;
-            default -> 0;
-        };
+        int direction = FnfKeys.VOLUME_UP.matches(keyCode, scanCode) ? 1
+                : FnfKeys.VOLUME_DOWN.matches(keyCode, scanCode) ? -1 : 0;
+        // Keep both old +/- locations while the bindings remain at their
+        // defaults. Rebinding removes these aliases, so the chosen control fully
+        // replaces the old keys instead of leaving an unchangeable shortcut.
+        if (direction == 0 && FnfKeys.VOLUME_UP.isDefault() && keyCode == GLFW.GLFW_KEY_KP_ADD) direction = 1;
+        if (direction == 0 && FnfKeys.VOLUME_DOWN.isDefault() && keyCode == GLFW.GLFW_KEY_KP_SUBTRACT) direction = -1;
+        return changeVolume(direction);
+    }
+
+    public static boolean handleMouseBinding(Screen screen, int button) {
+        if (!allowed(screen) || isTyping(screen)) return false;
+        int direction = FnfKeys.VOLUME_UP.matchesMouse(button) ? 1
+                : FnfKeys.VOLUME_DOWN.matchesMouse(button) ? -1 : 0;
+        return changeVolume(direction);
+    }
+
+    private static boolean changeVolume(int direction) {
         if (direction == 0) return false;
 
         Minecraft mc = Minecraft.getInstance();
@@ -146,7 +159,7 @@ public final class MasterVolumeOverlay {
     }
 
     private static boolean allowed(Screen screen) {
-        return !(screen instanceof PauseScreen);
+        return true;
     }
 
     private static boolean isTyping(Screen screen) {
