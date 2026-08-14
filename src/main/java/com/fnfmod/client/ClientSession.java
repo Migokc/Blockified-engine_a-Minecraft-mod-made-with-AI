@@ -24,8 +24,11 @@ import net.minecraft.world.level.block.state.BlockState;
 import net.neoforged.neoforge.network.PacketDistributor;
 
 import java.io.IOException;
+import java.io.OutputStream;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -53,14 +56,18 @@ public final class ClientSession {
     public static PlaybackMode playbackMode = PlaybackMode.MINECRAFT;
     /** Server-resolved rich-resource permission for the selected playback mode/source. */
     public static boolean songAssets = true;
+    /** Dedicated servers disable gameplay Lua; integrated/LAN servers retain it. */
+    public static boolean luaAllowed = true;
 
     public static SongChart chart;
     public static SongPlayer preloadedPlayer;
     public static Path resolvedFolder;
 
     private static List<FnfPayloads.FileMeta> manifest = List.of();
-    private static final Map<String, byte[][]> receiving = new HashMap<>();
+    private static final Map<String, FnfPayloads.FileMeta> manifestByName = new HashMap<>();
+    private static final Map<String, IncomingFile> receiving = new HashMap<>();
     private static List<String> missingFiles = new ArrayList<>();
+    private static final int MAX_CONCURRENT_FILES = 8;
     /** Invalidates asynchronous hash checks when a session changes or the client disconnects. */
     private static long generation;
 
@@ -76,9 +83,11 @@ public final class ClientSession {
         pendingSongExitTarget = FnfPayloads.LeaveC2S.RETURN_SELECTOR;
         playbackMode = PlaybackMode.MINECRAFT;
         songAssets = true;
+        luaAllowed = true;
         chart = null;
         resolvedFolder = null;
         manifest = List.of();
+        manifestByName.clear();
         receiving.clear();
         missingFiles.clear();
         if (preloadedPlayer != null) {
@@ -105,22 +114,31 @@ public final class ClientSession {
         opponentSide = payload.opponentSide();
         playbackMode = PlaybackMode.fromNetworkId(payload.playbackMode());
         songAssets = payload.songAssets();
-        manifest = payload.files();
+        luaAllowed = payload.luaAllowed();
+        List<FnfPayloads.FileMeta> checkedManifest = validateManifest(payload.files(), !payload.luaAllowed());
+        if (checkedManifest == null) {
+            fail("Server sent an invalid or oversized song manifest");
+            return;
+        }
+        manifest = checkedManifest;
+        manifestByName.clear();
+        for (FnfPayloads.FileMeta meta : manifest) manifestByName.put(meta.name(), meta);
         receiving.clear();
         long requestGeneration = ++generation;
         String requestedSongId = songId;
         String requestedDifficulty = difficulty;
         PlaybackMode requestedMode = playbackMode;
         boolean requestedAssets = songAssets;
+        boolean requestedLua = luaAllowed;
         List<FnfPayloads.FileMeta> requestedManifest = List.copyOf(manifest);
         Path requestedCacheDir = cacheVariantFolder(requestedSongId, requestedDifficulty,
-                requestedMode, requestedAssets);
+                requestedMode, requestedAssets, requestedLua);
 
         Minecraft.getInstance().setScreen(new WaitingScreen(Component.literal("Loading song...")));
 
         // hash checking can be slow for big oggs -> background thread
         CompletableFuture.supplyAsync(() -> checkLocalFiles(requestedSongId, requestedDifficulty,
-                requestedMode, requestedAssets, requestedManifest, requestedCacheDir)).whenComplete((result, err) -> {
+                requestedMode, requestedAssets, requestedLua, requestedManifest, requestedCacheDir)).whenComplete((result, err) -> {
             Minecraft.getInstance().execute(() -> {
                 if (requestGeneration != generation) return;
                 if (err != null) {
@@ -153,11 +171,13 @@ public final class ClientSession {
 
     private static LocalCheck checkLocalFiles(String requestedSongId, String requestedDifficulty,
                                               PlaybackMode requestedMode, boolean requestedAssets,
+                                              boolean requestedLua,
                                               List<FnfPayloads.FileMeta> requestedManifest,
                                               Path cacheDir) {
         SongEntry sourceEntry = SongLibrary.get(requestedSongId);
         if (sourceEntry != null && matchesEntry(sourceEntry, requestedDifficulty,
-                new com.fnfmod.gameplay.PlaybackPolicy(requestedMode, requestedAssets), requestedManifest)) {
+                new com.fnfmod.gameplay.PlaybackPolicy(requestedMode, requestedAssets, requestedLua),
+                requestedManifest)) {
             return new LocalCheck(sourceEntry, false, List.of());
         }
         Path songDir = SongLibrary.songsDir().resolve(requestedSongId);
@@ -194,12 +214,14 @@ public final class ClientSession {
     }
 
     private static Path cacheVariantFolder(String requestedSongId, String requestedDifficulty,
-                                           PlaybackMode requestedMode, boolean requestedAssets) {
+                                           PlaybackMode requestedMode, boolean requestedAssets,
+                                           boolean requestedLua) {
         String songKey = sanitize(requestedSongId) + "__" + Integer.toHexString(requestedSongId.hashCode());
         String difficultyKey = sanitize(requestedDifficulty) + "__"
                 + Integer.toHexString(requestedDifficulty.hashCode());
         String variant = difficultyKey + "__" + requestedMode.name().toLowerCase()
-                + (requestedAssets ? "__assets" : "__restricted");
+                + (requestedAssets ? "__assets" : "__restricted")
+                + (requestedLua ? "__lua" : "__no_lua");
         return SongLibrary.cacheDir().resolve(songKey).resolve(variant);
     }
 
@@ -213,40 +235,108 @@ public final class ClientSession {
         }
     }
 
+    private static List<FnfPayloads.FileMeta> validateManifest(List<FnfPayloads.FileMeta> files,
+                                                               boolean enforceDedicatedLimit) {
+        if (files == null || files.size() > FnfPayloads.MAX_MANIFEST_FILES) return null;
+        List<FnfPayloads.FileMeta> checked = new ArrayList<>(files.size());
+        java.util.HashSet<String> names = new java.util.HashSet<>();
+        long total = 0;
+        for (FnfPayloads.FileMeta meta : files) {
+            if (meta == null) return null;
+            String name = safeRelativeName(meta.name());
+            if (name == null || name.length() > FnfPayloads.MAX_FILE_NAME_LENGTH || !names.add(name)) return null;
+            if (meta.size() < 0) return null;
+            if (enforceDedicatedLimit && (meta.size() > SessionManager.MAX_SONG_TRANSFER_BYTES
+                    || total > SessionManager.MAX_SONG_TRANSFER_BYTES - meta.size())) return null;
+            if (meta.sha1() == null || !meta.sha1().matches("(?i)[0-9a-f]{40}")) return null;
+            if (Long.MAX_VALUE - total < meta.size()) return null;
+            total += meta.size();
+            checked.add(new FnfPayloads.FileMeta(name, meta.size(), meta.sha1().toLowerCase(java.util.Locale.ROOT)));
+        }
+        return List.copyOf(checked);
+    }
+
+    private static final class IncomingFile {
+        final FnfPayloads.FileMeta meta;
+        final byte[][] chunks;
+
+        IncomingFile(FnfPayloads.FileMeta meta, int chunkCount) {
+            this.meta = meta;
+            this.chunks = new byte[chunkCount][];
+        }
+    }
+
     public static void onChunk(FnfPayloads.FileChunkS2C payload) {
         if (!payload.songId().equals(songId)) return;
         String name = safeRelativeName(payload.fileName());
-        if (name == null) {
-            fail("Server sent an unsafe song resource path");
+        FnfPayloads.FileMeta meta = name == null ? null : manifestByName.get(name);
+        if (meta == null || !missingFiles.contains(name)) {
+            fail("Server sent a song resource that was not requested");
             return;
         }
-        byte[][] chunks = receiving.computeIfAbsent(name, k -> new byte[payload.totalChunks()][]);
-        if (payload.chunkIndex() < 0 || payload.chunkIndex() >= chunks.length) return;
-        chunks[payload.chunkIndex()] = payload.data();
+        int expectedChunks = (int) Math.max(1,
+                (meta.size() + FnfPayloads.MAX_CHUNK_BYTES - 1) / FnfPayloads.MAX_CHUNK_BYTES);
+        if (payload.totalChunks() != expectedChunks || payload.chunkIndex() < 0
+                || payload.chunkIndex() >= expectedChunks || payload.data() == null) {
+            fail("Server sent invalid song chunk metadata");
+            return;
+        }
+        long start = (long) payload.chunkIndex() * FnfPayloads.MAX_CHUNK_BYTES;
+        int expectedBytes = (int) Math.min(FnfPayloads.MAX_CHUNK_BYTES, Math.max(0, meta.size() - start));
+        if (payload.data().length != expectedBytes) {
+            fail("Server sent a song chunk with the wrong size");
+            return;
+        }
+        IncomingFile incoming = receiving.get(name);
+        if (incoming == null) {
+            if (receiving.size() >= MAX_CONCURRENT_FILES) {
+                fail("Server exceeded the concurrent song-file limit");
+                return;
+            }
+            incoming = new IncomingFile(meta, expectedChunks);
+            receiving.put(name, incoming);
+        }
+        if (incoming.chunks.length != expectedChunks || incoming.chunks[payload.chunkIndex()] != null) {
+            fail("Server sent a duplicate or inconsistent song chunk");
+            return;
+        }
+        incoming.chunks[payload.chunkIndex()] = payload.data();
 
-        for (byte[] c : chunks) {
+        for (byte[] c : incoming.chunks) {
             if (c == null) return; // still waiting
         }
-        // file complete -> write to cache
+        // Complete file: stream chunks into a temporary cache file, verify the
+        // manifest size and SHA-1, then publish it atomically.
+        Path temporary = null;
         try {
             Path target = manifestPath(resolvedFolder, name);
             if (target == null) throw new IOException("unsafe resource path");
             Files.createDirectories(target.getParent());
-            int total = 0;
-            for (byte[] c : chunks) total += c.length;
-            byte[] all = new byte[total];
-            int off = 0;
-            for (byte[] c : chunks) {
-                System.arraycopy(c, 0, all, off, c.length);
-                off += c.length;
+            temporary = target.resolveSibling(target.getFileName() + ".part-" + UUID.randomUUID());
+            try (OutputStream output = Files.newOutputStream(temporary)) {
+                for (byte[] chunk : incoming.chunks) output.write(chunk);
             }
-            Files.write(target, all);
+            if (Files.size(temporary) != meta.size()
+                    || !SessionManager.sha1(temporary).equalsIgnoreCase(meta.sha1())) {
+                throw new IOException("download failed size/hash verification");
+            }
+            try {
+                Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE,
+                        StandardCopyOption.REPLACE_EXISTING);
+            } catch (AtomicMoveNotSupportedException ignored) {
+                Files.move(temporary, target, StandardCopyOption.REPLACE_EXISTING);
+            }
         } catch (IOException e) {
             fail("Could not save downloaded file " + name + ": " + e.getMessage());
             return;
+        } finally {
+            if (temporary != null) {
+                try { Files.deleteIfExists(temporary); }
+                catch (IOException ignored) {}
+            }
         }
         receiving.remove(name);
-        missingFiles.remove(payload.fileName());
+        missingFiles.remove(name);
         if (missingFiles.isEmpty()) finishLoad(null);
     }
 
@@ -292,7 +382,7 @@ public final class ClientSession {
             Path preloadFolder = resolvedFolder;
             String preloadSongId = songId;
             com.fnfmod.gameplay.PlaybackPolicy preloadPolicy =
-                    new com.fnfmod.gameplay.PlaybackPolicy(playbackMode, songAssets);
+                    new com.fnfmod.gameplay.PlaybackPolicy(playbackMode, songAssets, luaAllowed);
             Minecraft.getInstance().setScreen(new WaitingScreen(Component.literal("Preparing graphics...")));
             CompletableFuture.supplyAsync(() -> GameplayAssetPreloader.prepare(
                     preloadChart, preloadSongId, preloadFolder, entry, preloadPolicy))

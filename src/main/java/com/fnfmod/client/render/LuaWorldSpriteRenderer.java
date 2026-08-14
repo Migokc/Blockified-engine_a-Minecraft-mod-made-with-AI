@@ -14,8 +14,19 @@ final class LuaWorldSpriteRenderer {
 
     private LuaWorldSpriteRenderer() {}
 
-    static void render(PoseStack poseStack, MultiBufferSource.BufferSource buffers,
+    static void render(PoseStack poseStack, MultiBufferSource buffers,
                        LuaWorldObject.Sprite sprite, int light) {
+        render(poseStack, buffers, sprite, light, true);
+    }
+
+    /** Entity renderers append to Minecraft/IRLights' owner-managed batch. */
+    static void renderBatched(PoseStack poseStack, MultiBufferSource buffers,
+                              LuaWorldObject.Sprite sprite, int light) {
+        render(poseStack, buffers, sprite, light, false);
+    }
+
+    private static void render(PoseStack poseStack, MultiBufferSource buffers,
+                               LuaWorldObject.Sprite sprite, int light, boolean flush) {
         if (sprite.width() <= 0 || sprite.height() <= 0) return;
         ResourceLocation texture = sprite.texture() == null ? WHITE_TEXTURE : sprite.texture();
         RenderType lit = sprite.lighting()
@@ -67,7 +78,7 @@ final class LuaWorldSpriteRenderer {
             vertex(vertices, pose, right, top, u1, v0, red, green, blue, alpha, light);
             vertex(vertices, pose, left, top, u0, v0, red, green, blue, alpha, light);
         }
-        buffers.endBatch(renderType);
+        if (flush && buffers instanceof MultiBufferSource.BufferSource source) source.endBatch(renderType);
     }
 
     private static void vertex(VertexConsumer vertices, PoseStack.Pose pose, float x, float y,

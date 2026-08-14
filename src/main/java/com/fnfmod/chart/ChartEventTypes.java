@@ -18,12 +18,14 @@ public final class ChartEventTypes {
     public static final String PLAY_ANIMATION = "Play Animation";
     public static final String CAMERA_FOLLOW_POS = "Camera Follow Pos";
     public static final String CAMERA_ROTATION_3D = "Camera Rotation 3D";
+    public static final String CAMERA_ORBIT = "Camera Orbit";
     public static final String ALT_IDLE_ANIMATION = "Alt Idle Animation";
     public static final String SCREEN_SHAKE = "Screen Shake";
     public static final String CHANGE_CHARACTER = "Change Character";
     public static final String CHANGE_SCROLL_SPEED = "Change Scroll Speed";
     public static final String SET_PROPERTY = "Set Property";
     public static final String PLAY_SOUND = "Play Sound";
+    public static final String DIRECTIONAL_SHADING = "Directional Shading";
     public static final String ADD_CHARACTER = "Add Character";
     public static final String REMOVE_CHARACTER = "Remove Character";
     public static final String TWEEN_CHARACTER = "Tween Character";
@@ -40,19 +42,21 @@ public final class ChartEventTypes {
             definition(MINECRAFT_COMMAND, "", "player"),
             new Definition(CAMERA_ZOOM, "0", "", "smooth", "", "", ""),
             definition(CAMERA_FOCUS, "player", "smooth"),
-            definition(CAMERA_BEHAVIOR, "1", "smooth"),
+            new Definition(CAMERA_BEHAVIOR, "1", "smooth", "true", "", "", ""),
             definition(HEY, "", "0.6"),
             definition(SET_GF_SPEED, "1", ""),
             definition(ADD_CAMERA_ZOOM, "0.015", "0.03"),
             definition(PLAY_ANIMATION, "idle", "dad"),
             definition(CAMERA_FOLLOW_POS, "", ""),
             definition(CAMERA_ROTATION_3D, "", ""),
+            new Definition(CAMERA_ORBIT, "on", "follow", "0,0,0", "0.5", "smooth", ""),
             definition(ALT_IDLE_ANIMATION, "dad", "-alt"),
             definition(SCREEN_SHAKE, "0.5,0.05", ""),
             definition(CHANGE_CHARACTER, "dad", ""),
             definition(CHANGE_SCROLL_SPEED, "1", "0"),
             definition(SET_PROPERTY, "", ""),
             definition(PLAY_SOUND, "", "1"),
+            definition(DIRECTIONAL_SHADING, "on", "on"),
             new Definition(ADD_CHARACTER, "extra", "", "0,0,0", "0", "idle,player", ""),
             definition(REMOVE_CHARACTER, "extra", ""),
             new Definition(TWEEN_CHARACTER, "extra", "0,0,0", "1", "smooth", "", "")
@@ -106,6 +110,10 @@ public final class ChartEventTypes {
         return is(name, CAMERA_ROTATION_3D);
     }
 
+    public static boolean isCameraOrbit(String name) {
+        return is(name, CAMERA_ORBIT);
+    }
+
     public static boolean is(String actual, String canonical) {
         Definition definition = definition(actual);
         return definition != null && definition.name.equals(canonical);
@@ -152,6 +160,7 @@ public final class ChartEventTypes {
             case CAMERA_FOCUS, CAMERA_BEHAVIOR -> 2;
             case CAMERA_ZOOM -> 3;
             case CAMERA_FOLLOW_POS, CAMERA_ROTATION_3D, TWEEN_CHARACTER -> 4;
+            case CAMERA_ORBIT -> 5;
             default -> 0;
         };
     }
@@ -177,12 +186,13 @@ public final class ChartEventTypes {
                     "Value 3: Easing curve plus in/out/inOut direction. constant snaps immediately.");
             case CAMERA_FOCUS -> String.join("\n",
                     "Overrides Must Hit camera focus until released.",
-                    "Value 1: player/BF, opponent/Dad, or GF/speakers. Leave empty to restore normal Must Hit section focus.",
+                    "Value 1: player/BF, opponent/Dad, GF/speakers, or an Add Character tag in Legacy/Minecraft mode. Leave empty to restore normal Must Hit section focus.",
                     "Value 2: Easing curve plus in/out/inOut direction. Ignored when Value 1 is empty.");
             case CAMERA_BEHAVIOR -> String.join("\n",
                     "Legacy and Minecraft only. Changes how section-focus camera movement behaves; FNF mode ignores it.",
                     "Value 1: Speed multiplier. 1 is normal; 2 is twice as fast; 0.5 is half speed.",
-                    "Value 2: Easing curve plus in/out/inOut direction. constant snaps to the target. Leave both values empty to restore defaults.");
+                    "Value 2: Easing curve plus in/out/inOut direction. constant snaps to the target.",
+                    "Value 3: Animation camera offsets. true/on (default) enables sing offsets; false/off disables them, including for an orbit pivot. Leave all values empty to restore defaults.");
             // Meanings and examples mirror Psych Engine 1.0.4 ChartingState event help.
             case HEY -> String.join("\n",
                     "Plays the Hey animation.",
@@ -210,11 +220,19 @@ public final class ChartEventTypes {
                     "Value 7: Move duration in seconds. Empty uses the default 0.5s; a larger value makes the camera glide to the position more slowly.");
             case CAMERA_ROTATION_3D -> String.join("\n",
                     "Rotates Minecraft's world camera in three axes.",
+                    "While Camera Orbit is active, these values rotate the camera position around that orbit's pivot instead.",
                     "Value 1: X rotation (pitch) in degrees.",
                     "Value 2: Y rotation (yaw) in degrees.",
                     "Value 3: Z rotation (roll) in degrees.",
                     "Value 4: Easing. Leave all rotation values empty to return to the normal camera rotation.",
                     "Value 5: Rotation duration in seconds. Empty uses the original 0.5s duration.");
+            case CAMERA_ORBIT -> String.join("\n",
+                    "Enables or disables a pivot for Minecraft's world camera. FNF presentation ignores it. Camera Follow Pos sets the camera position/radius; Camera Rotation 3D rotates it around the pivot.",
+                    "Value 1: on starts orbit mode; off/stop/normal ends it.",
+                    "Value 2: follow attaches the pivot to the current Camera Focus target; pin keeps it fixed in the world.",
+                    "Value 3: X,Y,Z stage-local pivot coordinates (right, up, forward). In follow mode they offset the focused character; in pin mode they are an absolute position from the machine.",
+                    "Value 4: Pivot move duration in seconds when changing an active orbit. 0 snaps; empty uses 0.5 seconds.",
+                    "Value 5: Pivot move easing. Empty uses smooth. Camera Focus target changes still use Camera Behavior.");
             case ALT_IDLE_ANIMATION -> String.join("\n",
                     "Adds a suffix to a character's idle animation name; for example, -alt selects idle-alt.",
                     "Value 1: Character: Dad, BF, or GF.",
@@ -239,6 +257,11 @@ public final class ChartEventTypes {
                     "Plays a sound from the active mod's sounds folder.",
                     "Value 1: Sound filename without .ogg.",
                     "Value 2: Volume from 0 to 1. Default is 1.");
+            case DIRECTIONAL_SHADING -> String.join("\n",
+                    "Controls Minecraft's directional face lighting during this song. Restored on exit.",
+                    "Value 1: Block/fluid shading: on keeps vanilla; off makes faces evenly lit and also disables ambient occlusion.",
+                    "Value 2: Entity shading: on keeps vanilla; off flattens players, mobs, dropped items, and other vanilla entity renders.",
+                    "World light levels remain active. Entity shadow blobs and shader-pack shadows are separate.");
             case ADD_CHARACTER -> String.join("\n",
                     "Creates or replaces a named client-side BBS performer for this song.",
                     "Value 1: Unique tag used by Lua and Play Animation, such as extraDad.",
@@ -269,7 +292,8 @@ public final class ChartEventTypes {
         return switch (definition.name) {
             case CAMERA_FOLLOW_POS -> "Blockified & Psych Hybrid event";
             case MINECRAFT_COMMAND, CAMERA_ZOOM, CAMERA_FOCUS, CAMERA_BEHAVIOR,
-                    CAMERA_ROTATION_3D, ADD_CHARACTER, REMOVE_CHARACTER, TWEEN_CHARACTER -> "Blockified event";
+                    CAMERA_ROTATION_3D, CAMERA_ORBIT, ADD_CHARACTER, REMOVE_CHARACTER,
+                    TWEEN_CHARACTER, DIRECTIONAL_SHADING -> "Blockified event";
             default -> "Psych Engine event";
         };
     }
@@ -280,7 +304,7 @@ public final class ChartEventTypes {
         return switch (definition.name) {
             case MINECRAFT_COMMAND -> "Minecraft command";
             case CAMERA_ZOOM -> "zoom amount; 0 resets";
-            case CAMERA_FOCUS -> "player, opponent, GF, or empty";
+            case CAMERA_FOCUS -> "player, opponent, GF, extra tag, or empty";
             case CAMERA_BEHAVIOR -> "speed multiplier; empty resets";
             case HEY -> "BF, GF, or both";
             case SET_GF_SPEED -> "integer beat interval";
@@ -288,6 +312,7 @@ public final class ChartEventTypes {
             case PLAY_ANIMATION -> "animation name";
             case CAMERA_FOLLOW_POS -> "camera X / 3D right";
             case CAMERA_ROTATION_3D -> "X rotation / pitch";
+            case CAMERA_ORBIT -> "on or off";
             case ALT_IDLE_ANIMATION -> "Dad, BF, or GF";
             case CHANGE_CHARACTER -> "Dad, BF, GF, or custom tag";
             case SCREEN_SHAKE -> "game: duration, intensity";
@@ -311,6 +336,7 @@ public final class ChartEventTypes {
             case PLAY_ANIMATION -> "Dad, BF, GF, or custom tag";
             case CAMERA_FOLLOW_POS -> "camera Y / 3D up";
             case CAMERA_ROTATION_3D -> "Y rotation / yaw";
+            case CAMERA_ORBIT -> "follow or pin";
             case ALT_IDLE_ANIMATION -> "animation suffix";
             case SCREEN_SHAKE -> "HUD: duration, intensity";
             case CHANGE_CHARACTER -> "new character ID";
@@ -327,9 +353,11 @@ public final class ChartEventTypes {
         Definition definition = definition(name);
         if (definition == null) return "custom value 3";
         return switch (definition.name) {
+            case CAMERA_BEHAVIOR -> "animation offsets: true or false";
             case CAMERA_ZOOM -> "easing; default is smooth";
             case CAMERA_FOLLOW_POS -> "3D forward offset (blocks)";
             case CAMERA_ROTATION_3D -> "Z rotation / roll";
+            case CAMERA_ORBIT -> "pivot X,Y,Z offset/position";
             case ADD_CHARACTER -> "stage X,Y,Z";
             case TWEEN_CHARACTER -> "duration in seconds";
             default -> "value 3";
@@ -338,6 +366,7 @@ public final class ChartEventTypes {
 
     public static String value4Hint(String name) {
         if (is(name, ADD_CHARACTER)) return "extra yaw rotation";
+        if (isCameraOrbit(name)) return "pivot duration (s); 0 snaps";
         return easingValue(name) == 4 ? "easing; default is smooth" : "value 4";
     }
 
@@ -345,6 +374,7 @@ public final class ChartEventTypes {
         if (is(name, ADD_CHARACTER)) return "animation,player/opponent";
         if (is(name, TWEEN_CHARACTER)) return "target rotation (deg)";
         if (isCameraRotation3d(name)) return "rotation duration (s); blank = 0.5";
+        if (isCameraOrbit(name)) return "pivot easing; default is smooth";
         return isCameraFollowPos(name) ? "default or override" : "value 5";
     }
 

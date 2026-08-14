@@ -18,7 +18,7 @@ public final class FnfNetworking {
 
     @SubscribeEvent
     public static void register(RegisterPayloadHandlersEvent event) {
-        PayloadRegistrar registrar = event.registrar("2");
+        PayloadRegistrar registrar = event.registrar("3");
 
         // client-bound
         registrar.playToClient(FnfPayloads.OpenMenuS2C.TYPE, FnfPayloads.OpenMenuS2C.CODEC, FnfNetworking::client);

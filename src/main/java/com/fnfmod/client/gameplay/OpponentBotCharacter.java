@@ -25,20 +25,23 @@ public final class OpponentBotCharacter {
     private final RemotePlayer entity;
     private final String set;
     private final String role;
+    private final boolean usePlayerSkin;
     private long lastSingMs;
     private long lastStatePlayMs;
 
-    private OpponentBotCharacter(RemotePlayer entity, String set, String role) {
+    private OpponentBotCharacter(RemotePlayer entity, String set, String role, boolean usePlayerSkin) {
         this.entity = entity;
         this.set = set;
         this.role = role;
+        this.usePlayerSkin = usePlayerSkin;
     }
 
     /**
      * Creates the bot's character, or null if the set is disabled or has no BBS form
      * (the caller then keeps the armor stand). {@code role} is "player"/"opponent".
      */
-    public static OpponentBotCharacter create(ClientLevel level, String set, String role, Entity stand) {
+    public static OpponentBotCharacter create(ClientLevel level, String set, String role, Entity stand,
+                                              boolean usePlayerSkin) {
         if (level == null || set == null || stand == null || CharacterAnimations.isDisabled(set)) return null;
         UUID id = UUID.nameUUIDFromBytes(("blockified:bot:" + role).getBytes(StandardCharsets.UTF_8));
         String name = "Bot_" + role;
@@ -50,11 +53,11 @@ public final class OpponentBotCharacter {
         level.addEntity(player);
         // Apply the BBS form. If the character/animation name has no form, bail so the
         // caller falls back to the plain armor stand.
-        if (!CharacterAnimations.prepare(player, set, role)) {
+        if (!CharacterAnimations.prepare(player, set, role, usePlayerSkin)) {
             level.removeEntity(player.getId(), Entity.RemovalReason.DISCARDED);
             return null;
         }
-        return new OpponentBotCharacter(player, set, role);
+        return new OpponentBotCharacter(player, set, role, usePlayerSkin);
     }
 
     /** Keeps the character on the bot stand's spot and hides the stand. Call each frame. */
@@ -73,7 +76,12 @@ public final class OpponentBotCharacter {
 
     /** Plays a sing/miss/hey animation on the opponent bot. */
     public boolean play(String action) {
-        return playState(action, true);
+        return playWithCameraOffset(action) != null;
+    }
+
+    /** Plays an action while preserving its character.json camera nudge. */
+    public float[] playWithCameraOffset(String action) {
+        return playStateWithCameraOffset(action, true);
     }
 
     /** Replays a sustain sing at the same bounded cadence used by the local performer. */
@@ -96,11 +104,16 @@ public final class OpponentBotCharacter {
     }
 
     private boolean playState(String action, boolean sing) {
-        if (CharacterAnimations.play(entity, set, role, action) == null) return false;
+        return playStateWithCameraOffset(action, sing) != null;
+    }
+
+    private float[] playStateWithCameraOffset(String action, boolean sing) {
+        float[] cameraOffset = CharacterAnimations.play(entity, set, role, action, usePlayerSkin);
+        if (cameraOffset == null) return null;
         long now = System.currentTimeMillis();
         lastStatePlayMs = now;
         if (sing) lastSingMs = now;
-        return true;
+        return cameraOffset;
     }
 
     public String role() {

@@ -13,10 +13,14 @@
     "ModWorldServerChunkCacheMixin"
   ],
   "client": [
+    "AmbientOcclusionMixin",
     "CameraMixin",
     "BbsMorphRendererMixin",
+    "DirectionalBlockShadingMixin",
     "EntityShadowMixin",
-    "PlayerRendererMixin"
+    "PlayerRendererMixin",
+    "RenderChunkRegionShadingMixin",
+    "ShaderDirectionalShadingMixin"
   ],
   "injectors": {
     "defaultRequire": 1

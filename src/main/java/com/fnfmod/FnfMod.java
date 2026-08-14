@@ -4,6 +4,7 @@ import com.fnfmod.block.FunkinMachineBlock;
 import com.fnfmod.block.MachineAnchorBlock;
 import com.fnfmod.block.ChunkLoaderPointBlock;
 import com.fnfmod.entity.MachineHitboxEntity;
+import com.fnfmod.entity.WorldSpriteEntity;
 import com.fnfmod.world.ChunkLoaderPointService;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.resources.ResourceLocation;
@@ -88,6 +89,13 @@ public class FnfMod {
                     .<MachineHitboxEntity>of(MachineHitboxEntity::new, MobCategory.MISC)
                     .sized(1f, 1f).clientTrackingRange(96).updateInterval(20)
                     .build("machine_hitbox"));
+    /** Instantiated only in ClientLevel; registered so Minecraft can render a real entity host. */
+    public static final DeferredHolder<EntityType<?>, EntityType<WorldSpriteEntity>> WORLD_SPRITE_ENTITY =
+            ENTITY_TYPES.register("world_sprite", () -> EntityType.Builder
+                    .<WorldSpriteEntity>of(WorldSpriteEntity::new, MobCategory.MISC)
+                    .sized(0.5f, 0.5f).clientTrackingRange(96).updateInterval(Integer.MAX_VALUE)
+                    .noSave().noSummon().fireImmune()
+                    .build("world_sprite"));
 
     public FnfMod(IEventBus modEventBus, ModContainer modContainer) {
         BLOCKS.register(modEventBus);

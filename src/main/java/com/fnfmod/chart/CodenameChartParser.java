@@ -56,6 +56,11 @@ public final class CodenameChartParser {
             chart.title = LegacyChartParser.optString(meta, "displayName",
                     LegacyChartParser.optString(meta, "name", "Unknown"));
             chart.startBpm = LegacyChartParser.optDouble(meta, "bpm", 100);
+            SongChart.TimeSignature startingMeter = new SongChart.TimeSignature(
+                    roundedInt(meta, "beatsPerMeasure", 4),
+                    denominatorFromStepsPerBeat(LegacyChartParser.optDouble(meta, "stepsPerBeat", 4)));
+            chart.timeSignatureNumerator = startingMeter.numerator();
+            chart.timeSignatureDenominator = startingMeter.denominator();
         }
         chart.speed = readScrollSpeed(root, difficulty);
 
@@ -118,6 +123,7 @@ public final class CodenameChartParser {
         chart.events.addAll(LegacyChartParser.parseEvents(chartJson));
         chart.sortEvents();
         buildBpmMap(chart, root);
+        buildMeterMap(chart, root);
         synthesizeSections(chart);
         return chart;
     }
@@ -168,6 +174,97 @@ public final class CodenameChartParser {
                 chart.bpmChanges.add(new SongChart.BpmChange(c.time(), c.bpm()));
             }
         }
+    }
+
+    /**
+     * Imports Codename's native meter model. The initial meter lives in
+     * meta.json as beatsPerMeasure/stepsPerBeat; later changes are chart events
+     * whose third parameter chooses whether parameter two is a denominator or
+     * Codename's internal steps-per-beat value.
+     */
+    private static void buildMeterMap(SongChart chart, JsonObject root) {
+        if (!root.has("events") || !root.get("events").isJsonArray()) return;
+
+        record Change(double time, int numerator, int denominator) {}
+        List<Change> changes = new ArrayList<>();
+        for (JsonElement eventElement : root.getAsJsonArray("events")) {
+            if (!eventElement.isJsonObject()) continue;
+            JsonObject event = eventElement.getAsJsonObject();
+            if (!"Time Signature Change".equals(
+                    LegacyChartParser.optString(event, "name", ""))) continue;
+            double time = LegacyChartParser.optDouble(event, "time", -1);
+            if (time < 0 || !event.has("params") || !event.get("params").isJsonArray()) continue;
+            JsonArray params = event.getAsJsonArray("params");
+            if (params.size() < 2) continue;
+
+            Double rawNumerator = number(params.get(0));
+            Double rawDenominator = number(params.get(1));
+            if (rawNumerator == null || rawDenominator == null) continue;
+            boolean denominatorIsSteps = params.size() > 2 && bool(params.get(2), false);
+            int denominator = denominatorIsSteps
+                    ? denominatorFromStepsPerBeat(rawDenominator)
+                    : (int) Math.round(rawDenominator);
+            SongChart.TimeSignature meter = new SongChart.TimeSignature(
+                    (int) Math.round(rawNumerator), denominator);
+            changes.add(new Change(time, meter.numerator(), meter.denominator()));
+        }
+
+        changes.sort(java.util.Comparator.comparingDouble(Change::time));
+        int previousNumerator = chart.timeSignatureNumerator;
+        int previousDenominator = chart.timeSignatureDenominator;
+        for (Change change : changes) {
+            if (change.time() <= 0.001) {
+                chart.timeSignatureNumerator = change.numerator();
+                chart.timeSignatureDenominator = change.denominator();
+            }
+            if (change.numerator() == previousNumerator
+                    && change.denominator() == previousDenominator) continue;
+
+            SongChart.MeterChange meterChange = new SongChart.MeterChange(
+                    change.time(), change.numerator(), change.denominator());
+            int last = chart.meterChanges.size() - 1;
+            if (last >= 0 && Math.abs(chart.meterChanges.get(last).timeMs() - change.time()) < 0.001) {
+                chart.meterChanges.set(last, meterChange);
+            } else {
+                chart.meterChanges.add(meterChange);
+            }
+            previousNumerator = change.numerator();
+            previousDenominator = change.denominator();
+        }
+    }
+
+    private static int roundedInt(JsonObject object, String key, int fallback) {
+        return (int) Math.round(LegacyChartParser.optDouble(object, key, fallback));
+    }
+
+    private static int denominatorFromStepsPerBeat(double stepsPerBeat) {
+        if (!Double.isFinite(stepsPerBeat) || stepsPerBeat <= 0) return 4;
+        return (int) Math.round(16.0 / stepsPerBeat);
+    }
+
+    private static Double number(JsonElement element) {
+        try {
+            if (element == null || !element.isJsonPrimitive()) return null;
+            var primitive = element.getAsJsonPrimitive();
+            if (primitive.isNumber()) return primitive.getAsDouble();
+            if (primitive.isString()) return Double.parseDouble(primitive.getAsString().trim());
+        } catch (Exception ignored) {}
+        return null;
+    }
+
+    private static boolean bool(JsonElement element, boolean fallback) {
+        try {
+            if (element == null || !element.isJsonPrimitive()) return fallback;
+            var primitive = element.getAsJsonPrimitive();
+            if (primitive.isBoolean()) return primitive.getAsBoolean();
+            if (primitive.isNumber()) return primitive.getAsDouble() != 0;
+            if (primitive.isString()) {
+                String value = primitive.getAsString().trim();
+                if ("true".equalsIgnoreCase(value) || "1".equals(value)) return true;
+                if ("false".equalsIgnoreCase(value) || "0".equals(value)) return false;
+            }
+        } catch (Exception ignored) {}
+        return fallback;
     }
 
     /**

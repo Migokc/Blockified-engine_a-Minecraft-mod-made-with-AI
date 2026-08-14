@@ -23,6 +23,7 @@ import com.fnfmod.song.SongImportService;
 import com.fnfmod.song.SongLibrary;
 import com.fnfmod.gameplay.PlaybackMode;
 import com.fnfmod.gameplay.PlaybackPolicy;
+import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.EditBox;
@@ -56,6 +57,10 @@ import java.util.concurrent.CompletableFuture;
  */
 public final class ChartEditorScreen extends Screen implements TextInputAwareScreen {
 
+    /** 1920x1080 at 3x establishes a 640x360 logical editor workspace. */
+    private static final int EDITOR_REFERENCE_GUI_WIDTH = 640;
+    /** Allows normal maximized-window chrome without dropping an entire scale step. */
+    private static final int EDITOR_MIN_GUI_HEIGHT = 320;
     private static final int[] SNAPS = {4, 8, 12, 16, 24, 32, 64};
     /** Default zoom uses four rows per beat, matching 16/16 Beat Snap. */
     private static final double BASE_GRID_ZOOM_ROWS = 4.0;
@@ -67,6 +72,9 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
     private static final int TAB_Y = 24;
     private static final int CONTROL_TOP = 40;
     private static final List<String> BUILTIN_EVENT_TYPES = ChartEventTypes.builtinNames();
+    /** Psych's built-in note types. An empty value is the normal/default note. */
+    private static final List<String> BUILTIN_NOTE_TYPES = List.of(
+            "", "Alt Animation", "Hey!", "Hurt Note", "GF Sing", "No Animation");
     private static final String[] HELP_LINES = {
             "W/S/Mouse Wheel - Move Conductor's Time",
             "A/D - Change Sections",
@@ -115,6 +123,8 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
     private final List<SongChart.Note> noteClipboard = new ArrayList<>();
     private final List<SongChart.Event> eventClipboard = new ArrayList<>();
     private boolean seededCameraShot;
+    /** True while the Window is using the editor-only resolution-derived GUI scale. */
+    private boolean editorGuiScaleApplied;
     /** Check a stored saving folder only once instead of repeating on GUI resizes. */
     private boolean saveFolderValidated;
     /** Missing assigned folder shown as a true foreground modal on editor open. */
@@ -152,6 +162,9 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
     private double viewportTweenFromMs;
     private long viewportTweenStartNano;
     private boolean viewportTweenActive;
+    /** Forward scrub tween whose visual note crossings should preview receptor hits. */
+    private boolean vortexForwardScrubTween;
+    private double vortexScrubPreviewPositionMs = Double.NaN;
     private static final long VIEWPORT_TWEEN_NANOS = 200_000_000L;
     // Silent lead-in for a positive offset: the playhead advances on the wall clock
     // through the pre-song gap before the audio starts, instead of skipping it.
@@ -168,8 +181,21 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
     private boolean controlSliderDragging;
     private int hitsoundIndex;
     private boolean vortex;
+    /** Gameplay-style confirmation flash for each Vortex receptor. */
+    private final long[] vortexFlashUntil = new long[8];
+    /** Chart time of the active sustain tail for each Vortex receptor. */
+    private final double[] vortexHoldUntilMs = new double[8];
+    /** Sustain confirm-atlas frames, advanced once per two screen renders. */
+    private final long[] vortexHoldRenderFrames = new long[8];
+    /** Next chart note that can cross the Vortex playhead during playback. */
+    private int vortexNoteIndex;
     private SongChart.Note selectedNote;
     private SongChart.Event selectedEvent;
+    private final List<String> noteTypes = new ArrayList<>(BUILTIN_NOTE_TYPES);
+    private boolean noteTypeDropdownOpen;
+    private int noteTypeDropdownScroll;
+    /** Note whose type was last copied into the dropdown draft. */
+    private SongChart.Note noteTypeDraftSource;
     private boolean eventDropdownOpen;
     private int eventDropdownScroll;
     private boolean eventDraftInitialized;
@@ -244,6 +270,7 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
     private EditBox songBpmField;
     private EditBox songSpeedField;
     private EditBox songOffsetField;
+    private EditBox chartingOffsetField;
     private EditBox songTimeNumeratorField;
     private EditBox songTimeDenominatorField;
     private EditBox playerField;
@@ -254,7 +281,6 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
     private EditBox sectionTimeDenominatorField;
     private EditBox noteTimeField;
     private EditBox sustainField;
-    private EditBox noteTypeField;
     private EditBox saveIdField;
     private EditBox importModNameField;
     private EditBox eventTimeField;
@@ -263,6 +289,7 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
     private EditBox eventValue3Field;
     private EditBox eventValue4Field;
     private EditBox eventValue5Field;
+    private EditBox eventValue6Field;
     private EditBox eventValue7Field;
     private EditBox noteTextureField;
     private EditBox noteSplashTextureField;
@@ -308,6 +335,7 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
 
     @Override
     protected void init() {
+        forceEditorGuiScale(minecraft);
         if (chart == null) loadChart();
         ensureAudioLoaded();
         clampOrInitializeInfoWindow();
@@ -324,6 +352,42 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
         }
         rebuildUi();
         validateSavingFolderOnOpen();
+    }
+
+    /**
+     * Keeps the editor's usable logical area close to 640x360 at every resolution.
+     * The global option is deliberately untouched; only Window's active scale changes.
+     */
+    private void forceEditorGuiScale(Minecraft client) {
+        if (client == null) return;
+        var window = client.getWindow();
+        // Width chooses the nearest reference scale, tolerating the few pixels
+        // removed by window borders. Height only vetoes it when the editor would
+        // have less than 320 logical pixels, so a maximized 1080p client remains 3x.
+        int scaleFromWidth = Math.max(1,
+                Math.round(window.getWidth() / (float) EDITOR_REFERENCE_GUI_WIDTH));
+        int scaleAllowedByHeight = Math.max(1, window.getHeight() / EDITOR_MIN_GUI_HEIGHT);
+        int targetScale = Math.min(scaleFromWidth, scaleAllowedByHeight);
+        window.setGuiScale(targetScale);
+        width = window.getGuiScaledWidth();
+        height = window.getGuiScaledHeight();
+        editorGuiScaleApplied = true;
+    }
+
+    /** Reapply the editor scale after fullscreen/window resolution changes. */
+    @Override
+    public void resize(Minecraft client, int ignoredWidth, int ignoredHeight) {
+        forceEditorGuiScale(client);
+        super.resize(client, width, height);
+    }
+
+    private void restoreConfiguredGuiScale() {
+        if (!editorGuiScaleApplied || minecraft == null) return;
+        editorGuiScaleApplied = false;
+        var window = minecraft.getWindow();
+        int configuredScale = window.calculateScale(
+                minecraft.options.guiScale().get(), minecraft.isEnforceUnicode());
+        window.setGuiScale(configuredScale);
     }
 
     private void loadChart() {
@@ -382,6 +446,7 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
         importModName = sanitizeModFolder(saveId + "-mod");
         loadedDifficulty = difficulty;
         discoverEventTypes();
+        discoverNoteTypes();
         reloadNoteTextures();
 
         ensureAudioLoaded();
@@ -461,13 +526,13 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
     }
 
     private void clearFieldReferences() {
-        songNameField = songBpmField = songSpeedField = songOffsetField = null;
+        songNameField = songBpmField = songSpeedField = songOffsetField = chartingOffsetField = null;
         songTimeNumeratorField = songTimeDenominatorField = null;
         playerField = opponentField = sectionBpmField = sectionBeatsField = null;
         sectionTimeNumeratorField = sectionTimeDenominatorField = null;
-        noteTimeField = sustainField = noteTypeField = saveIdField = importModNameField = null;
+        noteTimeField = sustainField = saveIdField = importModNameField = null;
         eventTimeField = eventValue1Field = eventValue2Field = null;
-        eventValue3Field = eventValue4Field = eventValue5Field = eventValue7Field = null;
+        eventValue3Field = eventValue4Field = eventValue5Field = eventValue6Field = eventValue7Field = null;
         noteTextureField = noteSplashTextureField = null;
     }
 
@@ -604,20 +669,82 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
         int x = controlX() + 10;
         int w = controlWidth() - 20;
         int y = 52;
+        if (selectedNote != noteTypeDraftSource) {
+            noteTypeDraftSource = selectedNote;
+            if (selectedNote != null) {
+                defaultNoteType = selectedNote.noteType == null ? "" : selectedNote.noteType;
+            }
+        }
         String time = selectedNote == null ? "" : trim(selectedNote.timeMs);
         String sustain = selectedNote == null ? "" : trim(selectedNote.sustainMs);
-        String type = selectedNote == null ? defaultNoteType : selectedNote.noteType;
 
         noteTimeField = labeledBox("Note Hit Time (ms)", x, y, w, time, "select a note");
         sustainField = labeledBox("Sustain Length (ms)", x, y + 31, w, sustain, "sustain");
-        noteTypeField = labeledBox("Note Type", x, y + 62, w, type, "note type");
         noteTimeField.active = selectedNote != null;
         sustainField.active = selectedNote != null;
-        button(x, y + 93, w, selectedNote == null ? "Default type applies to new notes" : "Apply Selected Note", b -> {
+        label("Note Type", x, y + 62, 0xFFDDDDDD, false);
+        button(x, y + 72, w, noteTypeLabel(defaultNoteType) + "  v", b -> {
             commitVisibleFields();
-            setStatus(selectedNote == null ? "Default note type updated" : "Selected note updated");
+            noteTypeDropdownOpen = !noteTypeDropdownOpen;
+            if (noteTypeDropdownOpen) noteTypeDropdownScroll = 0;
             rebuildUi();
         });
+        if (noteTypeDropdownOpen) {
+            int visible = Math.max(3, (height - (y + 88) - 8) / 14);
+            visible = Math.min(visible, noteTypes.size());
+            noteTypeDropdownScroll = Mth.clamp(noteTypeDropdownScroll, 0,
+                    Math.max(0, noteTypes.size() - visible));
+            for (int row = 0; row < visible; row++) {
+                int i = noteTypeDropdownScroll + row;
+                String type = noteTypes.get(i);
+                button(x, y + 86 + row * 14, w, noteTypeLabel(type), b -> selectNoteType(type));
+            }
+            if (noteTypes.size() > visible) {
+                label((noteTypeDropdownScroll + 1) + "-" + (noteTypeDropdownScroll + visible)
+                                + " / " + noteTypes.size() + "  (scroll)",
+                        x + w / 2, y + 89 + visible * 14, 0xFFBBBBBB, true);
+            }
+            return;
+        }
+        Button applyNote = button(x, y + 90, w, "Apply Selected Note", b -> applySelectedNote());
+        applyNote.active = selectedNote != null;
+        Button applyType = button(x, y + 108, w, "Apply Notetype to Selected",
+                b -> applyNoteTypeToSelected());
+        applyType.active = !selectedNotes.isEmpty();
+        if (selectedNote == null) {
+            label("Selected type applies to new notes", x + w / 2, y + 129,
+                    0xFFAAAAAA, true);
+        }
+    }
+
+    private static String noteTypeLabel(String type) {
+        return type == null || type.isBlank() ? "Normal" : type;
+    }
+
+    private void selectNoteType(String type) {
+        defaultNoteType = type == null ? "" : type;
+        noteTypeDropdownOpen = false;
+        rebuildUi();
+    }
+
+    private void applySelectedNote() {
+        if (selectedNote == null) return;
+        recordNoteChange();
+        selectedNote.noteType = defaultNoteType;
+        selectedNote.timeMs = Math.max(0, parseNumber(noteTimeField, selectedNote.timeMs));
+        selectedNote.sustainMs = Math.max(0, parseNumber(sustainField, selectedNote.sustainMs));
+        chart.sortNotes();
+        setStatus("Selected note updated");
+        rebuildUi();
+    }
+
+    private void applyNoteTypeToSelected() {
+        if (selectedNotes.isEmpty()) return;
+        recordNoteChange();
+        for (SongChart.Note note : selectedNotes) note.noteType = defaultNoteType;
+        setStatus("Applied " + noteTypeLabel(defaultNoteType) + " to "
+                + selectedNotes.size() + " selected note(s)");
+        rebuildUi();
     }
 
     private void buildChartingTab() {
@@ -638,8 +765,17 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
             }
         });
         y += 22;
-        button(x, y, w, "Beat Snap: " + snapText(), b -> cycleSnap(hasShiftDown() ? -1 : 1));
-        y += 18;
+        ClientOptions options = ClientOptions.get();
+        int half = (w - 4) / 2;
+        chartingOffsetField = numberBox("Charting Offset (ms)", x, y, half,
+                trim(options.editorChartingOffsetMs), "+later -earlier");
+        chartingOffsetField.setTooltip(Tooltip.create(Component.literal(
+                "Editor only. Added to Song Offset (" + trim(chart.offsetMs)
+                        + " ms). Effective editor offset: "
+                        + trim(effectiveEditorOffsetMs()) + " ms.")));
+        button(x + half + 4, y + 10, half, "Beat Snap: " + snapText(),
+                b -> cycleSnap(hasShiftDown() ? -1 : 1));
+        y += 29;
         Button vortexButton = button(x, y, w, "Vortex Editor: " + onOff(vortex), b -> {
             vortex = !vortex;
             if (vortex && !isPlaying()) snapPlayheadToGrid();
@@ -648,8 +784,6 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
         vortexButton.setTooltip(Tooltip.create(Component.literal("Keys 1-8 toggle notes at the fixed playhead")));
         y += 24;
 
-        ClientOptions options = ClientOptions.get();
-        int half = (w - 4) / 2;
         button(x, y, half, "Hitsound P: " + onOff(options.editorHitsoundPlayer), b -> {
             options.editorHitsoundPlayer = !options.editorHitsoundPlayer;
             ClientOptions.save();
@@ -802,11 +936,27 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
         boolean cameraBehavior = ChartEventTypes.isCameraBehavior(eventTypeDraft);
         boolean cameraFollow = ChartEventTypes.isCameraFollowPos(eventTypeDraft);
         boolean cameraRotation = ChartEventTypes.isCameraRotation3d(eventTypeDraft);
+        boolean cameraOrbit = ChartEventTypes.isCameraOrbit(eventTypeDraft);
         boolean addCharacter = ChartEventTypes.is(eventTypeDraft, ChartEventTypes.ADD_CHARACTER);
         boolean tweenCharacter = ChartEventTypes.is(eventTypeDraft, ChartEventTypes.TWEEN_CHARACTER);
         boolean extendedCamera = cameraFollow || cameraRotation;
         int actionsY;
-        if (extendedCamera || addCharacter || tweenCharacter) {
+        if (cameraOrbit) {
+            label("Value 1", x, y + 72, 0xFFDDDDDD, false);
+            button(x, y + 82, w, orbitEventEnabled(eventValue1Draft)
+                            ? "Orbit: On" : "Orbit: Off",
+                    b -> cycleOrbitEventEnabled());
+            label("Value 2", x, y + 99, 0xFFDDDDDD, false);
+            button(x, y + 109, w, orbitEventPinned(eventValue2Draft)
+                            ? "Pivot: Pinned" : "Pivot: Follow focus",
+                    b -> cycleOrbitEventPinned());
+            eventValue3Field = eventValueBox("Value 3", x, y + 126, w,
+                    eventValue3Draft, ChartEventTypes.value3Hint(eventTypeDraft));
+            eventValue4Field = eventValueBox("Value 4", x, y + 153, w,
+                    eventValue4Draft, ChartEventTypes.value4Hint(eventTypeDraft));
+            buildEasingControl(x, y + 180, w, 5, true, true);
+            actionsY = y + 207;
+        } else if (extendedCamera || addCharacter || tweenCharacter) {
             int halfValue = (w - 4) / 2;
             eventValue1Field = eventValueBox("Value 1", x, y + 72, halfValue,
                     eventValue1Draft, ChartEventTypes.value1Hint(eventTypeDraft));
@@ -850,9 +1000,9 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
                 button(x, y + 82, w, font.plainSubstrByWidth(preview, Math.max(8, w - 12)),
                         b -> openCommandEditor());
             } else if (cameraFocus) {
-                label("Value 1", x, y + 72, 0xFFDDDDDD, false);
-                String target = eventValue1Draft.isBlank() ? "Normal (Must Hit)" : eventValue1Draft;
-                button(x, y + 82, w, "Target: " + target,
+                eventValue1Field = eventValueBox("Value 1", x, y + 72, w - 52,
+                        eventValue1Draft, ChartEventTypes.value1Hint(eventTypeDraft));
+                button(x + w - 48, y + 82, 48, "Preset",
                         b -> cycleCameraFocusTarget(hasShiftDown() ? -1 : 1));
             } else {
                 eventValue1Field = eventValueBox("Value 1", x, y + 72, w, eventValue1Draft,
@@ -861,7 +1011,15 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
             if (cameraFocus || cameraBehavior) {
                 buildEasingControl(x, y + 99, w, 2, cameraBehavior,
                         !cameraFocus || !eventValue1Draft.isBlank());
-                actionsY = y + 126;
+                if (cameraBehavior) {
+                    label("Value 3", x, y + 126, 0xFFDDDDDD, false);
+                    button(x, y + 136, w, cameraBehaviorOffsetsEnabled(eventValue3Draft)
+                                    ? "Animation offsets: Enabled" : "Animation offsets: Disabled",
+                            b -> cycleCameraBehaviorOffsets());
+                    actionsY = y + 153;
+                } else {
+                    actionsY = y + 126;
+                }
             } else if (cameraZoom) {
                 // Value 2 = duration (seconds), Value 3 = easing.
                 eventValue2Field = eventValueBox("Value 2", x, y + 99, w,
@@ -910,6 +1068,45 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
         eventTypes.addAll(BUILTIN_EVENT_TYPES);
         discovered.stream().filter(name -> !BUILTIN_EVENT_TYPES.contains(name))
                 .sorted(String.CASE_INSENSITIVE_ORDER).forEach(eventTypes::add);
+    }
+
+    private void discoverNoteTypes() {
+        LinkedHashSet<String> discovered = new LinkedHashSet<>(BUILTIN_NOTE_TYPES);
+        if (chart != null) {
+            chart.notes.stream().map(note -> note.noteType)
+                    .filter(name -> name != null && !name.isBlank())
+                    .forEach(discovered::add);
+        }
+        if (entry == null || entry.allows(SongLibrary.ExternalContent.LUA)) {
+            addCustomNoteTypeFiles(eventDefinitionRoot, discovered);
+            if (entry != null) {
+                addCustomNoteTypeFiles(entry.modRoot, discovered);
+                addCustomNoteTypeFiles(entry.folder, discovered);
+            }
+            addCustomNoteTypeFiles(suppliedSongFolder, discovered);
+        }
+        noteTypes.clear();
+        noteTypes.addAll(BUILTIN_NOTE_TYPES);
+        discovered.stream().filter(name -> !BUILTIN_NOTE_TYPES.contains(name))
+                .sorted(String.CASE_INSENSITIVE_ORDER).forEach(noteTypes::add);
+    }
+
+    private static void addCustomNoteTypeFiles(Path root, Set<String> names) {
+        if (root == null) return;
+        Path directory = root.resolve("custom_notetypes");
+        if (!Files.isDirectory(directory)) return;
+        try (var files = Files.list(directory)) {
+            files.filter(Files::isRegularFile).map(path -> path.getFileName().toString())
+                    .filter(name -> {
+                        String lower = name.toLowerCase(Locale.ROOT);
+                        return lower.endsWith(".lua") || lower.endsWith(".txt");
+                    })
+                    .map(name -> name.substring(0, name.lastIndexOf('.')))
+                    .filter(name -> !name.isBlank() && !name.equalsIgnoreCase("readme"))
+                    .forEach(names::add);
+        } catch (Exception e) {
+            FnfMod.LOGGER.warn("Could not scan custom note types in {}: {}", directory, e.toString());
+        }
     }
 
     private static void addCustomEventFiles(Path root, Set<String> names) {
@@ -1144,6 +1341,24 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
         chart.startBpm = parsePositive(songBpmField, chart.startBpm);
         chart.speed = parsePositive(songSpeedField, chart.speed);
         chart.offsetMs = parseNumber(songOffsetField, chart.offsetMs);
+        if (chartingOffsetField != null) {
+            ClientOptions options = ClientOptions.get();
+            double previous = options.editorChartingOffsetMs;
+            double updated = parseNumber(chartingOffsetField, previous);
+            if (Double.isFinite(updated) && Double.compare(previous, updated) != 0) {
+                options.editorChartingOffsetMs = updated;
+                ClientOptions.save();
+                // Re-index editor-only sounds after the audio-to-grid mapping changes.
+                if (leadInStartNano >= 0) {
+                    leadInBaseView = viewPositionMs;
+                    leadInStartNano = System.nanoTime();
+                } else if (isPlaying() && audio != null) {
+                    viewPositionMs = audioToView(audio.positionMs());
+                }
+                resetHitsoundIndex(viewPositionMs);
+                if (tickScheduler != null) tickScheduler.seek(viewPositionMs);
+            }
+        }
         SongChart.TimeSignature startingMeter = parseTimeSignature(
                 songTimeNumeratorField, songTimeDenominatorField, chart.startingTimeSignature());
         chart.timeSignatureNumerator = startingMeter.numerator();
@@ -1164,14 +1379,10 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
             }
         }
 
-        if (noteTypeField != null) {
-            defaultNoteType = noteTypeField.getValue().trim();
-            if (selectedNote != null) {
-                selectedNote.noteType = defaultNoteType;
-                selectedNote.timeMs = Math.max(0, parseNumber(noteTimeField, selectedNote.timeMs));
-                selectedNote.sustainMs = Math.max(0, parseNumber(sustainField, selectedNote.sustainMs));
-                chart.sortNotes();
-            }
+        if (noteTimeField != null && selectedNote != null) {
+            selectedNote.timeMs = Math.max(0, parseNumber(noteTimeField, selectedNote.timeMs));
+            selectedNote.sustainMs = Math.max(0, parseNumber(sustainField, selectedNote.sustainMs));
+            chart.sortNotes();
         }
         if (noteTextureField != null) chart.noteTexture = noteTextureField.getValue().trim();
         if (noteSplashTextureField != null) {
@@ -1184,6 +1395,7 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
         if (eventValue3Field != null) eventValue3Draft = eventValue3Field.getValue().trim();
         if (eventValue4Field != null) eventValue4Draft = eventValue4Field.getValue().trim();
         if (eventValue5Field != null) eventValue5Draft = eventValue5Field.getValue().trim();
+        if (eventValue6Field != null) eventValue6Draft = eventValue6Field.getValue().trim();
         if (eventValue7Field != null) eventValue7Draft = eventValue7Field.getValue().trim();
         if (selectedEvent != null && eventDraftInitialized) {
             selectedEvent.timeMs = eventTimeDraft;
@@ -1432,6 +1644,7 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
             selectOnly(note);
             setStatus("Placed note @ " + (int) timeMs + "ms");
         }
+        resetVortexNoteIndex(viewPositionMs);
         if (activeTab == EditorTab.NOTE) rebuildUi();
     }
 
@@ -2172,16 +2385,27 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
         if (Double.isNaN(displayPositionMs)) displayPositionMs = viewPositionMs;
         if (!viewportTweenActive) {
             displayPositionMs = viewPositionMs;
+            vortexForwardScrubTween = false;
             return;
         }
         double progress = (System.nanoTime() - viewportTweenStartNano) / (double) VIEWPORT_TWEEN_NANOS;
         if (progress >= 1) {
             displayPositionMs = viewPositionMs;
             viewportTweenActive = false;
-            return;
+        } else {
+            double eased = Easing.apply("expoOut", progress);
+            displayPositionMs = viewportTweenFromMs + (viewPositionMs - viewportTweenFromMs) * eased;
         }
-        double eased = Easing.apply("expoOut", progress);
-        displayPositionMs = viewportTweenFromMs + (viewPositionMs - viewportTweenFromMs) * eased;
+        if (vortexForwardScrubTween) {
+            if (Double.isNaN(vortexScrubPreviewPositionMs)) {
+                vortexScrubPreviewPositionMs = viewportTweenFromMs;
+            }
+            if (displayPositionMs > vortexScrubPreviewPositionMs) {
+                flashForwardScrubbedTapNotes(vortexScrubPreviewPositionMs, displayPositionMs);
+            }
+            vortexScrubPreviewPositionMs = displayPositionMs;
+            if (!viewportTweenActive) vortexForwardScrubTween = false;
+        }
     }
 
     private void beginViewportTween() {
@@ -2213,6 +2437,7 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
 
     private void beginPlayback() {
         resetHitsoundIndex(viewPositionMs);
+        resetVortexNoteIndex(viewPositionMs);
         snapshotSchedulerNotes();
         tickScheduler().seek(viewPositionMs);
         schedulerActive = false;
@@ -2341,33 +2566,68 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
     }
 
     /**
-     * The chart offset shifts the song against the notes, so applying it here lets
-     * the editor hear the alignment it will play with. view = note-grid time;
+     * The effective editor offset shifts the song against notes so charting tools
+     * hear their authored alignment. view = note-grid time;
      * audio buffer = note-grid time − offset (same relationship as gameplay).
      */
     private double audioToView(double audioPositionMs) {
-        return audioPositionMs + chart.offsetMs;
+        return audioPositionMs + effectiveEditorOffsetMs();
     }
 
     private double viewToAudio(double viewMs) {
-        return viewMs - chart.offsetMs;
+        return viewMs - effectiveEditorOffsetMs();
+    }
+
+    private double effectiveEditorOffsetMs() {
+        return chart.offsetMs + ClientOptions.get().editorChartingOffsetMs;
     }
 
     private void seek(double timeMs) {
         updateViewportTween();
+        // A generic seek must not inherit tap previews from a previous scroll.
+        // scrub() enables them again only when its new target moves forward.
+        vortexForwardScrubTween = false;
+        vortexScrubPreviewPositionMs = Double.NaN;
         leadInStartNano = -1; // scrubbing leaves any silent lead-in
         viewPositionMs = Math.max(0, timeMs);
         beginViewportTween();
         if (tickScheduler != null) tickScheduler.seek(viewPositionMs); // don't replay skipped notes
         if (audio != null && audio.isStarted()) audio.seekMs(viewToAudio(viewPositionMs));
         resetHitsoundIndex(viewPositionMs);
+        resetVortexNoteIndex(viewPositionMs);
     }
 
     private void scrub(double steps) {
         commitVisibleFields();
         if (isPlaying()) audio.pause();
-        double beat = conductor.beatAt(Math.max(0, viewPositionMs));
-        seek(conductor.timeOfBeat(Math.max(0, beat - steps * snapStepBeats())));
+        double previousTimeMs = viewPositionMs;
+        double beat = conductor.beatAt(Math.max(0, previousTimeMs));
+        double targetTimeMs = conductor.timeOfBeat(
+                Math.max(0, beat - steps * snapStepBeats()));
+        seek(targetTimeMs);
+        if (viewPositionMs > previousTimeMs) {
+            // Delay tap confirms until the interpolated chart actually carries
+            // each note through the receptor instead of firing at seek time.
+            vortexForwardScrubTween = viewportTweenActive;
+            vortexScrubPreviewPositionMs = visualPositionMs();
+        } else if (viewPositionMs < previousTimeMs) {
+            // A backwards scrub must never leave a tap-note confirm flash from
+            // the previous forward step. Sustain holds remain position-driven.
+            java.util.Arrays.fill(vortexFlashUntil, 0);
+        }
+    }
+
+    /** Preview tap-note receptor hits only while scrubbing forward through the chart. */
+    private void flashForwardScrubbedTapNotes(double fromTimeMs, double toTimeMs) {
+        if (!vortex || toTimeMs <= fromTimeMs) return;
+        long until = System.currentTimeMillis() + 150;
+        for (SongChart.Note note : chart.notes) {
+            if (note.timeMs <= fromTimeMs) continue;
+            if (note.timeMs > toTimeMs) break;
+            if (note.sustainMs > 0) continue;
+            int column = (note.playerSide ? 4 : 0) + Math.floorMod(note.lane, 4);
+            vortexFlashUntil[column] = Math.max(vortexFlashUntil[column], until);
+        }
     }
 
     private void changeSection(int delta) {
@@ -2390,6 +2650,42 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
         chart.sortNotes();
         hitsoundIndex = 0;
         while (hitsoundIndex < chart.notes.size() && chart.notes.get(hitsoundIndex).timeMs <= timeMs) hitsoundIndex++;
+    }
+
+    private void resetVortexNoteIndex(double timeMs) {
+        vortexNoteIndex = 0;
+        java.util.Arrays.fill(vortexHoldUntilMs, -1);
+        java.util.Arrays.fill(vortexHoldRenderFrames, 0);
+        // Keep a note exactly beneath the playhead eligible to animate when
+        // playback starts. A sustain whose head is behind the playhead remains
+        // active until its tail crosses, including when seeking into its body.
+        while (vortexNoteIndex < chart.notes.size()
+                && chart.notes.get(vortexNoteIndex).timeMs < timeMs) {
+            SongChart.Note note = chart.notes.get(vortexNoteIndex++);
+            double tail = note.timeMs + Math.max(0, note.sustainMs);
+            if (tail > timeMs) {
+                int column = (note.playerSide ? 4 : 0) + Math.floorMod(note.lane, 4);
+                vortexHoldUntilMs[column] = Math.max(vortexHoldUntilMs[column], tail);
+            }
+        }
+    }
+
+    /** Advances even while Vortex is hidden, preventing old notes flashing when it is enabled later. */
+    private void flashCrossedVortexNotes(double timeMs) {
+        long until = System.currentTimeMillis() + 150;
+        while (vortexNoteIndex < chart.notes.size()
+                && chart.notes.get(vortexNoteIndex).timeMs <= timeMs) {
+            SongChart.Note note = chart.notes.get(vortexNoteIndex++);
+            int column = (note.playerSide ? 4 : 0) + Math.floorMod(note.lane, 4);
+            if (note.sustainMs > 0) {
+                vortexHoldUntilMs[column] = Math.max(vortexHoldUntilMs[column],
+                        note.timeMs + note.sustainMs);
+                vortexHoldRenderFrames[column] = 0;
+            }
+            if (vortex) {
+                vortexFlashUntil[column] = Math.max(vortexFlashUntil[column], until);
+            }
+        }
     }
 
     private void playCrossedHitsounds(double timeMs) {
@@ -2431,7 +2727,7 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
                         }
                         SongPlayer a = audio;
                         return a == null ? viewPositionMs
-                                : a.positionMsAt(System.nanoTime()) + chart.offsetMs;
+                                : audioToView(a.positionMsAt(System.nanoTime()));
                     },
                     playerSide -> {
                         ClientOptions o = ClientOptions.get();
@@ -2582,6 +2878,13 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
             }
             return true;
         }
+        if (noteTypeDropdownOpen) {
+            if (keyCode == GLFW.GLFW_KEY_ESCAPE) {
+                noteTypeDropdownOpen = false;
+                rebuildUi();
+            }
+            return true;
+        }
         if (instColorPickerOpen) {
             if (keyCode == GLFW.GLFW_KEY_ESCAPE) closeInstColorPicker(false);
             else if (keyCode == GLFW.GLFW_KEY_ENTER || keyCode == GLFW.GLFW_KEY_KP_ENTER) {
@@ -2675,6 +2978,7 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
             double beat = conductor.beatAt(Math.max(0, viewPositionMs));
             double snapped = Math.max(0, Math.round(beat / snapStepBeats()) * snapStepBeats());
             toggleNote(column, conductor.timeOfBeat(snapped), false);
+            vortexFlashUntil[column] = System.currentTimeMillis() + 150;
             return true;
         }
 
@@ -2976,6 +3280,15 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
             }
             return true;
         }
+        if (noteTypeDropdownOpen) {
+            int direction = scrollY > 0 ? -1 : scrollY < 0 ? 1 : 0;
+            if (direction != 0) {
+                noteTypeDropdownScroll = Mth.clamp(noteTypeDropdownScroll + direction,
+                        0, Math.max(0, noteTypes.size() - 1));
+                rebuildUi();
+            }
+            return true;
+        }
         if (insideInfo(mouseX, mouseY)) return true;
         if (selectingBox && mouseX >= gridX() - cellWidth() && mouseX < gridX() + 8 * cellWidth()) {
             double multiplier = (shiftDown() ? 4.0 : 1.0) / (altDown() ? 4.0 : 1.0);
@@ -3073,6 +3386,7 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
         } else {
             deactivateScheduler();
         }
+        if (isPlaying()) flashCrossedVortexNotes(viewPositionMs);
         handleLoopPlayback();
         updateViewportTween();
         if (instColorPickerOpen) {
@@ -3376,15 +3690,33 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
             int previewY = (int) Math.round(playheadY + gridCellHeight() / 2.0);
             int previewBottom = (int) Math.round(playheadY + gridCellHeight());
             gui.fill(gx, playheadY, gx + gridWidth, previewBottom, 0x22FFFFFF);
+            long nowMs = System.currentTimeMillis();
+            NoteStyle.setDrawAlpha(0.6f);
             for (int column = 0; column < 8; column++) {
                 int centerX = gx + column * cw + cw / 2;
                 int lane = column % 4;
-                boolean custom = noteTextures != null && noteTextures.drawNote(gui,
-                        editorChartNoteTexture(), lane, centerX, previewY, noteSize);
-                if (!custom) NoteStyle.drawNote(gui, lane, centerX, previewY, noteSize);
-                draw(gui, String.valueOf(column + 1), gx + column * cw + 2,
-                        previewBottom - font.lineHeight, 0xFFFFFFFF);
+                boolean holding = vortexHoldUntilMs[column] > viewPositionMs;
+                int state = holding || vortexFlashUntil[column] > nowMs ? 2 : 0;
+                boolean custom = false;
+                if (holding) {
+                    long animationFrame = vortexHoldRenderFrames[column] / 2;
+                    if (isPlaying()) vortexHoldRenderFrames[column]++;
+                    custom = noteTextures != null && noteTextures.drawSustainReceptor(gui,
+                            editorChartNoteTexture(), lane, animationFrame,
+                            centerX, previewY, noteSize);
+                    if (!custom) {
+                        NoteStyle.drawSustainReceptor(gui, lane, animationFrame,
+                                centerX, previewY, noteSize);
+                        custom = true;
+                    }
+                }
+                if (!custom) {
+                    custom = noteTextures != null && noteTextures.drawReceptor(gui,
+                            editorChartNoteTexture(), lane, state, centerX, previewY, noteSize);
+                    if (!custom) NoteStyle.drawReceptor(gui, lane, centerX, previewY, noteSize, state);
+                }
             }
+            NoteStyle.setDrawAlpha(1f);
         }
         if (selectingBox) {
             int left = (int) Math.min(selectionStartX, selectionEndX);
@@ -3547,11 +3879,12 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
         if (activeTab != EditorTab.EVENTS || eventDropdownOpen || eventDocumentationVisible) return;
         int x = controlX() + 10;
         int w = controlWidth() - 20;
-        // Camera Follow Pos carries an extra Value 6 row, so its controls end
-        // lower than the other extended events; start the preview below them.
+        // Follow Pos and Orbit both carry all seven value rows, so their controls
+        // end lower than the other extended events. Keep inline help beneath the
+        // final action row instead of letting it overlap Values 5-7/buttons.
         int top;
         if (ChartEventTypes.isCameraFollowPos(eventTypeDraft)) {
-            top = 330; // extra Value 7 (duration) field pushes the preview down
+            top = 330; // the Value 7 field and action rows push the preview down
         } else if (ChartEventTypes.isCameraRotation3d(eventTypeDraft)
                 || ChartEventTypes.is(eventTypeDraft, ChartEventTypes.ADD_CHARACTER)
                 || ChartEventTypes.is(eventTypeDraft, ChartEventTypes.TWEEN_CHARACTER)) {
@@ -3559,6 +3892,10 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
         } else if (ChartEventTypes.isCameraZoom(eventTypeDraft)) {
             // Value 2 duration box + Value 3 easing push the controls lower.
             top = 249;
+        } else if (ChartEventTypes.isCameraBehavior(eventTypeDraft)) {
+            top = 246;
+        } else if (ChartEventTypes.isCameraOrbit(eventTypeDraft)) {
+            top = 300;
         } else {
             top = 219;
         }
@@ -4096,6 +4433,44 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
         rebuildUi();
     }
 
+    private void cycleCameraBehaviorOffsets() {
+        commitVisibleFields();
+        setEventValue(3, cameraBehaviorOffsetsEnabled(eventValue3Draft) ? "false" : "true");
+        rebuildUi();
+    }
+
+    private static boolean cameraBehaviorOffsetsEnabled(String raw) {
+        String value = raw == null ? "" : raw.trim();
+        return !value.equalsIgnoreCase("false") && !value.equalsIgnoreCase("off")
+                && !value.equalsIgnoreCase("no") && !value.equals("0")
+                && !value.equalsIgnoreCase("disabled");
+    }
+
+    private void cycleOrbitEventEnabled() {
+        commitVisibleFields();
+        setEventValue(1, orbitEventEnabled(eventValue1Draft) ? "off" : "on");
+        rebuildUi();
+    }
+
+    private void cycleOrbitEventPinned() {
+        commitVisibleFields();
+        setEventValue(2, orbitEventPinned(eventValue2Draft) ? "follow" : "pin");
+        rebuildUi();
+    }
+
+    private static boolean orbitEventEnabled(String raw) {
+        String value = raw == null ? "" : raw.trim();
+        return !value.equalsIgnoreCase("off") && !value.equalsIgnoreCase("stop")
+                && !value.equalsIgnoreCase("normal") && !value.equalsIgnoreCase("false")
+                && !value.equals("0");
+    }
+
+    private static boolean orbitEventPinned(String raw) {
+        String value = raw == null ? "" : raw.trim();
+        return value.equalsIgnoreCase("pin") || value.equalsIgnoreCase("pinned")
+                || value.equalsIgnoreCase("fixed");
+    }
+
     private static boolean cameraFollowUsesCameraFrame(String value6) {
         String value = value6 == null ? "" : value6.trim().toLowerCase(Locale.ROOT);
         return value.equals("camera") || value.equals("cam") || value.equals("rotation")
@@ -4252,6 +4627,7 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
         for (Path folder : temporaryAudioFolders) ChartAudioImport.delete(folder);
         temporaryAudioFolders.clear();
         pendingAudioFolder = null;
+        restoreConfiguredGuiScale();
         super.onClose();
     }
 
@@ -4260,6 +4636,7 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
         disposeScheduler();
         disposeAudio();
         disposeNoteTextures();
+        restoreConfiguredGuiScale();
         super.removed();
     }
 

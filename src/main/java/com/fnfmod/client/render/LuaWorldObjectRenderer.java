@@ -80,6 +80,21 @@ public final class LuaWorldObjectRenderer {
         }
     }
 
+    /** Draws one sprite at an entity transform; the entity renderer already translated to world position. */
+    public static void renderEntitySprite(PoseStack poseStack, Camera camera, Direction facing,
+                                          LuaWorldObject.Sprite sprite, MultiBufferSource buffers,
+                                          int packedLight) {
+        Direction stageFacing = facing == null ? Direction.NORTH : facing;
+        poseStack.pushPose();
+        orientSprite(poseStack, camera, stageFacing, sprite.billboard());
+        applyLocalRotation(poseStack, sprite);
+        poseStack.scale((float) sprite.scaleX() * PIXEL_SCALE,
+                (float) -sprite.scaleY() * PIXEL_SCALE, PIXEL_SCALE);
+        int light = sprite.lighting() ? packedLight : LightTexture.FULL_BRIGHT;
+        LuaWorldSpriteRenderer.renderBatched(poseStack, buffers, sprite, light);
+        poseStack.popPose();
+    }
+
     private static void orientSprite(PoseStack poseStack, Camera camera,
                                      Direction stageFacing, boolean billboard) {
         if (billboard) poseStack.mulPose(camera.rotation());

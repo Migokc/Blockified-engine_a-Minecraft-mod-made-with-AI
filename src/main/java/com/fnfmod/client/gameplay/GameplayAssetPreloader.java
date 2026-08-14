@@ -147,8 +147,16 @@ public final class GameplayAssetPreloader {
     private static List<Path> scriptFiles(SongChart chart, String songId, Path songFolder,
                                           SongEntry entry, PlaybackPolicy policy) {
         LinkedHashSet<Path> files = new LinkedHashSet<>();
-        if (!policy.allows(entry, SongLibrary.ExternalContent.LUA)) return List.of();
-        addLuaFiles(SongLibrary.scriptsDir(), files);
+        Path global = SongLibrary.globalSharedAssetRoot();
+        if (policy.luaAllowed() && global != null
+                && SongLibrary.getExternalFolderContent(
+                global.toAbsolutePath().normalize().toString())
+                .contains(SongLibrary.ExternalContent.LUA)) {
+            addLuaFiles(SongLibrary.scriptsDir(), files);
+        }
+        // Global scripts above are independent from the song's content profile.
+        // Only the remaining pack/song scripts use the song-owned Lua permission.
+        if (!policy.allows(entry, SongLibrary.ExternalContent.LUA)) return List.copyOf(files);
         Path modRoot = entry == null ? null : entry.modRoot;
         boolean stageFound = false;
         if (modRoot != null) {

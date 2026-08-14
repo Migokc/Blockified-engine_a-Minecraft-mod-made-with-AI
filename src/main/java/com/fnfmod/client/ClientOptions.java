@@ -37,6 +37,10 @@ public class ClientOptions {
     public String animationSet = "none";
     /** Solo opponent/bot selection. Null migrates old configs to animationSet. */
     public String opponentAnimationSet;
+    /** Give the locally controlled performer your current skin on compatible BBS player forms. */
+    public boolean playerUsePlayerSkin = false;
+    /** Give the solo bot your current Minecraft skin when its BBS form supports player skins. */
+    public boolean botUsePlayerSkin = false;
     /** Solo mode side: 0 = player, 1 = opponent, 2 = both. */
     public int playAs = 0;
     /** default = chart arrowSkin/splashSkin; none = procedural; otherwise skins/&lt;name&gt;. */
@@ -60,6 +64,8 @@ public class ClientOptions {
     public double editorMetronomeVolume = 0.75;
     public boolean editorWaveforms = true;
     public boolean editorOnsetMarkers = true;
+    /** Added to the chart's song offset only inside the chart editor. */
+    public double editorChartingOffsetMs = 0.0;
     /** Chart-editor instrumental waveform RGB. */
     public int editorInstWaveformColor = 0x0000FF;
 

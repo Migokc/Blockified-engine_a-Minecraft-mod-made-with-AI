@@ -47,12 +47,18 @@ public final class PsychAssetResolver {
                     addSongRoot(roots, entry.characterRoot, content);
                 }
             }
-            // Naked global mod (config/fnfmod/mods root): a Psych-style shared base
-            // whose loose characters/images/stages/sounds fall through to every song,
-            // added after the song's own pack so the pack's own assets always win.
-            // Available in every playback mode as trusted local content; disabled in a
-            // bundled mod world (globalSharedAssetRoot() returns null there).
-            add(roots, SongLibrary.globalSharedAssetRoot());
+        }
+        // Naked global mod (config/fnfmod/mods root): trusted installed content is
+        // independent from the current song's source. In particular, a global Lua
+        // script may create a world character from global characters/ while playing
+        // an external/lightweight song in Minecraft mode. The source checklist still
+        // applies. Dedicated-server sessions advertise luaAllowed=false and must not
+        // regain local rich assets here; bundled mod worlds return no global root.
+        Path global = SongLibrary.globalSharedAssetRoot();
+        if (policy.luaAllowed() && global != null
+                && SongLibrary.getExternalFolderContent(
+                global.toAbsolutePath().normalize().toString()).contains(content)) {
+            add(roots, global);
         }
         // Shared Psych assets obey the first configured directory's checklist,
         // independently from whichever directory supplied this song/chart.

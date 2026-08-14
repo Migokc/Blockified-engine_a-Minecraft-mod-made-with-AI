@@ -72,6 +72,8 @@ public final class FnfClient {
                     com.fnfmod.client.render.ChunkLoaderPointRenderer::new);
             event.registerEntityRenderer(FnfMod.MACHINE_HITBOX_ENTITY.get(),
                     com.fnfmod.client.render.MachineHitboxEntityRenderer::new);
+            event.registerEntityRenderer(FnfMod.WORLD_SPRITE_ENTITY.get(),
+                    com.fnfmod.client.render.WorldSpriteEntityRenderer::new);
         }
     }
 

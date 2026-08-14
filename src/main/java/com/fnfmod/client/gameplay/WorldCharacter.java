@@ -163,6 +163,11 @@ public final class WorldCharacter implements AutoCloseable {
         }
     }
 
+    /** Psych-compatible alternate-idle suffix used by the Alt Idle Animation event. */
+    public void setIdleSuffix(String suffix) {
+        idleSuffix = suffix == null ? "" : suffix;
+    }
+
     public void beat(int beat, int speed) {
         if (beat >= 0 && beat % Math.max(1, danceEvery * Math.max(1, speed)) == 0
                 && !specialAnim && !animation.toLowerCase(Locale.ROOT).startsWith("sing")) {

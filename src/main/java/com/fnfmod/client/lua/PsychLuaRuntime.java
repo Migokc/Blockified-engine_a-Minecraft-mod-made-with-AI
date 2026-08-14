@@ -21,6 +21,7 @@ import com.fnfmod.client.render.LuaWorldObject;
 import com.fnfmod.client.render.LuaWorldObjectRenderer;
 import com.fnfmod.client.render.MissingAssetTexture;
 import com.fnfmod.client.render.WorldTextTextures;
+import com.fnfmod.client.render.WorldSpriteEntityVisuals;
 import com.fnfmod.client.render.HudLayerOrder;
 import com.fnfmod.client.render.SparrowAtlas;
 import com.fnfmod.client.render.SpriteAtlasCache;
@@ -29,8 +30,11 @@ import com.fnfmod.client.render.PsychCanvas;
 import com.fnfmod.client.render.PsychCameraTransform;
 import com.fnfmod.song.SongEntry;
 import com.fnfmod.song.SongLibrary;
+import com.fnfmod.entity.WorldSpriteEntity;
+import com.fnfmod.gameplay.PerformerShadows;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.Camera;
+import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.network.chat.Component;
@@ -38,12 +42,14 @@ import net.minecraft.client.renderer.texture.DynamicTexture;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.world.phys.Vec3;
+import net.minecraft.world.entity.Entity;
 import net.minecraft.resources.ResourceLocation;
 import org.luaj.vm2.Globals;
 import org.luaj.vm2.LuaError;
 import org.luaj.vm2.LuaTable;
 import org.luaj.vm2.LuaValue;
 import org.luaj.vm2.Varargs;
+import org.luaj.vm2.lib.DebugLib;
 import org.luaj.vm2.lib.VarArgFunction;
 import org.luaj.vm2.lib.jse.JsePlatform;
 import org.lwjgl.glfw.GLFW;
@@ -75,7 +81,11 @@ public final class PsychLuaRuntime implements AutoCloseable {
     public static final int FUNCTION_STOP_HSCRIPT = 3;
     public static final int FUNCTION_STOP_ALL = 4;
 
-    private record Script(Path path, Globals globals) {}
+    /** Per-callback runaway-script guard. Normal gameplay callbacks use far less. */
+    private static final long MAX_CALL_INSTRUCTIONS = 5_000_000L;
+    private static final long CALL_WALL_CEILING_NANOS = 1_000_000_000L;
+
+    private record Script(Path path, Globals globals, BudgetDebugLib budget) {}
 
     private static final class LuaAnimation {
         String name;
@@ -107,10 +117,16 @@ public final class PsychLuaRuntime implements AutoCloseable {
         boolean antialiasing = true;
         /** An image was requested but could not be resolved or decoded. */
         boolean missingAsset;
+        /** The image exists outside the current playback/Mods permission boundary. */
+        boolean imageBlockedByPolicy;
         /** World-camera behavior. Billboard matches vanilla name tags; lighting matches world entities. */
         boolean worldBillboard = true, worldLighting = true;
         /** World-camera see-through: when true the object ignores depth and draws over geometry. */
         boolean worldSeeThrough;
+        /** Physics belongs to the client-side host entity when this is a world sprite. */
+        boolean worldGravity, worldCollision, worldShadow;
+        /** Projected shadows from IRLights; independent from Minecraft's blob shadow. */
+        boolean worldIrlightsShadows = true;
         /** Cached bake of world text into a texture (drawn as a sprite), invalidated on change. */
         String bakedKey;
         ResourceLocation bakedTexture;
@@ -201,6 +217,13 @@ public final class PsychLuaRuntime implements AutoCloseable {
     private static final long DEBUG_LINE_FADE_MS = 1000;
     private static final int DEBUG_LINE_MAX = 20;
     private final Map<String, LuaObject> objects = new LinkedHashMap<>();
+    private static final class WorldEntityBinding {
+        final WorldSpriteEntity entity;
+        Direction facing = Direction.NORTH;
+        double lastX = Double.NaN, lastY = Double.NaN, lastZ = Double.NaN;
+        WorldEntityBinding(WorldSpriteEntity entity) { this.entity = entity; }
+    }
+    private final Map<String, WorldEntityBinding> worldSpriteEntities = new LinkedHashMap<>();
     private final Map<String, LuaValue> sharedVars = new HashMap<>();
     /**
      * Psych custom substate. Members are Lua object tags drawn above everything
@@ -231,7 +254,8 @@ public final class PsychLuaRuntime implements AutoCloseable {
 
     public static PsychLuaRuntime load(GameplayScreen host, SongChart chart) {
         return load(host, chart, null, null, null,
-                new PlaybackPolicy(ClientSession.playbackMode, ClientSession.songAssets));
+                new PlaybackPolicy(ClientSession.playbackMode, ClientSession.songAssets,
+                        ClientSession.luaAllowed));
     }
 
     public static PsychLuaRuntime load(GameplayScreen host, SongChart chart, String requestedId,
@@ -254,6 +278,8 @@ public final class PsychLuaRuntime implements AutoCloseable {
         PsychLuaRuntime runtime = new PsychLuaRuntime(host, chart, id, folder, root, entry, policy);
         runtime.applyNoteTypeConfigs();
         runtime.loadScripts(entry);
+        runtime.syncWorldSpriteEntities(host.psychLuaMachinePosition(),
+                com.fnfmod.client.gameplay.StageOrientation.facing());
         return runtime;
     }
 
@@ -276,6 +302,20 @@ public final class PsychLuaRuntime implements AutoCloseable {
 
     private boolean allows(SongLibrary.ExternalContent content) {
         return externalContent.contains(content) && playbackPolicy.allows(null, content);
+    }
+
+    /**
+     * The naked mod's scripts are installed, user-controlled engine scripts rather
+     * than content owned by the current song.  A lightweight songs/ entry therefore
+     * must not suppress them.  They still obey the installed-mod Lua permission,
+     * mod-world isolation and the dedicated-server no-Lua policy.
+     */
+    private boolean allowsGlobalLua() {
+        if (!playbackPolicy.luaAllowed()) return false;
+        Path global = SongLibrary.globalSharedAssetRoot();
+        return global != null && SongLibrary.getExternalFolderContent(
+                global.toAbsolutePath().normalize().toString())
+                .contains(SongLibrary.ExternalContent.LUA);
     }
 
     /** Psych 1.0 custom_notetypes/*.txt property files are applied before Lua onCreate. */
@@ -358,13 +398,14 @@ public final class PsychLuaRuntime implements AutoCloseable {
 
     private void loadScripts(SongEntry entry) {
         LinkedHashSet<Path> files = new LinkedHashSet<>();
-        // Lightweight songs/ entries intentionally expose no Lua surface. Global
-        // scripts remain available to complete packs and transferred mod caches.
-        if (allows(SongLibrary.ExternalContent.LUA)) {
+        // Global scripts belong to the naked installed mod, not to the selected
+        // song. This includes lightweight config/fnfmod/songs entries.
+        if (allowsGlobalLua()) {
             addLuaFiles(SongLibrary.scriptsDir(), files);
         }
+        boolean songLuaAllowed = allows(SongLibrary.ExternalContent.LUA);
         boolean stageFound = false;
-        if (modRoot != null && allows(SongLibrary.ExternalContent.LUA)) {
+        if (modRoot != null && songLuaAllowed) {
             addLuaFiles(modRoot.resolve("scripts"), files);
             stageFound = addStageLua(modRoot, chart.stage, files);
             for (String type : chart.notes.stream().map(n -> n.noteType).filter(s -> s != null && !s.isBlank()).distinct().toList()) {
@@ -379,11 +420,11 @@ public final class PsychLuaRuntime implements AutoCloseable {
         }
         // Base-engine stage scripts belong to first configured directory, not
         // song source directory. Its own Lua checklist decides availability.
-        if (!stageFound) {
+        if (!stageFound && playbackPolicy.luaAllowed()) {
             Path shared = SongLibrary.primaryExternalAssetRoot(SongLibrary.ExternalContent.LUA);
             addStageLua(shared, chart.stage, files);
         }
-        if (allows(SongLibrary.ExternalContent.LUA)) {
+        if (songLuaAllowed) {
             if (entry != null) addLuaFiles(entry.folder, files);
             addLuaFiles(songFolder, files);
         }
@@ -437,11 +478,18 @@ public final class PsychLuaRuntime implements AutoCloseable {
             Script existing = findScript(file.toString());
             if (existing != null) return existing;
             Globals globals = JsePlatform.standardGlobals();
+            BudgetDebugLib budget = new BudgetDebugLib();
+            globals.load(budget);
             sandbox(globals);
             installConstants(globals, file);
             installCallbacks(globals);
-            globals.load(Files.readString(file), file.toString()).call();
-            Script script = new Script(file, globals);
+            budget.begin();
+            try {
+                globals.load(Files.readString(file), file.toString()).call();
+            } finally {
+                budget.end();
+            }
+            Script script = new Script(file, globals, budget);
             scripts.add(script);
             scriptSnapshot = null;
             return script;
@@ -484,18 +532,12 @@ public final class PsychLuaRuntime implements AutoCloseable {
     }
 
     private static void sandbox(Globals globals) {
-        globals.set("luajava", LuaValue.NIL);
-        globals.set("io", LuaValue.NIL);
-        globals.set("package", LuaValue.NIL);
-        globals.set("require", LuaValue.NIL);
-        globals.set("dofile", LuaValue.NIL);
-        globals.set("loadfile", LuaValue.NIL);
-        LuaValue os = globals.get("os");
-        if (os.istable()) {
-            os.set("execute", LuaValue.NIL);
-            os.set("remove", LuaValue.NIL);
-            os.set("rename", LuaValue.NIL);
-            os.set("tmpname", LuaValue.NIL);
+        // Do not expose host-process, filesystem, environment, classloading, or
+        // dynamic-code facilities to gameplay scripts. In particular LuaJ's
+        // os.exit calls System.exit and os.getenv exposes Java environment data.
+        for (String blocked : new String[]{"luajava", "io", "os", "package", "require",
+                "dofile", "loadfile", "load", "loadstring", "debug"}) {
+            globals.set(blocked, LuaValue.NIL);
         }
     }
 
@@ -681,6 +723,23 @@ public final class PsychLuaRuntime implements AutoCloseable {
         fn(g, "runCommand", args -> LuaValue.valueOf(host.psychLuaRunMinecraftCommand(
                 args.optjstring(1, ""), args.optjstring(2, "player"))));
         fn(g, "cameraSetTarget", args -> { host.psychLuaCameraTarget(args.optjstring(1, "")); return LuaValue.TRUE; });
+        // Blockified pivot-orbit mode. Camera Follow Pos supplies the camera
+        // position/radius and Camera Rotation 3D supplies all orbital animation.
+        // cameraOrbit(pinned, x, y, z, duration, easing): follow uses
+        // focus-relative XYZ; pinned uses absolute stage-local XYZ.
+        fn(g, "cameraOrbit", args -> {
+            host.psychLuaCameraOrbit(args.optboolean(1, false), args.optdouble(2, 0),
+                    args.optdouble(3, 0), args.optdouble(4, 0), args.optdouble(5, 0.5),
+                    args.optjstring(6, "smooth"));
+            return LuaValue.TRUE;
+        });
+        fn(g, "startCameraOrbit", args -> {
+            host.psychLuaCameraOrbit(args.optboolean(1, false), args.optdouble(2, 0),
+                    args.optdouble(3, 0), args.optdouble(4, 0), args.optdouble(5, 0.5),
+                    args.optjstring(6, "smooth"));
+            return LuaValue.TRUE;
+        });
+        fn(g, "stopCameraOrbit", args -> { GameplayCamera.stopOrbit(); return LuaValue.TRUE; });
         fn(g, "endSong", args -> { host.psychLuaEndSong(); return LuaValue.TRUE; });
         fn(g, "restartSong", args -> { host.psychLuaRestartSong(); return LuaValue.TRUE; });
         fn(g, "exitSong", args -> { host.psychLuaExitSong(); return LuaValue.TRUE; });
@@ -718,7 +777,7 @@ public final class PsychLuaRuntime implements AutoCloseable {
         fn(g, "makeAnimatedLuaSprite", args -> { makeObject(args, false, true); return LuaValue.NIL; });
         fn(g, "makeLuaText", args -> { makeObject(args, true, false); return LuaValue.NIL; });
         fn(g, "makeGraphic", args -> { LuaObject o = object(args.checkjstring(1)); disposeGraphic(o);
-                o.image = ""; o.missingAsset = false;
+                o.image = ""; o.missingAsset = false; o.imageBlockedByPolicy = false;
                 o.width = args.optint(2, 256); o.height = args.optint(3, 256);
                 o.graphicWidth = o.width; o.graphicHeight = o.height; o.sizeExplicit = true;
                 o.color = color(args.optjstring(4, "FFFFFF")); return LuaValue.NIL; });
@@ -769,7 +828,11 @@ public final class PsychLuaRuntime implements AutoCloseable {
         // geometry instead of being occluded. Off by default (respects depth).
         fn(g, "setObjectSeeThrough", args -> { object(args.checkjstring(1)).worldSeeThrough = args.optboolean(2, true); return LuaValue.NIL; });
         fn(g, "setWorldSpriteLighting", args -> { object(args.checkjstring(1)).worldLighting = args.optboolean(2, true); return LuaValue.NIL; });
-        fn(g, "setWorldSpriteShadows", args -> { object(args.checkjstring(1)).worldLighting = args.optboolean(2, true); return LuaValue.NIL; });
+        fn(g, "setWorldSpriteGravity", args -> { object(args.checkjstring(1)).worldGravity = args.optboolean(2, true); return LuaValue.NIL; });
+        fn(g, "setWorldSpriteCollision", args -> { object(args.checkjstring(1)).worldCollision = args.optboolean(2, true); return LuaValue.NIL; });
+        fn(g, "setWorldSpriteShadows", args -> { object(args.checkjstring(1)).worldShadow = args.optboolean(2, true); return LuaValue.NIL; });
+        fn(g, "setWorldSpriteIRLightsShadows", args -> { object(args.checkjstring(1)).worldIrlightsShadows = args.optboolean(2, true); return LuaValue.NIL; });
+        fn(g, "setWorldSpriteIrlightsShadows", args -> { object(args.checkjstring(1)).worldIrlightsShadows = args.optboolean(2, true); return LuaValue.NIL; });
         fn(g, "setObjectRotation", args -> { LuaObject o = object(args.checkjstring(1));
                 o.rotationX = args.optdouble(2, o.rotationX); o.rotationY = args.optdouble(3, o.rotationY);
                 o.angle = args.optdouble(4, o.angle); return LuaValue.NIL; });
@@ -808,9 +871,9 @@ public final class PsychLuaRuntime implements AutoCloseable {
         fn(g, "addAnimationByIndices", args -> LuaValue.valueOf(addAnimationByIndices(args, true)));
         fn(g, "luaSpriteAddAnimationByIndices", args -> LuaValue.valueOf(addAnimationByIndices(args, true)));
         fn(g, "addAnimation", args -> LuaValue.valueOf(addAnimationByIndices(args, false)));
-        fn(g, "playAnim", args -> LuaValue.valueOf(playAnimation(args)));
-        fn(g, "objectPlayAnimation", args -> LuaValue.valueOf(playAnimation(args)));
-        fn(g, "luaSpritePlayAnimation", args -> LuaValue.valueOf(playAnimation(args)));
+        fn(g, "playAnim", args -> LuaValue.valueOf(playAnimation(args, false)));
+        fn(g, "objectPlayAnimation", args -> LuaValue.valueOf(playAnimation(args, false)));
+        fn(g, "luaSpritePlayAnimation", args -> LuaValue.valueOf(playAnimation(args, false)));
         fn(g, "addOffset", args -> { addAnimationOffset(args); return LuaValue.NIL; });
         fn(g, "screenCenter", args -> { LuaObject o = object(args.checkjstring(1)); String axes = args.optjstring(2, "xy");
                 if (axes.contains("x")) o.x = (host.psychLuaScreenWidth() - o.width * o.scaleX) / 2; if (axes.contains("y")) o.y = (host.psychLuaScreenHeight() - o.height * o.scaleY) / 2; return LuaValue.NIL; });
@@ -840,6 +903,12 @@ public final class PsychLuaRuntime implements AutoCloseable {
         // extra characters use the per-object .fullbright property (or .lighting).
         fn(g, "setFlatShading", args -> { setSceneFlatShading(args.optboolean(1, true)); return LuaValue.NIL; });
         fn(g, "setFullbright", args -> { setSceneFlatShading(args.optboolean(1, true)); return LuaValue.NIL; });
+        // Shading is changed through the built-in Directional Shading event so
+        // chart events and triggerEvent() always share one canonical path.
+        fn(g, "getBlockShading", args -> LuaValue.valueOf(
+                com.fnfmod.client.render.DirectionalShadingControl.blockShadingEnabled()));
+        fn(g, "getMobShading", args -> LuaValue.valueOf(
+                com.fnfmod.client.render.DirectionalShadingControl.entityShadingEnabled()));
         tweenFn(g, "doTweenX", "x"); tweenFn(g, "doTweenY", "y"); tweenFn(g, "doTweenZ", "z");
         tweenFn(g, "doTweenAngle", "angle"); tweenFn(g, "doTweenAlpha", "alpha");
         tweenFn(g, "doTweenAngleX", "rotation.x"); tweenFn(g, "doTweenAngleY", "rotation.y");
@@ -1009,6 +1078,11 @@ public final class PsychLuaRuntime implements AutoCloseable {
             host.psychLuaSetAllCharacterShadows(luaBoolean(args, 1, true));
             return LuaValue.NIL;
         });
+        fn(g, "setCharacterIRLightsShadows", args -> LuaValue.valueOf(
+                host.psychLuaSetProperty(args.checkjstring(1) + ".irlightsShadows",
+                        luaBoolean(args, 2, true))));
+        fn(g, "getCharacterIRLightsShadows", args -> toLua(
+                host.psychLuaGetProperty(args.checkjstring(1) + ".irlightsShadows")));
         fn(g, "blockifiedCharacterExists", args -> LuaValue.valueOf(
                 host.psychLuaExtraCharacterExists(args.checkjstring(1))));
         fn(g, "setBlockifiedCharacterPosition", args -> LuaValue.valueOf(
@@ -1189,7 +1263,9 @@ public final class PsychLuaRuntime implements AutoCloseable {
         Path png = resolveImage(imageName);
         if (png == null) {
             disposeGraphic(object);
-            object.missingAsset = imageName != null && !imageName.isBlank();
+            boolean requested = imageName != null && !imageName.isBlank();
+            object.imageBlockedByPolicy = requested && !allows(SongLibrary.ExternalContent.IMAGES);
+            object.missingAsset = requested && !object.imageBlockedByPolicy;
             if (object.missingAsset) warnOnce("image not found: " + imageName);
             return;
         }
@@ -1198,10 +1274,12 @@ public final class PsychLuaRuntime implements AutoCloseable {
             handle = SpriteImageCache.acquire(png, object.antialiasing);
             if (handle == null) {
                 disposeGraphic(object);
+                object.imageBlockedByPolicy = false;
                 object.missingAsset = true;
                 return;
             }
             disposeGraphic(object);
+            object.imageBlockedByPolicy = false;
             object.missingAsset = false;
             object.imageHandle = handle;
             object.imageSource = png;
@@ -1219,6 +1297,7 @@ public final class PsychLuaRuntime implements AutoCloseable {
         } catch (Exception error) {
             if (handle != null && object.imageHandle != handle) handle.close();
             disposeGraphic(object);
+            object.imageBlockedByPolicy = false;
             object.missingAsset = true;
             warnOnce("image " + imageName + ": " + compactError(error));
         }
@@ -1236,8 +1315,9 @@ public final class PsychLuaRuntime implements AutoCloseable {
         Path png = resolveImage(imageName);
         if (png == null) {
             disposeGraphic(object);
-            object.missingAsset = true;
-            warnOnce("animated image not found: " + imageName);
+            object.imageBlockedByPolicy = !allows(SongLibrary.ExternalContent.IMAGES);
+            object.missingAsset = !object.imageBlockedByPolicy;
+            if (object.missingAsset) warnOnce("animated image not found: " + imageName);
             return false;
         }
         String filename = png.getFileName().toString();
@@ -1252,6 +1332,7 @@ public final class PsychLuaRuntime implements AutoCloseable {
         }
         atlas.setAntialiasing(object.antialiasing);
         disposeGraphic(object);
+        object.imageBlockedByPolicy = false;
         object.missingAsset = false;
         object.atlas = atlas;
         object.atlasPng = png;
@@ -1356,7 +1437,9 @@ public final class PsychLuaRuntime implements AutoCloseable {
         if (imageName == null || imageName.isBlank()) return;
         Path png = resolveImage(imageName);
         if (png == null) {
-            warnOnce("precacheImage: image not found: " + imageName);
+            if (allows(SongLibrary.ExternalContent.IMAGES)) {
+                warnOnce("precacheImage: image not found: " + imageName);
+            }
             return;
         }
         String filename = png.getFileName().toString();
@@ -1479,14 +1562,20 @@ public final class PsychLuaRuntime implements AutoCloseable {
         return object.atlas;
     }
 
-    private boolean playAnimation(Varargs args) {
+    private boolean playAnimation(Varargs args, boolean defaultForced) {
         String tag = args.checkjstring(1);
-        if (host.psychLuaPlayCharacterAnimation(tag, args.checkjstring(2),
-                luaBoolean(args, 3, false))) return true;
+        boolean forced = luaBoolean(args, 3, defaultForced);
+        String animation = args.checkjstring(2);
+        // Psych resolves a created Lua object before reflecting built-in character
+        // fields. This is essential for ordinary tags such as back_bf/back_gf:
+        // Blockified's Minecraft character bridge intentionally maps unknown role
+        // names to BF, so asking the bridge first consumed the sprite call.
         LuaObject object = objects.get(tag);
-        if (object == null) return false;
-        return startAnimation(object, args.checkjstring(2), luaBoolean(args, 3, false),
-                luaBoolean(args, 4, false), args.optint(5, 0));
+        if (object != null) {
+            return startAnimation(object, animation, forced,
+                    luaBoolean(args, 4, false), args.optint(5, 0));
+        }
+        return host.psychLuaPlayCharacterAnimation(tag, animation, forced);
     }
 
     private boolean startAnimation(LuaObject object, String name, boolean forced, boolean reverse, int startFrame) {
@@ -1537,6 +1626,7 @@ public final class PsychLuaRuntime implements AutoCloseable {
     private void removeObject(String tag) {
         LuaObject object = objects.remove(tag);
         if (object != null) disposeGraphic(object);
+        removeWorldSpriteEntity(tag);
     }
 
     private void disposeGraphic(LuaObject object) {
@@ -1630,10 +1720,13 @@ public final class PsychLuaRuntime implements AutoCloseable {
             if (!function.isfunction()) return FUNCTION_CONTINUE;
             LuaValue[] values = new LuaValue[args.length];
             for (int i = 0; i < args.length; i++) values[i] = toLua(args[i]);
+            script.budget.begin();
             return fromLua(function.invoke(LuaValue.varargsOf(values)).arg1());
         } catch (Throwable error) {
             warnOnce(script.path.getFileName() + " " + functionName + ": " + compactError(error));
             return FUNCTION_CONTINUE;
+        } finally {
+            script.budget.end();
         }
     }
 
@@ -1838,9 +1931,14 @@ public final class PsychLuaRuntime implements AutoCloseable {
             case "scale.y" -> o.scaleY; case "offset.x" -> offset[0]; case "offset.y" -> offset[1];
             case "scrollFactor.x" -> o.scrollFactorX; case "scrollFactor.y" -> o.scrollFactorY;
             case "billboard", "worldBillboard", "alwaysFaceCamera" -> o.worldBillboard;
-            case "lighting", "worldLighting", "shadows", "worldShadows", "affectedByLighting" -> o.worldLighting;
+            case "lighting", "worldLighting", "affectedByLighting" -> o.worldLighting;
             case "fullbright", "fullBright", "unlit", "flat", "flatShading", "flatshading" -> !o.worldLighting;
             case "seeThrough", "seethrough", "worldSeeThrough", "throughWalls", "noDepth" -> o.worldSeeThrough;
+            case "grav", "gravity" -> o.worldGravity;
+            case "collision", "collisions", "solid" -> o.worldCollision;
+            case "shadow", "shadows", "worldShadow", "worldShadows" -> o.worldShadow;
+            case "irlightsShadow", "irlightsShadows", "worldIRLightsShadow", "worldIRLightsShadows",
+                    "projectedShadow", "projectedShadows" -> o.worldIrlightsShadows;
             case "animation.curAnim.name" -> animation == null ? null : animation.name;
             case "animation.curAnim.curFrame" -> o.animationFrame;
             case "animation.curAnim.finished" -> o.animationFinished;
@@ -1868,9 +1966,14 @@ public final class PsychLuaRuntime implements AutoCloseable {
             case "scrollFactor.x" -> o.scrollFactorX = number(value, o.scrollFactorX);
             case "scrollFactor.y" -> o.scrollFactorY = number(value, o.scrollFactorY);
             case "billboard", "worldBillboard", "alwaysFaceCamera" -> o.worldBillboard = bool(value);
-            case "lighting", "worldLighting", "shadows", "worldShadows", "affectedByLighting" -> o.worldLighting = bool(value);
+            case "lighting", "worldLighting", "affectedByLighting" -> o.worldLighting = bool(value);
             case "fullbright", "fullBright", "unlit", "flat", "flatShading", "flatshading" -> o.worldLighting = !bool(value);
             case "seeThrough", "seethrough", "worldSeeThrough", "throughWalls", "noDepth" -> o.worldSeeThrough = bool(value);
+            case "grav", "gravity" -> o.worldGravity = bool(value);
+            case "collision", "collisions", "solid" -> o.worldCollision = bool(value);
+            case "shadow", "shadows", "worldShadow", "worldShadows" -> o.worldShadow = bool(value);
+            case "irlightsShadow", "irlightsShadows", "worldIRLightsShadow", "worldIRLightsShadows",
+                    "projectedShadow", "projectedShadows" -> o.worldIrlightsShadows = bool(value);
             case "offset.x" -> currentAnimationOffsetForWrite(o)[0] = number(value, currentAnimationOffset(o)[0]);
             case "offset.y" -> currentAnimationOffsetForWrite(o)[1] = number(value, currentAnimationOffset(o)[1]);
             case "animation.curAnim.curFrame" -> {
@@ -2082,7 +2185,11 @@ public final class PsychLuaRuntime implements AutoCloseable {
         if (closed) return;
         updateAnimations(elapsedSeconds);
         soundPlayer.update();
-        if (scripts.isEmpty()) return;
+        if (scripts.isEmpty()) {
+            syncWorldSpriteEntities(host.psychLuaMachinePosition(),
+                    com.fnfmod.client.gameplay.StageOrientation.facing());
+            return;
+        }
         syncGlobals();
         call("onUpdate", elapsedSeconds);
         updateTweensAndTimers();
@@ -2106,6 +2213,8 @@ public final class PsychLuaRuntime implements AutoCloseable {
         if (!songStarted && host.psychLuaSongStarted()) { songStarted = true; call("onSongStart"); }
         updateSubstate(elapsedSeconds);
         call("onUpdatePost", elapsedSeconds);
+        syncWorldSpriteEntities(host.psychLuaMachinePosition(),
+                com.fnfmod.client.gameplay.StageOrientation.facing());
         for (int key : queriedKeys) previousKeys.put(key, keyDown(key));
         for (String control : queriedControls) previousControls.put(control, controlDown(control));
     }
@@ -2282,10 +2391,13 @@ public final class PsychLuaRuntime implements AutoCloseable {
                     values = new LuaValue[args.length];
                     for (int i = 0; i < args.length; i++) values[i] = toLua(args[i]);
                 }
+                script.budget.begin();
                 LuaValue value = function.invoke(LuaValue.varargsOf(values)).arg1();
                 if (!value.isnil()) result = fromLua(value);
             } catch (Throwable error) {
                 warnOnce(script.path.getFileName() + " " + name + ": " + compactError(error));
+            } finally {
+                script.budget.end();
             }
         }
         return result;
@@ -2304,6 +2416,36 @@ public final class PsychLuaRuntime implements AutoCloseable {
     private void setAll(String name, Object value) {
         LuaValue lua = toLua(value);
         for (Script script : scripts) script.globals.set(name, lua);
+    }
+
+    private static final class BudgetDebugLib extends DebugLib {
+        private long deadline = Long.MAX_VALUE;
+        private long remainingInstructions = Long.MAX_VALUE;
+        private int depth;
+
+        void begin() {
+            if (depth++ > 0) return;
+            remainingInstructions = MAX_CALL_INSTRUCTIONS;
+            deadline = System.nanoTime() + CALL_WALL_CEILING_NANOS;
+        }
+
+        void end() {
+            if (depth <= 0) {
+                depth = 0;
+                return;
+            }
+            if (--depth > 0) return;
+            remainingInstructions = Long.MAX_VALUE;
+            deadline = Long.MAX_VALUE;
+        }
+
+        @Override
+        public void onInstruction(int pc, Varargs varargs, int top) {
+            if (--remainingInstructions < 0 || System.nanoTime() > deadline) {
+                throw new LuaError("gameplay Lua exceeded its execution budget");
+            }
+            super.onInstruction(pc, varargs, top);
+        }
     }
 
     public void render(GuiGraphics gui, boolean hud) {
@@ -2354,6 +2496,7 @@ public final class PsychLuaRuntime implements AutoCloseable {
             }
         }
         List<LuaObject> visible = objects.values().stream().filter(o -> o.added && o.visible)
+                .filter(o -> !o.imageBlockedByPolicy)
                 .filter(o -> cameraGroup(o.camera) == group)
                 .filter(o -> o.order >= minOrderInclusive && o.order < maxOrderExclusive)
                 .sorted(Comparator.comparingInt(o -> o.order)).toList();
@@ -2463,41 +2606,135 @@ public final class PsychLuaRuntime implements AutoCloseable {
 
     public void renderWorld(PoseStack poseStack, Camera camera, BlockPos speakers, Direction facing) {
         if (closed || objects.isEmpty()) return;
+        syncWorldSpriteEntities(speakers, facing);
         List<LuaObject> visible = objects.values().stream()
-                .filter(o -> o.added && o.visible && o.camera.equalsIgnoreCase("world"))
+                .filter(o -> o.added && o.visible && !o.imageBlockedByPolicy
+                        && o.textObject && o.camera.equalsIgnoreCase("world"))
                 .sorted(Comparator.comparingInt(o -> o.order))
                 .toList();
         List<LuaWorldObject> worldObjects = new ArrayList<>(visible.size());
         for (LuaObject o : visible) {
-            if (o.textObject) {
-                // BBS FS draws its 3D label form with the vanilla Font into its own
-                // vertex-consumer provider, flushed on the spot. Mirroring that in
-                // LuaWorldTextRenderer paints during the level pass, where drawing
-                // into Minecraft's shared buffer source did not.
-                Font selected = o.fontName.isBlank() ? null : fontLoader.get(o.fontName);
-                Font font = selected == null ? Minecraft.getInstance().font : selected;
-                worldObjects.add(new LuaWorldObject.Text(
-                        font, o.text == null ? "" : o.text,
-                        o.x, o.y, o.z, o.width, o.textSize,
-                        o.scaleX, o.scaleY, o.alpha, o.angle, o.rotationX, o.rotationY,
-                        o.color, o.worldBillboard, o.worldLighting, o.worldSeeThrough,
-                        o.borderSize, o.borderColor, o.borderStyle, o.alignment, o.italic));
-            } else {
-                    SparrowAtlas.Frame frame = o.texture == null ? null : currentFrame(o);
-                    LuaWorldObject.Frame renderFrame = frame == null ? null
-                            : new LuaWorldObject.Frame(frame.x, frame.y, frame.w, frame.h,
-                            frame.frameX, frame.frameY, frame.rotated);
-                    double[] offset = currentAnimationOffset(o);
-                    worldObjects.add(new LuaWorldObject.Sprite(
-                            activeTexture(o), activeTextureWidth(o), activeTextureHeight(o),
-                            renderFrame, offset[0], offset[1],
-                            o.x, o.y, o.z, o.width, o.height, o.graphicWidth, o.graphicHeight,
-                            o.scaleX, o.scaleY, o.alpha, o.angle, o.rotationX, o.rotationY,
-                            o.missingAsset ? 0xFFFFFF : o.color,
-                            o.worldBillboard, o.worldLighting, o.worldSeeThrough));
-            }
+            // Text remains a direct world draw. Sprite-like objects are now rendered
+            // by their real client-side entity during Minecraft's entity pass.
+            Font selected = o.fontName.isBlank() ? null : fontLoader.get(o.fontName);
+            Font font = selected == null ? Minecraft.getInstance().font : selected;
+            worldObjects.add(new LuaWorldObject.Text(
+                    font, o.text == null ? "" : o.text,
+                    o.x, o.y, o.z, o.width, o.textSize,
+                    o.scaleX, o.scaleY, o.alpha, o.angle, o.rotationX, o.rotationY,
+                    o.color, o.worldBillboard, o.worldLighting, o.worldSeeThrough,
+                    o.borderSize, o.borderColor, o.borderStyle, o.alignment, o.italic));
         }
         LuaWorldObjectRenderer.render(poseStack, camera, speakers, facing, worldObjects);
+    }
+
+    private LuaWorldObject.Sprite worldSpriteSnapshot(LuaObject o) {
+        if (o == null || !o.added || !o.visible || o.textObject || o.imageBlockedByPolicy
+                || !o.camera.equalsIgnoreCase("world")) return null;
+        SparrowAtlas.Frame frame = o.texture == null ? null : currentFrame(o);
+        LuaWorldObject.Frame renderFrame = frame == null ? null
+                : new LuaWorldObject.Frame(frame.x, frame.y, frame.w, frame.h,
+                frame.frameX, frame.frameY, frame.rotated);
+        double[] offset = currentAnimationOffset(o);
+        return new LuaWorldObject.Sprite(
+                activeTexture(o), activeTextureWidth(o), activeTextureHeight(o),
+                renderFrame, offset[0], offset[1],
+                0, 0, 0, o.width, o.height, o.graphicWidth, o.graphicHeight,
+                o.scaleX, o.scaleY, o.alpha, o.angle, o.rotationX, o.rotationY,
+                o.missingAsset ? 0xFFFFFF : o.color,
+                o.worldBillboard, o.worldLighting, o.worldSeeThrough);
+    }
+
+    /** Keeps entity physics and Psych's stage-local XYZ properties in both directions. */
+    private void syncWorldSpriteEntities(BlockPos speakers, Direction facing) {
+        if (closed || speakers == null) return;
+        Minecraft minecraft = Minecraft.getInstance();
+        if (!(minecraft.level instanceof ClientLevel level)) return;
+        Direction stageFacing = facing == null ? Direction.NORTH : facing;
+
+        Set<String> active = new LinkedHashSet<>();
+        for (LuaObject o : objects.values()) {
+            if (!o.added || o.textObject || o.imageBlockedByPolicy
+                    || !o.camera.equalsIgnoreCase("world")) continue;
+            active.add(o.tag);
+            WorldEntityBinding binding = worldSpriteEntities.get(o.tag);
+            boolean created = false;
+            if (binding == null || binding.entity.level() != level || binding.entity.isRemoved()) {
+                if (binding != null) removeWorldSpriteEntity(o.tag);
+                WorldSpriteEntity entity = new WorldSpriteEntity(FnfMod.WORLD_SPRITE_ENTITY.get(), level);
+                entity.setId(WorldSpriteEntity.allocateClientId());
+                binding = new WorldEntityBinding(entity);
+                worldSpriteEntities.put(o.tag, binding);
+                WorldEntityBinding visualBinding = binding;
+                WorldSpriteEntityVisuals.bind(entity, () -> {
+                    LuaWorldObject.Sprite sprite = worldSpriteSnapshot(o);
+                    return sprite == null ? null : new WorldSpriteEntityVisuals.Visual(
+                            sprite, visualBinding.facing, o.worldIrlightsShadows);
+                });
+                level.addEntity(entity);
+                created = true;
+            }
+            binding.facing = stageFacing;
+            WorldSpriteEntity entity = binding.entity;
+            entity.setNoGravity(!o.worldGravity);
+            entity.noPhysics = !o.worldCollision;
+            entity.setVisualBounds(o.width * Math.abs(o.scaleX) * LuaWorldObjectRenderer.PIXEL_SCALE,
+                    o.height * Math.abs(o.scaleY) * LuaWorldObjectRenderer.PIXEL_SCALE);
+            PerformerShadows.setEnabled(entity.getId(), o.worldShadow);
+
+            boolean authored = created || different(o.x, binding.lastX)
+                    || different(o.y, binding.lastY) || different(o.z, binding.lastZ);
+            if (authored || !o.worldGravity) {
+                Vec3 world = worldFromStage(speakers, stageFacing, o.x, o.y, o.z);
+                entity.setPos(world);
+                if (!o.worldGravity) entity.setDeltaMovement(Vec3.ZERO);
+            } else {
+                double[] local = stageFromWorld(speakers, stageFacing, entity.position());
+                o.x = local[0]; o.y = local[1]; o.z = local[2];
+            }
+            binding.lastX = o.x; binding.lastY = o.y; binding.lastZ = o.z;
+        }
+        for (String tag : new ArrayList<>(worldSpriteEntities.keySet())) {
+            if (!active.contains(tag)) removeWorldSpriteEntity(tag);
+        }
+    }
+
+    private void removeWorldSpriteEntity(String tag) {
+        WorldEntityBinding binding = worldSpriteEntities.remove(tag);
+        if (binding == null) return;
+        WorldSpriteEntityVisuals.unbind(binding.entity);
+        PerformerShadows.setEnabled(binding.entity.getId(), true);
+        if (binding.entity.level() instanceof ClientLevel level
+                && level.getEntity(binding.entity.getId()) != null) {
+            level.removeEntity(binding.entity.getId(), Entity.RemovalReason.DISCARDED);
+        }
+    }
+
+    private static boolean different(double a, double b) {
+        return !Double.isFinite(b) || Math.abs(a - b) > 1.0e-7;
+    }
+
+    private static Vec3 worldFromStage(BlockPos speakers, Direction facing,
+                                       double x, double y, double z) {
+        Direction right = facing.getCounterClockWise();
+        Vec3 origin = Vec3.atCenterOf(speakers);
+        return origin.add(
+                right.getStepX() * x * LuaWorldObjectRenderer.PIXEL_SCALE
+                        + facing.getStepX() * z * LuaWorldObjectRenderer.PIXEL_SCALE,
+                -y * LuaWorldObjectRenderer.PIXEL_SCALE,
+                right.getStepZ() * x * LuaWorldObjectRenderer.PIXEL_SCALE
+                        + facing.getStepZ() * z * LuaWorldObjectRenderer.PIXEL_SCALE);
+    }
+
+    private static double[] stageFromWorld(BlockPos speakers, Direction facing, Vec3 world) {
+        Direction right = facing.getCounterClockWise();
+        Vec3 origin = Vec3.atCenterOf(speakers);
+        Vec3 delta = world.subtract(origin);
+        double scale = LuaWorldObjectRenderer.PIXEL_SCALE;
+        return new double[]{
+                (delta.x * right.getStepX() + delta.z * right.getStepZ()) / scale,
+                -delta.y / scale,
+                (delta.x * facing.getStepX() + delta.z * facing.getStepZ()) / scale};
     }
 
     private void renderObject(GuiGraphics gui, LuaObject o, float z) {
@@ -3004,6 +3241,7 @@ public final class PsychLuaRuntime implements AutoCloseable {
         if (closed) return;
         call("onDestroy");
         closed = true;
+        for (String tag : new ArrayList<>(worldSpriteEntities.keySet())) removeWorldSpriteEntity(tag);
         for (LuaObject object : objects.values()) disposeGraphic(object);
         soundPlayer.close();
         fontLoader.close();

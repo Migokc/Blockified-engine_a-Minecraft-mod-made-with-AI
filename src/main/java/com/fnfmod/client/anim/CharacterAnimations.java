@@ -89,6 +89,10 @@ public final class CharacterAnimations {
         // own loop carries it, so the idle plays continuously instead of bopping.
         boolean loopIdle, hasLoopIdle;
         boolean opponentLoopIdle, hasOpponentLoopIdle;
+        boolean usePlayerSkin, hasUsePlayerSkin;
+        boolean opponentUsePlayerSkin, hasOpponentUsePlayerSkin;
+        boolean allowPlayerSkinSelection = true, hasAllowPlayerSkinSelection;
+        boolean opponentAllowPlayerSkinSelection = true, hasOpponentAllowPlayerSkinSelection;
 
         AnimEntry resolve(String role, String action) {
             String normalized = actionKey(action);
@@ -107,6 +111,16 @@ public final class CharacterAnimations {
 
         boolean loopIdle(String role) {
             return "opponent".equals(role) && hasOpponentLoopIdle ? opponentLoopIdle : loopIdle;
+        }
+
+        boolean usePlayerSkin(String role) {
+            return "opponent".equals(role) && hasOpponentUsePlayerSkin
+                    ? opponentUsePlayerSkin : usePlayerSkin;
+        }
+
+        boolean allowPlayerSkinSelection(String role) {
+            return "opponent".equals(role) && hasOpponentAllowPlayerSkinSelection
+                    ? opponentAllowPlayerSkinSelection : allowPlayerSkinSelection;
         }
 
         AnimSet copy() {
@@ -136,6 +150,14 @@ public final class CharacterAnimations {
             copy.hasLoopIdle = hasLoopIdle;
             copy.opponentLoopIdle = opponentLoopIdle;
             copy.hasOpponentLoopIdle = hasOpponentLoopIdle;
+            copy.usePlayerSkin = usePlayerSkin;
+            copy.hasUsePlayerSkin = hasUsePlayerSkin;
+            copy.opponentUsePlayerSkin = opponentUsePlayerSkin;
+            copy.hasOpponentUsePlayerSkin = hasOpponentUsePlayerSkin;
+            copy.allowPlayerSkinSelection = allowPlayerSkinSelection;
+            copy.hasAllowPlayerSkinSelection = hasAllowPlayerSkinSelection;
+            copy.opponentAllowPlayerSkinSelection = opponentAllowPlayerSkinSelection;
+            copy.hasOpponentAllowPlayerSkinSelection = hasOpponentAllowPlayerSkinSelection;
             return copy;
         }
 
@@ -151,6 +173,22 @@ public final class CharacterAnimations {
             if (higherPriority.hasOpponentLoopIdle) {
                 opponentLoopIdle = higherPriority.opponentLoopIdle;
                 hasOpponentLoopIdle = true;
+            }
+            if (higherPriority.hasUsePlayerSkin) {
+                usePlayerSkin = higherPriority.usePlayerSkin;
+                hasUsePlayerSkin = true;
+            }
+            if (higherPriority.hasOpponentUsePlayerSkin) {
+                opponentUsePlayerSkin = higherPriority.opponentUsePlayerSkin;
+                hasOpponentUsePlayerSkin = true;
+            }
+            if (higherPriority.hasAllowPlayerSkinSelection) {
+                allowPlayerSkinSelection = higherPriority.allowPlayerSkinSelection;
+                hasAllowPlayerSkinSelection = true;
+            }
+            if (higherPriority.hasOpponentAllowPlayerSkinSelection) {
+                opponentAllowPlayerSkinSelection = higherPriority.opponentAllowPlayerSkinSelection;
+                hasOpponentAllowPlayerSkinSelection = true;
             }
             if (higherPriority.hasBaseCamera) {
                 baseCamX = higherPriority.baseCamX;
@@ -262,18 +300,37 @@ public final class CharacterAnimations {
      */
     public static synchronized boolean preview(Player player, String form,
                                                Path definitionFile, String state) {
+        return preview(player, form, definitionFile, state, false);
+    }
+
+    public static synchronized boolean preview(Player player, String form,
+                                               Path definitionFile, String state,
+                                               boolean usePlayerSkin) {
         if (!available) return false;
         Path bundled = bundledFormFor(definitionFile);
         if (bundled != null) BbsFsAnimationBridge.registerAssetPack(bundled.getParent());
-        return BbsFsAnimationBridge.play(player, form, bundled, state);
+        return BbsFsAnimationBridge.play(player, form, bundled, state,
+                usePlayerSkin ? player : null);
     }
 
     /** Loads/applies an editor character's bundled form before a state is previewed. */
     public static synchronized boolean preparePreview(Player player, String form, Path definitionFile) {
+        return preparePreview(player, form, definitionFile, false);
+    }
+
+    public static synchronized boolean preparePreview(Player player, String form, Path definitionFile,
+                                                       boolean usePlayerSkin) {
         if (!available) return false;
         Path bundled = bundledFormFor(definitionFile);
         if (bundled != null) BbsFsAnimationBridge.registerAssetPack(bundled.getParent());
-        return BbsFsAnimationBridge.prepare(player, form, bundled);
+        return BbsFsAnimationBridge.prepare(player, form, bundled,
+                usePlayerSkin ? player : null);
+    }
+
+    /** Whether a selected form is one of BBS's compatible Steve/Alex player models. */
+    public static synchronized boolean supportsPlayerSkin(String form, Path definitionFile) {
+        Path bundled = bundledFormFor(definitionFile);
+        return available && BbsFsAnimationBridge.supportsPlayerSkin(form, bundled);
     }
 
     /** Restores the form worn before a character preview or song. */
@@ -601,6 +658,30 @@ public final class CharacterAnimations {
             }
         }
 
+        if (json.has("usePlayerSkin")) {
+            boolean value = readBool(json.get("usePlayerSkin"), false);
+            if (opponent) {
+                set.opponentUsePlayerSkin = value;
+                set.hasOpponentUsePlayerSkin = true;
+            } else {
+                set.usePlayerSkin = value;
+                set.hasUsePlayerSkin = true;
+            }
+        }
+
+        JsonElement skinSelection = first(json, "allowPlayerSkinSelection", "allowPlayerSkinChange",
+                "allowSkinSelection", "allowSkinOverride");
+        if (skinSelection != null && skinSelection.isJsonPrimitive()) {
+            boolean value = readBool(skinSelection, true);
+            if (opponent) {
+                set.opponentAllowPlayerSkinSelection = value;
+                set.hasOpponentAllowPlayerSkinSelection = true;
+            } else {
+                set.allowPlayerSkinSelection = value;
+                set.hasAllowPlayerSkinSelection = true;
+            }
+        }
+
         JsonObject animations = json.has("animations") && json.get("animations").isJsonObject()
                 ? json.getAsJsonObject("animations") : null;
         if (animations != null) {
@@ -665,6 +746,13 @@ public final class CharacterAnimations {
             if (!value.isBlank()) return value;
         }
         return "";
+    }
+
+    private static JsonElement first(JsonObject object, String... keys) {
+        for (String key : keys) {
+            if (object.has(key)) return object.get(key);
+        }
+        return null;
     }
 
     private static boolean readBool(JsonElement value, boolean fallback) {
@@ -737,7 +825,31 @@ public final class CharacterAnimations {
         return set != null && set.loopIdle(role);
     }
 
+    /** Whether this animation pack lets the player replace its authored skin/model. */
+    public static synchronized boolean allowsPlayerSkinSelection(String setName, String role) {
+        AnimSet set = resolveSet(setName);
+        return set == null || set.allowPlayerSkinSelection(role);
+    }
+
+    /** Whether this role's selected BBS form is a compatible Steve/Alex player form. */
+    public static synchronized boolean supportsPlayerSkin(String setName, String role) {
+        AnimSet set = resolveSet(setName);
+        return set != null && BbsFsAnimationBridge.supportsPlayerSkin(
+                set.form(role), set.bundledForm(role));
+    }
+
     public static synchronized float[] play(Player player, String setName, String role, String action) {
+        return playResolved(player, setName, role, action, null);
+    }
+
+    /** playerSkinChoice is the Settings choice and is ignored when the pack locks it. */
+    public static synchronized float[] play(Player player, String setName, String role, String action,
+                                            boolean playerSkinChoice) {
+        return playResolved(player, setName, role, action, playerSkinChoice);
+    }
+
+    private static float[] playResolved(Player player, String setName, String role, String action,
+                                        Boolean playerSkinChoice) {
         if (!available || player == null) return null;
         AnimSet set = resolveSet(setName);
         if (set == null) return null;
@@ -749,16 +861,37 @@ public final class CharacterAnimations {
         }
         if (entry == null || entry.state.isBlank()) return null;
 
-        return BbsFsAnimationBridge.play(player, set.form(role), set.bundledForm(role), entry.state)
+        boolean useSkin = playerSkinChoice != null && set.allowPlayerSkinSelection(role)
+                ? playerSkinChoice : set.usePlayerSkin(role);
+        Player skinSource = useSkin
+                ? (playerSkinChoice != null ? net.minecraft.client.Minecraft.getInstance().player : player)
+                : null;
+        return BbsFsAnimationBridge.play(player, set.form(role), set.bundledForm(role), entry.state,
+                skinSource)
                 ? new float[]{entry.camX, entry.camY} : null;
     }
 
     /** Applies the character's BBS form up front, before the first animation plays. */
     public static synchronized boolean prepare(Player player, String setName, String role) {
+        return prepareResolved(player, setName, role, null);
+    }
+
+    public static synchronized boolean prepare(Player player, String setName, String role,
+                                               boolean playerSkinChoice) {
+        return prepareResolved(player, setName, role, playerSkinChoice);
+    }
+
+    private static boolean prepareResolved(Player player, String setName, String role,
+                                           Boolean playerSkinChoice) {
         if (!available || player == null) return false;
         AnimSet set = resolveSet(setName);
         if (set == null) return false;
-        return BbsFsAnimationBridge.prepare(player, set.form(role), set.bundledForm(role));
+        boolean useSkin = playerSkinChoice != null && set.allowPlayerSkinSelection(role)
+                ? playerSkinChoice : set.usePlayerSkin(role);
+        Player skinSource = useSkin
+                ? (playerSkinChoice != null ? net.minecraft.client.Minecraft.getInstance().player : player)
+                : null;
+        return BbsFsAnimationBridge.prepare(player, set.form(role), set.bundledForm(role), skinSource);
     }
 
     public static void stop(Player player) {

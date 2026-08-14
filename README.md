@@ -2,9 +2,41 @@
 
 A feature-full Friday Night Funkin' engine inside of Minecraft — **NeoForge 1.21.1**.
 
-Current release: **2.2.8bbs**.
+Current release: **2.2.9bbs**.
 
 Documentation: **[Blockified Engine Docs](https://migokc.github.io/Blockified-engine_a-Minecraft-mod-made-with-AI/)**.
+
+> **Unofficial fan project.** Blockified Engine is not affiliated with or
+> endorsed by Mojang Studios, Microsoft, The Funkin' Crew, or Friday Night
+> Funkin'. All referenced names and trademarks belong to their respective owners.
+
+### 2.2.9bbs highlights
+
+- Gameplay Lua is sandboxed from process shutdown and environment access, and
+  every callback has an execution budget. Dedicated servers transfer only chart,
+  event, and audio data with a 100 MiB per-song limit, bounded chunks, manifest
+  validation, SHA-1 checks, and no gameplay Lua; singleplayer and LAN retain local
+  scripting and complete mod assets.
+- The Mods settings page detects either complete mod folders or containers of
+  isolated Psych-style packs, reads `pack.json`/`pack.png`, shows compact paths and
+  pack detail screens, and provides per-source/per-pack drag-editable permissions.
+  Intentionally blocked images stay hidden instead of becoming missing textures.
+- Camera Orbit now owns an offsettable or pinned XYZ pivot with duration/easing,
+  while Camera Rotation 3D animates around it. Focus changes tween the pivot through
+  Camera Behavior, animation offsets can be disabled, and extra characters plus
+  Minecraft/Legacy GF replacements participate in camera and character routing.
+- Gameplay world sprites and 2D world characters use client-side entity hosts with
+  optional gravity, collision, Minecraft blob shadows, and independently toggleable
+  IRLights projected shadows. Compatible BBS player forms gain author-controlled
+  skin-choice permissions without texture keyframes covering the chosen skin.
+- The Directional Shading event independently flattens block/fluid and mob/entity
+  lighting while preserving light levels and restoring vanilla state on exit.
+  Codename time signatures import alongside V-Slice meters, and naked-mod global
+  scripts now run for every eligible local song.
+- The chart editor adds an editor-only Charting Offset, resolution-aware GUI scale,
+  a built-in/custom Note Type dropdown, bulk notetype application, and gameplay-style
+  Vortex receptors. Tap notes confirm exactly as forward scrolling tweens across
+  them, backward scrolling stays inactive, and sustain confirms loop while held.
 
 ### 2.2.8bbs highlights
 
@@ -282,16 +314,15 @@ Documentation: **[Blockified Engine Docs](https://migokc.github.io/Blockified-en
   world changes. Delayed mutations such as later TNT or creeper explosions are
   not currently part of this command transaction.
 
-Optional BBS character-animation stack for Minecraft 1.21.1:
+Required BBS character-animation stack for Minecraft 1.21.1:
 
-- [BBS FS mod](https://modrinth.com/mod/bbs-mod/) 2.3.1+
+- [BBS FS mod](https://modrinth.com/mod/bbs-fs) 2.3.1+
 - [Sinytra Connector](https://github.com/Sinytra/Connector) 2.0.0-beta.15+
 - [Forgified Fabric API](https://github.com/Sinytra/ForgifiedFabricAPI) 0.116.7+
 
 BBS FS remains a Fabric jar; Connector and Forgified Fabric API translate it at
-runtime for NeoForge. Keep all three as separate jars beside Blockified Engine
-when using BBS forms. Blockified Engine still loads without them; BBS animation
-control is disabled until the complete stack is installed.
+runtime for NeoForge. Keep all three as separate jars beside Blockified Engine;
+they are part of the supported installation, not optional extras.
 
 ## What it does
 
@@ -313,6 +344,11 @@ control is disabled until the complete stack is installed.
   Volume Up/Down default to `+` and `-`. All are rebindable in
   *Options → Controls → Blockified Engine*.
 - **Multiplayer**: the first player to click the machine picks the song ("Play VS"), the second player to click joins as the opponent side. On servers, only songs installed **on the server** are playable — the server streams the chart + audio to players who don't have them (cached in `config/fnfmod/cache/`).
+- **Dedicated-server safety**: remote sessions transfer only chart JSON, event
+  JSON, and audio. Gameplay Lua and rich executable/mod assets are disabled;
+  each song is limited to 100 MiB and every downloaded file is checked against
+  its manifest size and SHA-1 before entering the cache. Singleplayer and LAN
+  retain local Lua/mod behavior.
 - **Chart editor**: `/fnf editor [song]` or the button in the song menu. Saves Psych Engine format.
 - **Character editor**: open it from the song menu to create/edit named character
   JSONs such as `bf.json` and optional `bf-opp.json`, choose BBS forms and states, preview animations, and
@@ -322,6 +358,17 @@ control is disabled until the complete stack is installed.
   recovery shortcut is intentionally fixed and cannot be rebound or disabled.
 - `/fnf reload` reloads all FNF content without restarting. Targeted forms:
   `/fnf reload songs|skins|splashes|animations|icons|hitsounds|fonts|options|scores`.
+
+The settings page calls external directories **Mods**. It always lists
+`config/fnfmod/mods`, recognizes Psych-compatible `pack.json` names and
+descriptions plus `pack.png`, and shows each direct child pack separately.
+Added Psych `mods` roots can be expanded with the arrow beside them instead of
+blending every child into one asset namespace. Paths display only their final
+three folders; selecting a pack opens its icon/name/description details page.
+You may add either a complete mod folder directly or a container `mods` folder.
+The left-side Permissions drawer controls resource categories for the selected
+source or individual child pack; click-drag paints several permissions on/off,
+with bright buttons enabled and gray buttons disabled.
 
 After selecting a song, the **Look** button chooses its presentation profile:
 
@@ -860,9 +907,12 @@ data/<song>/*.lua
 <song folder>/*.lua
 ```
 
-`config/fnfmod/mods/scripts/*.lua` contains global scripts that run with complete mod
-packs. Pack-scoped song scripts belong in `mods/<pack>/data/<song>/` or
-`mods/<pack>/songs/<song>/`. Lightweight `songs/<song>` entries do not run Lua.
+`config/fnfmod/mods/scripts/*.lua` contains naked-mod global scripts. They run for
+every locally played song, including lightweight `config/fnfmod/songs/<song>`
+entries. Pack-scoped song scripts belong in `mods/<pack>/data/<song>/` or
+`mods/<pack>/songs/<song>/`; lightweight song folders still cannot provide their
+own Lua. Global scripts obey the installed Mods Lua permission, remain excluded
+from isolated mod worlds, and never run in dedicated-server sessions.
 
 Charts saved from another directory keep `original_directory.txt` and use that
 exact source pack for unsaved difficulties, audio, events, Lua, images, icons,
@@ -1003,6 +1053,10 @@ end
 trimming, rotated atlas frames, frame rate, looping, reverse playback, and start
 frames are preserved. Animated frames keep one atlas-wide scale, so differing
 Sparrow trim boxes do not make sprites wobble or resize between frames.
+`playAnim`, `objectPlayAnimation`, and `luaSpritePlayAnimation` keep Psych's
+non-forced default when their `forced` argument is omitted. All three calls
+resolve an exact Lua-object tag before built-in
+character aliases, so names such as `back_bf` and `back_gf` remain ordinary sprites.
 Lua object alpha is continuous from `0` through `1`, including generated graphics,
 text, static sprites, animated sprites, and the scriptable FNF HUD objects.
 `makeGraphic` accepts `#RRGGBB`, `0xRRGGBB`, `AARRGGBB`, and basic named colors:
@@ -1132,8 +1186,61 @@ act as local offsets instead of replacing the object's camera-facing behavior.
 World objects billboard toward the camera by default, like vanilla name tags.
 Use `setWorldSpriteBillboard(tag, false)` or set `tag.billboard` to `false` to
 lock the sprite to the stage direction. They use Minecraft world lighting by
-default; use `setWorldSpriteLighting(tag, false)`, `setWorldSpriteShadows(tag,
-false)`, or set `tag.lighting`/`tag.shadows` to `false` for a full-bright sprite.
+default; use `setWorldSpriteLighting(tag, false)` or set `tag.lighting` to
+`false` for a full-bright sprite.
+
+Minecraft's directional face lighting is controlled separately from full-bright
+object lighting through the built-in `Directional Shading` event. Value 1 controls
+blocks/fluids and Value 2 controls mobs/entities (`on` keeps vanilla, `off` is
+flat). Flat block shading also disables ambient occlusion and rebuilds visible
+chunks. World light levels remain active, entity shadow blobs remain independent,
+and both values restore on exit. Lua uses the same event path and can read the
+current states:
+
+```lua
+triggerEvent('Directional Shading', 'off', 'off')
+local mobsEnabled = getMobShading()
+local blocksEnabled = getBlockShading()
+```
+
+During gameplay, world sprites, graphics, animated spritesheets, and 2D world
+characters use client-side Minecraft entity hosts. Free-cam previews remain
+direct editor renders. Gravity, block/entity collision, and Minecraft's blob
+shadow are disabled by default for these flat entities and can be changed with
+Lua. The Psych/FNF-style stage coordinates follow the entity while physics is
+active, so `getProperty(tag .. '.x/y/z')` reports its current position.
+The hosts use IRLights' supported item-entity caster path, allowing these flat
+visuals to cast shadows from IRLights point lights and spotlights when that mod
+and its patched shaderpack are active. These projected shadows default on and
+are independent from Minecraft's blob shadow.
+
+```lua
+setProperty('worldSign.gravity', true)
+setProperty('worldSign.collision', true)
+setProperty('worldSign.shadow', true)
+
+-- Equivalent convenience functions:
+setWorldSpriteGravity('worldSign', true)
+setWorldSpriteCollision('worldSign', true)
+setWorldSpriteShadows('worldSign', true)
+
+-- IRLights projected shadows (enabled by default):
+setWorldSpriteIRLightsShadows('worldSign', false)
+setProperty('worldSign.irlightsShadows', true)
+
+-- 2D characters in 3D space use the same projected-shadow switch:
+setProperty('gf.irlightsShadows', false)
+setCharacterIRLightsShadows('gf', true)
+```
+
+Character packs can control whether players may replace a compatible BBS
+Steve/Alex form with their selected Minecraft skin/model. In the Character
+Editor, use **Player Skin Choice: Allowed/Locked**. This writes
+`"allowPlayerSkinSelection": true/false` to the role's character JSON and
+defaults to `true` for older packs. When locked, the Player/Bot Skin control in
+the animation selector is disabled and gameplay keeps the form author's choice.
+When a Minecraft skin is selected, BBS main-model texture keyframes no longer
+cover that skin; pose and non-skin animation keyframes continue normally.
 
 ## Note skins (Sparrow XML!)
 
@@ -1332,7 +1439,17 @@ restored afterwards.
   and Lua focus movement. Empty extra values retain normal Psych behavior.
 - **Camera Rotation 3D** uses Values 1/2/3 for additive pitch/yaw/roll, Value 4
   for easing, and Value 5 for duration in seconds (blank keeps the original 0.5s).
-  Leave all three rotations empty to return to the normal view.
+  Leave all three rotations empty to return to the normal view. While **Camera
+  Orbit** is active, those axes instead animate the camera position around its
+  pivot; Camera Orbit itself only enables/disables and positions that pivot.
+  Value 2 selects a focus-following or pinned pivot, and Value 3 supplies all-axis
+  `X,Y,Z` coordinates: focus-relative offsets when following, absolute stage-local
+  coordinates when pinned. Values 4/5 set the duration and easing used when an
+  active orbit moves to a new pivot. A focus-based orbit smoothly moves its pivot
+  when Camera Focus or a section changes target, following the active Camera
+  Behavior speed and easing.
+  Camera Behavior Value 3 controls animation/sing camera offsets (`true` by
+  default; use `false` for a stable camera and orbit pivot).
 - Every Blockified easing control has a separate **in / out / inOut** selector.
   Supported curves are Smooth, Sine, Cubic, Quint, Circ, Elastic, Quad, Quart,
   Expo, Back, Bounce, Linear, and Constant.
@@ -1347,7 +1464,10 @@ restored afterwards.
   eased zoom; **Add Camera Zoom** is Psych's temporary game/HUD impulse.
 - Beat Snap supports 4th–64th subdivisions and squishes/stretches boxes without
   changing the timeline dimensions; Grid Zoom independently adds or removes
-  fixed-height boxes. Under **Edit**, use
+  fixed-height boxes. The Chart tab's **Charting Offset** is an editor-only
+  adjustment added to the Song tab offset for playback, waveforms, metronome,
+  and chart alignment. It is stored in `options.json`, never in the chart; only
+  the Song offset affects saved charts and gameplay. Under **Edit**, use
   **Choose Saving Folder...** to remember an output folder for the current song
   name. Ctrl+S then overwrites that folder's chart JSON and `events.json`. Mappings
   for every chart live together in `config/fnfmod/chart_editor_save_folders.json`.
@@ -1434,3 +1554,10 @@ The source keeps reusable behavior outside GUI screens where possible:
 
 These classes are intended as stable starting points for contributors. Keep file
 I/O, parsing, and rendering out of screens when adding comparable features.
+
+## License
+
+Blockified Engine is distributed under the [MIT License](LICENSE). The bundled
+LuaJ runtime retains its own MIT notice in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md); both notices are included in
+release JARs under `META-INF`.

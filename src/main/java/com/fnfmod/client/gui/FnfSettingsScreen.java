@@ -5,6 +5,8 @@ import com.fnfmod.client.anim.CharacterAnimations;
 import com.fnfmod.client.audio.HitsoundPlayer;
 import com.fnfmod.client.math.Easing;
 import com.fnfmod.client.render.NoteStyle;
+import com.fnfmod.client.render.IconLibrary;
+import com.fnfmod.song.ModPackInfo;
 import com.fnfmod.song.SongLibrary;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;
@@ -18,7 +20,10 @@ import net.minecraft.util.Mth;
 import java.util.List;
 import java.util.ArrayList;
 import java.util.IdentityHashMap;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
+import java.nio.file.Path;
 
 /**
  * Options menu laid out like Psych Engine's: a category list
@@ -45,10 +50,22 @@ public class FnfSettingsScreen extends Screen {
     private double folderScrollFromPx;
     private long folderScrollTweenStart;
     private boolean folderScrollTweenActive;
-    private record FolderWidget(AbstractWidget widget, int baseY) {}
+    private record FolderWidget(AbstractWidget widget, int baseY, String iconPath) {}
     private final List<FolderWidget> folderWidgets = new ArrayList<>();
+    private final Set<AbstractWidget> suppressedFolderWidgets = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+    private final Set<String> expandedSources = new HashSet<>();
+    private int folderTotalRows;
     private boolean draggingFolderThumb;
     private String selectedFolder;
+    private Path selectedPackRoot;
+    private boolean filtersOpen;
+    private record PermissionWidget(Button button, SongLibrary.ExternalContent content) {}
+    private final List<PermissionWidget> permissionWidgets = new ArrayList<>();
+    private final Set<SongLibrary.ExternalContent> permissionDragVisited =
+            java.util.EnumSet.noneOf(SongLibrary.ExternalContent.class);
+    private boolean draggingPermissions;
+    private boolean permissionDragEnables;
+    private String permissionTargetLabel = "";
     // Directory edits rescan the whole library, which is heavy; defer that until
     // the user leaves the Directories page instead of running it per change.
     private boolean foldersDirty;
@@ -63,6 +80,8 @@ public class FnfSettingsScreen extends Screen {
         clearWidgets();
         pageWidgetBaseY.clear();
         folderWidgets.clear();
+        suppressedFolderWidgets.clear();
+        permissionWidgets.clear();
         if (category == null) {
             initCategories();
             capturePageWidgets();
@@ -110,7 +129,7 @@ public class FnfSettingsScreen extends Screen {
 
     private int pageContentBottom() {
         return switch (category == null ? "categories" : category) {
-            case "categories" -> 50 + 5 * 26 + 20;
+            case "categories" -> 50 + 6 * 26 + 20;
             case "visuals" -> 50 + 7 * 26 + 20;
             case "gameplay" -> 50 + 8 * 26 + 20;
             case "colors" -> 50 + 3 * 26 + 78 + 28;
@@ -146,7 +165,7 @@ public class FnfSettingsScreen extends Screen {
     private void clampScrolls() {
         pageScrollPx = Mth.clamp(pageScrollPx, 0, pageMaxScroll());
         pageScrollTargetPx = Mth.clamp(pageScrollTargetPx, 0, pageMaxScroll());
-        double folderMax = folderMaxScrollPx(SongLibrary.getExternalFolders().size());
+        double folderMax = folderMaxScrollPx(folderTotalRows);
         folderScrollPx = Mth.clamp(folderScrollPx, 0, folderMax);
         folderScrollTargetPx = Mth.clamp(folderScrollTargetPx, 0, folderMax);
     }
@@ -193,7 +212,7 @@ public class FnfSettingsScreen extends Screen {
         addRenderableWidget(Button.builder(Component.literal("Gameplay"),
                         b -> switchTo("gameplay"))
                 .bounds(x, rowY(4), w, 20).build());
-        addRenderableWidget(Button.builder(Component.literal("Directories"),
+        addRenderableWidget(Button.builder(Component.literal("Mods"),
                         b -> switchTo("folders"))
                 .bounds(x, rowY(5), w, 20).build());
     }
@@ -359,6 +378,7 @@ public class FnfSettingsScreen extends Screen {
 
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
+        if ("folders".equals(category) && button == 0 && beginPermissionPaint(mouseX, mouseY)) return true;
         if ("folders".equals(category) && button == 0 && clickFolderScrollbar(mouseX, mouseY)) return true;
         if (super.mouseClicked(mouseX, mouseY, button)) return true;
         return "colors".equals(category) && button == 0 && beginColorPick(mouseX, mouseY);
@@ -366,6 +386,10 @@ public class FnfSettingsScreen extends Screen {
 
     @Override
     public boolean mouseDragged(double mouseX, double mouseY, int button, double dragX, double dragY) {
+        if ("folders".equals(category) && button == 0 && draggingPermissions) {
+            continuePermissionPaint(mouseX, mouseY);
+            return true;
+        }
         if ("folders".equals(category) && draggingFolderThumb) {
             scrollFoldersTo(mouseY);
             return true;
@@ -379,6 +403,8 @@ public class FnfSettingsScreen extends Screen {
     @Override
     public boolean mouseReleased(double mouseX, double mouseY, int button) {
         draggingFolderThumb = false;
+        draggingPermissions = false;
+        permissionDragVisited.clear();
         if (button == 0) colorDragTarget = 0;
         // rebuilding the recolored sheets is heavy, so do it once the drag ends
         if (colorDirty) applyColorNow();
@@ -400,81 +426,250 @@ public class FnfSettingsScreen extends Screen {
     }
 
     private void initFolders() {
-        addRenderableWidget(Button.builder(Component.literal("Add Folder..."), b -> pickFolder())
-                .bounds(width / 2 - 85, rowY(0), 170, 20).build());
+        Button permissionsToggle = addRenderableWidget(Button.builder(
+                Component.literal(filtersOpen ? "Close Permissions" : "Permissions"), b -> {
+            filtersOpen = !filtersOpen;
+            switchTo("folders");
+        }).bounds(8, 18, 104, 20).build());
+        int headerWidth = Math.min(170, folderListWidth());
+        int headerX = folderListX() + (folderListWidth() - headerWidth) / 2;
+        addRenderableWidget(Button.builder(Component.literal("Add Mods Folder..."), b -> pickFolder())
+                .bounds(headerX, rowY(0), headerWidth, 20).build());
 
         long cacheBytes = SongLibrary.cacheSizeBytes();
         addRenderableWidget(Button.builder(
                 Component.literal(String.format("Clear Download Cache (%.1f MB)", cacheBytes / 1048576.0)), b -> {
                     SongLibrary.clearCache();
                     switchTo("folders");
-                }).bounds(width / 2 - 85, height - 56, 170, 20).build());
+                }).bounds(headerX, height - 56, headerWidth, 20).build());
         List<String> folders = SongLibrary.getExternalFolders();
-        if (selectedFolder == null || !folders.contains(selectedFolder)) {
-            selectedFolder = folders.isEmpty() ? null : folders.get(0);
+        String installedSource = SongLibrary.modsDir().toAbsolutePath().normalize().toString();
+        if (selectedFolder != null
+                && !selectedFolder.equals(installedSource) && !folders.contains(selectedFolder)) {
+            selectedFolder = null;
+            selectedPackRoot = null;
+            filtersOpen = false;
         }
-        folderScrollPx = Mth.clamp(folderScrollPx, 0, folderMaxScrollPx(folders.size()));
-        folderScrollTargetPx = Mth.clamp(folderScrollTargetPx, 0, folderMaxScrollPx(folders.size()));
+        permissionsToggle.active = selectedFolder != null;
+        record Source(String key, Path path, String label, boolean installed, boolean direct,
+                      int externalIndex, List<ModPackInfo> packs) {}
+        List<Source> sources = new ArrayList<>();
+        sources.add(new Source("installed", SongLibrary.modsDir(), "Installed Mods", true, false, -1,
+                SongLibrary.discoverModPacks(SongLibrary.modsDir())));
+        for (int i = 0; i < folders.size(); i++) {
+            try {
+                Path path = Path.of(folders.get(i)).toAbsolutePath().normalize();
+                boolean direct = SongLibrary.isDirectModPath(path);
+                List<ModPackInfo> packs = SongLibrary.discoverModPacks(path);
+                boolean namedAssets = path.getFileName() != null
+                        && path.getFileName().toString().equalsIgnoreCase("assets");
+                String label = direct && !packs.isEmpty() && !namedAssets
+                        ? packs.get(0).name() : displayPath(path);
+                sources.add(new Source("external:" + folders.get(i), path, label, false, direct, i, packs));
+            } catch (Exception ignored) {}
+        }
+        if (selectedPackRoot != null) {
+            boolean stillPresent = sources.stream().anyMatch(source -> {
+                String sourceId = source.installed() ? installedSource : folders.get(source.externalIndex());
+                return sourceId.equals(selectedFolder) && source.packs().stream()
+                        .anyMatch(pack -> pack.root().equals(selectedPackRoot));
+            });
+            if (!stillPresent) selectedPackRoot = null;
+        }
+        folderTotalRows = sources.size();
+        for (Source source : sources) {
+            if (!source.direct() && expandedSources.contains(source.key())) {
+                folderTotalRows += source.packs().size();
+            }
+        }
+        folderScrollPx = Mth.clamp(folderScrollPx, 0, folderMaxScrollPx(folderTotalRows));
+        folderScrollTargetPx = Mth.clamp(folderScrollTargetPx, 0, folderMaxScrollPx(folderTotalRows));
         int listX = folderListX();
         int listW = folderListWidth();
-        for (int folderIndex = 0; folderIndex < folders.size(); folderIndex++) {
-            String folder = folders.get(folderIndex);
-            final String f = folder;
-            int baseY = folderListTop() + folderIndex * FOLDER_ROW_H;
-            String pathLabel = shortenPath(folder, listW - 76);
-            Button path = addRenderableWidget(Button.builder(Component.literal(pathLabel), b -> {
-                selectedFolder = f;
+        int row = 0;
+        for (Source source : sources) {
+            int baseY = folderListTop() + row++ * FOLDER_ROW_H;
+            boolean hasPacks = !source.direct() && !source.packs().isEmpty();
+            int controls = source.installed() ? 0 : source.direct() ? 84 : 63;
+            int arrowWidth = hasPacks ? 21 : 0;
+            if (hasPacks) {
+                String arrow = expandedSources.contains(source.key()) ? "▼" : "▶";
+                Button expand = addRenderableWidget(Button.builder(Component.literal(arrow), button -> {
+                    if (!expandedSources.add(source.key())) expandedSources.remove(source.key());
+                    switchTo("folders");
+                }).bounds(listX, baseY, 20, 20).build());
+                folderWidgets.add(new FolderWidget(expand, baseY, null));
+            }
+            String sourceIcon = source.direct() && source.packs().size() == 1
+                    && source.packs().get(0).icon() != null
+                    ? source.packs().get(0).icon().toString() : null;
+            String sourceLabel = shortenPath(source.label(), listW - controls - arrowWidth - 24);
+            String sourceId = source.installed() ? installedSource : folders.get(source.externalIndex());
+            Button pathButton = addRenderableWidget(Button.builder(Component.literal(
+                    (sourceIcon == null ? "" : "    ") + sourceLabel), button -> {
+                selectedFolder = sourceId;
+                selectedPackRoot = source.direct() ? source.path() : null;
                 switchTo("folders");
-            }).bounds(listX, baseY, listW - 68, 20).build());
-            path.active = !folder.equals(selectedFolder);
-            folderWidgets.add(new FolderWidget(path, baseY));
+            }).bounds(listX + arrowWidth, baseY, listW - controls - arrowWidth, 20).build());
+            Path sourceSelection = source.direct() ? source.path() : null;
+            pathButton.active = !sourceId.equals(selectedFolder)
+                    || !java.util.Objects.equals(sourceSelection, selectedPackRoot);
+            folderWidgets.add(new FolderWidget(pathButton, baseY, sourceIcon));
+            if (source.direct() && !source.packs().isEmpty()) {
+                Button info = addRenderableWidget(Button.builder(Component.literal("i"), button ->
+                                minecraft.setScreen(new ModDetailsScreen(this, source.packs().get(0))))
+                        .bounds(listX + listW - 84, baseY, 20, 20).build());
+                folderWidgets.add(new FolderWidget(info, baseY, null));
+            }
+            String f = source.installed() ? null : folders.get(source.externalIndex());
+            int folderIndex = source.externalIndex();
             Button up = addRenderableWidget(Button.builder(Component.literal("↑"), b -> moveFolder(f, -1))
-                    .bounds(listX + listW - 64, baseY, 20, 20).build());
-            up.active = folderIndex > 0;
-            folderWidgets.add(new FolderWidget(up, baseY));
+                    .bounds(listX + listW - 62, baseY, 20, 20).build());
+            up.active = !source.installed() && folderIndex > 0;
+            up.setMessage(Component.literal("↑"));
+            up.visible = !source.installed();
+            if (source.installed()) suppressedFolderWidgets.add(up);
+            folderWidgets.add(new FolderWidget(up, baseY, null));
             Button down = addRenderableWidget(Button.builder(Component.literal("↓"), b -> moveFolder(f, 1))
-                    .bounds(listX + listW - 43, baseY, 20, 20).build());
-            down.active = folderIndex < folders.size() - 1;
-            folderWidgets.add(new FolderWidget(down, baseY));
+                    .bounds(listX + listW - 41, baseY, 20, 20).build());
+            down.active = !source.installed() && folderIndex < folders.size() - 1;
+            down.setMessage(Component.literal("↓"));
+            down.visible = !source.installed();
+            if (source.installed()) suppressedFolderWidgets.add(down);
+            folderWidgets.add(new FolderWidget(down, baseY, null));
             Button remove = addRenderableWidget(Button.builder(Component.literal("X"), b -> {
                 var list = new java.util.ArrayList<>(SongLibrary.getExternalFolders());
                 int removed = list.indexOf(f);
                 list.remove(f);
                 if (f.equals(selectedFolder)) {
-                    selectedFolder = list.isEmpty() ? null
+                    selectedFolder = list.isEmpty() ? installedSource
                             : list.get(Math.min(Math.max(0, removed), list.size() - 1));
+                    selectedPackRoot = null;
                 }
                 SongLibrary.setExternalFolders(list);
                 foldersDirty = true;
                 switchTo("folders");
-            }).bounds(listX + listW - 22, baseY, 20, 20).build());
-            folderWidgets.add(new FolderWidget(remove, baseY));
-        }
-
-        if (selectedFolder != null) {
-            var selected = SongLibrary.getExternalFolderContent(selectedFolder);
-            SongLibrary.ExternalContent[] types = SongLibrary.ExternalContent.values();
-            int columns = folderChecklistColumns();
-            int gap = 3;
-            int buttonW = (listW - gap * (columns - 1)) / columns;
-            int top = folderListBottom() + 15;
-            for (int i = 0; i < types.length; i++) {
-                SongLibrary.ExternalContent type = types[i];
-                int x = listX + (i % columns) * (buttonW + gap);
-                int y = top + (i / columns) * 22;
-                String name = switch (type) {
-                    case AUDIO -> "Audio";
-                    case CHARACTERS -> "Chars";
-                    default -> type.label;
-                };
-                boolean enabled = selected.contains(type);
-                addRenderableWidget(Button.builder(Component.literal((enabled ? "[x] " : "[ ] ") + name), b -> {
-                    SongLibrary.setExternalFolderContent(selectedFolder, type, !enabled);
-                    foldersDirty = true;
-                    switchTo("folders");
-                }).bounds(x, y, buttonW, 20).build());
+            }).bounds(listX + listW - 20, baseY, 20, 20).build());
+            remove.active = remove.visible = !source.installed();
+            if (source.installed()) suppressedFolderWidgets.add(remove);
+            folderWidgets.add(new FolderWidget(remove, baseY, null));
+            if (!source.direct() && expandedSources.contains(source.key())) {
+                for (ModPackInfo pack : source.packs()) {
+                    int packY = folderListTop() + row++ * FOLDER_ROW_H;
+                    String label = shortenPath(pack.name(), listW - 48);
+                    String icon = pack.icon() == null ? null : pack.icon().toString();
+                    Button mod = addRenderableWidget(Button.builder(Component.literal(
+                            (icon == null ? "" : "    ") + label),
+                            button -> {
+                                selectedFolder = sourceId;
+                                selectedPackRoot = pack.root();
+                                switchTo("folders");
+                            })
+                            .bounds(listX + 20, packY, listW - 43, 20).build());
+                    mod.active = !(sourceId.equals(selectedFolder)
+                            && pack.root().equals(selectedPackRoot));
+                    folderWidgets.add(new FolderWidget(mod, packY, icon));
+                    Button info = addRenderableWidget(Button.builder(Component.literal("i"), button ->
+                                    minecraft.setScreen(new ModDetailsScreen(this, pack)))
+                            .bounds(listX + listW - 22, packY, 20, 20).build());
+                    folderWidgets.add(new FolderWidget(info, packY, null));
+                }
             }
         }
+
+        if (filtersOpen && selectedFolder != null) initPermissionPanel();
+    }
+
+    private String displayPath(Path path) {
+        int count = path.getNameCount();
+        if (count <= 3) return path.toString();
+        return "..." + java.io.File.separator + path.subpath(count - 3, count);
+    }
+
+    private int permissionPanelWidth() { return Math.min(150, Math.max(108, width / 3)); }
+
+    private void initPermissionPanel() {
+        if (selectedPackRoot != null) permissionTargetLabel = ModPackInfo.read(selectedPackRoot).name();
+        else if (selectedFolder != null && selectedFolder.equals(
+                SongLibrary.modsDir().toAbsolutePath().normalize().toString())) permissionTargetLabel = "Installed Mods";
+        else {
+            try { permissionTargetLabel = displayPath(Path.of(selectedFolder)); }
+            catch (Exception ignored) { permissionTargetLabel = "Selected source"; }
+        }
+        SongLibrary.ExternalContent[] types = SongLibrary.ExternalContent.values();
+        int panelW = permissionPanelWidth();
+        int availableRows = Math.max(2, (height - 112) / 23);
+        int columns = Math.max(2, (types.length + availableRows - 1) / availableRows);
+        columns = Math.min(3, columns);
+        int gap = 3;
+        int buttonW = (panelW - 12 - gap * (columns - 1)) / columns;
+        int top = 64;
+        var selected = selectedPermissionContent();
+        for (int i = 0; i < types.length; i++) {
+            SongLibrary.ExternalContent type = types[i];
+            int x = 6 + (i % columns) * (buttonW + gap);
+            int y = top + (i / columns) * 23;
+            Button button = addRenderableWidget(Button.builder(Component.literal(permissionName(type)), b -> {
+                boolean enable = !selectedPermissionContent().contains(type);
+                setSelectedPermission(type, enable);
+            }).bounds(x, y, buttonW, 20).build());
+            button.setAlpha(selected.contains(type) ? 1.0f : 0.42f);
+            permissionWidgets.add(new PermissionWidget(button, type));
+        }
+    }
+
+    private String permissionName(SongLibrary.ExternalContent type) {
+        return switch (type) {
+            case CHARACTERS -> "Chars";
+            default -> type.label;
+        };
+    }
+
+    private java.util.EnumSet<SongLibrary.ExternalContent> selectedPermissionContent() {
+        if (selectedFolder == null) return SongLibrary.allExternalContent();
+        return selectedPackRoot == null
+                ? SongLibrary.getExternalFolderContent(selectedFolder)
+                : SongLibrary.getExternalPackContent(selectedFolder, selectedPackRoot);
+    }
+
+    private void setSelectedPermission(SongLibrary.ExternalContent type, boolean enabled) {
+        if (selectedFolder == null) return;
+        if (selectedPackRoot == null) {
+            SongLibrary.setExternalFolderContent(selectedFolder, type, enabled);
+        } else {
+            SongLibrary.setExternalPackContent(selectedFolder, selectedPackRoot, type, enabled);
+        }
+        foldersDirty = true;
+        var selected = selectedPermissionContent();
+        for (PermissionWidget permission : permissionWidgets) {
+            permission.button().setAlpha(selected.contains(permission.content()) ? 1.0f : 0.42f);
+        }
+    }
+
+    private boolean beginPermissionPaint(double mouseX, double mouseY) {
+        if (!filtersOpen) return false;
+        for (PermissionWidget permission : permissionWidgets) {
+            if (!permission.button().visible || !permission.button().isMouseOver(mouseX, mouseY)) continue;
+            permissionDragEnables = !selectedPermissionContent().contains(permission.content());
+            draggingPermissions = true;
+            permissionDragVisited.clear();
+            paintPermission(permission);
+            return true;
+        }
+        return false;
+    }
+
+    private void continuePermissionPaint(double mouseX, double mouseY) {
+        for (PermissionWidget permission : permissionWidgets) {
+            if (permission.button().visible && permission.button().isMouseOver(mouseX, mouseY)) {
+                paintPermission(permission);
+            }
+        }
+    }
+
+    private void paintPermission(PermissionWidget permission) {
+        if (!permissionDragVisited.add(permission.content())) return;
+        setSelectedPermission(permission.content(), permissionDragEnables);
     }
 
     private void moveFolder(String folder, int direction) {
@@ -491,24 +686,25 @@ public class FnfSettingsScreen extends Screen {
         double viewport = folderVisibleRows() * (double) FOLDER_ROW_H;
         if (rowTop < folderScrollTargetPx) folderScrollTargetPx = rowTop;
         else if (rowBottom > folderScrollTargetPx + viewport) folderScrollTargetPx = rowBottom - viewport;
-        folderScrollTargetPx = Mth.clamp(folderScrollTargetPx, 0, folderMaxScrollPx(folders.size()));
+        folderScrollTargetPx = Mth.clamp(folderScrollTargetPx, 0, folderMaxScrollPx(folderTotalRows));
         folderScrollPx = folderScrollTargetPx;
         folderScrollTweenActive = false;
         switchTo("folders");
     }
 
     private int folderListTop() { return rowY(1); }
-    private int folderChecklistColumns() { return folderListWidth() >= 240 ? 4 : 2; }
-    private int folderChecklistRows() {
-        return (SongLibrary.ExternalContent.values().length + folderChecklistColumns() - 1)
-                / folderChecklistColumns();
-    }
-    private int folderChecklistHeight() { return 15 + folderChecklistRows() * 22; }
     private int folderListBottom() {
-        return Math.max(folderListTop() + FOLDER_ROW_H, height - 76 - folderChecklistHeight());
+        return Math.max(folderListTop() + FOLDER_ROW_H, height - 64);
     }
-    private int folderListWidth() { return Math.min(360, Math.max(170, width - 40)); }
-    private int folderListX() { return width / 2 - folderListWidth() / 2; }
+    private int folderListWidth() {
+        int reservedLeft = filtersOpen ? permissionPanelWidth() + 18 : 20;
+        return Math.min(360, Math.max(130, width - reservedLeft - 20));
+    }
+    private int folderListX() {
+        if (!filtersOpen) return width / 2 - folderListWidth() / 2;
+        int left = permissionPanelWidth() + 12;
+        return left + Math.max(0, (width - left - folderListWidth()) / 2);
+    }
     private int folderVisibleRows() {
         return Math.max(1, (folderListBottom() - folderListTop()) / FOLDER_ROW_H);
     }
@@ -522,7 +718,7 @@ public class FnfSettingsScreen extends Screen {
     }
 
     private void scrollFoldersTo(double mouseY) {
-        int total = SongLibrary.getExternalFolders().size();
+        int total = folderTotalRows;
         double max = folderMaxScrollPx(total);
         if (max <= 0) return;
         int top = folderListTop();
@@ -539,7 +735,7 @@ public class FnfSettingsScreen extends Screen {
         updateFolderScrollTween();
         folderScrollFromPx = folderScrollPx;
         folderScrollTargetPx = Mth.clamp(target, 0,
-                folderMaxScrollPx(SongLibrary.getExternalFolders().size()));
+                folderMaxScrollPx(folderTotalRows));
         folderScrollTweenStart = System.nanoTime();
         folderScrollTweenActive = Math.abs(folderScrollTargetPx - folderScrollFromPx) > 0.01;
         if (!folderScrollTweenActive) folderScrollPx = folderScrollTargetPx;
@@ -564,12 +760,13 @@ public class FnfSettingsScreen extends Screen {
         for (FolderWidget row : folderWidgets) {
             int y = row.baseY() - offset;
             row.widget().setY(y);
-            row.widget().visible = y + row.widget().getHeight() > top && y < bottom;
+            row.widget().visible = !suppressedFolderWidgets.contains(row.widget())
+                    && y + row.widget().getHeight() > top && y < bottom;
         }
     }
 
     private boolean clickFolderScrollbar(double mouseX, double mouseY) {
-        int total = SongLibrary.getExternalFolders().size();
+        int total = folderTotalRows;
         if (folderMaxScroll(total) <= 0) return false;
         int x = folderScrollbarX();
         if (mouseX < x - 2 || mouseX >= x + 8
@@ -593,9 +790,10 @@ public class FnfSettingsScreen extends Screen {
                 selectedFolder = picked;
                 SongLibrary.setExternalFolders(list);
                 foldersDirty = true;
-                folderScrollTargetPx = folderMaxScrollPx(list.size());
-                scrollFoldersToPx(folderScrollTargetPx);
-                if (minecraft.screen == this && "folders".equals(category)) switchTo("folders");
+                if (minecraft.screen == this && "folders".equals(category)) {
+                    switchTo("folders");
+                    scrollFoldersToPx(Double.MAX_VALUE);
+                }
             });
         }, "fnf-folder-picker").start();
     }
@@ -927,12 +1125,20 @@ public class FnfSettingsScreen extends Screen {
     public void render(GuiGraphics gui, int mouseX, int mouseY, float partialTick) {
         updatePageScrollTween();
         updateFolderScrollTween();
+        if ("folders".equals(category) && filtersOpen) renderPermissionPanelBackground(gui);
+        if ("folders".equals(category)) {
+            // Render list rows ourselves inside one scissor. Merely hiding rows
+            // whose origins are outside the viewport allowed partially visible
+            // buttons/text to paint over the filter controls.
+            for (FolderWidget row : folderWidgets) row.widget().visible = false;
+        }
         super.render(gui, mouseX, mouseY, partialTick);
+        if ("folders".equals(category)) renderFolderRows(gui, mouseX, mouseY, partialTick);
         String title = switch (category == null ? "" : category) {
             case "delay" -> "Adjust Delay and Combo";
             case "visuals" -> "Visuals and UI";
             case "gameplay" -> "Gameplay";
-            case "folders" -> "Directories";
+            case "folders" -> "Mods";
             case "colors" -> "Note Colors";
             default -> "Options";
         };
@@ -945,23 +1151,20 @@ public class FnfSettingsScreen extends Screen {
         }
 
         if ("folders".equals(category)) {
-            List<String> folders = SongLibrary.getExternalFolders();
-            if (folders.isEmpty()) {
-                gui.drawCenteredString(font, "No folders added.", width / 2, folderListTop() + 6, 0x888888);
-            } else if (folderMaxScroll(folders.size()) > 0) {
+            if (folderMaxScroll(folderTotalRows) > 0) {
                 int trackX = folderScrollbarX();
                 int trackTop = folderListTop();
                 int trackH = folderListBottom() - trackTop;
-                int thumbH = folderThumbHeight(folders.size());
+                int thumbH = folderThumbHeight(folderTotalRows);
                 int thumbY = trackTop + (int) ((trackH - thumbH)
-                        * (folderScrollPx / folderMaxScrollPx(folders.size())));
+                        * (folderScrollPx / folderMaxScrollPx(folderTotalRows)));
                 gui.fill(trackX, trackTop, trackX + 5, folderListBottom(), 0x55000000);
                 gui.fill(trackX, thumbY, trackX + 5, thumbY + thumbH, 0xFFAAAAAA);
             }
-            String filterHint = selectedFolder == null
-                    ? "Add a directory to choose what it loads"
-                    : "Load from selected directory (top = highest priority)";
-            gui.drawCenteredString(font, filterHint, width / 2, folderListBottom() + 3, 0xAAAAAA);
+            if (selectedFolder == null) {
+                gui.drawCenteredString(font, "Installed mods are always available",
+                        width / 2, folderListBottom() + 3, 0xAAAAAA);
+            }
         } else if (pageMaxScroll() > 0) {
             int top = pageViewportTop(), bottom = pageViewportBottom();
             int trackH = bottom - top;
@@ -983,6 +1186,34 @@ public class FnfSettingsScreen extends Screen {
             gui.drawCenteredString(font, "All folders under config/fnfmod/",
                     width / 2, hintY(0), 0xAAAAAA);
         }
+    }
+
+    private void renderPermissionPanelBackground(GuiGraphics gui) {
+        int panelW = permissionPanelWidth();
+        gui.fill(2, 42, panelW, height - 40, 0xE6181822);
+        gui.renderOutline(2, 42, panelW - 2, height - 82, 0xFF555566);
+        String label = shortenPath(permissionTargetLabel, panelW - 12);
+        gui.drawCenteredString(font, label, panelW / 2, 49, 0xFFFFFFFF);
+    }
+
+    private void renderFolderRows(GuiGraphics gui, int mouseX, int mouseY, float partialTick) {
+        int top = folderListTop(), bottom = folderListBottom();
+        gui.enableScissor(folderListX(), top, folderListX() + folderListWidth(), bottom);
+        for (FolderWidget row : folderWidgets) {
+            AbstractWidget widget = row.widget();
+            int y = widget.getY();
+            boolean visible = !suppressedFolderWidgets.contains(widget)
+                    && y + widget.getHeight() > top && y < bottom;
+            widget.visible = visible;
+            if (!visible) continue;
+            widget.render(gui, mouseX, mouseY, partialTick);
+            if (row.iconPath() != null) {
+                IconLibrary.drawFile(gui, row.iconPath(), 0,
+                        widget.getX() + 11, widget.getY() + widget.getHeight() / 2f,
+                        16, false);
+            }
+        }
+        gui.disableScissor();
     }
 
     /** Y for a hint line sitting just above the Back button (line 0 = closest). */

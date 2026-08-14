@@ -183,7 +183,9 @@ public final class FreeCamObjects {
     private boolean plane;       // shift+axis: constrain to all axes except the chosen one
     private boolean trackball;   // double-tap R: free camera-relative rotate
     private String numericInput = "";
-    private double startMouseX, startMouseY;
+    private double lastTransformMouseX, lastTransformMouseY;
+    /** Shift changes the gain applied to new cursor motion; accumulated motion is never rescaled. */
+    private double effectiveMouseDx, effectiveMouseDy, effectiveRotateDegrees;
     private double bX, bY, bZ, bRotX, bRotY, bRotZ, bScaleX, bScaleY, bScaleZ;
 
     // --- face-snap drag (centre cube) ---
@@ -556,7 +558,7 @@ public final class FreeCamObjects {
 
     /**
      * Selects the object nearest to the camera ray, or deselects if none is close.
-     * Returns true if the selection changed.
+     * Returns true when the ray hit an object, including the already-selected one.
      */
     public boolean pick(Vec3 eye, Vec3 dir, BlockPos speakers, Direction facing) {
         Vec3 look = dir.normalize();
@@ -574,9 +576,8 @@ public final class FreeCamObjects {
                 best = i;
             }
         }
-        if (best == selected) return false;
-        selected = best;
-        return true;
+        if (best != selected) selected = best;
+        return best >= 0;
     }
 
     // --- modal transform ---
@@ -596,8 +597,11 @@ public final class FreeCamObjects {
         plane = false;
         trackball = false;
         numericInput = "";
-        startMouseX = mouseX;
-        startMouseY = mouseY;
+        lastTransformMouseX = mouseX;
+        lastTransformMouseY = mouseY;
+        effectiveMouseDx = 0;
+        effectiveMouseDy = 0;
+        effectiveRotateDegrees = 0;
         bX = o.x; bY = o.y; bZ = o.z;
         bRotX = o.rotX; bRotY = o.rotY; bRotZ = o.rotZ;
         bScaleX = o.scaleX; bScaleY = o.scaleY; bScaleZ = o.scaleZ;
@@ -613,7 +617,9 @@ public final class FreeCamObjects {
 
     private void resetTransform() {
         mode = Mode.NONE; axis = 0; plane = false; trackball = false;
-        numericInput = ""; pending = null;
+        numericInput = "";
+        effectiveMouseDx = effectiveMouseDy = effectiveRotateDegrees = 0;
+        pending = null;
     }
 
     /** Adds Blender-style signed decimal input to the active G/R/S transform. */
@@ -661,8 +667,8 @@ public final class FreeCamObjects {
 
     /** Shifts the transform's mouse origin so a wrapped cursor keeps the delta continuous. */
     public void shiftTransformStart(double dx, double dy) {
-        startMouseX += dx;
-        startMouseY += dy;
+        lastTransformMouseX += dx;
+        lastTransformMouseY += dy;
     }
 
     /** World position of the selected object's visible centre/origin handle. */
@@ -815,12 +821,26 @@ public final class FreeCamObjects {
      */
     public void updateTransform(Camera camera, BlockPos speakers, Direction facing,
                                 double mouseX, double mouseY, double centerX, double centerY,
-                                boolean precise, boolean snap) {
+                                double verticalFovDegrees, boolean precise, boolean snap) {
         if (!isTransforming()) return;
         Obj o = selected();
-        double p = precise ? 0.2 : 1.0;
-        double rawDx = mouseX - startMouseX;
-        double rawDy = mouseY - startMouseY;
+        double fine = precise ? 0.2 : 1.0;
+        double stepDx = mouseX - lastTransformMouseX;
+        double stepDy = mouseY - lastTransformMouseY;
+        effectiveMouseDx += stepDx * fine;
+        effectiveMouseDy += stepDy * fine;
+        if (mode == Mode.ROTATE) {
+            double previousAngle = Math.atan2(lastTransformMouseY - centerY, lastTransformMouseX - centerX);
+            double currentAngle = Math.atan2(mouseY - centerY, mouseX - centerX);
+            double stepAngle = Math.toDegrees(currentAngle - previousAngle);
+            if (stepAngle > 180) stepAngle -= 360;
+            else if (stepAngle < -180) stepAngle += 360;
+            effectiveRotateDegrees += stepAngle * fine;
+        }
+        lastTransformMouseX = mouseX;
+        lastTransformMouseY = mouseY;
+        double rawDx = effectiveMouseDx;
+        double rawDy = effectiveMouseDy;
         boolean numeric = !numericInput.isEmpty();
         double entered = numericValue();
 
@@ -829,13 +849,18 @@ public final class FreeCamObjects {
                 Vec3 camRight = new Vec3(camera.getLeftVector()).scale(-1);
                 Vec3 camUp = new Vec3(camera.getUpVector());
                 Vec3 start = worldPosFrom(bX, bY, bZ, speakers, facing);
-                double dist = start.subtract(camera.getPosition()).length();
-                // Keep object translation independent from faster viewport orbit.
-                // Half the previous effective world-units-per-pixel value: objects
-                // were travelling roughly twice as far as the cursor gesture.
-                double wu = Math.max(0.01, dist * 0.0011) * p;
+                Vec3 fromCamera = start.subtract(camera.getPosition());
+                Vec3 camForward = new Vec3(camera.getLookVector()).normalize();
+                double depth = fromCamera.dot(camForward);
+                if (depth < 0.05) depth = Math.max(0.05, fromCamera.length());
+                // At the object's depth, this is the exact size of one GUI pixel in
+                // perspective space. Free movement therefore stays under the cursor
+                // at any camera distance or FOV instead of using a guessed sensitivity.
+                double fov = Math.max(1.0, Math.min(179.0, verticalFovDegrees));
+                double viewportHeight = Math.max(1.0, centerY * 2.0);
+                double wu = 2.0 * depth * Math.tan(Math.toRadians(fov * 0.5)) / viewportHeight;
                 Vec3 delta = camRight.scale(rawDx * wu).add(camUp.scale(-rawDy * wu));
-                delta = constrain(delta, facing);
+                delta = constrainMove(delta, camRight, camUp, rawDy, wu, facing);
                 if (numeric) {
                     Vec3 direction;
                     if (axis != 0 && !plane) {
@@ -856,7 +881,7 @@ public final class FreeCamObjects {
                 o.x = round(px[0]); o.y = round(px[1]); o.z = round(px[2]);
             }
             case SCALE -> {
-                double factor = numeric ? entered : Math.max(0.05, 1 + rawDx * 0.005 * p);
+                double factor = numeric ? entered : Math.max(0.05, 1 + rawDx * 0.005);
                 if (snap && !numeric) factor = Math.max(0.05, Math.round(factor * 10) / 10.0);
                 boolean threeD = o.type == Type.CHARACTER_3D;
                 boolean setX, setY, setZ;
@@ -877,7 +902,7 @@ public final class FreeCamObjects {
                 if (setZ) o.scaleZ = round(bScaleZ * factor);
             }
             case ROTATE -> {
-                double sens = precise ? 0.15 : 0.5;
+                double sens = 0.5;
                 if (o.type == Type.CHARACTER_3D && axis == 0 && !trackball) {
                     // Plain R keeps the established BBS yaw behavior. Explicit X/Z
                     // constraints and trackball mode can now tilt the rendered form.
@@ -896,9 +921,7 @@ public final class FreeCamObjects {
                         if (snap) { o.rotX = snap(o.rotX, 15); o.rotY = snap(o.rotY, 15); }
                     }
                 } else if (axis == 0) {
-                    double a0 = Math.atan2(startMouseY - centerY, startMouseX - centerX);
-                    double a1 = Math.atan2(mouseY - centerY, mouseX - centerX);
-                    double deg = numeric ? entered : Math.toDegrees(a1 - a0) * p;
+                    double deg = numeric ? entered : effectiveRotateDegrees;
                     o.rotZ = round(bRotZ + deg);
                     if (snap && !numeric) o.rotZ = snap(o.rotZ, 15);
                 } else {
@@ -919,6 +942,47 @@ public final class FreeCamObjects {
         Vec3 a = axisVec(axis, facing);
         Vec3 along = a.scale(delta.dot(a));
         return plane ? delta.subtract(along) : along;
+    }
+
+    /**
+     * Maps the two-dimensional cursor gesture onto a stage axis or plane while
+     * preserving its screen-space speed. A simple dot projection becomes much
+     * slower whenever an axis points partly into the screen.
+     */
+    private Vec3 constrainMove(Vec3 screenDelta, Vec3 camRight, Vec3 camUp,
+                               double rawDy, double worldPerPixel, Direction facing) {
+        if (axis == 0) return screenDelta;
+
+        Vec3 selectedAxis = axisVec(axis, facing);
+        double desiredRight = screenDelta.dot(camRight);
+        double desiredUp = screenDelta.dot(camUp);
+        if (!plane) {
+            double projectedRight = selectedAxis.dot(camRight);
+            double projectedUp = selectedAxis.dot(camUp);
+            double projectedLengthSq = projectedRight * projectedRight + projectedUp * projectedUp;
+            if (projectedLengthSq < 1.0e-8) {
+                return selectedAxis.scale(-rawDy * worldPerPixel);
+            }
+            double amount = (desiredRight * projectedRight + desiredUp * projectedUp) / projectedLengthSq;
+            return selectedAxis.scale(amount);
+        }
+
+        Vec3 xAxis = axisVec(1, facing);
+        Vec3 yAxis = axisVec(2, facing);
+        Vec3 zAxis = axisVec(3, facing);
+        Vec3 first = axis == 1 ? yAxis : xAxis;
+        Vec3 second = axis == 3 ? yAxis : zAxis;
+        double a11 = first.dot(camRight);
+        double a12 = second.dot(camRight);
+        double a21 = first.dot(camUp);
+        double a22 = second.dot(camUp);
+        double determinant = a11 * a22 - a12 * a21;
+        if (Math.abs(determinant) < 1.0e-8) {
+            return screenDelta.subtract(selectedAxis.scale(screenDelta.dot(selectedAxis)));
+        }
+        double firstAmount = (desiredRight * a22 - a12 * desiredUp) / determinant;
+        double secondAmount = (a11 * desiredUp - desiredRight * a21) / determinant;
+        return first.scale(firstAmount).add(second.scale(secondAmount));
     }
 
     private static Vec3 axisVec(int a, Direction facing) {

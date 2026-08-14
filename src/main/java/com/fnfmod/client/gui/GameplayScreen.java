@@ -145,6 +145,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     private int camSection = -1;
     /** Null follows Must Hit sections; otherwise an event owns camera focus. */
     private String cameraFocusOverride;
+    private int girlfriendDanceSpeed = 1;
 
     private static class GameNote {
         final SongChart.Note data;
@@ -292,8 +293,8 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     private boolean editorPlaytest;
     private boolean editorPreview;
     private double editorStartMs;
-    // Free-camera playtest state (Ctrl+Shift+Space). freeCamMove toggles the
-    // spectator move/look with a captured mouse; freeCamSpeed is scroll-adjusted.
+    // Free-camera playtest state (Ctrl+Shift+Space). Holding LMB in empty viewport
+    // space captures the mouse for spectator move/look; wheel adjusts freeCamSpeed.
     private boolean freeCam;
     private boolean freeCamMove;
     private double freeCamSpeed = 6.0;
@@ -309,6 +310,11 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     // anchor; otherwise attached to the focused character. Machine vs camera frame.
     private boolean freeCamOverride = true;
     private boolean freeCamCameraFrame;
+    /** Export a static camera pose or pivot-orbit mode beginning at that pose. */
+    private boolean freeCamOrbitShot;
+    private boolean freeCamOrbitPinned;
+    /** False = object authoring tab; true = camera authoring tab. */
+    private boolean freeCamCameraTab;
     // On-screen free-cam control panel. Clickable when the cursor is released
     // (move/look off); the M/F/R/Ctrl+C keys still work alongside the buttons.
     private final java.util.List<FreeCamButton> freeCamButtons = new java.util.ArrayList<>();
@@ -431,7 +437,8 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         this.runtimeSongEntry = ClientSession.songId == null ? null : SongLibrary.get(ClientSession.songId);
         this.runtimeSongFolder = ClientSession.resolvedFolder != null ? ClientSession.resolvedFolder
                 : runtimeSongEntry == null ? null : runtimeSongEntry.folder;
-        this.playbackPolicy = new PlaybackPolicy(ClientSession.playbackMode, ClientSession.songAssets);
+        this.playbackPolicy = new PlaybackPolicy(ClientSession.playbackMode, ClientSession.songAssets,
+                ClientSession.luaAllowed);
         CharacterAnimations.useSongFolder(playbackPolicy.songAssets() && runtimeSongEntry != null
                 ? runtimeSongEntry.animationRoot() : null, chart.player1, chart.player2);
         // Default (song) resolves the definition named by this chart role. None
@@ -551,7 +558,8 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             // source once the session has been left.
             screen.playbackPolicy = requestedPolicy;
         } else if (currentSessionSong) {
-            screen.playbackPolicy = new PlaybackPolicy(ClientSession.playbackMode, ClientSession.songAssets);
+            screen.playbackPolicy = new PlaybackPolicy(ClientSession.playbackMode, ClientSession.songAssets,
+                    ClientSession.luaAllowed);
         } else {
             // No look was chosen for this chart. Use the same default a normal
             // play starts from, so a playtest is not silently a different mode.
@@ -886,6 +894,12 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         super.init();
         markGameplayCursorActive();
         muteVanillaMusic();
+        // Screen.init runs synchronously when Minecraft opens PlayState, before
+        // the next level/world render. Load onCreate assets here so a 2D world
+        // character exists for that first visible frame. Loading it from logic()
+        // was one frame too late because the level render precedes Screen.render;
+        // a large atlas made that late frame look like a noticeable pop-in.
+        initializeLuaRuntime();
     }
 
     private void markGameplayCursorActive() {
@@ -947,16 +961,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             return;
         }
 
-        if (luaRuntime == null && width > 0 && height > 0) {
-            luaRuntime = PsychLuaRuntime.load(this, chart, runtimeSongId, runtimeSongFolder,
-                    runtimeSongEntry, playbackPolicy);
-            rebuildNoteLanesAfterLuaCreate();
-            // Psych announces the whole event list once, right after scripts load,
-            // so a script can pre-cache assets for events it will receive later.
-            for (SongChart.Event event : chart.events) {
-                luaRuntime.onEventPushed(event.name, event.value1, event.value2, event.timeMs);
-            }
-        }
+        initializeLuaRuntime();
         // Spawn/morph the solo opponent during the count-in, before the first
         // note scan. Creating it afterward could lose a song's time-zero sing.
         if (phase == Phase.COUNTDOWN || phase == Phase.PLAYING) updateOpponentBot();
@@ -1072,7 +1077,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                         if (hold.data.playerSide == myChartSideIsPlayer
                                 && nowMs - lastHoldSingMs[lane] > BBS_HOLD_LOOP_MS && minecraft.player != null) {
                             CharacterAnimations.play(minecraft.player, myAnimSet, myRole(),
-                                    DIR_NAMES[lane] + hold.data.animSuffix);
+                                    DIR_NAMES[lane] + hold.data.animSuffix, localUsePlayerSkin());
                             lastHoldSingMs[lane] = nowMs;
                             lastSingMs = nowMs; // suppress idle bop during the hold
                         }
@@ -1144,9 +1149,12 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         if (idx != camSection) {
             camSection = idx;
             if (cameraFocusOverride == null) {
-                GameplayCamera.focusSection(secFocusPlayer[idx], Math.min(700, secBeatMs[idx] * 2));
                 String cameraTarget = secFocusGirlfriend[idx] ? "gf"
                         : secFocusPlayer[idx] ? "boyfriend" : "dad";
+                if (!secFocusGirlfriend[idx] || !focusExtraCharacter(cameraTarget,
+                        null, Math.min(700, secBeatMs[idx] * 2))) {
+                    GameplayCamera.focusSection(secFocusPlayer[idx], Math.min(700, secBeatMs[idx] * 2));
+                }
                 if (psychScene != null) {
                     psychScene.focus(cameraTarget);
                 }
@@ -1174,18 +1182,18 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             long nowMs = System.currentTimeMillis();
             if (nowMs - lastSingMs > singHold && minecraft.player != null
                     && !CharacterAnimations.loopIdle(myAnimSet, myRole())) {
-                playIdle(minecraft.player, myAnimSet, myRole(), pulse);
+                playIdle(minecraft.player, myAnimSet, myRole(), pulse, localUsePlayerSkin());
             }
             if (partnerId != null && minecraft.level != null && nowMs - partnerLastSingMs > singHold
                     && !CharacterAnimations.loopIdle(partnerAnimSet, partnerRole())) {
                 Player partner = minecraft.level.getPlayerByUUID(partnerId);
                 if (partner != null) {
-                    playIdle(partner, partnerAnimSet, partnerRole(), pulse);
+                    playIdle(partner, partnerAnimSet, partnerRole(), pulse, false);
                 }
             }
             // Chart-added 2D and 3D performers use the same written pulse.
-            extraCharacters.danceAll(pulse);
-            extraCharacters.beat(pulse, 1);
+            extraCharacters.danceAll(pulse, gfReplacementTag(), girlfriendDanceSpeed);
+            extraCharacters.beat(pulse, 1, gfReplacementTag(), girlfriendDanceSpeed);
             if (opponentBot != null) {
                 opponentBot.idle(pulse, singHold);
             }
@@ -1194,6 +1202,19 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         // song end
         if (phase == Phase.PLAYING && songPlayer.isFinished()) {
             if (!anyNotesLeft(myLanes, myLaneIndex)) finishSong(false);
+        }
+    }
+
+    /** Loads Lua/onCreate exactly once, early enough for first-frame world objects. */
+    private void initializeLuaRuntime() {
+        if (luaRuntime != null || width <= 0 || height <= 0 || resourcesDisposed) return;
+        luaRuntime = PsychLuaRuntime.load(this, chart, runtimeSongId, runtimeSongFolder,
+                runtimeSongEntry, playbackPolicy);
+        rebuildNoteLanesAfterLuaCreate();
+        // Psych announces the whole event list once, right after scripts load,
+        // so a script can pre-cache assets for events it will receive later.
+        for (SongChart.Event event : chart.events) {
+            luaRuntime.onEventPushed(event.name, event.value1, event.value2, event.timeMs);
         }
     }
 
@@ -1246,8 +1267,11 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         if (target.isEmpty()) {
             cameraFocusOverride = null;
             int section = camSection < 0 ? 0 : Math.min(camSection, secFocusPlayer.length - 1);
-            GameplayCamera.focusSection(secFocusPlayer[section],
-                    Math.min(700, secBeatMs[section] * 2));
+            if (!secFocusGirlfriend[section] || !focusExtraCharacter("gf", null,
+                    Math.min(700, secBeatMs[section] * 2))) {
+                GameplayCamera.focusSection(secFocusPlayer[section],
+                        Math.min(700, secBeatMs[section] * 2));
+            }
             if (psychScene != null) {
                 psychScene.focus(secFocusGirlfriend[section] ? "gf"
                         : secFocusPlayer[section] ? "boyfriend" : "dad");
@@ -1259,11 +1283,18 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         if (target.equalsIgnoreCase("player") || target.equalsIgnoreCase("boyfriend")
                 || target.equalsIgnoreCase("bf")) role = "boyfriend";
         else if (target.equalsIgnoreCase("opponent") || target.equalsIgnoreCase("dad")) role = "dad";
-        else if (target.equalsIgnoreCase("gf") || target.equalsIgnoreCase("girlfriend")
-                || target.equalsIgnoreCase("speakers")) role = "gf";
-        else return;
+        else if (isGfAlias(target)) role = "gf";
+        else {
+            String extra = resolvedExtraCharacterTarget(target);
+            if (extra == null) return;
+            cameraFocusOverride = extra;
+            String eventEase = event.value2 == null || event.value2.isBlank() ? "smooth" : event.value2;
+            focusExtraCharacter(extra, eventEase, 500);
+            return;
+        }
         cameraFocusOverride = role;
         String eventEase = event.value2 == null || event.value2.isBlank() ? "smooth" : event.value2;
+        if (role.equals("gf") && focusExtraCharacter(role, eventEase, 500)) return;
         GameplayCamera.focus(!role.equals("dad"), eventEase, 500);
         if (psychScene != null) psychScene.focus(role);
     }
@@ -1275,12 +1306,15 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
 
     @Override
     public void eventHey(String target, double durationSeconds) {
+        String extra = resolvedExtraCharacterTarget(target);
+        if (extra != null && isGfAlias(target)) extraCharacters.hey(extra, durationSeconds);
         if (psychScene != null) psychScene.hey(target, durationSeconds);
         playMinecraftHey(target, durationSeconds);
     }
 
     @Override
     public void eventSetGirlfriendSpeed(int speed) {
+        girlfriendDanceSpeed = Math.max(1, speed);
         if (psychScene != null) psychScene.setGirlfriendDanceSpeed(speed);
     }
 
@@ -1294,8 +1328,9 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     @Override
     public void eventPlayAnimation(String target, String animation) {
         if (animation == null || animation.isBlank()) return;
-        if (extraCharacters.exists(target)) {
-            extraCharacters.play(target, animation);
+        String extra = resolvedExtraCharacterTarget(target);
+        if (extra != null) {
+            extraCharacters.play(extra, animation);
             return;
         }
         if (psychScene != null) psychScene.playSpecialAnimation(target, animation);
@@ -1321,7 +1356,20 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     }
 
     @Override
+    public void eventCameraOrbit(boolean enabled, boolean pinned,
+                                 double pivotX, double pivotY, double pivotZ,
+                                 double durationSeconds, String easing) {
+        if (!enabled) GameplayCamera.stopOrbit();
+        else GameplayCamera.orbit(pinned, pivotX, pivotY, pivotZ, durationSeconds, easing);
+    }
+
+    @Override
     public void eventAltIdle(String target, String suffix) {
+        String extra = resolvedExtraCharacterTarget(target);
+        if (extra != null) {
+            extraCharacters.setIdleSuffix(extra, suffix);
+            return;
+        }
         if (psychScene != null) psychScene.setIdleSuffix(target, suffix);
         if (target.equals("boyfriend")) playerIdleSuffix = suffix == null ? "" : suffix;
         else if (target.equals("dad")) opponentIdleSuffix = suffix == null ? "" : suffix;
@@ -1337,7 +1385,8 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     public void eventChangeCharacter(String target, String characterId) {
         if (characterId == null || characterId.isBlank()) return;
         String selected = characterId.trim();
-        if (extraCharacters.changeDefinition(target, selected, null)) return;
+        String extra = resolvedExtraCharacterTarget(target);
+        if (extra != null && extraCharacters.changeDefinition(extra, selected, null)) return;
         String animationDefinition = CharacterAnimations.modSet(selected);
         if (psychScene != null) psychScene.changeCharacter(target, selected);
         if (restrictsMinecraftSongAssets()) return;
@@ -1366,7 +1415,10 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         if (target.equals("boyfriend") || target.equals("dad")) {
             boolean boyfriendSide = target.equals("boyfriend");
             if (performerEntity(boyfriendSide) instanceof Player performer) {
-                CharacterAnimations.prepare(performer, activeSet, boyfriendSide ? "player" : "opponent");
+                boolean useSkin = localControlsRole(target) && performer == minecraft.player
+                        && localUsePlayerSkin();
+                CharacterAnimations.prepare(performer, activeSet,
+                        boyfriendSide ? "player" : "opponent", useSkin);
             }
             // Solo opponent bot follows Change Character too: rebuild with the new
             // character (or fall back to the armor stand if it has no BBS form).
@@ -1413,12 +1465,18 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
 
     @Override
     public void eventRemoveCharacter(String tag) {
-        extraCharacters.remove(tag);
+        String extra = explicitExtraCharacterTarget(tag);
+        if (extra != null) extraCharacters.remove(extra);
     }
 
     @Override
     public void eventTweenCharacter(String tag, Double x, Double y, Double z, Double rotation,
                                     double seconds, String easing) {
+        String extra = resolvedExtraCharacterTarget(tag);
+        if (extra != null) {
+            extraCharacters.tween(extra, x, y, z, rotation, seconds, easing);
+            return;
+        }
         // bf/dad target the real stage performers (Legacy/Minecraft); other tags
         // fall through to the client-only Add Character roster.
         PerformerTween performer = performerTweenFor(tag);
@@ -1448,9 +1506,54 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         return performerTweenFor(tag);
     }
 
+    private boolean supportsExtraGirlfriend() {
+        return playbackPolicy != null && !playbackPolicy.usesPsychCamera();
+    }
+
+    private static boolean isGfAlias(String raw) {
+        if (raw == null) return false;
+        String value = raw.trim().toLowerCase(java.util.Locale.ROOT);
+        return value.equals("gf") || value.equals("gfgroup")
+                || value.equals("girlfriend") || value.equals("girlfriendgroup")
+                || value.equals("speakers");
+    }
+
+    /** Reserved GF aliases prefer tag "gf", then "girlfriend", outside FNF look. */
+    private String gfReplacementTag() {
+        if (!supportsExtraGirlfriend()) return null;
+        if (extraCharacters.exists("gf")) return "gf";
+        return extraCharacters.exists("girlfriend") ? "girlfriend" : null;
+    }
+
+    /** Returns an actual extra tag, while preserving native GF ownership in FNF look. */
+    private String resolvedExtraCharacterTarget(String raw) {
+        if (isGfAlias(raw)) return gfReplacementTag();
+        return extraCharacters.exists(raw) ? raw.trim().toLowerCase(java.util.Locale.ROOT) : null;
+    }
+
+    /** Blockified-specific APIs can still address an exact extra named GF in FNF look. */
+    private String explicitExtraCharacterTarget(String raw) {
+        String replacement = supportsExtraGirlfriend() && isGfAlias(raw) ? gfReplacementTag() : null;
+        if (replacement != null) return replacement;
+        return extraCharacters.exists(raw) ? raw.trim().toLowerCase(java.util.Locale.ROOT) : null;
+    }
+
+    private boolean focusExtraCharacter(String raw, String easing, double durationMs) {
+        String tag = resolvedExtraCharacterTarget(raw);
+        if (tag == null || playbackPolicy == null || playbackPolicy.usesPsychCamera()) return false;
+        GameplayCamera.focusAt(() -> extraCharacters.focusWorldPosition(tag), 0, 0,
+                easing == null || easing.isBlank() ? "smooth" : easing, durationMs);
+        return true;
+    }
+
     private boolean localControlsRole(String role) {
         return (myChartSideIsPlayer && role.equals("boyfriend"))
                 || (!myChartSideIsPlayer && role.equals("dad"));
+    }
+
+    /** Skin choice follows the human-controlled performer, independent of chart side. */
+    private boolean localUsePlayerSkin() {
+        return ClientOptions.get().playerUsePlayerSkin;
     }
 
     private boolean partnerControlsRole(String role) {
@@ -1459,12 +1562,14 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     }
 
     private boolean playMinecraftCharacterAnimation(String role, String animation) {
-        if (extraCharacters.exists(role)) return extraCharacters.play(role, animation);
+        String extra = resolvedExtraCharacterTarget(role);
+        if (extra != null) return extraCharacters.play(extra, animation);
         role = minecraftCharacterRole(role);
         if (role.equals("gf")) return false;
         boolean played = false;
         if (localControlsRole(role) && minecraft.player != null) {
-            float[] cameraOffset = playMinecraftAnimation(minecraft.player, myAnimSet, myRole(), animation);
+            float[] cameraOffset = playMinecraftAnimation(minecraft.player, myAnimSet, myRole(),
+                    animation, localUsePlayerSkin());
             if (cameraOffset != null) {
                 lastSingMs = System.currentTimeMillis();
                 GameplayCamera.sing(role.equals("boyfriend"), cameraOffset[0], cameraOffset[1]);
@@ -1474,7 +1579,8 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         if (partnerControlsRole(role) && minecraft.level != null) {
             Player partner = minecraft.level.getPlayerByUUID(partnerId);
             if (partner != null) {
-                float[] cameraOffset = playMinecraftAnimation(partner, partnerAnimSet, partnerRole(), animation);
+                float[] cameraOffset = playMinecraftAnimation(partner, partnerAnimSet, partnerRole(),
+                        animation, false);
                 if (cameraOffset != null) {
                     partnerLastSingMs = System.currentTimeMillis();
                     GameplayCamera.sing(role.equals("boyfriend"), cameraOffset[0], cameraOffset[1]);
@@ -1482,17 +1588,31 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                 }
             }
         }
+        if (partnerId == null && opponentBot != null
+                && opponentBot.role().equals(botRoleFor(role))) {
+            float[] cameraOffset = opponentBot.playWithCameraOffset(animation);
+            if (cameraOffset == null) {
+                String conventional = minecraftAnimationName(animation);
+                if (!conventional.equalsIgnoreCase(animation.trim())) {
+                    cameraOffset = opponentBot.playWithCameraOffset(conventional);
+                }
+            }
+            if (cameraOffset != null) {
+                GameplayCamera.sing(role.equals("boyfriend"), cameraOffset[0], cameraOffset[1]);
+                played = true;
+            }
+        }
         return played;
     }
 
     private static float[] playMinecraftAnimation(Player player, String set, String role,
-                                                  String requestedAnimation) {
+                                                  String requestedAnimation, boolean usePlayerSkin) {
         if (requestedAnimation == null || requestedAnimation.isBlank()) return null;
-        float[] exact = CharacterAnimations.play(player, set, role, requestedAnimation);
+        float[] exact = CharacterAnimations.play(player, set, role, requestedAnimation, usePlayerSkin);
         if (exact != null) return exact;
         String conventional = minecraftAnimationName(requestedAnimation);
         return conventional.equalsIgnoreCase(requestedAnimation.trim()) ? null
-                : CharacterAnimations.play(player, set, role, conventional);
+                : CharacterAnimations.play(player, set, role, conventional, usePlayerSkin);
     }
 
     private static String minecraftCharacterRole(String role) {
@@ -1510,7 +1630,8 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         long idleMarker = System.currentTimeMillis()
                 + Math.max(0, Math.round(durationSeconds * 1000.0)) - Math.round(singHoldMs());
         if (localControlsRole(role) && minecraft.player != null
-                && CharacterAnimations.play(minecraft.player, myAnimSet, myRole(), "hey") != null) {
+                && CharacterAnimations.play(minecraft.player, myAnimSet, myRole(), "hey",
+                localUsePlayerSkin()) != null) {
             lastSingMs = idleMarker;
         }
         if (partnerControlsRole(role) && minecraft.level != null) {
@@ -1625,7 +1746,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
      */
     private void prepareCharacterForms() {
         if (minecraft.player != null) {
-            CharacterAnimations.prepare(minecraft.player, myAnimSet, myRole());
+            CharacterAnimations.prepare(minecraft.player, myAnimSet, myRole(), localUsePlayerSkin());
         }
         if (partnerId != null && minecraft.level != null) {
             Player partner = minecraft.level.getPlayerByUUID(partnerId);
@@ -1639,7 +1760,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         return Mth.clamp(60000.0 / bpm, 100.0, 3000.0);
     }
 
-    private void playIdle(Player p, String set, String role, int beat) {
+    private void playIdle(Player p, String set, String role, int beat, boolean usePlayerSkin) {
         String suffix = "player".equals(role) ? playerIdleSuffix : opponentIdleSuffix;
         boolean hasSecondIdle = CharacterAnimations.hasAction(set, role, "idle2");
         // Minecraft animation sets have two canonical idle slots. Non-empty
@@ -1647,8 +1768,9 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         if (!hasSecondIdle && (beat & 1) == 1) return;
         String action = !suffix.isBlank() && hasSecondIdle ? "idle2"
                 : (beat & 1) == 1 ? "idle2" : "idle";
-        if (CharacterAnimations.play(p, set, role, action) == null && !"idle".equals(action)) {
-            CharacterAnimations.play(p, set, role, "idle");
+        if (CharacterAnimations.play(p, set, role, action, usePlayerSkin) == null
+                && !"idle".equals(action)) {
+            CharacterAnimations.play(p, set, role, "idle", usePlayerSkin);
         }
     }
 
@@ -1922,7 +2044,8 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
      * suppressed, through {@link PerformerCollisions}.
      */
     public boolean psychLuaSetCharacterCollision(String tag, boolean enabled) {
-        if (extraCharacters.exists(tag)) return extraCharacters.setCollision(tag, enabled);
+        String extra = resolvedExtraCharacterTarget(tag);
+        if (extra != null) return extraCharacters.setCollision(extra, enabled);
         Entity performer = performerEntityForTag(tag);
         if (performer == null) return false;
         PerformerCollisions.setEnabled(performer.getId(), enabled);
@@ -1930,7 +2053,8 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     }
 
     public boolean psychLuaCharacterCollision(String tag) {
-        if (extraCharacters.exists(tag)) return extraCharacters.collision(tag);
+        String extra = resolvedExtraCharacterTarget(tag);
+        if (extra != null) return extraCharacters.collision(extra);
         Entity performer = performerEntityForTag(tag);
         return performer != null && PerformerCollisions.enabled(performer.getId());
     }
@@ -1941,8 +2065,9 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
      * stop being held in place, for example before teleporting it somewhere else.
      */
     public boolean psychLuaResetCharacterPosition(String tag) {
-        if (extraCharacters.exists(tag)) {
-            return extraCharacters.setPosition(tag, 0, 0, 0);
+        String extra = resolvedExtraCharacterTarget(tag);
+        if (extra != null) {
+            return extraCharacters.setPosition(extra, 0, 0, 0);
         }
         PerformerTween tween = performerTweenFor(tag);
         if (tween == null) return false;
@@ -1957,7 +2082,8 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
      * on the ground, not a BBS form's shader shadow.
      */
     public boolean psychLuaSetCharacterShadow(String tag, boolean enabled) {
-        if (extraCharacters.exists(tag)) return extraCharacters.setShadow(tag, enabled);
+        String extra = resolvedExtraCharacterTarget(tag);
+        if (extra != null) return extraCharacters.setShadow(extra, enabled);
         Entity performer = performerEntityForTag(tag);
         if (performer == null) return false;
         PerformerShadows.setEnabled(performer.getId(), enabled);
@@ -1965,7 +2091,8 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     }
 
     public boolean psychLuaCharacterShadow(String tag) {
-        if (extraCharacters.exists(tag)) return extraCharacters.shadow(tag);
+        String extra = resolvedExtraCharacterTarget(tag);
+        if (extra != null) return extraCharacters.shadow(extra);
         Entity performer = performerEntityForTag(tag);
         return performer != null && PerformerShadows.enabled(performer.getId());
     }
@@ -2583,7 +2710,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             boolean heyNote = !miss && note != null && "Hey!".equalsIgnoreCase(note.noteType);
             String action = heyNote ? "hey" : miss ? "miss" + suffix : DIR_NAMES[lane] + suffix;
             float[] camOff = CharacterAnimations.play(minecraft.player, myAnimSet, myRole(),
-                    action);
+                    action, localUsePlayerSkin());
             if (camOff != null && !miss) {
                 GameplayCamera.sing(myChartSideIsPlayer, camOff[0], camOff[1]);
             }
@@ -2728,13 +2855,6 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                 }
                 return true;
             }
-            // Toggle Blender-like fly/look navigation and cursor grab.
-            if (keyCode == GLFW.GLFW_KEY_F
-                    && (modifiers & GLFW.GLFW_MOD_SHIFT) != 0
-                    && (modifiers & GLFW.GLFW_MOD_CONTROL) == 0) {
-                setFreeCamMove(!freeCamMove);
-                return true;
-            }
             // Esc cancels a running transform, then closes help, then leaves free cam.
             if (keyCode == GLFW.GLFW_KEY_ESCAPE) {
                 if (freeCamObjects.isTransforming()) freeCamObjects.cancelTransform();
@@ -2818,9 +2938,14 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                 else copyFreeCamShot();
                 return true;
             }
-            // M cycles Follow Pos Movement (override/attached); F cycles the Frame.
+            // M cycles Follow Pos Movement (override/attached); bare F cycles the Frame.
             if (keyCode == GLFW.GLFW_KEY_M) { freeCamOverride = !freeCamOverride; return true; }
-            if (keyCode == GLFW.GLFW_KEY_F) { freeCamCameraFrame = !freeCamCameraFrame; return true; }
+            if (keyCode == GLFW.GLFW_KEY_F
+                    && (modifiers & (GLFW.GLFW_MOD_SHIFT | GLFW.GLFW_MOD_CONTROL
+                    | GLFW.GLFW_MOD_ALT | GLFW.GLFW_MOD_SUPER)) == 0) {
+                freeCamCameraFrame = !freeCamCameraFrame;
+                return true;
+            }
             return true; // movement uses polled keys; swallow the rest
         }
         if (editorPreview && (keyCode == GLFW.GLFW_KEY_F12 || keyCode == GLFW.GLFW_KEY_ESCAPE)) {
@@ -2943,6 +3068,8 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         freeCamEntryCameraPitch = entryCamera.getXRot();
         freeCamEntryCameraRoll = entryCamera.getRoll();
         freeCam = true;
+        freeCamCameraTab = false;
+        freeCamPanelScroll = 0;
         beginFreeCamPresentation();
         freeCamPausedAtMs = System.currentTimeMillis();
         songPlayer.pause();
@@ -3199,6 +3326,13 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         if (!freeCamMove) return;
 
         long window = minecraft.getWindow().getWindow();
+        // Movement is hold-to-grab. Polling as well as handling mouseReleased
+        // prevents a missed release (focus change/cursor-mode transition) from
+        // leaving the camera captured.
+        if (GLFW.glfwGetMouseButton(window, GLFW.GLFW_MOUSE_BUTTON_LEFT) != GLFW.GLFW_PRESS) {
+            setFreeCamMove(false);
+            return;
+        }
         double[] cx = new double[1];
         double[] cy = new double[1];
         GLFW.glfwGetCursorPos(window, cx, cy);
@@ -3273,7 +3407,10 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     }
 
     private void copyFreeCamShot() {
-        double[] follow = freeCamFollowValues();
+        // Orbit capture must start from the authored position immediately. Use
+        // the stable machine frame and a constant Follow Pos sample so orbit
+        // does not capture halfway through the usual 0.5-second position tween.
+        double[] follow = freeCamOrbitShot ? freeCamFollowValues(false) : freeCamFollowValues();
         double bx = round2(follow[0]);
         double by = round2(follow[1]);
         double bz = round2(follow[2]);
@@ -3286,25 +3423,79 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         // fixes it at the anchor; empty attaches it to the focused character. v6
         // camera aligns to the camera rotation; empty uses the machine facing.
         String movement = freeCamOverride ? "override" : "";
-        String frame = freeCamCameraFrame ? "camera" : "";
+        String frame = !freeCamOrbitShot && freeCamCameraFrame ? "camera" : "";
         SongChart.Event pos = new SongChart.Event(0, ChartEventTypes.CAMERA_FOLLOW_POS,
-                num(bx), num(by), num(bz), "", movement, frame, false);
-        // Camera Rotation 3D: pitch, yaw, roll (v4 = ease, left empty).
+                num(bx), num(by), num(bz), freeCamOrbitShot ? "constant" : "",
+                movement, frame, "", false);
+        // Camera Rotation 3D is the orbital animator once pivot mode is active.
+        // The values copied here establish a continuous zero-phase baseline.
         SongChart.Event rot = new SongChart.Event(0, ChartEventTypes.CAMERA_ROTATION_3D,
-                num(pitch), num(yaw), num(roll), "", "", false);
+                num(pitch), num(yaw),
+                num(roll), freeCamOrbitShot ? "constant" : "", "", false);
         // Camera Zoom: amount (v2 = duration, v3 = ease, left empty).
         SongChart.Event cameraZoom = new SongChart.Event(0, ChartEventTypes.CAMERA_ZOOM,
                 num(zoom), "", "", "", "", false);
-        CameraShotClipboard.set(java.util.List.of(pos, rot, cameraZoom));
+        java.util.List<SongChart.Event> events = new java.util.ArrayList<>();
+        events.add(pos);
+        events.add(rot);
+        events.add(cameraZoom);
+        if (freeCamOrbitShot) {
+            double[] pivot = freeCamOrbitPivotValues();
+            events.add(new SongChart.Event(0, ChartEventTypes.CAMERA_ORBIT,
+                    "on", freeCamOrbitPinned ? "pin" : "follow",
+                    num(round2(pivot[0])) + "," + num(round2(pivot[1])) + ","
+                            + num(round2(pivot[2])), "", "", "", "", false));
+        }
+        CameraShotClipboard.set(events);
         freeCamMessage = "Copied camera shot — paste in the chart editor";
         freeCamMessageUntil = System.currentTimeMillis() + 3000;
     }
 
+    private void toggleFreeCamShotMode() {
+        freeCamOrbitShot = !freeCamOrbitShot;
+        if (freeCamOrbitShot) {
+            Camera camera = minecraft.gameRenderer.getMainCamera();
+            freeCamFocusPoint = viewportPivot(camera);
+            GameplayCamera.aimFreeCamAt(freeCamFocusPoint, camera.getYRot(), camera.getXRot());
+        }
+    }
+
     /** Camera Follow Pos X/Y/Z for the current Movement/Frame options. */
     private double[] freeCamFollowValues() {
+        return freeCamFollowValues(freeCamCameraFrame);
+    }
+
+    private double[] freeCamFollowValues(boolean cameraFrame) {
         Camera cam = minecraft.gameRenderer.getMainCamera();
-        return GameplayCamera.followPosValues(freeCamOverride, freeCamCameraFrame,
+        return GameplayCamera.followPosValues(freeCamOverride, cameraFrame,
                 cam.getLeftVector(), cam.getUpVector(), cam.getLookVector());
+    }
+
+    private double[] freeCamOrbitPivotValues() {
+        Camera camera = minecraft.gameRenderer.getMainCamera();
+        Vec3 pivot = freeCamFocusPoint == null ? viewportPivot(camera) : freeCamFocusPoint;
+        double[] local = GameplayCamera.worldToFreeOffset(pivot);
+        if (freeCamOrbitPinned) return local;
+        double[] focus = GameplayCamera.worldToFreeOffset(GameplayCamera.focusWorldPos());
+        return new double[]{local[0] - focus[0], local[1] - focus[1], local[2] - focus[2]};
+    }
+
+    private void setFreeCamOrbitPivotValue(int axis, double value) {
+        if (!Double.isFinite(value)) return;
+        double[] pivot = freeCamOrbitPivotValues();
+        pivot[Math.max(0, Math.min(2, axis))] = value;
+        Vec3 origin = freeCamOrbitPinned ? null : GameplayCamera.focusWorldPos();
+        freeCamFocusPoint = GameplayCamera.stageOffsetFrom(origin, pivot[0], pivot[1], pivot[2]);
+        Camera camera = minecraft.gameRenderer.getMainCamera();
+        GameplayCamera.aimFreeCamAt(freeCamFocusPoint, camera.getYRot(), camera.getXRot());
+    }
+
+    private void toggleFreeCamOrbitPinned() {
+        // The represented world point must not move when switching between an
+        // absolute pinned pivot and a focus-relative pivot.
+        Camera camera = minecraft.gameRenderer.getMainCamera();
+        if (freeCamFocusPoint == null) freeCamFocusPoint = viewportPivot(camera);
+        freeCamOrbitPinned = !freeCamOrbitPinned;
     }
 
     private static double round2(double value) {
@@ -3581,7 +3772,14 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                 return true;
             }
             if (freeCamColorPicker) {
-                if (freeCamColorHexBox != null) freeCamColorHexBox.mouseClicked(mouseX, mouseY, button);
+                if (freeCamColorHexBox != null
+                        && freeCamColorHexBox.mouseClicked(mouseX, mouseY, button)) {
+                    // This field is rendered manually rather than registered as a
+                    // Screen child, so direct click forwarding must also assign
+                    // the container focus that vanilla normally assigns for us.
+                    setFocused(freeCamColorHexBox);
+                    freeCamColorHexBox.setFocused(true);
+                }
                 if (button == 0) {
                     if (mouseX >= colorCancelX && mouseX < colorCancelX + colorCancelW
                             && mouseY >= colorCancelY && mouseY < colorCancelY + colorCancelH) {
@@ -3604,12 +3802,6 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                 }
                 return true;
             }
-            // Blender-style confirm: LMB leaves Shift+F fly/look mode and
-            // releases the cursor. This click never falls through to selection.
-            if (freeCamMove && button == GLFW.GLFW_MOUSE_BUTTON_LEFT) {
-                setFreeCamMove(false);
-                return true;
-            }
             // While transforming, clicks confirm (left) or cancel (right).
             if (freeCamObjects.isTransforming()) {
                 if (button == 0) freeCamObjects.confirmTransform();
@@ -3621,11 +3813,18 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                 if (button == 1) freeCamObjects.cancelSnapDrag();
                 return true;
             }
-            // Left-click a control-panel button when the cursor is released; else
-            // grab the selection's cube to face-snap, or pick another object.
+            // LMB gives editor interactions priority. Clicking empty viewport space
+            // deselects and captures the cursor for camera movement until release.
             if (button == 0 && !freeCamMove) {
                 for (FreeCamButton b : freeCamButtons) {
                     if (b.contains(mouseX, mouseY)) { b.action().run(); return true; }
+                }
+                // Shift is needed only for this initial press. It deliberately
+                // bypasses objects/gizmos under the cursor; once grabbed, holding
+                // LMB alone keeps camera movement active.
+                if (hasShiftDown()) {
+                    setFreeCamMove(true);
+                    return true;
                 }
                 Camera cam = minecraft.gameRenderer.getMainCamera();
                 Direction facing = StageOrientation.facing();
@@ -3634,7 +3833,8 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                     freeCamObjects.beginSnapDrag();
                     freeCamObjects.snapToFace(raycastFromCursor(mouseX, mouseY), machinePos, facing);
                 } else {
-                    freeCamObjects.pick(cam.getPosition(), dir, machinePos, facing);
+                    boolean hitObject = freeCamObjects.pick(cam.getPosition(), dir, machinePos, facing);
+                    if (!hitObject) setFreeCamMove(true);
                 }
                 return true;
             }
@@ -3707,6 +3907,9 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             wrapFreeCamViewportCursor(mouseX, mouseY);
             return true;
         }
+        if (freeCam && button == GLFW.GLFW_MOUSE_BUTTON_LEFT && freeCamMove) {
+            return true;
+        }
         return super.mouseDragged(mouseX, mouseY, button, dragX, dragY);
     }
 
@@ -3722,6 +3925,10 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             freeCamViewportDragging = false;
             freeCamViewportIgnoreWarpMotion = false;
             freeCamViewportPivot = null;
+            return true;
+        }
+        if (freeCam && button == GLFW.GLFW_MOUSE_BUTTON_LEFT && freeCamMove) {
+            setFreeCamMove(false);
             return true;
         }
         return super.mouseReleased(mouseX, mouseY, button);
@@ -3877,6 +4084,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     public double psychLuaGetFov() { return FieldOfViewControl.current(); }
     public double psychLuaSongLength() { return songPlayer.durationMs(); }
     public double psychLuaSongPosition() { return songPos; }
+    public BlockPos psychLuaMachinePosition() { return machinePos; }
     public double psychLuaBeat() { return conductor.beatAt(Math.max(0, songPos)); }
     public int psychLuaMeterBeat() {
         return (int) Math.min(Integer.MAX_VALUE, currentMeter().pulse);
@@ -3915,11 +4123,13 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         return psychScene == null ? PsychLuaRuntime.VIRTUAL_HEIGHT * 0.5 : psychScene.cameraY();
     }
     public double psychLuaCharacterMidpointX(String role) {
-        if (extraCharacters.exists(role)) return extraCharacters.x(role);
+        String extra = resolvedExtraCharacterTarget(role);
+        if (extra != null) return extraCharacters.x(extra);
         return psychScene == null ? 0 : psychScene.midpointX(role);
     }
     public double psychLuaCharacterMidpointY(String role) {
-        if (extraCharacters.exists(role)) return extraCharacters.y(role);
+        String extra = resolvedExtraCharacterTarget(role);
+        if (extra != null) return extraCharacters.y(extra);
         return psychScene == null ? 0 : psychScene.midpointY(role);
     }
     public void psychLuaSetHealth(double value) {
@@ -3995,9 +4205,13 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     }
     /** Stage-defined character positions, before any event or Lua movement. */
     public double psychLuaDefaultCharacterX(String role) {
+        String extra = resolvedExtraCharacterTarget(role);
+        if (extra != null) return extraCharacters.x(extra);
         return psychScene == null ? 0 : psychScene.defaultX(role);
     }
     public double psychLuaDefaultCharacterY(String role) {
+        String extra = resolvedExtraCharacterTarget(role);
+        if (extra != null) return extraCharacters.y(extra);
         return psychScene == null ? 0 : psychScene.defaultY(role);
     }
 
@@ -4161,6 +4375,12 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                 : note == null ? fallbackRole
                 : note.playerSide ? "boyfriend" : "dad";
         boolean hey = !miss && note != null && "Hey!".equalsIgnoreCase(note.noteType);
+        String gfExtra = note != null && note.gfNote ? gfReplacementTag() : null;
+        if (gfExtra != null) {
+            String suffix = note.animSuffix == null ? "" : note.animSuffix;
+            if (hey) extraCharacters.hey(gfExtra, 0.6);
+            else extraCharacters.sing(gfExtra, DIR_NAMES[lane], miss, suffix);
+        }
         if (psychScene != null) {
             if (hey) psychScene.hey(role, 0.6);
             else psychScene.sing(role, lane, miss, note == null ? "" : note.animSuffix);
@@ -4168,7 +4388,11 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         // Drive the solo opponent bot character when the note is on its side.
         if (opponentBot != null && opponentBot.role().equals(botRoleFor(role))) {
             String suffix = note == null || note.animSuffix == null ? "" : note.animSuffix;
-            opponentBot.play(hey ? "hey" : miss ? "miss" + suffix : DIR_NAMES[lane] + suffix);
+            float[] cameraOffset = opponentBot.playWithCameraOffset(
+                    hey ? "hey" : miss ? "miss" + suffix : DIR_NAMES[lane] + suffix);
+            if (!miss && cameraOffset != null) {
+                GameplayCamera.sing("boyfriend".equals(role), cameraOffset[0], cameraOffset[1]);
+            }
         }
     }
 
@@ -4183,6 +4407,8 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                 : note == null ? fallbackRole
                 : note.playerSide ? "boyfriend" : "dad";
         String suffix = note == null || note.animSuffix == null ? "" : note.animSuffix;
+        String gfExtra = note != null && note.gfNote ? gfReplacementTag() : null;
+        if (gfExtra != null) extraCharacters.sing(gfExtra, DIR_NAMES[lane], false, suffix);
         if (psychScene != null) psychScene.hold(role, lane, suffix);
         if (opponentBot != null && opponentBot.role().equals(botRoleFor(role))) {
             opponentBot.hold(DIR_NAMES[lane] + suffix, BBS_HOLD_LOOP_MS);
@@ -4239,8 +4465,10 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             default -> { }
         }
         int extraDot = path.indexOf('.');
-        if (extraDot > 0 && extraCharacters.exists(path.substring(0, extraDot))) {
-            String tag = path.substring(0, extraDot);
+        String extraTag = extraDot > 0
+                ? resolvedExtraCharacterTarget(path.substring(0, extraDot)) : null;
+        if (extraTag != null) {
+            String tag = extraTag;
             String property = path.substring(extraDot + 1);
             return switch (property) {
                 case "x" -> extraCharacters.x(tag);
@@ -4254,6 +4482,8 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                 case "grav", "gravity" -> extraCharacters.gravity(tag);
                 case "collision", "collisions", "solid" -> extraCharacters.collision(tag);
                 case "shadow", "shadows" -> extraCharacters.shadow(tag);
+                case "irlightsShadow", "irlightsShadows", "projectedShadow", "projectedShadows" ->
+                        extraCharacters.irlightsShadows(tag);
                 case "alpha" -> extraCharacters.alpha(tag);
                 case "color" -> extraCharacters.color(tag);
                 case "scale.x", "scaleX" -> extraCharacters.scaleX(tag);
@@ -4386,8 +4616,10 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             default -> { }
         }
         int extraDot = path.indexOf('.');
-        if (extraDot > 0 && extraCharacters.exists(path.substring(0, extraDot))) {
-            String tag = path.substring(0, extraDot);
+        String extraTag = extraDot > 0
+                ? resolvedExtraCharacterTarget(path.substring(0, extraDot)) : null;
+        if (extraTag != null) {
+            String tag = extraTag;
             String property = path.substring(extraDot + 1);
             return switch (property) {
                 case "x" -> extraCharacters.setX(tag, noteNumber(value, extraCharacters.x(tag)));
@@ -4404,6 +4636,8 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                 case "collision", "collisions", "solid" ->
                         extraCharacters.setCollision(tag, noteBool(value, true));
                 case "shadow", "shadows" -> extraCharacters.setShadow(tag, noteBool(value, true));
+                case "irlightsShadow", "irlightsShadows", "projectedShadow", "projectedShadows" ->
+                        extraCharacters.setIrlightsShadows(tag, noteBool(value, true));
                 // 2D visuals plus BBS XYZ render scale.
                 case "alpha" -> extraCharacters.setAlpha(tag, noteNumber(value, extraCharacters.alpha(tag)));
                 case "color" -> extraCharacters.setColor(tag, (int) (long) noteNumber(value, 0xFFFFFF));
@@ -4533,6 +4767,12 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
 
     public void psychLuaCameraTarget(String target) {
         if (target == null || target.isBlank()) return;
+        String extra = resolvedExtraCharacterTarget(target);
+        if (extra != null && focusExtraCharacter(extra, "smooth", 500)) {
+            cameraFocusOverride = extra;
+            if (luaRuntime != null) luaRuntime.onMoveCamera(extra);
+            return;
+        }
         String role = target.equalsIgnoreCase("gf") || target.equalsIgnoreCase("girlfriend")
                 || target.equalsIgnoreCase("speakers") ? "gf"
                 : target.equalsIgnoreCase("dad") || target.equalsIgnoreCase("opponent")
@@ -4543,39 +4783,50 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         if (luaRuntime != null) luaRuntime.onMoveCamera(role);
     }
 
+    public void psychLuaCameraOrbit(boolean pinned, double pivotX, double pivotY, double pivotZ,
+                                    double durationSeconds, String easing) {
+        GameplayCamera.orbit(pinned, pivotX, pivotY, pivotZ, durationSeconds, easing);
+    }
+
     public boolean psychLuaPlayCharacterAnimation(String role, String animation, boolean force) {
-        if (extraCharacters.exists(role)) return extraCharacters.play(role, animation);
+        String extra = resolvedExtraCharacterTarget(role);
+        if (extra != null) return extraCharacters.play(extra, animation);
         boolean psychPlayed = psychScene != null && psychScene.playAnimation(role, animation, force);
         return playMinecraftCharacterAnimation(role, animation) || psychPlayed;
     }
 
     public boolean psychLuaCharacterDance(String role) {
-        if (extraCharacters.exists(role)) return extraCharacters.dance(role);
+        String extra = resolvedExtraCharacterTarget(role);
+        if (extra != null) return extraCharacters.dance(extra);
         return psychScene != null && psychScene.dance(role);
     }
 
     public double psychLuaCharacterX(String role) {
-        if (extraCharacters.exists(role)) return extraCharacters.x(role);
+        String extra = resolvedExtraCharacterTarget(role);
+        if (extra != null) return extraCharacters.x(extra);
         return psychScene == null ? 0 : psychScene.characterX(role);
     }
 
     public double psychLuaCharacterY(String role) {
-        if (extraCharacters.exists(role)) return extraCharacters.y(role);
+        String extra = resolvedExtraCharacterTarget(role);
+        if (extra != null) return extraCharacters.y(extra);
         return psychScene == null ? 0 : psychScene.characterY(role);
     }
 
     public boolean psychLuaSetCharacterX(String role, double value) {
-        if (extraCharacters.exists(role)) return extraCharacters.setX(role, value);
+        String extra = resolvedExtraCharacterTarget(role);
+        if (extra != null) return extraCharacters.setX(extra, value);
         return psychScene != null && psychScene.setCharacterX(role, value);
     }
 
     public boolean psychLuaSetCharacterY(String role, double value) {
-        if (extraCharacters.exists(role)) return extraCharacters.setY(role, value);
+        String extra = resolvedExtraCharacterTarget(role);
+        if (extra != null) return extraCharacters.setY(extra, value);
         return psychScene != null && psychScene.setCharacterY(role, value);
     }
 
     public boolean psychLuaExtraCharacterExists(String tag) {
-        return extraCharacters.exists(tag);
+        return explicitExtraCharacterTarget(tag) != null;
     }
 
     public boolean psychLuaAddCharacter(String tag, String definition, double x, double y, double z,
@@ -4584,35 +4835,43 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     }
 
     public boolean psychLuaRemoveCharacter(String tag) {
-        return extraCharacters.remove(tag);
+        String extra = explicitExtraCharacterTarget(tag);
+        return extra != null && extraCharacters.remove(extra);
     }
 
     public boolean psychLuaSetCharacterPosition(String tag, double x, double y, double z) {
-        return extraCharacters.setPosition(tag, x, y, z);
+        String extra = explicitExtraCharacterTarget(tag);
+        return extra != null && extraCharacters.setPosition(extra, x, y, z);
     }
 
     public boolean psychLuaSetCharacterZ(String tag, double value) {
-        return extraCharacters.setZ(tag, value);
+        String extra = explicitExtraCharacterTarget(tag);
+        return extra != null && extraCharacters.setZ(extra, value);
     }
 
     public double psychLuaCharacterZ(String tag) {
-        return extraCharacters.z(tag);
+        String extra = explicitExtraCharacterTarget(tag);
+        return extra == null ? 0 : extraCharacters.z(extra);
     }
 
     public boolean psychLuaSetCharacterRotation(String tag, double value) {
-        return extraCharacters.setRotation(tag, value);
+        String extra = explicitExtraCharacterTarget(tag);
+        return extra != null && extraCharacters.setRotation(extra, value);
     }
 
     public double psychLuaCharacterRotation(String tag) {
-        return extraCharacters.rotation(tag);
+        String extra = explicitExtraCharacterTarget(tag);
+        return extra == null ? 0 : extraCharacters.rotation(extra);
     }
 
     public boolean psychLuaSetCharacterVisible(String tag, boolean visible) {
-        return extraCharacters.setVisible(tag, visible);
+        String extra = explicitExtraCharacterTarget(tag);
+        return extra != null && extraCharacters.setVisible(extra, visible);
     }
 
     public boolean psychLuaChangeExtraCharacter(String tag, String definition, String role) {
-        return extraCharacters.changeDefinition(tag, definition, role);
+        String extra = explicitExtraCharacterTarget(tag);
+        return extra != null && extraCharacters.changeDefinition(extra, definition, role);
     }
 
     private record ChunkPointProperty(String tag, String property) {}
@@ -4894,7 +5153,9 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         if (freeCamObjects.isTransforming()) {
             freeCamObjects.updateTransform(minecraft.gameRenderer.getMainCamera(),
                     machinePos, StageOrientation.facing(), mouseX, mouseY,
-                    width / 2.0, height / 2.0, hasShiftDown(), hasControlDown());
+                    width / 2.0, height / 2.0,
+                    minecraft.options.fov().get() * GameplayCamera.fovScale(),
+                    hasShiftDown(), hasControlDown());
             wrapTransformCursor(mouseX, mouseY);
             String status = freeCamObjects.transformStatus();
             drawOutlined(gui, status, (width - font.width(status)) / 2, height / 2 + 16, 0xFFFFEE66);
@@ -4937,6 +5198,17 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         y += 11;
         drawRight(gui, String.format(java.util.Locale.ROOT, "%.2f", GameplayCamera.freeZoom()),
                 right, y, 0xFFE0E0E0);
+        if (freeCamOrbitShot) {
+            double[] local = freeCamOrbitPivotValues();
+            y += 13;
+            drawRight(gui, "Orbit " + (freeCamOrbitPinned ? "Pinned" : "Follow"),
+                    right, y, 0xFFC879FF);
+            y += 11;
+            drawRight(gui, String.format(java.util.Locale.ROOT,
+                    "%s %.2f, %.2f, %.2f", freeCamOrbitPinned ? "Position" : "Offset",
+                    local[0], local[1], local[2]),
+                    right, y, 0xFFE0E0E0);
+        }
         if (freeCamEntryCameraPos != null) {
             y += 13;
             drawRight(gui, "Entry camera (world)", right, y, 0xFFFFC440);
@@ -5023,7 +5295,11 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         gui.renderOutline(x0, y0, boxW, boxH, 0xFFFFEE66);
         String label = switch (freeCamTextTarget) {
             case "name" -> "Object name"; case "fps" -> "Animation FPS";
-            case "text" -> "Text"; default -> "Edit";
+            case "text" -> "Text";
+            case "pivotx" -> "Pivot X (right / left)";
+            case "pivoty" -> "Pivot Y (up / down)";
+            case "pivotz" -> "Pivot Z (forward / back)";
+            default -> "Edit";
         };
         gui.drawString(font, label, x0 + 10, y0 + 8, 0xFFFFEE66, false);
         if (freeCamTextBox != null) {
@@ -5044,7 +5320,8 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         String title = "FREE CAMERA — KEYS";
         String[][] rows = {
                 {"Ctrl+Shift+Space", "Exit free cam"},
-                {"Shift+F", "Toggle fly / look; LMB exits"},
+                {"Hold LMB", "Fly / look (empty viewport space)"},
+                {"Shift+LMB", "Start fly / look through objects; then release Shift"},
                 {"MMB", "Orbit around viewport pivot"},
                 {"Shift+MMB", "Pan view"},
                 {"Ctrl+MMB", "Dolly in / out"},
@@ -5057,6 +5334,9 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                 {"Shift / Ctrl", "Slower / faster"},
                 {"M", "Movement: override / attached"},
                 {"F", "Frame: machine / camera"},
+                {"Object / Camera", "Switch free-cam menu tabs"},
+                {"Camera mode", "Normal pose / pivot orbit when copied"},
+                {"Orbit + Rotation", "Rotation 3D animates around the pivot"},
                 {"Ctrl+C", "Copy selected object Lua; otherwise camera shot"},
                 {"", ""},
                 {"Click", "Select object   ·   Del: delete"},
@@ -5067,7 +5347,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                 {"Type number", "Exact blocks / degrees / scale; Backspace edits"},
                 {"Alt+G / R / S", "Reset position / rotation / scale"},
                 {"X / Y / Z", "Lock axis   ·   Shift+axis: plane (all but that axis)"},
-                {"Shift / Ctrl", "Precise / snap (1 block · 15° · 0.1)"},
+                {"Shift / Ctrl", "Slow motion / snap (1 block · 15° · 0.1)"},
                 {"LMB / Enter", "Confirm transform   ·   RMB / Esc: cancel"},
                 {"Ctrl+Z / Y", "Undo / redo (Ctrl+Shift+Z also redoes)"},
                 {"F1", "Close this help"},
@@ -5116,15 +5396,21 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             freeCamPanelMaxScroll = 0;
             return;
         }
-        int top = 30 - freeCamPanelScroll;
-        int by = top;
-
-        gui.drawString(font, "FREE CAM", bx, by - 12, 0xFFFFEE66, false);
-
-        addFreeCamBtn(gui, bx, by, bw, bh, "Hide Menu",
+        gui.drawString(font, "FREE CAM", bx, 18, 0xFFFFEE66, false);
+        addFreeCamBtn(gui, bx, 30, bw, bh, "Hide Menu",
                 mouseX, mouseY, canClick, this::toggleFreeCamMenu);
-        by += bh + gap;
+        int tabW = (bw - gap) / 2;
+        addFreeCamBtn(gui, bx, 50, tabW, bh, freeCamCameraTab ? "Objects" : "[ Objects ]",
+                mouseX, mouseY, canClick, () -> switchFreeCamPanelTab(false));
+        addFreeCamBtn(gui, bx + tabW + gap, 50, bw - tabW - gap, bh,
+                freeCamCameraTab ? "[ Camera ]" : "Camera",
+                mouseX, mouseY, canClick, () -> switchFreeCamPanelTab(true));
 
+        int top = 72 - freeCamPanelScroll;
+        int by = top;
+        gui.enableScissor(0, 70, width, height);
+
+        if (!freeCamCameraTab) {
         // Add-object dropdown.
         addFreeCamBtn(gui, bx, by, bw, bh, (freeCamAddMenu ? "Add object  ▲" : "Add object  ▼"),
                 mouseX, mouseY, canClick, () -> freeCamAddMenu = !freeCamAddMenu);
@@ -5165,7 +5451,9 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                     mouseX, mouseY, canClick, this::refreshExistingFreeCamObjects);
             by += bh + gap + 2;
         }
+        }
 
+        if (freeCamCameraTab) {
         addFreeCamBtn(gui, bx, by, bw, bh,
                 "Movement: " + (freeCamOverride ? "Override" : "Attached"),
                 mouseX, mouseY, canClick, () -> freeCamOverride = !freeCamOverride);
@@ -5174,6 +5462,33 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                 "Frame: " + (freeCamCameraFrame ? "Camera" : "Machine"),
                 mouseX, mouseY, canClick, () -> freeCamCameraFrame = !freeCamCameraFrame);
         by += bh + gap;
+
+        addFreeCamBtn(gui, bx, by, bw, bh,
+                "Camera mode: " + (freeCamOrbitShot ? "Orbit" : "Normal"),
+                mouseX, mouseY, canClick, this::toggleFreeCamShotMode);
+        by += bh + gap;
+        if (freeCamOrbitShot) {
+            double[] pivot = freeCamOrbitPivotValues();
+            addFreeCamBtn(gui, bx, by, bw, bh,
+                    "Pivot: " + (freeCamOrbitPinned ? "Pinned" : "Follow focus"),
+                    mouseX, mouseY, canClick, this::toggleFreeCamOrbitPinned);
+            by += bh + gap;
+            addFreeCamBtn(gui, bx, by, bw, bh,
+                    "Pivot X: " + num(round2(pivot[0])),
+                    mouseX, mouseY, canClick,
+                    () -> beginTextEntry("pivotx", num(freeCamOrbitPivotValues()[0])));
+            by += bh + gap;
+            addFreeCamBtn(gui, bx, by, bw, bh,
+                    "Pivot Y: " + num(round2(pivot[1])),
+                    mouseX, mouseY, canClick,
+                    () -> beginTextEntry("pivoty", num(freeCamOrbitPivotValues()[1])));
+            by += bh + gap;
+            addFreeCamBtn(gui, bx, by, bw, bh,
+                    "Pivot Z: " + num(round2(pivot[2])),
+                    mouseX, mouseY, canClick,
+                    () -> beginTextEntry("pivotz", num(freeCamOrbitPivotValues()[2])));
+            by += bh + gap;
+        }
 
         gui.drawString(font, String.format(java.util.Locale.ROOT, "Fly speed %.1f (grabbed wheel)", freeCamSpeed),
                 bx, by + 4, 0xFFBFC7D5, false);
@@ -5186,7 +5501,9 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                 "Entry camera: " + (freeCamShowEntryCamera ? "Visible" : "Hidden"),
                 mouseX, mouseY, true, () -> freeCamShowEntryCamera = !freeCamShowEntryCamera);
         by += bh + gap;
+        }
 
+        if (!freeCamCameraTab) {
         // Selected-object row with a Delete button.
         gui.drawString(font, "Selected: " + freeCamObjects.selectionLabel(), bx, by, 0xFFBFC7D5, false);
         by += 12;
@@ -5291,15 +5608,21 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             by += bh + gap;
 
         }
+        }
 
         // Extra gap separating Exit from the rest.
         by += 10;
         addFreeCamBtn(gui, bx, by, bw, bh, "Exit free cam",
                 mouseX, mouseY, true, this::exitFreeCam);
+        gui.disableScissor();
+        // Content is clipped below the fixed tabs. Do not leave clipped rows
+        // clickable through the header or outside the screen.
+        freeCamButtons.removeIf(button -> (button.y() < 70
+                && button.y() != 30 && button.y() != 50) || button.y() >= height);
 
         // General scrolling: if the panel is taller than the screen, let the wheel scroll it.
         int contentHeight = (by + bh) - top;
-        int visibleHeight = height - 30 - 8;
+        int visibleHeight = height - 72 - 8;
         freeCamPanelMaxScroll = Math.max(0, contentHeight - visibleHeight);
         freeCamPanelScroll = Math.max(0, Math.min(freeCamPanelScroll, freeCamPanelMaxScroll));
         if (freeCamPanelMaxScroll > 0) {
@@ -5331,6 +5654,16 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         minecraft.options.hideGui = freeCamHideGui;
         freeCamHelp = false;
         freeCamPanelScroll = 0;
+    }
+
+    private void switchFreeCamPanelTab(boolean cameraTab) {
+        if (freeCamCameraTab == cameraTab) return;
+        freeCamCameraTab = cameraTab;
+        freeCamPanelScroll = 0;
+        freeCamAddMenu = false;
+        freeCamExistingMenu = false;
+        freeCamModMenu = false;
+        freeCamAnimMenu = false;
     }
 
     private void restoreHideGui() {
@@ -5379,6 +5712,13 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             freeCamObjects.setText(raw);
         } else if ("bordersize".equals(freeCamTextTarget)) {
             try { freeCamObjects.setBorderSize(Double.parseDouble(raw.trim())); } catch (NumberFormatException ignored) { }
+        } else if (freeCamTextTarget.startsWith("pivot")) {
+            try {
+                double value = Double.parseDouble(raw.trim());
+                int axis = freeCamTextTarget.equals("pivotx") ? 0
+                        : freeCamTextTarget.equals("pivoty") ? 1 : 2;
+                setFreeCamOrbitPivotValue(axis, value);
+            } catch (NumberFormatException ignored) { }
         }
         freeCamTextEntry = false;
         freeCamTextBox = null;
@@ -5562,6 +5902,12 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         updateFreeCamColorHex();
         freeCamObjects.beginColorEdit();
         freeCamColorPicker = true;
+        setFocused(freeCamColorHexBox);
+        freeCamColorHexBox.setFocused(true);
+        // The field opens already full (six of six characters). Selecting it
+        // lets typing immediately replace the value instead of appearing broken.
+        freeCamColorHexBox.setCursorPosition(6);
+        freeCamColorHexBox.setHighlightPos(0);
     }
 
     private void updateFreeCamColorHex() {
@@ -5579,6 +5925,8 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         }
         freeCamColorPicker = false;
         pickDrag = 0;
+        if (getFocused() == freeCamColorHexBox) setFocused(null);
+        if (freeCamColorHexBox != null) freeCamColorHexBox.setFocused(false);
         freeCamColorHexBox = null;
     }
 
@@ -5787,7 +6135,8 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         if (stand == null) return;
         if (opponentBot == null) {
             opponentBot = com.fnfmod.client.gameplay.OpponentBotCharacter.create(
-                    level, opponentBotSet, opponentBotRole, stand);
+                    level, opponentBotSet, opponentBotRole, stand,
+                    ClientOptions.get().botUsePlayerSkin);
         }
         if (opponentBot != null) opponentBot.follow(stand);
     }
@@ -6379,6 +6728,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         restorePerformerGravity();
         PerformerCollisions.clear();
         PerformerShadows.clear();
+        com.fnfmod.client.render.DirectionalShadingControl.restore();
         RenderDistanceControl.restore();
         FieldOfViewControl.restore();
         StageChunkLoader.unload();

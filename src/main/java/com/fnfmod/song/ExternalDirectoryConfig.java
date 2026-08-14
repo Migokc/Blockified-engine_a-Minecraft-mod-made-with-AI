@@ -19,6 +19,7 @@ import java.util.Map;
 
 /** Persists ordered external mod directories and each directory's resource filter. */
 public final class ExternalDirectoryConfig {
+    private static final String PACK_SEPARATOR = "::blockified-pack::";
     private final Path root;
 
     public ExternalDirectoryConfig(Path root) {
@@ -52,8 +53,6 @@ public final class ExternalDirectoryConfig {
         try {
             Files.createDirectories(root);
             Files.write(foldersFile(), folders);
-            Map<String, EnumSet<SongLibrary.ExternalContent>> filters = readFilters();
-            if (filters.keySet().retainAll(folders)) writeFilters(filters);
         } catch (IOException error) {
             FnfMod.LOGGER.warn("Could not save external_folders.txt: {}", error.toString());
         }
@@ -61,8 +60,18 @@ public final class ExternalDirectoryConfig {
 
     /** A missing filter means every resource group, preserving old installations. */
     public EnumSet<SongLibrary.ExternalContent> content(String folder) {
-        EnumSet<SongLibrary.ExternalContent> saved = readFilters().get(folder);
+        EnumSet<SongLibrary.ExternalContent> saved = contentOrNull(folder);
         return saved == null ? SongLibrary.allExternalContent() : EnumSet.copyOf(saved);
+    }
+
+    /** Null means the target inherits its containing source's checklist. */
+    public EnumSet<SongLibrary.ExternalContent> contentOrNull(String key) {
+        EnumSet<SongLibrary.ExternalContent> saved = readFilters().get(key);
+        return saved == null ? null : EnumSet.copyOf(saved);
+    }
+
+    public static String packKey(String source, Path pack) {
+        return source + PACK_SEPARATOR + pack.toAbsolutePath().normalize();
     }
 
     public void setContent(String folder, SongLibrary.ExternalContent content, boolean enabled) {
@@ -71,6 +80,12 @@ public final class ExternalDirectoryConfig {
                 ? EnumSet.copyOf(filters.get(folder)) : SongLibrary.allExternalContent();
         if (enabled) selected.add(content); else selected.remove(content);
         filters.put(folder, selected);
+        writeFilters(filters);
+    }
+
+    public void setContent(String key, EnumSet<SongLibrary.ExternalContent> selected) {
+        Map<String, EnumSet<SongLibrary.ExternalContent>> filters = readFilters();
+        filters.put(key, EnumSet.copyOf(selected));
         writeFilters(filters);
     }
 

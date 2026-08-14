@@ -850,6 +850,28 @@ public final class NoteStyle {
                 size * (state == 2 ? 1.1f : 1f), color);
     }
 
+    /** Gameplay sustain receptor: loops the confirm atlas, holding each frame for two renders. */
+    public static void drawSustainReceptor(GuiGraphics gui, int lane, long animationFrame,
+                                           float centerX, float centerY, float size) {
+        load();
+        int safeLane = Math.floorMod(lane, 4);
+        NoteSkinConfig.Part config = skinConfig.receptor();
+        applyAlpha(config.alpha());
+        if (strumAtlas != null && confirmAnims[safeLane] != null) {
+            var frames = strumAtlas.frames(confirmAnims[safeLane]);
+            if (!frames.isEmpty()) {
+                var frame = frames.get((int) Math.floorMod(animationFrame, (long) frames.size()));
+                float pixelScale = size * config.scale() / strumRefPx;
+                strumAtlas.drawScaled(gui, frame,
+                        centerX + config.x() * pixelScale,
+                        centerY + config.y() * pixelScale,
+                        pixelScale, laneTex(strumRGB, safeLane));
+                return;
+            }
+        }
+        drawReceptor(gui, safeLane, centerX, centerY, size, 2);
+    }
+
     /** tailAtTop = downscroll (the sustain's far end points up). */
     public static void drawHoldPiece(GuiGraphics gui, int lane, float centerX, float yTop, float yBottom,
                                      float size, boolean tailAtTop) {

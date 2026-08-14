@@ -53,6 +53,13 @@ public abstract class CameraMixin {
         Vector3f stageLeft = new Vector3f(getLeftVector());
         Vector3f stageUp = new Vector3f(getUpVector());
         Vector3f stageLook = new Vector3f(getLookVector());
+        GameplayCamera.OrbitPose orbit = GameplayCamera.orbitPose();
+        if (orbit != null) {
+            setRotation(orbit.yaw(), orbit.pitch(), orbit.roll());
+            Vec3 pos = orbit.position();
+            setPosition(pos.x, pos.y, pos.z);
+            return;
+        }
         if (!rotation.equals(Vec3.ZERO)) {
             setRotation(getYRot() + (float) rotation.y,
                     getXRot() + (float) rotation.x,
@@ -74,6 +81,19 @@ public abstract class CameraMixin {
         if (offset == null) return;
         Vec3 pos = getPosition();
         setPosition(pos.x + offset.x, pos.y + offset.y, pos.z + offset.z);
+
+        // Camera Follow Pos and Rotation events at the same timestamp establish
+        // the exact start pose before orbit takes ownership.
+        if (GameplayCamera.isOrbitCapturePending()) {
+            GameplayCamera.captureOrbitStart(getPosition(), getYRot(), getXRot(), getRoll(),
+                    stageLeft, stageUp, stageLook);
+            GameplayCamera.OrbitPose captured = GameplayCamera.orbitPose();
+            if (captured != null) {
+                setRotation(captured.yaw(), captured.pitch(), captured.roll());
+                Vec3 orbitPos = captured.position();
+                setPosition(orbitPos.x, orbitPos.y, orbitPos.z);
+            }
+        }
 
         // On the first free-camera frame the normal follow pose above is the exact
         // starting point; capture it (using the un-rotated stage basis) so the

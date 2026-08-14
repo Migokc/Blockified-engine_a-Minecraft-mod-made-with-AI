@@ -5,15 +5,33 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.network.codec.StreamCodec;
 import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
+import io.netty.handler.codec.DecoderException;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.function.Function;
 
 /** All custom payloads for the mod. */
 public final class FnfPayloads {
 
+    public static final int MAX_MANIFEST_FILES = 4096;
+    public static final int MAX_FILE_NAME_LENGTH = 512;
+    public static final int MAX_CHUNK_BYTES = 400 * 1024;
+
     private FnfPayloads() {}
+
+    private static <T> List<T> readBoundedList(FriendlyByteBuf buf, int maximum,
+                                                Function<FriendlyByteBuf, T> reader) {
+        int size = buf.readVarInt();
+        if (size < 0 || size > maximum) {
+            throw new DecoderException("Collection size " + size + " exceeds limit " + maximum);
+        }
+        List<T> values = new ArrayList<>(size);
+        for (int i = 0; i < size; i++) values.add(reader.apply(buf));
+        return values;
+    }
 
     public record SongInfo(String id, String name, List<String> difficulties, String opponentIcon, String opponentIconPath) {
         static void write(FriendlyByteBuf buf, SongInfo v) {
@@ -32,13 +50,13 @@ public final class FnfPayloads {
 
     public record FileMeta(String name, long size, String sha1) {
         static void write(FriendlyByteBuf buf, FileMeta v) {
-            buf.writeUtf(v.name);
+            buf.writeUtf(v.name, MAX_FILE_NAME_LENGTH);
             buf.writeVarLong(v.size);
-            buf.writeUtf(v.sha1);
+            buf.writeUtf(v.sha1, 40);
         }
 
         static FileMeta read(FriendlyByteBuf buf) {
-            return new FileMeta(buf.readUtf(), buf.readVarLong(), buf.readUtf());
+            return new FileMeta(buf.readUtf(MAX_FILE_NAME_LENGTH), buf.readVarLong(), buf.readUtf(40));
         }
     }
 
@@ -82,6 +100,7 @@ public final class FnfPayloads {
 
     public record FileManifestS2C(BlockPos pos, String songId, String difficulty, boolean duet,
                                   boolean opponentSide, byte playbackMode, boolean songAssets,
+                                  boolean luaAllowed,
                                   List<FileMeta> files)
             implements CustomPacketPayload {
         public static final Type<FileManifestS2C> TYPE = new Type<>(FnfMod.id("file_manifest"));
@@ -94,11 +113,12 @@ public final class FnfPayloads {
                     buf.writeBoolean(v.opponentSide);
                     buf.writeByte(v.playbackMode);
                     buf.writeBoolean(v.songAssets);
+                    buf.writeBoolean(v.luaAllowed);
                     buf.writeCollection(v.files, FileMeta::write);
                 },
                 buf -> new FileManifestS2C(buf.readBlockPos(), buf.readUtf(), buf.readUtf(), buf.readBoolean(),
-                        buf.readBoolean(), buf.readByte(), buf.readBoolean(),
-                        buf.readList(FileMeta::read)));
+                        buf.readBoolean(), buf.readByte(), buf.readBoolean(), buf.readBoolean(),
+                        readBoundedList(buf, MAX_MANIFEST_FILES, FileMeta::read)));
 
         @Override
         public Type<? extends CustomPacketPayload> type() { return TYPE; }
@@ -110,13 +130,13 @@ public final class FnfPayloads {
         public static final StreamCodec<FriendlyByteBuf, FileChunkS2C> CODEC = StreamCodec.of(
                 (buf, v) -> {
                     buf.writeUtf(v.songId);
-                    buf.writeUtf(v.fileName);
+                    buf.writeUtf(v.fileName, MAX_FILE_NAME_LENGTH);
                     buf.writeVarInt(v.chunkIndex);
                     buf.writeVarInt(v.totalChunks);
                     buf.writeByteArray(v.data);
                 },
-                buf -> new FileChunkS2C(buf.readUtf(), buf.readUtf(), buf.readVarInt(), buf.readVarInt(),
-                        buf.readByteArray()));
+                buf -> new FileChunkS2C(buf.readUtf(), buf.readUtf(MAX_FILE_NAME_LENGTH),
+                        buf.readVarInt(), buf.readVarInt(), buf.readByteArray(MAX_CHUNK_BYTES)));
 
         @Override
         public Type<? extends CustomPacketPayload> type() { return TYPE; }
@@ -392,7 +412,9 @@ public final class FnfPayloads {
                     buf.writeUtf(v.songId);
                     buf.writeCollection(v.fileNames, FriendlyByteBuf::writeUtf);
                 },
-                buf -> new RequestFilesC2S(buf.readBlockPos(), buf.readUtf(), buf.readList(FriendlyByteBuf::readUtf)));
+                buf -> new RequestFilesC2S(buf.readBlockPos(), buf.readUtf(),
+                        readBoundedList(buf, MAX_MANIFEST_FILES,
+                                value -> value.readUtf(MAX_FILE_NAME_LENGTH))));
 
         @Override
         public Type<? extends CustomPacketPayload> type() { return TYPE; }

@@ -82,6 +82,7 @@ public final class CharacterEditorScreen extends Screen implements TextInputAwar
     private Button formButton;
     private Button actionButton;
     private Button loopIdleButton;
+    private Button playerSkinButton;
     private Button colorButton;
     private boolean colorPickerOpen;
     private int colorPickerOriginal;
@@ -170,8 +171,11 @@ public final class CharacterEditorScreen extends Screen implements TextInputAwar
                 value -> { if (!loadingFields) current().cameraX = number(value); markDirty(); });
         cameraY = edit(x + half + 4, 150, panelWidth - half - 4,
                 value -> { if (!loadingFields) current().cameraY = number(value); markDirty(); });
-        addRenderableWidget(Button.builder(Component.literal("Preview State"), button -> preview())
+        playerSkinButton = addRenderableWidget(Button.builder(playerSkinLabel(), button -> togglePlayerSkin())
                 .bounds(x, 174, panelWidth, 20).build());
+        updatePlayerSkinButton();
+        addRenderableWidget(Button.builder(Component.literal("Preview State"), button -> preview())
+                .bounds(x, 198, panelWidth, 20).build());
     }
 
     private void buildAnimationsTab(int x, int panelWidth) {
@@ -211,7 +215,7 @@ public final class CharacterEditorScreen extends Screen implements TextInputAwar
     private void clearFieldReferences() {
         setName = icon = vocalsFile = rotation = cameraX = cameraY = null;
         actionName = state = actionCameraX = actionCameraY = null;
-        roleButton = formButton = actionButton = loopIdleButton = colorButton = null;
+        roleButton = formButton = actionButton = loopIdleButton = playerSkinButton = colorButton = null;
     }
 
     private EditBox edit(int x, int y, int width, java.util.function.Consumer<String> responder) {
@@ -359,6 +363,7 @@ public final class CharacterEditorScreen extends Screen implements TextInputAwar
         if (formButton != null) formButton.setMessage(formLabel());
         if (actionButton != null) actionButton.setMessage(actionLabel());
         if (loopIdleButton != null) loopIdleButton.setMessage(loopIdleLabel());
+        updatePlayerSkinButton();
         if (colorButton != null) colorButton.setMessage(Component.literal(colorLabel()));
     }
 
@@ -429,7 +434,7 @@ public final class CharacterEditorScreen extends Screen implements TextInputAwar
         }
         if (stateName.isBlank()) stateName = selectedAction;
         boolean played = CharacterAnimations.preview(minecraft.player, form,
-                bundledDefinitionForCurrentRole(), stateName);
+                bundledDefinitionForCurrentRole(), stateName, definition.usePlayerSkin);
         if (updateStatus) {
             status = played ? "Previewing " + stateName : "State not found on the selected BBS form";
         }
@@ -448,7 +453,7 @@ public final class CharacterEditorScreen extends Screen implements TextInputAwar
         if (form.isBlank() && opponent) form = playerDefinition.form;
         if (form.isBlank()) return;
         loadedFormPrepared = CharacterAnimations.preparePreview(
-                minecraft.player, form, bundledDefinitionForCurrentRole());
+                minecraft.player, form, bundledDefinitionForCurrentRole(), current().usePlayerSkin);
     }
 
     private void save() {
@@ -521,7 +526,9 @@ public final class CharacterEditorScreen extends Screen implements TextInputAwar
         if (opponentDefinition == null) return false;
         if (!opponentDefinition.form.isBlank() || !opponentDefinition.icon.isBlank()
                 || !opponentDefinition.vocalsFile.isBlank() || opponentDefinition.healthColor >= 0
-                || opponentDefinition.loopIdle || nonZero(opponentDefinition.rotation)
+                || opponentDefinition.loopIdle || opponentDefinition.usePlayerSkin
+                || !opponentDefinition.allowPlayerSkinSelection
+                || nonZero(opponentDefinition.rotation)
                 || nonZero(opponentDefinition.cameraX) || nonZero(opponentDefinition.cameraY)) {
             return true;
         }
@@ -553,6 +560,32 @@ public final class CharacterEditorScreen extends Screen implements TextInputAwar
         current().loopIdle = !current().loopIdle;
         markDirty();
         if (loopIdleButton != null) loopIdleButton.setMessage(loopIdleLabel());
+    }
+
+    private Component playerSkinLabel() {
+        boolean allowed = current() != null && current().allowPlayerSkinSelection;
+        return Component.literal("Player Skin Choice: " + (allowed ? "Allowed" : "Locked"));
+    }
+
+    private void togglePlayerSkin() {
+        if (current() == null) return;
+        current().allowPlayerSkinSelection = !current().allowPlayerSkinSelection;
+        markDirty();
+        updatePlayerSkinButton();
+    }
+
+    private void updatePlayerSkinButton() {
+        if (playerSkinButton == null) return;
+        playerSkinButton.active = current() != null;
+        playerSkinButton.setMessage(playerSkinLabel());
+    }
+
+    private boolean currentFormSupportsPlayerSkin() {
+        if (current() == null) return false;
+        String form = current().form;
+        if (form.isBlank() && opponent && playerDefinition != null) form = playerDefinition.form;
+        return !form.isBlank() && CharacterAnimations.supportsPlayerSkin(
+                form, bundledDefinitionForCurrentRole());
     }
 
     private String colorLabel() {
@@ -864,6 +897,7 @@ public final class CharacterEditorScreen extends Screen implements TextInputAwar
         loadedFormPrepared = false;
         markDirty();
         if (formButton != null) formButton.setMessage(formLabel());
+        updatePlayerSkinButton();
         preview();
     }
 
@@ -879,12 +913,18 @@ public final class CharacterEditorScreen extends Screen implements TextInputAwar
         if (animation == null || animation.isBlank()) return;
         long now = System.nanoTime();
         if (!temporary) dialogSelectedAnimation = animation;
-        if (!temporary && isIdleAnimation(animation) && !current().loopIdle
-                && hasConfiguredAction("idle") && hasConfiguredAction("idle2")) {
-            dialogIdleBeat = "idle2".equalsIgnoreCase(animation) ? 1 : 0;
-            previewNextDialogIdle();
+        if (!temporary && isIdleAnimation(animation)) {
+            String idle = configuredSingleIdle(animation);
+            if (!current().loopIdle && hasTwoConfiguredIdles()) {
+                dialogIdleBeat = "idle2".equalsIgnoreCase(animation) ? 1 : 0;
+                previewNextDialogIdle();
+            } else {
+                dialogPreviewAnimation = idle;
+                previewAction(idle, false);
+            }
             dialogReturnToSelection = 0;
-            dialogNextIdlePreview = now + DIALOG_PREVIEW_BEAT_NANOS;
+            dialogNextIdlePreview = current().loopIdle ? 0 : now + DIALOG_PREVIEW_BEAT_NANOS
+                    * (hasTwoConfiguredIdles() ? 1 : 2);
             return;
         }
         dialogPreviewAnimation = animation;
@@ -903,13 +943,16 @@ public final class CharacterEditorScreen extends Screen implements TextInputAwar
             return;
         }
         if (dialogNextIdlePreview > 0 && now >= dialogNextIdlePreview) {
-            if (isIdleAnimation(dialogSelectedAnimation)
-                    && hasConfiguredAction("idle") && hasConfiguredAction("idle2")) {
+            boolean twoIdles = isIdleAnimation(dialogSelectedAnimation) && hasTwoConfiguredIdles();
+            if (twoIdles) {
                 previewNextDialogIdle();
             } else {
-                previewAction(dialogSelectedAnimation, false);
+                String animation = isIdleAnimation(dialogSelectedAnimation)
+                        ? configuredSingleIdle(dialogSelectedAnimation) : dialogSelectedAnimation;
+                dialogPreviewAnimation = animation;
+                previewAction(animation, false);
             }
-            dialogNextIdlePreview = now + DIALOG_PREVIEW_BEAT_NANOS;
+            dialogNextIdlePreview = now + DIALOG_PREVIEW_BEAT_NANOS * (twoIdles ? 1 : 2);
         }
     }
 
@@ -922,6 +965,18 @@ public final class CharacterEditorScreen extends Screen implements TextInputAwar
     private boolean hasConfiguredAction(String animation) {
         CharacterDefinitionFile.Action action = current().findAction(animation);
         return action != null && action.state != null && !action.state.isBlank();
+    }
+
+    private boolean hasTwoConfiguredIdles() {
+        return hasConfiguredAction("idle") && hasConfiguredAction("idle2");
+    }
+
+    /** Supports either idle slot alone and falls back from an empty selected slot. */
+    private String configuredSingleIdle(String selected) {
+        if (hasConfiguredAction(selected)) return selected;
+        if (hasConfiguredAction("idle")) return "idle";
+        if (hasConfiguredAction("idle2")) return "idle2";
+        return selected;
     }
 
     private static boolean isIdleAnimation(String animation) {

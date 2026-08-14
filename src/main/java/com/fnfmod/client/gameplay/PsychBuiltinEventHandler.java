@@ -19,6 +19,9 @@ public final class PsychBuiltinEventHandler {
                                Double durationSeconds);
         void eventCameraRotation(Double pitch, Double yaw, Double roll, String easing,
                                  Double durationSeconds);
+        void eventCameraOrbit(boolean enabled, boolean pinned,
+                              double pivotX, double pivotY, double pivotZ,
+                              double durationSeconds, String easing);
         void eventAltIdle(String target, String suffix);
         void eventScreenShake(double gameDuration, double gameIntensity,
                               double hudDuration, double hudIntensity);
@@ -51,9 +54,7 @@ public final class PsychBuiltinEventHandler {
                 host.eventHey("boyfriend", duration);
             }
         } else if (ChartEventTypes.is(name, ChartEventTypes.SET_GF_SPEED)) {
-            if (host.playbackMode() == PlaybackMode.FNF) {
-                host.eventSetGirlfriendSpeed(Math.max(1, integer(value1, 1)));
-            }
+            host.eventSetGirlfriendSpeed(Math.max(1, integer(value1, 1)));
         } else if (ChartEventTypes.is(name, ChartEventTypes.ADD_CAMERA_ZOOM)) {
             host.eventAddCameraZoom((float) number(value1, 0.015), (float) number(value2, 0.03));
         } else if (ChartEventTypes.is(name, ChartEventTypes.PLAY_ANIMATION)) {
@@ -70,6 +71,29 @@ public final class PsychBuiltinEventHandler {
             host.eventCameraRotation(optionalNumber(value1), optionalNumber(value2),
                     optionalNumber(text(event.value3)), text(event.value4),
                     optionalNumber(text(event.value5)));
+        } else if (ChartEventTypes.is(name, ChartEventTypes.CAMERA_ORBIT)) {
+            String state = value1.toLowerCase(Locale.ROOT);
+            boolean enabled = !(state.equals("stop") || state.equals("off")
+                    || state.equals("normal") || state.equals("none") || state.equals("false")
+                    || state.equals("0"));
+            boolean pivotModeValue = value2.isBlank() || value2.equalsIgnoreCase("follow")
+                    || value2.equalsIgnoreCase("pin") || value2.equalsIgnoreCase("pinned")
+                    || value2.equalsIgnoreCase("fixed");
+            boolean newFormat = (state.isBlank() || state.equals("on") || state.equals("start")
+                    || state.equals("true") || state.equals("1")) && pivotModeValue;
+            if (newFormat) {
+                boolean pinned = value2.equalsIgnoreCase("pin")
+                        || value2.equalsIgnoreCase("pinned") || value2.equalsIgnoreCase("fixed");
+                double[] pivot = triple(text(event.value3));
+                host.eventCameraOrbit(enabled, pinned, pivot[0], pivot[1], pivot[2],
+                        Math.max(0, number(text(event.value4), 0.5)), text(event.value5));
+            } else {
+                // Older Orbit events still enable pivot mode: focus remains a
+                // zero-offset follow pivot and an old XYZ pivot becomes pinned.
+                boolean pinned = !state.isBlank() && !state.equals("focus") && !state.equals("target");
+                double[] pivot = pinned ? triple(value1) : new double[]{0, 0, 0};
+                host.eventCameraOrbit(enabled, pinned, pivot[0], pivot[1], pivot[2], 0.5, "smooth");
+            }
         } else if (ChartEventTypes.is(name, ChartEventTypes.ALT_IDLE_ANIMATION)) {
             host.eventAltIdle(characterTarget(value1), value2);
         } else if (ChartEventTypes.is(name, ChartEventTypes.SCREEN_SHAKE)) {

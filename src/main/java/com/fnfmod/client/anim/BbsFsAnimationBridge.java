@@ -2,6 +2,8 @@ package com.fnfmod.client.anim;
 
 import com.fnfmod.FnfMod;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.player.AbstractClientPlayer;
+import net.minecraft.client.resources.PlayerSkin;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.player.Player;
 
@@ -50,6 +52,9 @@ final class BbsFsAnimationBridge {
     private static Method formPlayState;
     private static Field formStates;
     private static Method statesGetById;
+    private static Method animationStatesGetAllTyped;
+    private static Field animationStateProperties;
+    private static Field formPropertiesMap;
     private static Method formGetId;
     private static Method formGetIdOrName;
     private static Method formGetDisplayName;
@@ -58,6 +63,14 @@ final class BbsFsAnimationBridge {
     private static Method categoryGetForms;
     private static Method sendPlayerForm;
     private static Method sendFormTrigger;
+    // Optional ModelForm access used to substitute live Minecraft skins without
+    // introducing a compile-time BBS dependency.
+    private static Class<?> modelFormClass;
+    private static Field modelFormModelField;
+    private static Field modelFormTextureField;
+    private static Method modelValueGet;
+    private static Method modelValueSet;
+    private static Method textureValueSet;
 
     // Bundled-asset support: register animation folders as BBS asset packs and
     // (de)serialize forms so a character can travel with its own model + texture.
@@ -95,6 +108,8 @@ final class BbsFsAnimationBridge {
             formClass = Class.forName("mchorse.bbs_mod.forms.forms.Form");
             Class<?> formUtilsClass = Class.forName("mchorse.bbs_mod.forms.FormUtils");
             Class<?> animationStatesClass = Class.forName("mchorse.bbs_mod.forms.states.AnimationStates");
+            Class<?> animationStateClass = Class.forName("mchorse.bbs_mod.forms.states.AnimationState");
+            Class<?> formPropertiesClass = Class.forName("mchorse.bbs_mod.film.replays.FormProperties");
             Class<?> bbsClientClass = Class.forName("mchorse.bbs_mod.BBSModClient");
             Class<?> categoriesClass = Class.forName("mchorse.bbs_mod.forms.FormCategories");
             Class<?> categoryClass = Class.forName("mchorse.bbs_mod.forms.categories.FormCategory");
@@ -107,6 +122,9 @@ final class BbsFsAnimationBridge {
             formPlayState = findMethod(formClass, "playState", false, 1, String.class);
             formStates = formClass.getField("states");
             statesGetById = findMethod(animationStatesClass, "getById", false, 1, String.class);
+            animationStatesGetAllTyped = findMethod(animationStatesClass, "getAllTyped", false, 0);
+            animationStateProperties = animationStateClass.getField("properties");
+            formPropertiesMap = formPropertiesClass.getField("properties");
             formGetId = findOptionalMethod(formClass, "getFormId", false, 0);
             formGetIdOrName = findOptionalMethod(formClass, "getFormIdOrName", false, 0);
             formGetDisplayName = findOptionalMethod(formClass, "getDisplayName", false, 0);
@@ -116,6 +134,22 @@ final class BbsFsAnimationBridge {
             sendPlayerForm = findMethod(clientNetworkClass, "sendPlayerForm", true, 1, formClass);
             sendFormTrigger = findMethod(clientNetworkClass, "sendFormTrigger", true, 2,
                     String.class, int.class);
+
+            try {
+                modelFormClass = Class.forName("mchorse.bbs_mod.forms.forms.ModelForm");
+                Class<?> linkClass = Class.forName("mchorse.bbs_mod.resources.Link");
+                modelFormModelField = modelFormClass.getField("model");
+                modelFormTextureField = modelFormClass.getField("texture");
+                modelValueGet = findMethod(modelFormModelField.getType(), "get", false, 0);
+                modelValueSet = findMethod(modelFormModelField.getType(), "set", false, 1, String.class);
+                textureValueSet = findMethod(modelFormTextureField.getType(), "set", false, 1, linkClass);
+                linkCreate = findMethod(linkClass, "create", true, 1, String.class);
+            } catch (Throwable ignored) {
+                modelFormClass = null;
+                modelFormModelField = null;
+                modelFormTextureField = null;
+                modelValueGet = modelValueSet = textureValueSet = null;
+            }
 
             // Optional: full-bright control via the form's lighting value.
             try {
@@ -182,6 +216,11 @@ final class BbsFsAnimationBridge {
      */
     static synchronized boolean prepare(Player player, String requestedForm,
                                         java.nio.file.Path bundledForm) {
+        return prepare(player, requestedForm, bundledForm, null);
+    }
+
+    static synchronized boolean prepare(Player player, String requestedForm,
+                                        java.nio.file.Path bundledForm, Player skinSource) {
         if (!isAvailable() || player == null) return false;
         try {
             Object morph = morphGet.invoke(null, player);
@@ -189,11 +228,11 @@ final class BbsFsAnimationBridge {
 
             Object bundled = bundledForm == null ? null : loadBundledForm(bundledForm);
             if (bundled != null) {
-                applyForm(player, morph, bundledKey(bundledForm), bundled);
+                applyForm(player, morph, bundledKey(bundledForm), bundled, skinSource);
                 return true;
             }
             if (requestedForm != null && !requestedForm.isBlank()) {
-                applyForm(player, morph, key(requestedForm), FORM_CACHE.get(key(requestedForm)));
+                applyForm(player, morph, key(requestedForm), FORM_CACHE.get(key(requestedForm)), skinSource);
                 return true;
             }
         } catch (Throwable error) {
@@ -204,6 +243,11 @@ final class BbsFsAnimationBridge {
 
     static synchronized boolean play(Player player, String requestedForm,
                                      java.nio.file.Path bundledForm, String state) {
+        return play(player, requestedForm, bundledForm, state, null);
+    }
+
+    static synchronized boolean play(Player player, String requestedForm,
+                                     java.nio.file.Path bundledForm, String state, Player skinSource) {
         if (!isAvailable() || player == null || state == null || state.isBlank()) return false;
 
         try {
@@ -212,9 +256,9 @@ final class BbsFsAnimationBridge {
 
             Object bundled = bundledForm == null ? null : loadBundledForm(bundledForm);
             if (bundled != null) {
-                applyForm(player, morph, bundledKey(bundledForm), bundled);
+                applyForm(player, morph, bundledKey(bundledForm), bundled, skinSource);
             } else if (requestedForm != null && !requestedForm.isBlank()) {
-                applyForm(player, morph, key(requestedForm), FORM_CACHE.get(key(requestedForm)));
+                applyForm(player, morph, key(requestedForm), FORM_CACHE.get(key(requestedForm)), skinSource);
             }
 
             Object form = morphGetForm.invoke(morph);
@@ -290,14 +334,17 @@ final class BbsFsAnimationBridge {
         }
     }
 
-    private static void applyForm(Player player, Object morph, String requestedKey, Object template)
+    private static void applyForm(Player player, Object morph, String requestedKey, Object template,
+                                  Player skinSource)
             throws Exception {
-        if (requestedKey == null || requestedKey.equals(APPLIED_FORMS.get(player.getUUID()))) return;
         if (template == null) {
             refreshForms();
             template = FORM_CACHE.get(requestedKey);
         }
         if (template == null) return;
+
+        String appliedKey = requestedKey + playerSkinKey(template, skinSource);
+        if (requestedKey == null || appliedKey.equals(APPLIED_FORMS.get(player.getUUID()))) return;
 
         if (!ORIGINAL_FORMS.containsKey(player.getUUID())) {
             Object current = morphGetForm.invoke(morph);
@@ -306,11 +353,102 @@ final class BbsFsAnimationBridge {
         }
 
         Object copy = formCopy.invoke(null, template);
+        if (applyPlayerSkin(copy, skinSource)) suppressSkinReplacingTextureKeyframes(copy);
         morphSetForm.invoke(morph, copy);
-        APPLIED_FORMS.put(player.getUUID(), requestedKey);
+        APPLIED_FORMS.put(player.getUUID(), appliedKey);
         // A newly applied form resets to default lighting; re-force it if requested.
         applyLighting(player, copy);
         if (isLocalPlayer(player)) sendPlayerForm.invoke(null, copy);
+    }
+
+    static synchronized boolean supportsPlayerSkin(String requestedForm,
+                                                   java.nio.file.Path bundledForm) {
+        if (!isAvailable()) return false;
+        Object template = bundledForm == null ? null : loadBundledForm(bundledForm);
+        if (template == null && requestedForm != null && !requestedForm.isBlank()) {
+            refreshForms();
+            template = FORM_CACHE.get(key(requestedForm));
+        }
+        return playerModel(template) != null;
+    }
+
+    private static String playerSkinKey(Object template, Player skinSource) {
+        if (!(skinSource instanceof AbstractClientPlayer clientPlayer)
+                || playerModel(template) == null) return "";
+        try {
+            PlayerSkin skin = clientPlayer.getSkin();
+            return "|skin:" + skin.model().id() + ":" + String.valueOf(skin.textureUrl());
+        } catch (Throwable ignored) {
+            return "";
+        }
+    }
+
+    /** Applies a live skin only to BBS's bundled Steve/Alex model families. */
+    private static boolean applyPlayerSkin(Object form, Player skinSource) {
+        String currentModel = playerModel(form);
+        if (currentModel == null || !(skinSource instanceof AbstractClientPlayer clientPlayer)
+                || linkCreate == null) return false;
+        try {
+            PlayerSkin skin = clientPlayer.getSkin();
+            boolean slim = skin.model() == PlayerSkin.Model.SLIM;
+            String suffix = currentModel.substring((currentModel.startsWith("player/alex")
+                    ? "player/alex" : "player/steve").length());
+            String targetModel = "player/" + (slim ? "alex" : "steve") + suffix;
+            Object modelValue = modelFormModelField.get(form);
+            modelValueSet.invoke(modelValue, targetModel);
+            ensureModelsLoaded(java.util.List.of(targetModel));
+            String textureUrl = skin.textureUrl();
+            if (textureUrl != null && !textureUrl.isBlank()) {
+                Object textureValue = modelFormTextureField.get(form);
+                textureValueSet.invoke(textureValue, linkCreate.invoke(null, textureUrl));
+            }
+            return true;
+        } catch (Throwable error) {
+            warnOnce("Failed to apply a Minecraft skin to a BBS player form", error);
+            return false;
+        }
+    }
+
+    /**
+     * A BBS state's texture channel writes a runtime value after the form's base
+     * texture has been replaced, which would cover the selected Minecraft skin.
+     * Remove only main-model texture channels from this private form copy. Nested
+     * body-part textures and every non-texture animation channel remain authored.
+     */
+    private static void suppressSkinReplacingTextureKeyframes(Object form) {
+        if (form == null || formStates == null || animationStatesGetAllTyped == null
+                || animationStateProperties == null || formPropertiesMap == null) return;
+        try {
+            Object states = formStates.get(form);
+            Object all = states == null ? null : animationStatesGetAllTyped.invoke(states);
+            if (!(all instanceof Iterable<?> iterable)) return;
+            for (Object state : iterable) {
+                Object properties = animationStateProperties.get(state);
+                Object rawMap = properties == null ? null : formPropertiesMap.get(properties);
+                if (!(rawMap instanceof Map<?, ?> raw)) continue;
+                @SuppressWarnings("unchecked")
+                Map<String, Object> channels = (Map<String, Object>) raw;
+                channels.keySet().removeIf(key -> key != null
+                        && (key.equalsIgnoreCase("texture")
+                        || key.toLowerCase(Locale.ROOT).startsWith("texture.materials.")));
+            }
+        } catch (Throwable error) {
+            warnOnce("Failed to preserve a selected Minecraft skin across BBS texture keyframes", error);
+        }
+    }
+
+    private static String playerModel(Object form) {
+        if (form == null || modelFormClass == null || !modelFormClass.isInstance(form)) return null;
+        try {
+            Object value = modelValueGet.invoke(modelFormModelField.get(form));
+            String model = value == null ? "" : value.toString().trim().toLowerCase(Locale.ROOT);
+            for (String suffix : new String[]{"", "_3d", "_bends", "_bends_3d"}) {
+                if (model.equals("player/steve" + suffix) || model.equals("player/alex" + suffix)) {
+                    return model;
+                }
+            }
+        } catch (Throwable ignored) {}
+        return null;
     }
 
     /**

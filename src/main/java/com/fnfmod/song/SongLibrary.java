@@ -73,8 +73,11 @@ public class SongLibrary {
      * Subfolder names inside {@code mods/} that are the naked global mod's own
      * content, never a named mod pack. Skipped when enumerating mods/ subfolders.
      */
-    public static final Set<String> RESERVED_MOD_SUBDIRS =
-            Set.of("animations", "scripts", "fonts", "images");
+    public static final Set<String> RESERVED_MOD_SUBDIRS = Set.of(
+            "animations", "scripts", "fonts", "images", "songs", "data", "characters",
+            "stages", "weeks", "sounds", "music", "videos", "machines", "worlds",
+            "custom_events", "custom_notetypes", "notetypes", "events", "shaders",
+            "achievements", "credits", "source", "shared", "assets");
 
     /** Global Psych Lua scripts that run for every song. */
     public static Path scriptsDir() {
@@ -212,12 +215,23 @@ public class SongLibrary {
             });
         } else if (ModContentScope.mode() == ModContentScope.Mode.ALL) {
             fingerprintRoots.add(modsDir());
+            String installedSource = modsDir().toAbsolutePath().normalize().toString();
+            fingerprintConfig.append("\ninstalled=").append(getExternalFolderContent(installedSource));
+            for (ModPackInfo pack : discoverModPacks(modsDir())) {
+                fingerprintConfig.append("\ninstalled-pack=").append(pack.root()).append('|')
+                        .append(getExternalPackContent(installedSource, pack.root()));
+            }
             for (String folder : externalFolders) {
                 EnumSet<ExternalContent> content = getExternalFolderContent(folder);
                 externalContent.put(folder, content);
                 fingerprintConfig.append("\nexternal=").append(folder).append('|').append(content);
                 try {
-                    fingerprintRoots.add(Path.of(folder));
+                    Path source = Path.of(folder);
+                    fingerprintRoots.add(source);
+                    for (ModPackInfo pack : discoverModPacks(source)) {
+                        fingerprintConfig.append("\nexternal-pack=").append(pack.root()).append('|')
+                                .append(getExternalPackContent(folder, pack.root()));
+                    }
                 } catch (Exception ignored) {}
             }
         }
@@ -257,7 +271,7 @@ public class SongLibrary {
                 try {
                     EnumSet<ExternalContent> content = Objects.requireNonNullElseGet(
                             externalContent.get(folder), SongLibrary::allExternalContent);
-                    scanPsychRoot(Path.of(folder), found, icons, content);
+                    scanExternalRoot(folder, Path.of(folder), found, icons, content);
                 } catch (Exception e) {
                     FnfMod.LOGGER.warn("Failed to scan external folder {}: {}", folder, e.toString());
                 }
@@ -423,6 +437,67 @@ public class SongLibrary {
         new ExternalDirectoryConfig(root()).setContent(folder, content, enabled);
     }
 
+    public static String packFilterKey(String source, Path pack) {
+        return ExternalDirectoryConfig.packKey(source, pack);
+    }
+
+    /** A pack inherits its source checklist until it receives an explicit override. */
+    public static EnumSet<ExternalContent> getExternalPackContent(String source, Path pack) {
+        ExternalDirectoryConfig config = new ExternalDirectoryConfig(root());
+        EnumSet<ExternalContent> selected = config.contentOrNull(packFilterKey(source, pack));
+        return selected == null ? config.content(source) : selected;
+    }
+
+    public static void setExternalPackContent(String source, Path pack, ExternalContent content, boolean enabled) {
+        String key = packFilterKey(source, pack);
+        ExternalDirectoryConfig config = new ExternalDirectoryConfig(root());
+        // First edit starts from the inherited source selection, not from All.
+        if (config.contentOrNull(key) == null) config.setContent(key, config.content(source));
+        config.setContent(key, content, enabled);
+    }
+
+    /**
+     * Finds isolated Psych-style packs immediately inside a selected mods root.
+     * A non-reserved child is a pack even without pack.json/pack.png, matching
+     * Psych's convention. If there are no such children, the selected directory
+     * itself is exposed as a single pack when it contains mod content/metadata.
+     */
+    public static List<ModPackInfo> discoverModPacks(Path source) {
+        if (source == null || !Files.isDirectory(source)) return List.of();
+        if (isDirectModSelection(source)) return List.of(ModPackInfo.read(source));
+        List<ModPackInfo> packs = new ArrayList<>();
+        try (Stream<Path> children = Files.list(source)) {
+            children.filter(Files::isDirectory).sorted().forEach(child -> {
+                String key = child.getFileName().toString().toLowerCase(Locale.ROOT);
+                if (!RESERVED_MOD_SUBDIRS.contains(key)) packs.add(ModPackInfo.read(child));
+            });
+        } catch (IOException ignored) {}
+        return List.copyOf(packs);
+    }
+
+    public static boolean isDirectModPath(Path source) {
+        return source != null && Files.isDirectory(source) && isDirectModSelection(source);
+    }
+
+    private static boolean isDirectModSelection(Path source) {
+        if (source.toAbsolutePath().normalize().equals(modsDir().toAbsolutePath().normalize())) return false;
+        if (Files.isRegularFile(source.resolve("pack.json"))
+                || Files.isRegularFile(source.resolve("pack.png"))) return true;
+        Path name = source.getFileName();
+        if (!isModFolder(source)) return false;
+        if (name == null || !name.toString().equalsIgnoreCase("mods")) return true;
+        // A path ending in "mods" is ambiguous: Psych commonly uses it as a
+        // container, while some standalone packs put their content directly in
+        // a folder with that name. Non-reserved child folders make it a
+        // container; otherwise its standard content folders make it one mod.
+        try (Stream<Path> children = Files.list(source)) {
+            return children.filter(Files::isDirectory).noneMatch(child ->
+                    !RESERVED_MOD_SUBDIRS.contains(child.getFileName().toString().toLowerCase(Locale.ROOT)));
+        } catch (IOException ignored) {
+            return true;
+        }
+    }
+
     /**
      * The naked global mod ({@code config/fnfmod/mods} root) as a Psych-style shared
      * asset base: its loose {@code characters/}, {@code images/}, {@code stages/},
@@ -475,14 +550,17 @@ public class SongLibrary {
     private static void scanModsDir(Map<String, SongEntry> found, Map<String, Path> icons) {
         Path mods = modsDir();
         if (!Files.isDirectory(mods)) return;
+        String source = mods.toAbsolutePath().normalize().toString();
+        Set<ExternalContent> sourceContent = getExternalFolderContent(source);
         // Naked global mod: its own loose content (songs, images/icons, ...).
-        if (isModFolder(mods)) scanPsychMod(mods, found, icons, allExternalContent());
+        if (isModFolder(mods)) scanPsychMod(mods, found, icons, sourceContent);
         else collectIcons(mods, icons);
         // Named mod packs: every subfolder that is not a reserved global folder.
         try (Stream<Path> subs = Files.list(mods)) {
             subs.filter(Files::isDirectory).sorted().forEach(sub -> {
                 if (RESERVED_MOD_SUBDIRS.contains(sub.getFileName().toString().toLowerCase(Locale.ROOT))) return;
-                if (isModFolder(sub)) scanPsychMod(sub, found, icons, allExternalContent());
+                if (isModFolder(sub)) scanPsychMod(sub, found, icons,
+                        getExternalPackContent(source, sub));
             });
         } catch (IOException ignored) {}
     }
@@ -490,20 +568,43 @@ public class SongLibrary {
     private static void scanPsychRoot(Path root, Map<String, SongEntry> found, Map<String, Path> icons,
                                       Set<ExternalContent> content) {
         if (!Files.isDirectory(root)) return;
-        if (isModFolder(root)) {
+        if (isDirectModSelection(root)) {
             scanPsychMod(root, found, icons, content);
             return;
         }
+        // Scan loose/shared content at the selected root, then every named child
+        // independently. Previously an images/ folder made a Psych mods container
+        // look like one giant mod and blended all child packs together.
+        if (isModFolder(root)) scanPsychMod(root, found, icons, content);
         try (Stream<Path> subs = Files.list(root)) {
             subs.filter(Files::isDirectory).sorted().forEach(sub -> {
-                if (isModFolder(sub)) scanPsychMod(sub, found, icons, content);
+                String key = sub.getFileName().toString().toLowerCase(Locale.ROOT);
+                if (RESERVED_MOD_SUBDIRS.contains(key)) return;
+                scanPsychMod(sub, found, icons, content);
             });
         } catch (IOException ignored) {}
     }
 
+    private static void scanExternalRoot(String source, Path root, Map<String, SongEntry> found,
+                                         Map<String, Path> icons, Set<ExternalContent> sourceContent) {
+        if (!Files.isDirectory(root)) return;
+        if (isDirectModSelection(root)) {
+            scanPsychMod(root, found, icons, getExternalPackContent(source, root));
+            return;
+        }
+        if (isModFolder(root)) scanPsychMod(root, found, icons, sourceContent);
+        for (ModPackInfo pack : discoverModPacks(root)) {
+            scanPsychMod(pack.root(), found, icons, getExternalPackContent(source, pack.root()));
+        }
+    }
+
     private static boolean isModFolder(Path p) {
         return Files.isDirectory(p.resolve("data")) || Files.isDirectory(p.resolve("songs"))
-                || Files.isDirectory(p.resolve("images"));
+                || Files.isDirectory(p.resolve("images")) || Files.isDirectory(p.resolve("characters"))
+                || Files.isDirectory(p.resolve("animations")) || Files.isDirectory(p.resolve("scripts"))
+                || Files.isDirectory(p.resolve("machines")) || Files.isDirectory(p.resolve("worlds"))
+                || Files.isDirectory(p.resolve("custom_events"))
+                || Files.isDirectory(p.resolve("custom_notetypes"));
     }
 
     private static void scanPsychMod(Path mod, Map<String, SongEntry> found, Map<String, Path> icons,

@@ -151,7 +151,8 @@ public class IconPickerScreen extends Screen implements TextInputAwareScreen {
         gui.renderOutline(x0, y0, boxW, boxH, 0xFF6A70FF);
         gui.drawCenteredString(font, title, x0 + boxW / 2, y0 + 9, 0xFFFFFFFF);
 
-        clampSelection();
+        if (visible.isEmpty()) selectedIndex = 0;
+        else selectedIndex = Mth.clamp(selectedIndex, 0, visible.size() - 1);
         updateScrollTween();
         int top = listTop(), height = listHeight();
         int first = Math.max(0, (int) Math.floor(scrollPx / ROW));
@@ -253,8 +254,9 @@ public class IconPickerScreen extends Screen implements TextInputAwareScreen {
     @Override
     public boolean mouseScrolled(double mouseX, double mouseY, double scrollX, double scrollY) {
         if (scrollY != 0) {
-            selectedIndex += scrollY > 0 ? -1 : 1;
-            clampSelection();
+            // Wheel movement navigates the viewport; selection changes only by
+            // click/keyboard so scrolling a long icon library cannot overwrite it.
+            scrollTo(scrollTargetPx - scrollY * ROW * 1.5);
         }
         return true;
     }

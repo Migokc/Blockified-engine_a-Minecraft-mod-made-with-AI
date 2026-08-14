@@ -41,8 +41,11 @@ public final class AnimationSetPickerScreen extends Screen implements TextInputA
     private String previewedSet = "";
     private String previewedAction = "idle";
     private int idleBeat;
+    private boolean previewHasSecondIdle;
     private long returnToIdleAt;
     private long nextIdleAt;
+    private boolean playerUsePlayerSkin;
+    private boolean botUsePlayerSkin;
 
     public AnimationSetPickerScreen(Screen parent, boolean opponent) {
         super(Component.literal(opponent ? "Opponent Animations" : "Player Animations"));
@@ -56,6 +59,8 @@ public final class AnimationSetPickerScreen extends Screen implements TextInputA
         visible = all;
         String current = opponent ? ClientOptions.get().opponentAnimationSet
                 : ClientOptions.get().animationSet;
+        playerUsePlayerSkin = ClientOptions.get().playerUsePlayerSkin;
+        botUsePlayerSkin = ClientOptions.get().botUsePlayerSkin;
         selectedIndex = Math.max(0, indexOf(visible, current));
         resetScroll(true);
 
@@ -160,6 +165,7 @@ public final class AnimationSetPickerScreen extends Screen implements TextInputA
         previewedSet = set;
         previewedAction = "idle";
         idleBeat = 0;
+        previewHasSecondIdle = CharacterAnimations.hasAction(set, role(), "idle2");
         returnToIdleAt = 0;
         nextIdleAt = 0;
         if (minecraft == null || minecraft.player == null) return;
@@ -167,7 +173,7 @@ public final class AnimationSetPickerScreen extends Screen implements TextInputA
             CharacterAnimations.stopPreview();
             return;
         }
-        CharacterAnimations.prepare(minecraft.player, set, role());
+        CharacterAnimations.prepare(minecraft.player, set, role(), selectedUsePlayerSkin());
         playIdlePreview();
     }
 
@@ -176,7 +182,8 @@ public final class AnimationSetPickerScreen extends Screen implements TextInputA
                 || CharacterAnimations.isDisabled(previewedSet)) return;
         long now = System.nanoTime();
         previewedAction = action;
-        CharacterAnimations.play(minecraft.player, previewedSet, role(), action);
+        CharacterAnimations.play(minecraft.player, previewedSet, role(), action,
+                selectedUsePlayerSkin());
         returnToIdleAt = temporary ? now + PREVIEW_BEAT_NANOS : 0;
         nextIdleAt = 0;
     }
@@ -186,17 +193,24 @@ public final class AnimationSetPickerScreen extends Screen implements TextInputA
         if (minecraft == null || minecraft.player == null || previewedSet.isEmpty()
                 || CharacterAnimations.isDisabled(previewedSet)) return;
         boolean loop = CharacterAnimations.loopIdle(previewedSet, role());
-        boolean second = !loop && CharacterAnimations.hasAction(previewedSet, role(), "idle2")
-                && (idleBeat & 1) == 1;
+        boolean second = !loop && previewHasSecondIdle && (idleBeat & 1) == 1;
         String action = second ? "idle2" : "idle";
         previewedAction = action;
-        if (CharacterAnimations.play(minecraft.player, previewedSet, role(), action) == null && second) {
+        if (CharacterAnimations.play(minecraft.player, previewedSet, role(), action,
+                selectedUsePlayerSkin()) == null && second) {
+            // A stale/inherited mapping can claim idle2 even when the selected
+            // form cannot play it. Downgrade this preview to the single-idle cadence.
+            previewHasSecondIdle = false;
             previewedAction = "idle";
-            CharacterAnimations.play(minecraft.player, previewedSet, role(), "idle");
+            CharacterAnimations.play(minecraft.player, previewedSet, role(), "idle",
+                    selectedUsePlayerSkin());
         }
         idleBeat++;
         returnToIdleAt = 0;
-        nextIdleAt = loop ? 0 : System.nanoTime() + PREVIEW_BEAT_NANOS;
+        // Two idles alternate each beat. A single idle bops every two beats,
+        // matching normal FNF character cadence at the 120 BPM preview tempo.
+        nextIdleAt = loop ? 0 : System.nanoTime() + PREVIEW_BEAT_NANOS
+                * (previewHasSecondIdle ? 1 : 2);
     }
 
     private void updatePreview() {
@@ -214,8 +228,35 @@ public final class AnimationSetPickerScreen extends Screen implements TextInputA
         if (set.isEmpty()) return;
         if (opponent) ClientOptions.get().opponentAnimationSet = set;
         else ClientOptions.get().animationSet = set;
+        if (opponent) ClientOptions.get().botUsePlayerSkin = botUsePlayerSkin;
+        else ClientOptions.get().playerUsePlayerSkin = playerUsePlayerSkin;
         ClientOptions.save();
         onClose();
+    }
+
+    private boolean selectedUsePlayerSkin() {
+        return opponent ? botUsePlayerSkin : playerUsePlayerSkin;
+    }
+
+    private boolean skinChoiceAllowed() {
+        String set = selectedSet();
+        return !set.isEmpty() && CharacterAnimations.allowsPlayerSkinSelection(set, role());
+    }
+
+    private boolean skinChoiceSupported() {
+        String set = selectedSet();
+        return !set.isEmpty() && CharacterAnimations.supportsPlayerSkin(set, role());
+    }
+
+    private boolean skinButtonEnabled() {
+        return skinChoiceAllowed() && skinChoiceSupported();
+    }
+
+    private String skinButtonLabel() {
+        String owner = opponent ? "Bot" : "Player";
+        if (!skinChoiceAllowed()) return owner + " Skin: Locked";
+        if (!skinChoiceSupported()) return owner + " Skin: Unavailable";
+        return owner + (selectedUsePlayerSkin() ? " Skin: Yours" : " Skin: Form");
     }
 
     @Override
@@ -257,9 +298,12 @@ public final class AnimationSetPickerScreen extends Screen implements TextInputA
         renderPreview(gui, listRight + 7, y0 + 26, x0 + boxW - 12, y0 + boxH - 35);
 
         int buttonY = y0 + boxH - 27;
-        int buttonWidth = (boxW - 28) / 2;
-        renderButton(gui, x0 + 10, buttonY, buttonWidth, "Cancel", mouseX, mouseY);
-        renderButton(gui, x0 + 18 + buttonWidth, buttonY, buttonWidth, "Select", mouseX, mouseY);
+        int buttonCount = 3;
+        int buttonWidth = (boxW - 12 - (buttonCount - 1) * 8) / buttonCount;
+        renderButton(gui, x0 + 6, buttonY, buttonWidth, "Cancel", mouseX, mouseY);
+        renderButton(gui, x0 + 14 + buttonWidth, buttonY, buttonWidth,
+                skinButtonLabel(), mouseX, mouseY, skinButtonEnabled());
+        renderButton(gui, x0 + 22 + buttonWidth * 2, buttonY, buttonWidth, "Select", mouseX, mouseY);
         super.render(gui, mouseX, mouseY, partialTick);
     }
 
@@ -315,10 +359,17 @@ public final class AnimationSetPickerScreen extends Screen implements TextInputA
 
     private void renderButton(GuiGraphics gui, int x, int y, int buttonWidth, String text,
                               int mouseX, int mouseY) {
+        renderButton(gui, x, y, buttonWidth, text, mouseX, mouseY, true);
+    }
+
+    private void renderButton(GuiGraphics gui, int x, int y, int buttonWidth, String text,
+                              int mouseX, int mouseY, boolean enabled) {
         boolean hover = mouseX >= x && mouseX < x + buttonWidth && mouseY >= y && mouseY < y + 18;
-        gui.fill(x, y, x + buttonWidth, y + 18, hover ? 0xFF505675 : 0xFF303442);
-        gui.renderOutline(x, y, buttonWidth, 18, 0xFF6A7080);
-        gui.drawCenteredString(font, text, x + buttonWidth / 2, y + 5, 0xFFFFFFFF);
+        gui.fill(x, y, x + buttonWidth, y + 18,
+                !enabled ? 0xFF22232B : hover ? 0xFF505675 : 0xFF303442);
+        gui.renderOutline(x, y, buttonWidth, 18, enabled ? 0xFF6A7080 : 0xFF42444F);
+        gui.drawCenteredString(font, text, x + buttonWidth / 2, y + 5,
+                enabled ? 0xFFFFFFFF : 0xFF777986);
     }
 
     @Override
@@ -364,14 +415,25 @@ public final class AnimationSetPickerScreen extends Screen implements TextInputA
                 return true;
             }
             int buttonY = y0 + boxH - 27;
-            int buttonWidth = (boxW - 28) / 2;
+            int buttonCount = 3;
+            int buttonWidth = (boxW - 12 - (buttonCount - 1) * 8) / buttonCount;
             if (mouseY >= buttonY && mouseY < buttonY + 18
-                    && mouseX >= x0 + 10 && mouseX < x0 + 10 + buttonWidth) {
+                    && mouseX >= x0 + 6 && mouseX < x0 + 6 + buttonWidth) {
                 onClose();
                 return true;
             }
             if (mouseY >= buttonY && mouseY < buttonY + 18
-                    && mouseX >= x0 + 18 + buttonWidth && mouseX < x0 + 18 + buttonWidth * 2) {
+                    && mouseX >= x0 + 14 + buttonWidth
+                    && mouseX < x0 + 14 + buttonWidth * 2) {
+                if (!skinButtonEnabled()) return true;
+                if (opponent) botUsePlayerSkin = !botUsePlayerSkin;
+                else playerUsePlayerSkin = !playerUsePlayerSkin;
+                previewSelection();
+                return true;
+            }
+            if (mouseY >= buttonY && mouseY < buttonY + 18
+                    && mouseX >= x0 + 22 + buttonWidth * 2
+                    && mouseX < x0 + 22 + buttonWidth * 3) {
                 choose();
                 return true;
             }

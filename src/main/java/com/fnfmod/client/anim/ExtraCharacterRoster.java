@@ -1,5 +1,6 @@
 package com.fnfmod.client.anim;
 
+import com.fnfmod.FnfMod;
 import com.fnfmod.gameplay.GameplayClock;
 import com.fnfmod.client.gameplay.WorldCharacter;
 import com.fnfmod.client.math.Easing;
@@ -7,6 +8,8 @@ import com.fnfmod.client.render.LuaWorldObject;
 import com.fnfmod.client.render.LuaWorldObjectRenderer;
 import com.fnfmod.client.render.PerformerRotation;
 import com.fnfmod.client.render.SparrowAtlas;
+import com.fnfmod.client.render.WorldSpriteEntityVisuals;
+import com.fnfmod.entity.WorldSpriteEntity;
 import com.fnfmod.gameplay.PerformerCollisions;
 import com.fnfmod.gameplay.PerformerPin;
 import com.fnfmod.gameplay.PerformerShadows;
@@ -19,6 +22,7 @@ import net.minecraft.client.player.RemotePlayer;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.phys.Vec3;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
@@ -44,9 +48,11 @@ public final class ExtraCharacterRoster implements AutoCloseable {
     private static final class Entry {
         final String tag;
         final RemotePlayer entity;   // null for a 2D character (rendered as a world sprite)
+        WorldSpriteEntity spriteEntity;
         WorldCharacter world2d;      // set for a 2D Psych character
         String definition;
         String role;
+        String idleSuffix = "";
         double x, y, z;
         float rotation;
         /** Local pitch/yaw; rotation is compatibility yaw for BBS and roll for 2D. */
@@ -56,6 +62,9 @@ public final class ExtraCharacterRoster implements AutoCloseable {
         /** Render-only scale for BBS forms; 2D characters keep their WorldCharacter scale. */
         double scaleX = 1, scaleY = 1, scaleZ = 1;
         boolean visible = true;
+        /** Projected IRLights shadows for 2D entity-hosted characters. */
+        boolean irlightsShadows = true;
+        double entityX = Double.NaN, entityY = Double.NaN, entityZ = Double.NaN;
 
         // Smooth position/rotation tween state (client-side, event or Lua driven).
         boolean tweening;
@@ -134,6 +143,7 @@ public final class ExtraCharacterRoster implements AutoCloseable {
             entry.z = finite(z);
             entry.rotation = Float.isFinite(rotation) ? rotation : 0;
             entries.put(key, entry);
+            spawn2DEntity(entry, current);
             world2d.play(animation == null || animation.isBlank() ? "idle" : animation, true);
             return true;
         }
@@ -184,26 +194,50 @@ public final class ExtraCharacterRoster implements AutoCloseable {
      * are skipped for the reason above; BBS keeps their idle running by itself.
      */
     public void danceAll(int beat) {
+        danceAll(beat, null, 1);
+    }
+
+    /** Gives one named 3D replacement (normally GF) its own dance interval. */
+    public void danceAll(int beat, String specialTag, int specialSpeed) {
+        String special = key(specialTag);
         for (Entry entry : entries.values()) {
             if (entry.world2d != null) continue;   // 2D characters dance via beat()
             if (CharacterAnimations.loopIdle(entry.definition, entry.role)) continue;
-            boolean second = CharacterAnimations.hasAction(entry.definition, entry.role, "idle2")
+            if (entry.tag.equals(special) && beat % Math.max(1, specialSpeed) != 0) continue;
+            String suffix = entry.idleSuffix;
+            String first = "idle" + suffix;
+            String secondName = "idle2" + suffix;
+            boolean second = CharacterAnimations.hasAction(entry.definition, entry.role, secondName)
                     && (beat & 1) == 1;
-            if (!play(entry.tag, second ? "idle2" : "idle") && second) play(entry.tag, "idle");
+            if (!play(entry.tag, second ? secondName : first)) {
+                if (second && !play(entry.tag, first)) play(entry.tag, "idle");
+                else if (!second && !suffix.isEmpty()) play(entry.tag, "idle");
+            }
         }
     }
 
     /** Beat-synced dance honouring each 2D character's dance_every. */
     public void beat(int beat, int speed) {
+        beat(beat, speed, null, speed);
+    }
+
+    /** Gives one named replacement (normally GF) its own dance-speed multiplier. */
+    public void beat(int beat, int speed, String specialTag, int specialSpeed) {
+        String special = key(specialTag);
         for (Entry entry : entries.values()) {
-            if (entry.world2d != null) entry.world2d.beat(beat, speed);
+            if (entry.world2d != null) entry.world2d.beat(beat,
+                    entry.tag.equals(special) ? specialSpeed : speed);
         }
     }
 
     public boolean remove(String tag) {
         Entry entry = entries.remove(key(tag));
         if (entry == null) return false;
-        if (entry.world2d != null) { entry.world2d.close(); return true; }
+        if (entry.world2d != null) {
+            remove2DEntity(entry);
+            entry.world2d.close();
+            return true;
+        }
         // Drop the per-entity overrides so a recycled id cannot inherit them.
         PerformerRotation.clear(entry.entity);
         PerformerCollisions.setEnabled(entry.entity.getId(), true);
@@ -304,6 +338,41 @@ public final class ExtraCharacterRoster implements AutoCloseable {
         return play(tag, "idle");
     }
 
+    /** Plays a chart-note direction using the naming convention of the entry's renderer. */
+    public boolean sing(String tag, String direction, boolean miss, String suffix) {
+        Entry entry = entries.get(key(tag));
+        if (entry == null) return false;
+        String safeDirection = direction == null ? "" : direction.trim();
+        String safeSuffix = suffix == null ? "" : suffix;
+        if (entry.world2d != null) {
+            String name = "sing" + safeDirection.toUpperCase(Locale.ROOT)
+                    + (miss ? "miss" : "") + safeSuffix;
+            return entry.world2d.play(name, true);
+        }
+        return play(entry.tag, miss ? "miss" + safeSuffix
+                : safeDirection.toLowerCase(Locale.ROOT) + safeSuffix);
+    }
+
+    /** GF-style Hey support, including the timed Psych 2D special-animation path. */
+    public boolean hey(String tag, double seconds) {
+        Entry entry = entries.get(key(tag));
+        if (entry == null) return false;
+        if (entry.world2d != null) {
+            entry.world2d.playHey(seconds);
+            return true;
+        }
+        return play(entry.tag, "hey") || play(entry.tag, "cheer");
+    }
+
+    /** Applies Psych's Alt Idle Animation suffix to a 2D or BBS extra. */
+    public boolean setIdleSuffix(String tag, String suffix) {
+        Entry entry = entries.get(key(tag));
+        if (entry == null) return false;
+        entry.idleSuffix = suffix == null ? "" : suffix;
+        if (entry.world2d != null) entry.world2d.setIdleSuffix(entry.idleSuffix);
+        return true;
+    }
+
     public boolean setPosition(String tag, double x, double y, double z) {
         Entry entry = entries.get(key(tag));
         if (entry == null) return false;
@@ -312,6 +381,7 @@ public final class ExtraCharacterRoster implements AutoCloseable {
         entry.y = finite(y);
         entry.z = finite(z);
         updateTransform(entry);
+        if (entry.spriteEntity != null) update2DTransform(entry, true);
         return true;
     }
 
@@ -370,40 +440,21 @@ public final class ExtraCharacterRoster implements AutoCloseable {
                             + (entry.toRotation - entry.fromRotation) * f);
                 }
                 if (entry.entity != null) updateTransform(entry);
+                if (entry.spriteEntity != null) update2DTransform(entry, true);
                 if (t >= 1.0) entry.tweening = false;
             } else if (entry.entity != null) {
-                // Real client entities need holding in place or gravity pulls them off.
-                updateTransform(entry);
+                if (entry.entity.isNoGravity()) updateTransform(entry);
+                else updateFrom3DEntity(entry);
+            } else if (entry.spriteEntity != null) {
+                update2DTransform(entry, false);
             }
             if (entry.world2d != null) entry.world2d.update(dt, stepMs, 1);
         }
     }
 
-    /** Draws every 2D character as a world sprite (call from the level render pass). */
+    /** Gameplay 2D characters now render through their entity hosts. */
     public void render2D(PoseStack poseStack, Camera camera, BlockPos speakers, Direction facing) {
-        if (entries.isEmpty()) return;
-        List<LuaWorldObject> sprites = new ArrayList<>();
-        for (Entry entry : entries.values()) {
-            if (entry.world2d == null || !entry.visible) continue;
-            WorldCharacter wc = entry.world2d;
-            SparrowAtlas.Frame f = wc.currentFrame();
-            if (f == null) continue;
-            LuaWorldObject.Frame rf = new LuaWorldObject.Frame(
-                    f.x, f.y, f.w, f.h, f.frameX, f.frameY, f.rotated);
-            double[] off = wc.currentOffset();
-            double sx = wc.scaleX() * (wc.flipX() ? -1 : 1);
-            // Stage-local blocks (X right, Y up, Z forward) -> Lua world pixels.
-            double px = entry.x * 64, py = -entry.y * 64, pz = entry.z * 64;
-            sprites.add(new LuaWorldObject.Sprite(
-                    wc.texture(), wc.texWidth(), wc.texHeight(), rf, off[0], off[1],
-                    px, py, pz, wc.refW(), wc.refH(), wc.refW(), wc.refH(),
-                    sx, wc.scaleY(), wc.alpha(), entry.rotation,
-                    entry.rotationX, entry.rotationY,
-                    wc.color(), wc.billboard(), wc.lighting(), wc.seeThrough()));
-        }
-        if (!sprites.isEmpty()) {
-            LuaWorldObjectRenderer.render(poseStack, camera, speakers, facing, sprites);
-        }
+        // Free-cam objects use FreeCamObjects and retain the direct preview renderer.
     }
 
     public boolean setX(String tag, double value) {
@@ -465,14 +516,16 @@ public final class ExtraCharacterRoster implements AutoCloseable {
 
     public boolean setGravity(String tag, boolean enabled) {
         Entry entry = entries.get(key(tag));
-        if (entry == null || entry.entity == null) return false;
-        entry.entity.setNoGravity(!enabled);
+        Entity physics = physicsEntity(entry);
+        if (physics == null) return false;
+        physics.setNoGravity(!enabled);
         return true;
     }
 
     public boolean gravity(String tag) {
         Entry entry = entries.get(key(tag));
-        return entry != null && entry.entity != null && !entry.entity.isNoGravity();
+        Entity physics = physicsEntity(entry);
+        return physics != null && !physics.isNoGravity();
     }
 
     /**
@@ -482,44 +535,63 @@ public final class ExtraCharacterRoster implements AutoCloseable {
      */
     public boolean setCollision(String tag, boolean enabled) {
         Entry entry = entries.get(key(tag));
-        if (entry == null || entry.entity == null) return false;
-        entry.entity.noPhysics = !enabled;
-        PerformerCollisions.setEnabled(entry.entity.getId(), enabled);
+        Entity physics = physicsEntity(entry);
+        if (physics == null) return false;
+        physics.noPhysics = !enabled;
+        PerformerCollisions.setEnabled(physics.getId(), enabled);
         return true;
     }
 
     public boolean collision(String tag) {
         Entry entry = entries.get(key(tag));
-        return entry != null && entry.entity != null && !entry.entity.noPhysics
-                && PerformerCollisions.enabled(entry.entity.getId());
+        Entity physics = physicsEntity(entry);
+        return physics != null && !physics.noPhysics
+                && PerformerCollisions.enabled(physics.getId());
     }
 
     /** Applies a collision setting to every performer this roster owns. */
     public void setAllCollisions(boolean enabled) {
         for (Entry entry : entries.values()) {
-            if (entry.entity == null) continue;
-            entry.entity.noPhysics = !enabled;
-            PerformerCollisions.setEnabled(entry.entity.getId(), enabled);
+            Entity physics = physicsEntity(entry);
+            if (physics == null) continue;
+            physics.noPhysics = !enabled;
+            PerformerCollisions.setEnabled(physics.getId(), enabled);
         }
     }
 
-    /** Shows or hides one performer's vanilla blob shadow. On by default. */
+    /** Shows or hides one performer's vanilla blob shadow (2D hosts default off). */
     public boolean setShadow(String tag, boolean enabled) {
         Entry entry = entries.get(key(tag));
-        if (entry == null || entry.entity == null) return false;
-        PerformerShadows.setEnabled(entry.entity.getId(), enabled);
+        Entity physics = physicsEntity(entry);
+        if (physics == null) return false;
+        PerformerShadows.setEnabled(physics.getId(), enabled);
         return true;
     }
 
     public boolean shadow(String tag) {
         Entry entry = entries.get(key(tag));
-        return entry != null && entry.entity != null && PerformerShadows.enabled(entry.entity.getId());
+        Entity physics = physicsEntity(entry);
+        return physics != null && PerformerShadows.enabled(physics.getId());
     }
 
     public void setAllShadows(boolean enabled) {
         for (Entry entry : entries.values()) {
-            if (entry.entity != null) PerformerShadows.setEnabled(entry.entity.getId(), enabled);
+            Entity physics = physicsEntity(entry);
+            if (physics != null) PerformerShadows.setEnabled(physics.getId(), enabled);
         }
+    }
+
+    /** Enables projected IRLights shadows for a 2D world character. */
+    public boolean setIrlightsShadows(String tag, boolean enabled) {
+        Entry entry = entries.get(key(tag));
+        if (entry == null || entry.world2d == null) return false;
+        entry.irlightsShadows = enabled;
+        return true;
+    }
+
+    public boolean irlightsShadows(String tag) {
+        Entry entry = entries.get(key(tag));
+        return entry != null && entry.world2d != null && entry.irlightsShadows;
     }
 
     public boolean changeDefinition(String tag, String definition, String role) {
@@ -638,8 +710,126 @@ public final class ExtraCharacterRoster implements AutoCloseable {
     }
     public boolean visible(String tag) { Entry e = entries.get(key(tag)); return e != null && e.visible; }
 
+    /** Actual rendered origin used by Camera Focus for both BBS and 2D performers. */
+    public Vec3 focusWorldPosition(String tag) {
+        Entry entry = entries.get(key(tag));
+        if (entry == null) return null;
+        if (entry.entity != null) return entry.entity.position().add(0, 1.0, 0);
+        if (entry.spriteEntity != null) return entry.spriteEntity.position();
+        Minecraft minecraft = Minecraft.getInstance();
+        ClientLevel current = minecraft.level;
+        if (current == null) return null;
+        Direction facing = com.fnfmod.client.gameplay.StageOrientation.facingOr(current, machinePosition);
+        Direction right = facing.getCounterClockWise();
+        return Vec3.atCenterOf(machinePosition).add(
+                right.getStepX() * entry.x + facing.getStepX() * entry.z,
+                entry.y,
+                right.getStepZ() * entry.x + facing.getStepZ() * entry.z);
+    }
+
+    private static Entity physicsEntity(Entry entry) {
+        if (entry == null) return null;
+        return entry.spriteEntity != null ? entry.spriteEntity : entry.entity;
+    }
+
+    private void spawn2DEntity(Entry entry, ClientLevel current) {
+        WorldSpriteEntity entity = new WorldSpriteEntity(FnfMod.WORLD_SPRITE_ENTITY.get(), current);
+        entity.setId(WorldSpriteEntity.allocateClientId());
+        entry.spriteEntity = entity;
+        entry.entityX = entry.entityY = entry.entityZ = Double.NaN;
+        entity.setNoGravity(true);
+        entity.noPhysics = true;
+        WorldSpriteEntityVisuals.bind(entity, () -> {
+            LuaWorldObject.Sprite sprite = snapshot2D(entry);
+            if (sprite == null) return null;
+            Direction facing = com.fnfmod.client.gameplay.StageOrientation.facingOr(
+                    Minecraft.getInstance().level, machinePosition);
+            return new WorldSpriteEntityVisuals.Visual(sprite, facing, entry.irlightsShadows);
+        });
+        current.addEntity(entity);
+        // Unlike BBS player models, flat sprites do not show Minecraft's blob by default.
+        PerformerShadows.setEnabled(entity.getId(), false);
+        update2DTransform(entry, true);
+    }
+
+    private void remove2DEntity(Entry entry) {
+        WorldSpriteEntity entity = entry.spriteEntity;
+        if (entity == null) return;
+        WorldSpriteEntityVisuals.unbind(entity);
+        PerformerCollisions.setEnabled(entity.getId(), true);
+        PerformerShadows.setEnabled(entity.getId(), true);
+        if (entity.level() instanceof ClientLevel owner && owner.getEntity(entity.getId()) != null) {
+            owner.removeEntity(entity.getId(), Entity.RemovalReason.DISCARDED);
+        }
+        entry.spriteEntity = null;
+    }
+
+    private LuaWorldObject.Sprite snapshot2D(Entry entry) {
+        if (entry.world2d == null || !entry.visible) return null;
+        WorldCharacter wc = entry.world2d;
+        SparrowAtlas.Frame frame = wc.currentFrame();
+        if (frame == null) return null;
+        LuaWorldObject.Frame renderFrame = new LuaWorldObject.Frame(
+                frame.x, frame.y, frame.w, frame.h, frame.frameX, frame.frameY, frame.rotated);
+        double[] offset = wc.currentOffset();
+        double sx = wc.scaleX() * (wc.flipX() ? -1 : 1);
+        return new LuaWorldObject.Sprite(
+                wc.texture(), wc.texWidth(), wc.texHeight(), renderFrame, offset[0], offset[1],
+                0, 0, 0, wc.refW(), wc.refH(), wc.refW(), wc.refH(),
+                sx, wc.scaleY(), wc.alpha(), entry.rotation,
+                entry.rotationX, entry.rotationY,
+                wc.color(), wc.billboard(), wc.lighting(), wc.seeThrough());
+    }
+
+    private void update2DTransform(Entry entry, boolean authored) {
+        if (entry.spriteEntity == null || entry.world2d == null) return;
+        Minecraft minecraft = Minecraft.getInstance();
+        if (!(minecraft.level instanceof ClientLevel current)) return;
+        WorldSpriteEntity entity = entry.spriteEntity;
+        Direction facing = com.fnfmod.client.gameplay.StageOrientation.facingOr(current, machinePosition);
+        Direction right = facing.getCounterClockWise();
+        entity.setVisualBounds(entry.world2d.refW() * Math.abs(entry.world2d.scaleX())
+                        * LuaWorldObjectRenderer.PIXEL_SCALE,
+                entry.world2d.refH() * Math.abs(entry.world2d.scaleY())
+                        * LuaWorldObjectRenderer.PIXEL_SCALE);
+
+        boolean changed = authored || different(entry.x, entry.entityX)
+                || different(entry.y, entry.entityY) || different(entry.z, entry.entityZ);
+        if (changed || entity.isNoGravity()) {
+            Vec3 origin = Vec3.atCenterOf(machinePosition);
+            PerformerPin.pin(entity,
+                    origin.x + right.getStepX() * entry.x + facing.getStepX() * entry.z,
+                    origin.y + entry.y,
+                    origin.z + right.getStepZ() * entry.x + facing.getStepZ() * entry.z);
+        } else {
+            Vec3 delta = entity.position().subtract(Vec3.atCenterOf(machinePosition));
+            entry.x = delta.x * right.getStepX() + delta.z * right.getStepZ();
+            entry.y = delta.y;
+            entry.z = delta.x * facing.getStepX() + delta.z * facing.getStepZ();
+        }
+        entry.entityX = entry.x; entry.entityY = entry.y; entry.entityZ = entry.z;
+    }
+
+    private void updateFrom3DEntity(Entry entry) {
+        if (entry.entity == null) return;
+        Minecraft minecraft = Minecraft.getInstance();
+        if (!(minecraft.level instanceof ClientLevel current)) return;
+        Direction facing = com.fnfmod.client.gameplay.StageOrientation.facingOr(current, machinePosition);
+        Direction right = facing.getCounterClockWise();
+        Vec3 origin = new Vec3(machinePosition.getX() + 0.5 + facing.getStepX() * 2.0,
+                machinePosition.getY(), machinePosition.getZ() + 0.5 + facing.getStepZ() * 2.0);
+        Vec3 delta = entry.entity.position().subtract(origin);
+        entry.x = delta.x * right.getStepX() + delta.z * right.getStepZ();
+        entry.y = delta.y;
+        entry.z = delta.x * facing.getStepX() + delta.z * facing.getStepZ();
+    }
+
+    private static boolean different(double a, double b) {
+        return !Double.isFinite(b) || Math.abs(a - b) > 1.0e-7;
+    }
+
     private void updateTransform(Entry entry) {
-        if (entry.entity == null) return;   // 2D characters carry no client entity
+        if (entry.entity == null) return;
         Minecraft minecraft = Minecraft.getInstance();
         ClientLevel current = minecraft.level;
         if (current == null) return;

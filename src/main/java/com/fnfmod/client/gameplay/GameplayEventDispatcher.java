@@ -5,6 +5,7 @@ import com.fnfmod.chart.ChartEventTypes;
 import com.fnfmod.chart.CommandEventPlaceholders;
 import com.fnfmod.chart.SongChart;
 import com.fnfmod.client.camera.GameplayCamera;
+import com.fnfmod.client.render.DirectionalShadingControl;
 import com.fnfmod.net.FnfPayloads;
 import net.minecraft.client.Minecraft;
 import net.minecraft.core.BlockPos;
@@ -54,7 +55,12 @@ public final class GameplayEventDispatcher {
         } else if (ChartEventTypes.isCameraFocus(event.name)) {
             cameraFocusHandler.accept(event);
         } else if (ChartEventTypes.isCameraBehavior(event.name)) {
-            GameplayCamera.setCameraBehavior(event.value1, event.value2);
+            GameplayCamera.setCameraBehavior(event.value1, event.value2, event.value3);
+        } else if (ChartEventTypes.is(event.name, ChartEventTypes.DIRECTIONAL_SHADING)) {
+            DirectionalShadingControl.setBlockShading(
+                    DirectionalShadingControl.parseToggle(event.value1, true));
+            DirectionalShadingControl.setEntityShading(
+                    DirectionalShadingControl.parseToggle(event.value2, true));
         }
         luaHandler.accept(event);
     }

@@ -54,8 +54,8 @@ import java.util.UUID;
 public final class SessionManager {
 
     private static final int CHUNK_SIZE = 400 * 1024;
-    /** Requested missing files only; large FNF packs commonly exceed 256 MiB. */
-    private static final long MAX_TRANSFER_REQUEST_BYTES = 1024L * 1024 * 1024;
+    /** Hard per-song network transfer limit for untrusted remote servers. */
+    public static final long MAX_SONG_TRANSFER_BYTES = 100L * 1024 * 1024;
 
     /**
      * File transfers stream off the server tick thread. Reading and slicing a
@@ -241,6 +241,7 @@ public final class SessionManager {
                 PacketDistributor.sendToPlayer(player, new FnfPayloads.FileManifestS2C(
                         pos, session.songId, session.difficulty, true, true,
                         session.playbackPolicy.mode().networkId(), session.playbackPolicy.songAssets(),
+                        session.playbackPolicy.luaAllowed(),
                         manifest(entry, session.difficulty, session.playbackPolicy)));
             }
             return;
@@ -298,12 +299,29 @@ public final class SessionManager {
             player.sendSystemMessage(Component.literal("Difficulty not found for song: " + payload.difficulty()));
             return;
         }
+        PlaybackPolicy policy = PlaybackPolicy.resolve(
+                PlaybackMode.fromNetworkId(payload.playbackMode()), entry);
+        // A dedicated internet server may provide only declarative gameplay data:
+        // audio, chart JSON and event JSON. Integrated servers (singleplayer/LAN)
+        // keep the full local-mod behavior requested by the world owner.
+        if (player.getServer().isDedicatedServer()) {
+            policy = new PlaybackPolicy(policy.mode(), false, false);
+        }
+        List<FnfPayloads.FileMeta> selectedManifest = manifest(entry, payload.difficulty(), policy);
+        long manifestBytes = manifestSize(selectedManifest);
+        if (selectedManifest.size() > FnfPayloads.MAX_MANIFEST_FILES
+                || player.getServer().isDedicatedServer()
+                && (manifestBytes < 0 || manifestBytes > MAX_SONG_TRANSFER_BYTES)) {
+            player.sendSystemMessage(Component.literal(
+                    "Song exceeds the 100 MiB server transfer limit."));
+            return;
+        }
+
         session.songId = payload.songId();
         session.difficulty = payload.difficulty();
         session.duet = payload.duet();
         session.playSide = payload.duet() ? 0 : (byte) Math.max(0, Math.min(2, payload.playSide()));
-        session.playbackPolicy = PlaybackPolicy.resolve(
-                PlaybackMode.fromNetworkId(payload.playbackMode()), entry);
+        session.playbackPolicy = policy;
         session.hostReady = false;
         session.guestReady = false;
         session.executedServerEvents.clear();
@@ -319,12 +337,13 @@ public final class SessionManager {
                 payload.pos(), session.songId, session.difficulty, payload.duet(),
                 !payload.duet() && session.playSide == 1,
                 session.playbackPolicy.mode().networkId(), session.playbackPolicy.songAssets(),
-                manifest(entry, session.difficulty, session.playbackPolicy)));
+                session.playbackPolicy.luaAllowed(), selectedManifest));
     }
 
     public static void onRequestFiles(ServerPlayer player, FnfPayloads.RequestFilesC2S payload) {
         Session session = SESSIONS.get(keyOf(player, payload.pos()));
         if (session == null || (session.host != player && session.guest != player)) return;
+        if (!payload.songId().equals(session.songId)) return;
         SongEntry entry = SongLibrary.get(payload.songId());
         if (entry == null) return;
 
@@ -334,11 +353,16 @@ public final class SessionManager {
         long total = 0;
         for (Path f : candidates) {
             try {
-                total += Files.size(f);
+                long size = Files.size(f);
+                if (size < 0 || total > MAX_SONG_TRANSFER_BYTES - size) {
+                    total = MAX_SONG_TRANSFER_BYTES + 1;
+                    break;
+                }
+                total += size;
             } catch (IOException ignored) {}
         }
-        if (total > MAX_TRANSFER_REQUEST_BYTES) {
-            player.sendSystemMessage(Component.literal("Requested song files exceed the 1 GiB transfer limit."));
+        if (player.getServer().isDedicatedServer() && total > MAX_SONG_TRANSFER_BYTES) {
+            player.sendSystemMessage(Component.literal("Requested song files exceed the 100 MiB transfer limit."));
             return;
         }
 
@@ -1025,10 +1049,26 @@ public final class SessionManager {
         return out;
     }
 
+    private static long manifestSize(List<FnfPayloads.FileMeta> files) {
+        long total = 0;
+        for (FnfPayloads.FileMeta file : files) {
+            if (file.size() < 0 || total > MAX_SONG_TRANSFER_BYTES - file.size()) return -1;
+            total += file.size();
+        }
+        return total;
+    }
+
     public static String sha1(Path f) throws IOException {
         try {
             MessageDigest md = MessageDigest.getInstance("SHA-1");
-            byte[] digest = md.digest(Files.readAllBytes(f));
+            byte[] buffer = new byte[64 * 1024];
+            try (java.io.InputStream input = new java.io.BufferedInputStream(Files.newInputStream(f))) {
+                int read;
+                while ((read = input.read(buffer)) >= 0) {
+                    if (read > 0) md.update(buffer, 0, read);
+                }
+            }
+            byte[] digest = md.digest();
             StringBuilder sb = new StringBuilder();
             for (byte b : digest) sb.append(String.format("%02x", b));
             return sb.toString();

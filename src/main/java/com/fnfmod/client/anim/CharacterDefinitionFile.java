@@ -47,6 +47,10 @@ public final class CharacterDefinitionFile {
     public float rotation;
     public float cameraX;
     public float cameraY;
+    /** Use the performer's live Minecraft skin on compatible built-in BBS player forms. */
+    public boolean usePlayerSkin;
+    /** Whether players may override the authored BBS skin/model in Settings. */
+    public boolean allowPlayerSkinSelection = true;
     public boolean loopIdle;
     public final Map<String, Action> actions = new LinkedHashMap<>();
 
@@ -162,6 +166,8 @@ public final class CharacterDefinitionFile {
             source.add("healthbar_colors", color);
         } else source.remove("healthbar_colors");
         source.addProperty("rotation", rotation);
+        source.addProperty("usePlayerSkin", usePlayerSkin);
+        source.addProperty("allowPlayerSkinSelection", allowPlayerSkinSelection);
         source.addProperty("loopIdle", loopIdle);
         source.add("cameraOffset", vec2(cameraX, cameraY));
 
@@ -217,6 +223,10 @@ public final class CharacterDefinitionFile {
                 "vocals_prefix", "vocalsPrefix", "vocal_prefix", "vocalPrefix");
         healthColor = color(source);
         rotation = number(source.get("rotation"));
+        usePlayerSkin = bool(source, "usePlayerSkin");
+        allowPlayerSkinSelection = firstBool(source, true,
+                "allowPlayerSkinSelection", "allowPlayerSkinChange",
+                "allowSkinSelection", "allowSkinOverride");
         loopIdle = bool(source, "loopIdle") || bool(source, "loopAnimation");
         float[] camera = vec2(source.get("cameraOffset"));
         cameraX = camera[0];
@@ -277,6 +287,13 @@ public final class CharacterDefinitionFile {
         } catch (Exception ignored) {
             return false;
         }
+    }
+
+    private static boolean firstBool(JsonObject object, boolean fallback, String... keys) {
+        for (String key : keys) {
+            if (object.has(key)) return bool(object, key);
+        }
+        return fallback;
     }
 
     private static float number(JsonElement value) {
