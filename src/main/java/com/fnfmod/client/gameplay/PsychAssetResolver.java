@@ -94,6 +94,38 @@ public final class PsychAssetResolver {
         return find(roots, file, library + "/images", "assets/" + library + "/images");
     }
 
+    /** Finds an Adobe Animate atlas folder instead of a single PNG. */
+    public Path animateFolder(String raw) {
+        if (raw == null || raw.isBlank()) return null;
+        String value = raw.trim().replace('\\', '/');
+        String assetLibrary = "";
+        int colon = value.indexOf(':');
+        if (colon > 0) {
+            assetLibrary = value.substring(0, colon);
+            value = value.substring(colon + 1);
+        }
+        while (value.startsWith("/")) value = value.substring(1);
+        List<String> prefixes = new ArrayList<>();
+        prefixes.add("");
+        prefixes.add("images");
+        prefixes.add("assets/images");
+        prefixes.add("shared/images");
+        prefixes.add("assets/shared/images");
+        if (!assetLibrary.isBlank()) {
+            prefixes.add(assetLibrary + "/images");
+            prefixes.add("assets/" + assetLibrary + "/images");
+        }
+        for (Path root : roots(SongLibrary.ExternalContent.IMAGES)) {
+            for (String prefix : prefixes) {
+                Path base = prefix.isBlank() ? root : root.resolve(prefix);
+                Path candidate = base.resolve(value).normalize();
+                if (candidate.startsWith(root) && Files.isDirectory(candidate)
+                        && Files.isRegularFile(candidate.resolve("Animation.json"))) return candidate;
+            }
+        }
+        return null;
+    }
+
     public Path sound(String raw) {
         if (raw == null || raw.isBlank()) return null;
         boolean music = raw.startsWith("@music/");

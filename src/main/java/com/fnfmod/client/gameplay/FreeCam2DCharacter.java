@@ -2,6 +2,7 @@ package com.fnfmod.client.gameplay;
 
 import com.fnfmod.FnfMod;
 import com.fnfmod.client.render.SparrowAtlas;
+import com.fnfmod.client.render.AnimateAtlas;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -23,7 +24,8 @@ import java.util.Map;
 public final class FreeCam2DCharacter implements AutoCloseable {
 
     private record AnimDef(List<SparrowAtlas.Frame> frames, double fps, boolean loop,
-                           double offsetX, double offsetY, String prefix, List<Integer> indices) {}
+                           double offsetX, double offsetY, String prefix, List<Integer> indices,
+                           SparrowAtlas sheet) {}
 
     /** Export view of one animation, for generating Lua addAnimationBy... calls. */
     public record AnimExport(String name, String prefix, int fps, boolean loop,
@@ -46,16 +48,23 @@ public final class FreeCam2DCharacter implements AutoCloseable {
         try {
             JsonObject root = JsonParser.parseString(Files.readString(json)).getAsJsonObject();
             String image = str(root, "image");
-            if (image.isEmpty()) return null;
-
-            // Resolve <mod>/images/<image>.png|.xml by walking up to the folder holding images/.
-            Path base = json.getParent();
-            while (base != null && !Files.isDirectory(base.resolve("images"))) base = base.getParent();
-            if (base == null) base = json.getParent();
-            Path png = base.resolve("images").resolve(image + ".png");
-            Path xml = base.resolve("images").resolve(image + ".xml");
-
-            SparrowAtlas atlas = SparrowAtlas.load(png, xml);
+            String assetPath = str(root, "assetPath");
+            String renderType = str(root, "renderType").toLowerCase(java.util.Locale.ROOT);
+            boolean animate = renderType.contains("animateatlas") || !assetPath.isEmpty();
+            SparrowAtlas atlas;
+            if (animate) {
+                atlas = AnimateAtlas.load(AnimateAtlas.resolveFolder(json, assetPath));
+                image = assetPath;
+            } else {
+                if (image.isEmpty()) return null;
+                // Resolve <mod>/images/<image>.png|.xml by walking up to the folder holding images/.
+                Path base = json.getParent();
+                while (base != null && !Files.isDirectory(base.resolve("images"))) base = base.getParent();
+                if (base == null) base = json.getParent();
+                Path png = base.resolve("images").resolve(image + ".png");
+                Path xml = base.resolve("images").resolve(image + ".xml");
+                atlas = SparrowAtlas.load(png, xml);
+            }
             if (atlas == null) return null;
 
             FreeCam2DCharacter c = new FreeCam2DCharacter();
@@ -63,21 +72,37 @@ public final class FreeCam2DCharacter implements AutoCloseable {
             c.image = image;
             JsonArray list = root.has("animations") && root.get("animations").isJsonArray()
                     ? root.getAsJsonArray("animations") : new JsonArray();
+            Map<String, SparrowAtlas> sheets = new LinkedHashMap<>();
+            sheets.put(assetPath, atlas);
             for (JsonElement element : list) {
                 if (!element.isJsonObject()) continue;
                 JsonObject a = element.getAsJsonObject();
-                String prefix = str(a, "name");
+                String prefix = str(a, "prefix");
+                if (prefix.isEmpty()) prefix = str(a, "name");
                 String trigger = str(a, "anim");
+                if (trigger.isEmpty()) trigger = str(a, "name");
                 if (trigger.isEmpty()) trigger = prefix;
                 if (trigger.isEmpty()) continue;
+                SparrowAtlas sheet = atlas;
+                String animationAsset = str(a, "assetPath");
+                if (!animationAsset.isEmpty() && !animationAsset.equals(assetPath)) {
+                    sheet = sheets.get(animationAsset);
+                    if (sheet == null) {
+                        sheet = AnimateAtlas.load(AnimateAtlas.resolveFolder(json, animationAsset));
+                        if (sheet != null) sheets.put(animationAsset, sheet);
+                    }
+                    if (sheet == null) continue;
+                }
                 double fps = a.has("fps") ? a.get("fps").getAsDouble() : 24;
-                boolean loop = a.has("loop") && a.get("loop").getAsBoolean();
+                boolean loop = a.has("looped") ? a.get("looped").getAsBoolean()
+                        : a.has("loop") && a.get("loop").getAsBoolean();
                 double[] off = readOffsets(a);
                 List<Integer> indices = readIndices(a);
-                List<SparrowAtlas.Frame> frames = resolveFrames(atlas, prefix, indices);
+                List<SparrowAtlas.Frame> frames = str(a, "animType").equalsIgnoreCase("symbol")
+                        ? new ArrayList<>(sheet.framesBySymbol(prefix)) : resolveFrames(sheet, prefix, indices);
                 if (frames.isEmpty()) continue;
                 c.anims.put(trigger, new AnimDef(frames, fps <= 0 ? 24 : fps, loop,
-                        off[0], off[1], prefix, indices));
+                        off[0], off[1], prefix, indices, sheet));
                 c.order.add(trigger);
             }
             if (c.anims.isEmpty()) { atlas.close(); return null; }
@@ -102,7 +127,7 @@ public final class FreeCam2DCharacter implements AutoCloseable {
         for (String prefix : atlas.animationNames()) {
             List<SparrowAtlas.Frame> frames = atlas.frames(prefix);
             if (frames.isEmpty()) continue;
-            c.anims.put(prefix, new AnimDef(frames, 24, true, 0, 0, prefix, null));
+            c.anims.put(prefix, new AnimDef(frames, 24, true, 0, 0, prefix, null, atlas));
             c.order.add(prefix);
         }
         if (c.anims.isEmpty()) { atlas.close(); return null; }
@@ -180,7 +205,9 @@ public final class FreeCam2DCharacter implements AutoCloseable {
         int n = a.frames().size();
         int idx = (int) Math.floor(elapsed * Math.max(0.1, fps));
         idx = loop ? Math.floorMod(idx, n) : Math.min(idx, n - 1);
-        return a.frames().get(idx);
+        SparrowAtlas.Frame result = a.frames().get(idx);
+        a.sheet().prepareFrame(result);
+        return result;
     }
 
     public double[] currentOffset() {
@@ -192,14 +219,22 @@ public final class FreeCam2DCharacter implements AutoCloseable {
         if (atlas != null) atlas.setAntialiasing(enabled);
     }
 
-    public ResourceLocation texture() { return atlas.texture(); }
-    public int texWidth() { return atlas.width(); }
-    public int texHeight() { return atlas.height(); }
+    private SparrowAtlas currentSheet() {
+        AnimDef currentAnimation = anims.get(current);
+        return currentAnimation == null ? atlas : currentAnimation.sheet();
+    }
+    public ResourceLocation texture() { return currentSheet().texture(); }
+    public int texWidth() { return currentSheet().width(); }
+    public int texHeight() { return currentSheet().height(); }
     public int refW() { return refW; }
     public int refH() { return refH; }
 
     @Override
     public void close() {
-        if (atlas != null) { atlas.close(); atlas = null; }
+        java.util.Set<SparrowAtlas> sheets = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        if (atlas != null) sheets.add(atlas);
+        for (AnimDef animation : anims.values()) sheets.add(animation.sheet());
+        for (SparrowAtlas sheet : sheets) sheet.close();
+        atlas = null;
     }
 }

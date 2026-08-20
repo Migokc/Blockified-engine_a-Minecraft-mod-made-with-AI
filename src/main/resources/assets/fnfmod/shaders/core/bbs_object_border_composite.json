@@ -1,0 +1,14 @@
+{
+  "blend": {
+    "func": "add",
+    "srcrgb": "one",
+    "dstrgb": "zero"
+  },
+  "vertex": "fnfmod:bbs_object_border_composite",
+  "fragment": "fnfmod:bbs_object_border_composite",
+  "attributes": ["Position"],
+  "samplers": [{ "name": "DiffuseSampler" }],
+  "uniforms": [
+    { "name": "BorderColor", "type": "float", "count": 4, "values": [1.0, 1.0, 1.0, 1.0] }
+  ]
+}

@@ -2,6 +2,7 @@ package com.fnfmod.client.gameplay;
 
 import com.fnfmod.FnfMod;
 import com.fnfmod.client.render.SparrowAtlas;
+import com.fnfmod.client.render.AnimateAtlas;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -31,7 +32,8 @@ import java.util.Map;
 public final class WorldCharacter implements AutoCloseable {
 
     private record Animation(List<SparrowAtlas.Frame> frames, double fps, boolean loop,
-                             double offsetX, double offsetY, String prefix, List<Integer> indices) {}
+                             double offsetX, double offsetY, String prefix, List<Integer> indices,
+                             SparrowAtlas sheet) {}
 
     /** Export view of one animation, for generating addAnimationBy... Lua. */
     public record AnimExport(String name, String prefix, int fps, boolean loop,
@@ -71,46 +73,72 @@ public final class WorldCharacter implements AutoCloseable {
         try {
             JsonObject data = JsonParser.parseString(Files.readString(json)).getAsJsonObject();
             String image = str(data, "image");
-            if (image.isEmpty()) return null;
-
-            Path base = json.getParent();
-            while (base != null && !Files.isDirectory(base.resolve("images"))) base = base.getParent();
-            if (base == null) base = json.getParent();
-            Path png = base.resolve("images").resolve(image + ".png");
-            Path xml = base.resolve("images").resolve(image + ".xml");
-            SparrowAtlas atlas = SparrowAtlas.load(png, xml);
+            String assetPath = str(data, "assetPath");
+            String renderType = str(data, "renderType").toLowerCase(Locale.ROOT);
+            boolean animate = renderType.contains("animateatlas") || !assetPath.isEmpty();
+            SparrowAtlas atlas;
+            if (animate) {
+                atlas = AnimateAtlas.load(AnimateAtlas.resolveFolder(json, assetPath));
+                image = assetPath;
+            } else {
+                if (image.isEmpty()) return null;
+                Path base = json.getParent();
+                while (base != null && !Files.isDirectory(base.resolve("images"))) base = base.getParent();
+                if (base == null) base = json.getParent();
+                Path png = base.resolve("images").resolve(image + ".png");
+                Path xml = base.resolve("images").resolve(image + ".xml");
+                atlas = SparrowAtlas.load(png, xml);
+            }
             if (atlas == null) return null;
 
             WorldCharacter c = new WorldCharacter();
             c.atlas = atlas;
             c.image = image;
             c.scaleX = c.scaleY = num(data, "scale", 1);
-            c.flipX = boolAttr(data, "flip_x", false);
+            c.flipX = data.has("flipX") ? boolAttr(data, "flipX", false) : boolAttr(data, "flip_x", false);
             c.antialiasing = antialiasingFlag(data);
-            c.singDuration = Math.max(0.1, num(data, "sing_duration", 4));
-            c.danceEvery = (int) num(data, "dance_every", 0);
+            c.singDuration = Math.max(0.1, data.has("singTime")
+                    ? num(data, "singTime", 4) : num(data, "sing_duration", 4));
+            c.danceEvery = (int) (data.has("danceEvery")
+                    ? num(data, "danceEvery", 0) : num(data, "dance_every", 0));
             String id = stripExt(json.getFileName().toString()).toLowerCase(Locale.ROOT);
             c.danceFromSing = id.equals("gf") || id.startsWith("gf-") || id.startsWith("gf_");
 
             JsonArray list = data.has("animations") && data.get("animations").isJsonArray()
                     ? data.getAsJsonArray("animations") : new JsonArray();
+            Map<String, SparrowAtlas> sheets = new LinkedHashMap<>();
+            sheets.put(assetPath, atlas);
             for (JsonElement element : list) {
                 if (!element.isJsonObject()) continue;
                 JsonObject a = element.getAsJsonObject();
-                String prefix = str(a, "name");
+                String prefix = str(a, "prefix");
+                if (prefix.isEmpty()) prefix = str(a, "name");
                 String trigger = str(a, "anim");
+                if (trigger.isEmpty()) trigger = str(a, "name");
                 if (trigger.isEmpty()) trigger = prefix;
                 if (trigger.isEmpty()) continue;
+                SparrowAtlas sheet = atlas;
+                String animationAsset = str(a, "assetPath");
+                if (!animationAsset.isEmpty() && !animationAsset.equals(assetPath)) {
+                    sheet = sheets.get(animationAsset);
+                    if (sheet == null) {
+                        sheet = AnimateAtlas.load(AnimateAtlas.resolveFolder(json, animationAsset));
+                        if (sheet != null) sheets.put(animationAsset, sheet);
+                    }
+                    if (sheet == null) continue;
+                }
                 List<Integer> indices = readIndices(a);
-                List<SparrowAtlas.Frame> frames = frames(atlas, prefix, indices);
+                List<SparrowAtlas.Frame> frames = str(a, "animType").equalsIgnoreCase("symbol")
+                        ? new ArrayList<>(sheet.framesBySymbol(prefix)) : frames(sheet, prefix, indices);
                 if (frames.isEmpty()) continue;
                 double[] off = pair(a, "offsets");
                 c.animations.put(trigger, new Animation(frames, num(a, "fps", 24) <= 0 ? 24 : num(a, "fps", 24),
-                        boolAttr(a, "loop", false), off[0], off[1], prefix, indices));
+                        a.has("looped") ? boolAttr(a, "looped", false) : boolAttr(a, "loop", false),
+                        off[0], off[1], prefix, indices, sheet));
                 c.order.add(trigger);
             }
             if (c.animations.isEmpty()) { atlas.close(); return null; }
-            atlas.setAntialiasing(c.antialiasing);
+            for (SparrowAtlas sheet : c.animationSheets()) sheet.setAntialiasing(c.antialiasing);
             if (c.danceEvery <= 0) c.danceEvery = has(c, "danceLeft") && has(c, "danceRight") ? 1 : 2;
 
             SparrowAtlas.Frame f0 = atlas.allFrames().isEmpty() ? c.animations.values().iterator().next().frames().get(0)
@@ -227,7 +255,9 @@ public final class WorldCharacter implements AutoCloseable {
     public SparrowAtlas.Frame currentFrame() {
         Animation a = animations.get(animation);
         if (a == null || a.frames().isEmpty()) return null;
-        return a.frames().get(Math.max(0, Math.min(frame, a.frames().size() - 1)));
+        SparrowAtlas.Frame result = a.frames().get(Math.max(0, Math.min(frame, a.frames().size() - 1)));
+        a.sheet().prepareFrame(result);
+        return result;
     }
 
     public double[] currentOffset() {
@@ -235,9 +265,13 @@ public final class WorldCharacter implements AutoCloseable {
         return a == null ? new double[]{0, 0} : new double[]{a.offsetX(), a.offsetY()};
     }
 
-    public ResourceLocation texture() { return atlas.texture(); }
-    public int texWidth() { return atlas.width(); }
-    public int texHeight() { return atlas.height(); }
+    private SparrowAtlas currentSheet() {
+        Animation current = animations.get(animation);
+        return current == null ? atlas : current.sheet();
+    }
+    public ResourceLocation texture() { return currentSheet().texture(); }
+    public int texWidth() { return currentSheet().width(); }
+    public int texHeight() { return currentSheet().height(); }
     public int refW() { return refW; }
     public int refH() { return refH; }
     public double scaleX() { return scaleX; }
@@ -265,7 +299,7 @@ public final class WorldCharacter implements AutoCloseable {
 
     public void setAntialiasing(boolean enabled) {
         antialiasing = enabled;
-        if (atlas != null) atlas.setAntialiasing(enabled);
+        for (SparrowAtlas sheet : animationSheets()) sheet.setAntialiasing(enabled);
     }
 
     public List<AnimExport> exportData() {
@@ -280,7 +314,15 @@ public final class WorldCharacter implements AutoCloseable {
 
     @Override
     public void close() {
-        if (atlas != null) { atlas.close(); atlas = null; }
+        for (SparrowAtlas sheet : animationSheets()) sheet.close();
+        atlas = null;
+    }
+
+    private java.util.Set<SparrowAtlas> animationSheets() {
+        java.util.Set<SparrowAtlas> sheets = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        if (atlas != null) sheets.add(atlas);
+        for (Animation animation : animations.values()) sheets.add(animation.sheet());
+        return sheets;
     }
 
     // --- helpers ---
@@ -338,6 +380,7 @@ public final class WorldCharacter implements AutoCloseable {
     }
 
     private static boolean antialiasingFlag(JsonObject o) {
+        if (o.has("isPixel")) return !boolAttr(o, "isPixel", false);
         if (o.has("no_antialiasing")) return !boolAttr(o, "no_antialiasing", false);
         if (o.has("noAntialiasing")) return !boolAttr(o, "noAntialiasing", false);
         return boolAttr(o, "antialiasing", true);

@@ -5,6 +5,7 @@ import com.fnfmod.chart.SongChart;
 import com.fnfmod.client.camera.GameplayCamera;
 import com.fnfmod.client.math.Easing;
 import com.fnfmod.client.render.PsychCanvas;
+import com.fnfmod.client.render.AnimateAtlas;
 import com.fnfmod.client.render.SparrowAtlas;
 import com.fnfmod.client.render.SpriteAtlasCache;
 import com.fnfmod.gameplay.PlaybackPolicy;
@@ -15,6 +16,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import net.minecraft.client.gui.GuiGraphics;
+import net.minecraft.resources.ResourceLocation;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -31,7 +33,7 @@ public final class PsychGameplayScene implements AutoCloseable {
     private static final String[] DIRECTIONS = {"LEFT", "DOWN", "UP", "RIGHT"};
 
     private record Animation(List<SparrowAtlas.Frame> frames, double fps, boolean loop,
-                             double offsetX, double offsetY) {}
+                             double offsetX, double offsetY, SparrowAtlas sheet) {}
 
     private record StageLayout(double[] boyfriend, double[] opponent, double[] girlfriend,
                                double[] cameraBoyfriend, double[] cameraOpponent,
@@ -62,6 +64,8 @@ public final class PsychGameplayScene implements AutoCloseable {
         double scaleY;
         double alpha = 1;
         int color = 0xFFFFFF;
+        double objectBorderSize;
+        int objectBorderColor;
         double angle;
         double holdTimer;
         double heyTimer;
@@ -89,7 +93,7 @@ public final class PsychGameplayScene implements AutoCloseable {
             this.flipX = flipX;
             this.antialiasing = antialiasing;
             this.danceFromSing = danceFromSing;
-            atlas.setAntialiasing(antialiasing);
+            for (SparrowAtlas sheet : animationSheets()) sheet.setAntialiasing(antialiasing);
             this.cameraX = cameraX;
             this.cameraY = cameraY;
             this.singDuration = Math.max(0.1, singDuration);
@@ -246,6 +250,7 @@ public final class PsychGameplayScene implements AutoCloseable {
             if (current == null || current.frames().isEmpty()) return;
             SparrowAtlas.Frame atlasFrame = current.frames().get(Math.max(0,
                     Math.min(frame, current.frames().size() - 1)));
+            current.sheet().prepareFrame(atlasFrame);
             float sx = (float) scaleX;
             float sy = (float) scaleY;
             float cx = (float) (x + atlasFrame.frameW * sx * 0.5 - current.offsetX() * sx);
@@ -255,20 +260,43 @@ public final class PsychGameplayScene implements AutoCloseable {
             float oldTintG = SparrowAtlas.tintG;
             float oldTintB = SparrowAtlas.tintB;
             SparrowAtlas.globalAlpha = (float) Math.max(0, Math.min(1, alpha));
+            int stroke = (int) Math.round(objectBorderSize);
+            if (stroke > 0) {
+                SparrowAtlas.tintR = ((objectBorderColor >> 16) & 255) / 255f;
+                SparrowAtlas.tintG = ((objectBorderColor >> 8) & 255) / 255f;
+                SparrowAtlas.tintB = (objectBorderColor & 255) / 255f;
+                ResourceLocation mask = current.sheet().silhouetteTexture();
+                for (int dx = -stroke; dx <= stroke; dx++) {
+                    for (int dy = -stroke; dy <= stroke; dy++) {
+                        if (dx == 0 && dy == 0) continue;
+                        drawFrame(gui, atlasFrame, current, sx, sy, cx + dx, cy + dy, mask);
+                    }
+                }
+            }
             SparrowAtlas.tintR = oldTintR * ((color >> 16 & 255) / 255f);
             SparrowAtlas.tintG = oldTintG * ((color >> 8 & 255) / 255f);
             SparrowAtlas.tintB = oldTintB * ((color & 255) / 255f);
+            drawFrame(gui, atlasFrame, current, sx, sy, cx, cy, null);
+            SparrowAtlas.globalAlpha = oldAlpha;
+            SparrowAtlas.tintR = oldTintR;
+            SparrowAtlas.tintG = oldTintG;
+            SparrowAtlas.tintB = oldTintB;
+        }
+
+        private void drawFrame(GuiGraphics gui, SparrowAtlas.Frame atlasFrame, Animation current,
+                               float sx, float sy, float cx, float cy, ResourceLocation texture) {
             gui.pose().pushPose();
             gui.pose().translate(cx, cy, 0);
             if (angle != 0) gui.pose().mulPose(com.mojang.math.Axis.ZP.rotationDegrees((float) angle));
             gui.pose().scale(flipX ? -1f : 1f, 1f, 1f);
             if (Math.abs(sx) > 0.0001f) gui.pose().scale(1f, sy / sx, 1f);
-            atlas.drawScaled(gui, atlasFrame, 0, 0, Math.abs(sx));
+            current.sheet().drawScaled(gui, atlasFrame, 0, 0, Math.abs(sx), texture);
             gui.pose().popPose();
-            SparrowAtlas.globalAlpha = oldAlpha;
-            SparrowAtlas.tintR = oldTintR;
-            SparrowAtlas.tintG = oldTintG;
-            SparrowAtlas.tintB = oldTintB;
+        }
+
+        void setObjectBorder(double size, int color) {
+            objectBorderSize = Double.isFinite(size) ? Math.max(0, size) : 0;
+            objectBorderColor = color & 0xFFFFFF;
         }
 
         double midpointX() {
@@ -308,7 +336,8 @@ public final class PsychGameplayScene implements AutoCloseable {
                 case "holdTimer" -> holdTimer = Math.max(0, number);
                 case "visible" -> visible = bool(value); case "flipX" -> flipX = bool(value);
                 case "color" -> color = (int) ((long) number) & 0xFFFFFF;
-                case "antialiasing" -> { antialiasing = bool(value); atlas.setAntialiasing(antialiasing); }
+                case "antialiasing" -> { antialiasing = bool(value);
+                    for (SparrowAtlas sheet : animationSheets()) sheet.setAntialiasing(antialiasing); }
                 case "specialAnim" -> specialAnim = bool(value);
                 case "animation.curAnim.curFrame" -> {
                     Animation current = animations.get(animation);
@@ -325,6 +354,8 @@ public final class PsychGameplayScene implements AutoCloseable {
             angle = 0;
             alpha = 1;
             color = 0xFFFFFF;
+            objectBorderSize = 0;
+            objectBorderColor = 0;
             visible = true;
             holdTimer = heyTimer = 0;
             specialAnim = false;
@@ -335,7 +366,14 @@ public final class PsychGameplayScene implements AutoCloseable {
             dance(true);
         }
 
-        @Override public void close() { atlas.close(); }
+        private java.util.Set<SparrowAtlas> animationSheets() {
+            java.util.Set<SparrowAtlas> sheets = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+            sheets.add(atlas);
+            for (Animation animation : animations.values()) sheets.add(animation.sheet());
+            return sheets;
+        }
+
+        @Override public void close() { for (SparrowAtlas sheet : animationSheets()) sheet.close(); }
     }
 
     private CharacterSprite boyfriend;
@@ -428,26 +466,39 @@ public final class PsychGameplayScene implements AutoCloseable {
         SparrowAtlas loadedAtlas = null;
         try {
             JsonObject data = JsonParser.parseString(Files.readString(json)).getAsJsonObject();
-            Path png = assets.image(string(data, "image", ""));
-            if (png == null) return null;
-            Path xml = png.resolveSibling(stripExtension(png.getFileName().toString()) + ".xml");
             boolean antialiasing = characterAntialiasing(data);
-            loadedAtlas = SpriteAtlasCache.acquire(png, xml, antialiasing);
+            String renderType = string(data, "renderType", "").toLowerCase(Locale.ROOT);
+            String assetPath = string(data, "assetPath", "");
+            boolean animate = renderType.contains("animateatlas") || !assetPath.isBlank();
+            if (animate) {
+                Path folder = AnimateAtlas.resolveFolder(json, assetPath);
+                loadedAtlas = AnimateAtlas.load(folder);
+            } else {
+                Path png = assets.image(string(data, "image", ""));
+                if (png == null) return null;
+                Path xml = png.resolveSibling(stripExtension(png.getFileName().toString()) + ".xml");
+                loadedAtlas = SpriteAtlasCache.acquire(png, xml, antialiasing);
+            }
             if (loadedAtlas == null) return null;
             SparrowAtlas atlas = loadedAtlas;
-            Map<String, Animation> animations = readAnimations(data, atlas);
+            Map<String, Animation> animations = readAnimations(data, atlas, json, assetPath, antialiasing);
             if (animations.isEmpty()) {
                 atlas.close();
                 loadedAtlas = null;
                 return null;
             }
-            double[] position = pair(data, "position", 0, 0);
-            double[] camera = pair(data, "camera_position", 0, 0);
+            double[] position = data.has("position") ? pair(data, "position", 0, 0)
+                    : pair(data, "offsets", 0, 0);
+            double[] camera = data.has("camera_position") ? pair(data, "camera_position", 0, 0)
+                    : pair(data, "cameraOffsets", 0, 0);
             CharacterSprite sprite = new CharacterSprite(atlas, animations,
                     stagePosition[0] + position[0], stagePosition[1] + position[1],
-                    number(data, "scale", 1), bool(data, "flip_x", false) != playerSide,
-                    camera[0], camera[1], number(data, "sing_duration", 4),
-                    (int) number(data, "dance_every", 0), antialiasing,
+                    number(data, "scale", 1), (data.has("flipX")
+                    ? bool(data, "flipX", false) : bool(data, "flip_x", false)) != playerSide,
+                    camera[0], camera[1], data.has("singTime")
+                    ? number(data, "singTime", 4) : number(data, "sing_duration", 4),
+                    (int) (data.has("danceEvery") ? number(data, "danceEvery", 0)
+                    : number(data, "dance_every", 0)), antialiasing,
                     id.equalsIgnoreCase("gf") || id.toLowerCase(Locale.ROOT).startsWith("gf-"));
             loadedAtlas = null;
             return sprite;
@@ -458,31 +509,55 @@ public final class PsychGameplayScene implements AutoCloseable {
         }
     }
 
-    private static Map<String, Animation> readAnimations(JsonObject data, SparrowAtlas atlas) {
+    private static Map<String, Animation> readAnimations(JsonObject data, SparrowAtlas atlas,
+                                                          Path characterJson, String baseAssetPath,
+                                                          boolean antialiasing) {
         Map<String, Animation> animations = new LinkedHashMap<>();
+        Map<String, SparrowAtlas> sheets = new LinkedHashMap<>();
+        sheets.put(baseAssetPath == null ? "" : baseAssetPath, atlas);
         JsonArray list = data.has("animations") && data.get("animations").isJsonArray()
                 ? data.getAsJsonArray("animations") : new JsonArray();
         for (JsonElement element : list) {
             if (!element.isJsonObject()) continue;
             JsonObject anim = element.getAsJsonObject();
-            String name = string(anim, "anim", "");
-            String prefix = string(anim, "name", name);
+            String name = string(anim, "anim", string(anim, "name", ""));
+            String prefix = string(anim, "prefix", string(anim, "name", name));
+            SparrowAtlas sheet = atlas;
+            String animationAsset = string(anim, "assetPath", "");
+            if (!animationAsset.isBlank() && !animationAsset.equals(baseAssetPath)) {
+                sheet = sheets.get(animationAsset);
+                if (sheet == null) {
+                    sheet = AnimateAtlas.load(AnimateAtlas.resolveFolder(characterJson, animationAsset));
+                    if (sheet != null) {
+                        sheet.setAntialiasing(antialiasing);
+                        sheets.put(animationAsset, sheet);
+                    }
+                }
+                if (sheet == null) continue;
+            }
             List<SparrowAtlas.Frame> frames;
-            if (anim.has("indices") && anim.get("indices").isJsonArray()
+            if (string(anim, "animType", "").equalsIgnoreCase("symbol")) {
+                frames = new ArrayList<>(sheet.framesBySymbol(prefix));
+            } else if (anim.has("indices") && anim.get("indices").isJsonArray()
                     && !anim.getAsJsonArray("indices").isEmpty()) {
                 List<Integer> indices = new ArrayList<>();
                 for (JsonElement index : anim.getAsJsonArray("indices")) {
                     try { indices.add(index.getAsInt()); } catch (Exception ignored) {}
                 }
-                frames = new ArrayList<>(atlas.framesByIndices(prefix, indices));
+                frames = new ArrayList<>(sheet.framesByIndices(prefix, indices));
             } else {
-                frames = new ArrayList<>(atlas.framesByPrefix(prefix));
+                frames = new ArrayList<>(sheet.framesByPrefix(prefix));
             }
             if (name.isBlank() || frames.isEmpty()) continue;
             double[] offsets = pair(anim, "offsets", 0, 0);
             animations.put(name, new Animation(List.copyOf(frames), number(anim, "fps", 24),
-                    bool(anim, "loop", false), offsets[0], offsets[1]));
+                    anim.has("looped") ? bool(anim, "looped", false) : bool(anim, "loop", false),
+                    offsets[0], offsets[1], sheet));
         }
+        java.util.Set<SparrowAtlas> used = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        used.add(atlas);
+        for (Animation animation : animations.values()) used.add(animation.sheet());
+        for (SparrowAtlas sheet : sheets.values()) if (!used.contains(sheet)) sheet.close();
         return animations;
     }
 
@@ -508,6 +583,7 @@ public final class PsychGameplayScene implements AutoCloseable {
 
     /** Psych stores this as an inverted no_antialiasing flag. */
     private static boolean characterAntialiasing(JsonObject object) {
+        if (object.has("isPixel")) return !bool(object, "isPixel", false);
         if (object.has("no_antialiasing")) return !bool(object, "no_antialiasing", false);
         if (object.has("noAntialiasing")) return !bool(object, "noAntialiasing", false);
         // Compatibility with older Blockified files that used a direct flag.
@@ -841,6 +917,14 @@ public final class PsychGameplayScene implements AutoCloseable {
         CharacterSprite target = sprite(role);
         if (target == null) return false;
         target.y = value;
+        return true;
+    }
+
+    /** setObjectBorder for Psych-rendered bf/dad/gf character sprites. */
+    public boolean setObjectBorder(String role, double size, int color) {
+        CharacterSprite target = sprite(role);
+        if (target == null) return false;
+        target.setObjectBorder(size, color);
         return true;
     }
 

@@ -20,6 +20,9 @@ public class ClientOptions {
     public static final String SONG_ICON = "__song__";
     public static final String NOTE_SKIN_DEFAULT = "default";
     public static final String NOTE_SKIN_NONE = "none";
+    public static final String SKIN_SOURCE_FORM = "form";
+    public static final String SKIN_SOURCE_PLAYER = "player";
+    public static final String SKIN_SOURCE_FILE = "file";
     public boolean downscroll = false;
     /** Your strumline centered, opponent notes split to the screen edges. */
     public boolean middlescroll = false;
@@ -41,6 +44,15 @@ public class ClientOptions {
     public boolean playerUsePlayerSkin = false;
     /** Give the solo bot your current Minecraft skin when its BBS form supports player skins. */
     public boolean botUsePlayerSkin = false;
+    /** Compatible BBS player-form texture source: form, player, or file. */
+    public String playerSkinSource;
+    public String botSkinSource;
+    /** Absolute PNG selected in the native file picker. Empty unless the file source is used. */
+    public String playerSkinFile = "";
+    public String botSkinFile = "";
+    /** Minecraft model geometry for a selected file (false = wide/Steve, true = slim/Alex). */
+    public boolean playerSkinSlim = false;
+    public boolean botSkinSlim = false;
     /** Solo mode side: 0 = player, 1 = opponent, 2 = both. */
     public int playAs = 0;
     /** default = chart arrowSkin/splashSkin; none = procedural; otherwise skins/&lt;name&gt;. */
@@ -158,9 +170,28 @@ public class ClientOptions {
         if (o.opponentAnimationSet == null || o.opponentAnimationSet.isBlank()) {
             o.opponentAnimationSet = o.animationSet;
         }
+        // Old configs only had a boolean Form/Player choice. A missing source is
+        // migrated without changing the user's existing selection.
+        o.playerSkinSource = normalizeSkinSource(o.playerSkinSource, o.playerUsePlayerSkin);
+        o.botSkinSource = normalizeSkinSource(o.botSkinSource, o.botUsePlayerSkin);
+        o.playerUsePlayerSkin = SKIN_SOURCE_PLAYER.equals(o.playerSkinSource);
+        o.botUsePlayerSkin = SKIN_SOURCE_PLAYER.equals(o.botSkinSource);
+        if (o.playerSkinFile == null) o.playerSkinFile = "";
+        if (o.botSkinFile == null) o.botSkinFile = "";
         if (o.noteSkin == null || o.noteSkin.isBlank()) o.noteSkin = NOTE_SKIN_DEFAULT;
         if (o.noteColorBase == null || o.noteColorBase.length != 4) o.noteColorBase = defaultBase();
         if (o.noteColorOutline == null || o.noteColorOutline.length != 4) o.noteColorOutline = defaultOutline();
+    }
+
+    private static String normalizeSkinSource(String source, boolean oldUsePlayerSkin) {
+        if (source == null || source.isBlank()) {
+            return oldUsePlayerSkin ? SKIN_SOURCE_PLAYER : SKIN_SOURCE_FORM;
+        }
+        String normalized = source.trim().toLowerCase(java.util.Locale.ROOT);
+        return switch (normalized) {
+            case SKIN_SOURCE_PLAYER, SKIN_SOURCE_FILE -> normalized;
+            default -> SKIN_SOURCE_FORM;
+        };
     }
 
     /**
@@ -186,6 +217,15 @@ public class ClientOptions {
         // override either selector independently.
         if (override.has("animationSet") && !override.has("opponentAnimationSet")) {
             override.add("opponentAnimationSet", override.get("animationSet").deepCopy());
+        }
+        // Preserve old mod-world configs that only set the former two-way boolean.
+        if (override.has("playerUsePlayerSkin") && !override.has("playerSkinSource")) {
+            override.addProperty("playerSkinSource", override.get("playerUsePlayerSkin").getAsBoolean()
+                    ? SKIN_SOURCE_PLAYER : SKIN_SOURCE_FORM);
+        }
+        if (override.has("botUsePlayerSkin") && !override.has("botSkinSource")) {
+            override.addProperty("botSkinSource", override.get("botUsePlayerSkin").getAsBoolean()
+                    ? SKIN_SOURCE_PLAYER : SKIN_SOURCE_FORM);
         }
         JsonObject baseJson = GSON.toJsonTree(get()).getAsJsonObject();
         Map<String, JsonElement> originals = new LinkedHashMap<>();

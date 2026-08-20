@@ -1,6 +1,7 @@
 package com.fnfmod.mixin;
 
 import com.fnfmod.gameplay.PerformerShadows;
+import com.fnfmod.client.render.ObjectBorderRegistry;
 import com.mojang.blaze3d.vertex.PoseStack;
 import net.minecraft.client.renderer.MultiBufferSource;
 import net.minecraft.client.renderer.entity.EntityRenderDispatcher;
@@ -20,11 +21,21 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 @Mixin(EntityRenderDispatcher.class)
 public abstract class EntityShadowMixin {
 
+    /** Prevents one outlined entity's buffer/color state leaking into the next render. */
+    @Inject(method = "render", at = @At("RETURN"))
+    private void fnfmod$finishObjectBorder(Entity entity, double x, double y, double z,
+                                           float yaw, float partialTick, PoseStack poseStack,
+                                           MultiBufferSource buffers, int packedLight,
+                                           CallbackInfo ci) {
+        ObjectBorderRegistry.finish(entity);
+    }
+
     @Inject(method = "renderShadow", at = @At("HEAD"), cancellable = true)
     private static void fnfmod$skipPerformerShadow(PoseStack poseStack, MultiBufferSource buffer,
                                                    Entity entity, float strength, float partialTick,
                                                    LevelReader level, float radius, CallbackInfo ci) {
-        if (entity != null && PerformerShadows.hidden(entity.getId())) {
+        if (com.fnfmod.client.world.WorldImportCutscene.hideShadows()
+                || (entity != null && PerformerShadows.hidden(entity.getId()))) {
             ci.cancel();
         }
     }

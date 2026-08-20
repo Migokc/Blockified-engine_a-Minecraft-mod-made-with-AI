@@ -1,0 +1,70 @@
+{
+  "targets": [
+    "raw",
+    "propagate_a",
+    "propagate_b",
+    "final"
+  ],
+  "passes": [
+    {
+      "name": "fnfmod:object_outline_propagate",
+      "intarget": "final",
+      "outtarget": "raw",
+      "uniforms": [{ "name": "Step", "values": [0.0] }]
+    },
+    {
+      "name": "fnfmod:object_outline_propagate",
+      "intarget": "raw",
+      "outtarget": "propagate_a",
+      "uniforms": [{ "name": "Step", "values": [128.0] }]
+    },
+    {
+      "name": "fnfmod:object_outline_propagate",
+      "intarget": "propagate_a",
+      "outtarget": "propagate_b",
+      "uniforms": [{ "name": "Step", "values": [64.0] }]
+    },
+    {
+      "name": "fnfmod:object_outline_propagate",
+      "intarget": "propagate_b",
+      "outtarget": "propagate_a",
+      "uniforms": [{ "name": "Step", "values": [32.0] }]
+    },
+    {
+      "name": "fnfmod:object_outline_propagate",
+      "intarget": "propagate_a",
+      "outtarget": "propagate_b",
+      "uniforms": [{ "name": "Step", "values": [16.0] }]
+    },
+    {
+      "name": "fnfmod:object_outline_propagate",
+      "intarget": "propagate_b",
+      "outtarget": "propagate_a",
+      "uniforms": [{ "name": "Step", "values": [8.0] }]
+    },
+    {
+      "name": "fnfmod:object_outline_propagate",
+      "intarget": "propagate_a",
+      "outtarget": "propagate_b",
+      "uniforms": [{ "name": "Step", "values": [4.0] }]
+    },
+    {
+      "name": "fnfmod:object_outline_propagate",
+      "intarget": "propagate_b",
+      "outtarget": "propagate_a",
+      "uniforms": [{ "name": "Step", "values": [2.0] }]
+    },
+    {
+      "name": "fnfmod:object_outline_propagate",
+      "intarget": "propagate_a",
+      "outtarget": "propagate_b",
+      "uniforms": [{ "name": "Step", "values": [1.0] }]
+    },
+    {
+      "name": "fnfmod:object_outline_edge",
+      "intarget": "propagate_b",
+      "outtarget": "final",
+      "auxtargets": [{ "name": "OriginalSampler", "id": "raw" }]
+    }
+  ]
+}

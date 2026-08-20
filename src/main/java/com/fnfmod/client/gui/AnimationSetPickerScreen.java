@@ -3,6 +3,7 @@ package com.fnfmod.client.gui;
 import com.fnfmod.client.ClientOptions;
 import com.fnfmod.client.FnfKeys;
 import com.fnfmod.client.anim.CharacterAnimations;
+import com.fnfmod.client.gameplay.NativeFilePicker;
 import com.fnfmod.client.math.Easing;
 import com.mojang.blaze3d.systems.RenderSystem;
 import net.minecraft.client.gui.GuiGraphics;
@@ -19,6 +20,8 @@ import org.lwjgl.glfw.GLFW;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.nio.file.Files;
+import java.nio.file.Path;
 
 /** Searchable player/opponent animation-set picker with a live BBS preview. */
 public final class AnimationSetPickerScreen extends Screen implements TextInputAwareScreen {
@@ -44,8 +47,16 @@ public final class AnimationSetPickerScreen extends Screen implements TextInputA
     private boolean previewHasSecondIdle;
     private long returnToIdleAt;
     private long nextIdleAt;
-    private boolean playerUsePlayerSkin;
-    private boolean botUsePlayerSkin;
+    private String playerSkinSource;
+    private String botSkinSource;
+    private Path playerSkinFile;
+    private Path botSkinFile;
+    private boolean playerSkinSlim;
+    private boolean botSkinSlim;
+    private SkinDialog skinDialog = SkinDialog.NONE;
+    private Path pendingSkinFile;
+
+    private enum SkinDialog { NONE, SOURCE, MODEL }
 
     public AnimationSetPickerScreen(Screen parent, boolean opponent) {
         super(Component.literal(opponent ? "Opponent Animations" : "Player Animations"));
@@ -59,8 +70,13 @@ public final class AnimationSetPickerScreen extends Screen implements TextInputA
         visible = all;
         String current = opponent ? ClientOptions.get().opponentAnimationSet
                 : ClientOptions.get().animationSet;
-        playerUsePlayerSkin = ClientOptions.get().playerUsePlayerSkin;
-        botUsePlayerSkin = ClientOptions.get().botUsePlayerSkin;
+        ClientOptions options = ClientOptions.get();
+        playerSkinSource = options.playerSkinSource;
+        botSkinSource = options.botSkinSource;
+        playerSkinFile = pathOrNull(options.playerSkinFile);
+        botSkinFile = pathOrNull(options.botSkinFile);
+        playerSkinSlim = options.playerSkinSlim;
+        botSkinSlim = options.botSkinSlim;
         selectedIndex = Math.max(0, indexOf(visible, current));
         resetScroll(true);
 
@@ -173,7 +189,7 @@ public final class AnimationSetPickerScreen extends Screen implements TextInputA
             CharacterAnimations.stopPreview();
             return;
         }
-        CharacterAnimations.prepare(minecraft.player, set, role(), selectedUsePlayerSkin());
+        CharacterAnimations.prepare(minecraft.player, set, role(), selectedSkinChoice());
         playIdlePreview();
     }
 
@@ -183,7 +199,7 @@ public final class AnimationSetPickerScreen extends Screen implements TextInputA
         long now = System.nanoTime();
         previewedAction = action;
         CharacterAnimations.play(minecraft.player, previewedSet, role(), action,
-                selectedUsePlayerSkin());
+                selectedSkinChoice());
         returnToIdleAt = temporary ? now + PREVIEW_BEAT_NANOS : 0;
         nextIdleAt = 0;
     }
@@ -197,13 +213,13 @@ public final class AnimationSetPickerScreen extends Screen implements TextInputA
         String action = second ? "idle2" : "idle";
         previewedAction = action;
         if (CharacterAnimations.play(minecraft.player, previewedSet, role(), action,
-                selectedUsePlayerSkin()) == null && second) {
+                selectedSkinChoice()) == null && second) {
             // A stale/inherited mapping can claim idle2 even when the selected
             // form cannot play it. Downgrade this preview to the single-idle cadence.
             previewHasSecondIdle = false;
             previewedAction = "idle";
             CharacterAnimations.play(minecraft.player, previewedSet, role(), "idle",
-                    selectedUsePlayerSkin());
+                    selectedSkinChoice());
         }
         idleBeat++;
         returnToIdleAt = 0;
@@ -228,14 +244,31 @@ public final class AnimationSetPickerScreen extends Screen implements TextInputA
         if (set.isEmpty()) return;
         if (opponent) ClientOptions.get().opponentAnimationSet = set;
         else ClientOptions.get().animationSet = set;
-        if (opponent) ClientOptions.get().botUsePlayerSkin = botUsePlayerSkin;
-        else ClientOptions.get().playerUsePlayerSkin = playerUsePlayerSkin;
+        ClientOptions options = ClientOptions.get();
+        if (opponent) {
+            options.botSkinSource = botSkinSource;
+            options.botSkinFile = botSkinFile == null ? "" : botSkinFile.toString();
+            options.botSkinSlim = botSkinSlim;
+            options.botUsePlayerSkin = ClientOptions.SKIN_SOURCE_PLAYER.equals(botSkinSource);
+        } else {
+            options.playerSkinSource = playerSkinSource;
+            options.playerSkinFile = playerSkinFile == null ? "" : playerSkinFile.toString();
+            options.playerSkinSlim = playerSkinSlim;
+            options.playerUsePlayerSkin = ClientOptions.SKIN_SOURCE_PLAYER.equals(playerSkinSource);
+        }
         ClientOptions.save();
         onClose();
     }
 
-    private boolean selectedUsePlayerSkin() {
-        return opponent ? botUsePlayerSkin : playerUsePlayerSkin;
+    private CharacterAnimations.SkinChoice selectedSkinChoice() {
+        String source = opponent ? botSkinSource : playerSkinSource;
+        Path file = opponent ? botSkinFile : playerSkinFile;
+        boolean slim = opponent ? botSkinSlim : playerSkinSlim;
+        if (ClientOptions.SKIN_SOURCE_PLAYER.equals(source)) return CharacterAnimations.SkinChoice.player();
+        if (ClientOptions.SKIN_SOURCE_FILE.equals(source) && file != null) {
+            return CharacterAnimations.SkinChoice.file(file, slim);
+        }
+        return CharacterAnimations.SkinChoice.form();
     }
 
     private boolean skinChoiceAllowed() {
@@ -256,7 +289,15 @@ public final class AnimationSetPickerScreen extends Screen implements TextInputA
         String owner = opponent ? "Bot" : "Player";
         if (!skinChoiceAllowed()) return owner + " Skin: Locked";
         if (!skinChoiceSupported()) return owner + " Skin: Unavailable";
-        return owner + (selectedUsePlayerSkin() ? " Skin: Yours" : " Skin: Form");
+        String source = opponent ? botSkinSource : playerSkinSource;
+        if (ClientOptions.SKIN_SOURCE_PLAYER.equals(source)) return owner + " Skin: Yours";
+        if (ClientOptions.SKIN_SOURCE_FILE.equals(source)) {
+            Path file = opponent ? botSkinFile : playerSkinFile;
+            boolean slim = opponent ? botSkinSlim : playerSkinSlim;
+            String name = file == null ? "Missing" : file.getFileName().toString();
+            return trim(owner + " Skin: " + name + " (" + (slim ? "Slim" : "Wide") + ")", 31);
+        }
+        return owner + " Skin: Form";
     }
 
     @Override
@@ -305,6 +346,41 @@ public final class AnimationSetPickerScreen extends Screen implements TextInputA
                 skinButtonLabel(), mouseX, mouseY, skinButtonEnabled());
         renderButton(gui, x0 + 22 + buttonWidth * 2, buttonY, buttonWidth, "Select", mouseX, mouseY);
         super.render(gui, mouseX, mouseY, partialTick);
+        if (skinDialog != SkinDialog.NONE) renderSkinDialog(gui, mouseX, mouseY);
+    }
+
+    private void renderSkinDialog(GuiGraphics gui, int mouseX, int mouseY) {
+        gui.pose().pushPose();
+        gui.pose().translate(0, 0, 1000);
+        gui.fill(0, 0, width, height, 0xB8000000);
+        int w = Math.min(280, width - 32);
+        int rows = skinDialog == SkinDialog.SOURCE ? 4 : 3;
+        int h = 38 + rows * 24;
+        int x = (width - w) / 2;
+        int y = (height - h) / 2;
+        gui.fill(x, y, x + w, y + h, 0xFF101018);
+        gui.renderOutline(x, y, w, h, 0xFF8A90FF);
+        gui.drawCenteredString(font, skinDialog == SkinDialog.SOURCE
+                        ? "Choose skin source" : "Is this skin Slim or Wide?",
+                x + w / 2, y + 10, 0xFFFFFFFF);
+        if (skinDialog == SkinDialog.SOURCE) {
+            renderModalButton(gui, x + 12, y + 30, w - 24, "Form's Skin", mouseX, mouseY);
+            renderModalButton(gui, x + 12, y + 54, w - 24, "Current Player Skin", mouseX, mouseY);
+            renderModalButton(gui, x + 12, y + 78, w - 24, "Choose PNG File...", mouseX, mouseY);
+            renderModalButton(gui, x + 12, y + 102, w - 24, "Cancel", mouseX, mouseY);
+        } else {
+            String file = pendingSkinFile == null ? "" : trim(pendingSkinFile.getFileName().toString(), 32);
+            gui.drawCenteredString(font, file, x + w / 2, y + 25, 0xFFAAAEC5);
+            renderModalButton(gui, x + 12, y + 42, w - 24, "Wide (Steve)", mouseX, mouseY);
+            renderModalButton(gui, x + 12, y + 66, w - 24, "Slim (Alex)", mouseX, mouseY);
+            renderModalButton(gui, x + 12, y + 90, w - 24, "Cancel", mouseX, mouseY);
+        }
+        gui.pose().popPose();
+    }
+
+    private void renderModalButton(GuiGraphics gui, int x, int y, int w, String text,
+                                   int mouseX, int mouseY) {
+        renderButton(gui, x, y, w, text, mouseX, mouseY);
     }
 
     private void renderScrollbar(GuiGraphics gui, int listRight, int top, int height) {
@@ -374,6 +450,13 @@ public final class AnimationSetPickerScreen extends Screen implements TextInputA
 
     @Override
     public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
+        if (skinDialog != SkinDialog.NONE) {
+            if (keyCode == GLFW.GLFW_KEY_ESCAPE) {
+                skinDialog = SkinDialog.NONE;
+                pendingSkinFile = null;
+            }
+            return true;
+        }
         if (keyCode == GLFW.GLFW_KEY_ESCAPE) {
             onClose();
             return true;
@@ -399,6 +482,7 @@ public final class AnimationSetPickerScreen extends Screen implements TextInputA
 
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
+        if (skinDialog != SkinDialog.NONE) return clickSkinDialog(mouseX, mouseY, button);
         if (button == GLFW.GLFW_MOUSE_BUTTON_LEFT) {
             int x0 = panelX(), y0 = panelY(), boxW = panelWidth(), boxH = panelHeight();
             int listRight = listRight(), top = listTop();
@@ -426,9 +510,9 @@ public final class AnimationSetPickerScreen extends Screen implements TextInputA
                     && mouseX >= x0 + 14 + buttonWidth
                     && mouseX < x0 + 14 + buttonWidth * 2) {
                 if (!skinButtonEnabled()) return true;
-                if (opponent) botUsePlayerSkin = !botUsePlayerSkin;
-                else playerUsePlayerSkin = !playerUsePlayerSkin;
-                previewSelection();
+                search.setFocused(false);
+                setFocused(null);
+                skinDialog = SkinDialog.SOURCE;
                 return true;
             }
             if (mouseY >= buttonY && mouseY < buttonY + 18
@@ -443,6 +527,7 @@ public final class AnimationSetPickerScreen extends Screen implements TextInputA
 
     @Override
     public boolean mouseScrolled(double mouseX, double mouseY, double scrollX, double scrollY) {
+        if (skinDialog != SkinDialog.NONE) return true;
         if (scrollY != 0) {
             selectedIndex += scrollY > 0 ? -1 : 1;
             clampSelection();
@@ -493,6 +578,70 @@ public final class AnimationSetPickerScreen extends Screen implements TextInputA
     private static String trim(String text, int max) {
         if (text == null || text.length() <= max) return text == null ? "" : text;
         return text.substring(0, Math.max(0, max - 3)) + "...";
+    }
+
+    private boolean clickSkinDialog(double mouseX, double mouseY, int button) {
+        if (button != GLFW.GLFW_MOUSE_BUTTON_LEFT) return true;
+        int w = Math.min(280, width - 32);
+        int rows = skinDialog == SkinDialog.SOURCE ? 4 : 3;
+        int h = 38 + rows * 24;
+        int x = (width - w) / 2;
+        int y = (height - h) / 2;
+        if (mouseX < x + 12 || mouseX >= x + w - 12) return true;
+        if (skinDialog == SkinDialog.SOURCE) {
+            int row = modalRow(mouseY, y + 30, 4);
+            if (row == 0) applySkinSource(ClientOptions.SKIN_SOURCE_FORM, null, false);
+            else if (row == 1) applySkinSource(ClientOptions.SKIN_SOURCE_PLAYER, null, false);
+            else if (row == 2) {
+                NativeFilePicker.openFile("Choose Minecraft skin", new String[]{"*.png"}, "PNG skin")
+                        .filter(Files::isRegularFile)
+                        .ifPresent(path -> {
+                            pendingSkinFile = path.toAbsolutePath().normalize();
+                            skinDialog = SkinDialog.MODEL;
+                        });
+            } else if (row == 3) skinDialog = SkinDialog.NONE;
+        } else {
+            int row = modalRow(mouseY, y + 42, 3);
+            if (row == 0 || row == 1) {
+                applySkinSource(ClientOptions.SKIN_SOURCE_FILE, pendingSkinFile, row == 1);
+                pendingSkinFile = null;
+            } else if (row == 2) {
+                pendingSkinFile = null;
+                skinDialog = SkinDialog.SOURCE;
+            }
+        }
+        return true;
+    }
+
+    private static int modalRow(double mouseY, int top, int rows) {
+        for (int row = 0; row < rows; row++) {
+            int y = top + row * 24;
+            if (mouseY >= y && mouseY < y + 18) return row;
+        }
+        return -1;
+    }
+
+    private void applySkinSource(String source, Path file, boolean slim) {
+        if (opponent) {
+            botSkinSource = source;
+            if (file != null) botSkinFile = file;
+            botSkinSlim = slim;
+        } else {
+            playerSkinSource = source;
+            if (file != null) playerSkinFile = file;
+            playerSkinSlim = slim;
+        }
+        skinDialog = SkinDialog.NONE;
+        previewSelection();
+    }
+
+    private static Path pathOrNull(String value) {
+        if (value == null || value.isBlank()) return null;
+        try {
+            return Path.of(value).toAbsolutePath().normalize();
+        } catch (RuntimeException ignored) {
+            return null;
+        }
     }
 
     private static void renderFixedCharacter(GuiGraphics gui, int clipLeft, int clipTop,

@@ -2,13 +2,34 @@
 
 A feature-full Friday Night Funkin' engine inside of Minecraft — **NeoForge 1.21.1**.
 
-Current release: **2.2.9bbs**.
+Current release: **2.3.0bbs**.
 
 Documentation: **[Blockified Engine Docs](https://migokc.github.io/Blockified-engine_a-Minecraft-mod-made-with-AI/)**.
 
 > **Unofficial fan project.** Blockified Engine is not affiliated with or
 > endorsed by Mojang Studios, Microsoft, The Funkin' Crew, or Friday Night
 > Funkin'. All referenced names and trademarks belong to their respective owners.
+
+### 2.3.0bbs highlights
+
+- Move a world between your saves and a pack without leaving the game: `/fnf world
+  export <pack>` relocates the current world into a pack's `worlds/` folder and
+  reopens it as a bundled mod world, and `/fnf world import` moves a bundled world
+  back into saves. A short black-screen transition saves, closes, moves, and reloads
+  the world with movement and camera locked and a progress bar, and self-heals if the
+  game is closed mid-transition.
+- A host-only **World Settings** button in the song selector edits a bundled world's
+  `blockified-options.json` in-game: toggle cheats, world saving, whether external
+  packs and directories are allowed, and hide the button; force the world's players
+  onto your current gameplay/visual settings; and bundle the models and textures of
+  placed BBS model blocks into the world so it still renders when shared.
+- Characters can load Adobe Animate / Better Texture Atlas art (modern V-Slice
+  atlases) through new Lua sprite functions, and a character's skin can be sourced
+  from its BBS form, the real player skin, or a chosen file.
+- Performers, BBS models, entities, and world sprites can carry colored screen-space
+  outlines controlled from Lua.
+- Dedicated servers no longer cap per-song transfer size; songs of any size transfer,
+  while the file-count, name, SHA-1, and overflow checks stay in place.
 
 ### 2.2.9bbs highlights
 

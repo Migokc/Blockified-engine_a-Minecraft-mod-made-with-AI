@@ -54,8 +54,6 @@ import java.util.UUID;
 public final class SessionManager {
 
     private static final int CHUNK_SIZE = 400 * 1024;
-    /** Hard per-song network transfer limit for untrusted remote servers. */
-    public static final long MAX_SONG_TRANSFER_BYTES = 100L * 1024 * 1024;
 
     /**
      * File transfers stream off the server tick thread. Reading and slicing a
@@ -308,12 +306,9 @@ public final class SessionManager {
             policy = new PlaybackPolicy(policy.mode(), false, false);
         }
         List<FnfPayloads.FileMeta> selectedManifest = manifest(entry, payload.difficulty(), policy);
-        long manifestBytes = manifestSize(selectedManifest);
-        if (selectedManifest.size() > FnfPayloads.MAX_MANIFEST_FILES
-                || player.getServer().isDedicatedServer()
-                && (manifestBytes < 0 || manifestBytes > MAX_SONG_TRANSFER_BYTES)) {
+        if (selectedManifest.size() > FnfPayloads.MAX_MANIFEST_FILES) {
             player.sendSystemMessage(Component.literal(
-                    "Song exceeds the 100 MiB server transfer limit."));
+                    "Song has too many files to transfer."));
             return;
         }
 
@@ -350,21 +345,6 @@ public final class SessionManager {
         java.util.Set<String> requested = new java.util.HashSet<>(payload.fileNames());
         List<Path> candidates = entry.transferFiles(session.difficulty, session.playbackPolicy).stream()
                 .filter(file -> requested.contains(entry.transferName(file))).toList();
-        long total = 0;
-        for (Path f : candidates) {
-            try {
-                long size = Files.size(f);
-                if (size < 0 || total > MAX_SONG_TRANSFER_BYTES - size) {
-                    total = MAX_SONG_TRANSFER_BYTES + 1;
-                    break;
-                }
-                total += size;
-            } catch (IOException ignored) {}
-        }
-        if (player.getServer().isDedicatedServer() && total > MAX_SONG_TRANSFER_BYTES) {
-            player.sendSystemMessage(Component.literal("Requested song files exceed the 100 MiB transfer limit."));
-            return;
-        }
 
         // Stream the files off the tick thread so the world keeps running, and
         // stop between chunks if the session is cancelled or the player leaves.
@@ -1047,15 +1027,6 @@ public final class SessionManager {
             }
         }
         return out;
-    }
-
-    private static long manifestSize(List<FnfPayloads.FileMeta> files) {
-        long total = 0;
-        for (FnfPayloads.FileMeta file : files) {
-            if (file.size() < 0 || total > MAX_SONG_TRANSFER_BYTES - file.size()) return -1;
-            total += file.size();
-        }
-        return total;
     }
 
     public static String sha1(Path f) throws IOException {

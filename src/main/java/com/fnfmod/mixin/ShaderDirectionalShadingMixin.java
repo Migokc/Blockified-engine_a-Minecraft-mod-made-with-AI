@@ -1,6 +1,7 @@
 package com.fnfmod.mixin;
 
 import com.fnfmod.client.render.DirectionalShadingControl;
+import com.fnfmod.client.render.BbsObjectBorderRenderer;
 import com.mojang.blaze3d.shaders.Uniform;
 import net.minecraft.client.renderer.ShaderInstance;
 import org.spongepowered.asm.mixin.Mixin;
@@ -30,6 +31,7 @@ public abstract class ShaderDirectionalShadingMixin {
 
     @Inject(method = "apply", at = @At("HEAD"))
     private void fnfmod$applyFlatEntityLighting(CallbackInfo callback) {
+        BbsObjectBorderRenderer.beforeShaderApply((ShaderInstance) (Object) this);
         fnfmod$flatLightingApplied = false;
         if (DirectionalShadingControl.entityShadingEnabled()
                 || LIGHT0_DIRECTION == null || LIGHT1_DIRECTION == null
@@ -65,12 +67,13 @@ public abstract class ShaderDirectionalShadingMixin {
 
     @Inject(method = "apply", at = @At("RETURN"))
     private void fnfmod$restoreEntityLightingUniforms(CallbackInfo callback) {
-        if (!fnfmod$flatLightingApplied) return;
-
-        COLOR_MODULATOR.set(fnfmod$savedColor);
-        LIGHT0_DIRECTION.set(fnfmod$savedLight0);
-        LIGHT1_DIRECTION.set(fnfmod$savedLight1);
-        fnfmod$flatLightingApplied = false;
+        if (fnfmod$flatLightingApplied) {
+            COLOR_MODULATOR.set(fnfmod$savedColor);
+            LIGHT0_DIRECTION.set(fnfmod$savedLight0);
+            LIGHT1_DIRECTION.set(fnfmod$savedLight1);
+            fnfmod$flatLightingApplied = false;
+        }
+        BbsObjectBorderRenderer.afterShaderApply((ShaderInstance) (Object) this);
     }
 
     @Unique

@@ -27,6 +27,8 @@ public final class SpriteImageCache {
         final int width;
         final int height;
         final long bytes;
+        ResourceLocation maskId;
+        DynamicTexture maskTexture;
         int references;
 
         Loaded(ResourceLocation id, DynamicTexture texture, int width, int height) {
@@ -51,6 +53,9 @@ public final class SpriteImageCache {
         public DynamicTexture dynamicTexture() { return value == null ? null : value.texture; }
         public int width() { return value == null ? 0 : value.width; }
         public int height() { return value == null ? 0 : value.height; }
+        public ResourceLocation silhouetteTexture() {
+            return value == null ? null : SpriteImageCache.silhouette(value, key.antialiasing());
+        }
 
         @Override public void close() {
             if (value == null) return;
@@ -174,6 +179,39 @@ public final class SpriteImageCache {
         trimLoaded();
     }
 
+    private static synchronized ResourceLocation silhouette(Loaded value, boolean antialiasing) {
+        if (value.maskId != null) return value.maskId;
+        NativeImage source = value.texture.getPixels();
+        if (source == null) return value.id;
+        try {
+            NativeImage mask = new NativeImage(value.width, value.height, true);
+            for (int y = 0; y < value.height; y++) {
+                for (int x = 0; x < value.width; x++) {
+                    int alpha = source.getPixelRGBA(x, y) >>> 24;
+                    mask.setPixelRGBA(x, y, alpha << 24 | 0xFFFFFF);
+                }
+            }
+            value.maskTexture = new DynamicTexture(mask);
+            value.maskTexture.setFilter(antialiasing, false);
+            value.maskId = FnfMod.id("sprite_image_outline/" + NEXT_ID.incrementAndGet());
+            Minecraft.getInstance().getTextureManager().register(value.maskId, value.maskTexture);
+            loadedBytes += value.bytes;
+        } catch (Throwable ignored) {
+            value.maskId = value.id;
+            value.maskTexture = null;
+        }
+        return value.maskId;
+    }
+
+    private static void releaseMask(Loaded value) {
+        if (value.maskTexture != null && value.maskId != null) {
+            Minecraft.getInstance().getTextureManager().release(value.maskId);
+            loadedBytes = Math.max(0, loadedBytes - value.bytes);
+        }
+        value.maskTexture = null;
+        value.maskId = null;
+    }
+
     private static void trimLoaded() {
         if (loadedBytes <= MAX_BYTES) return;
         Iterator<Map.Entry<Key, Loaded>> iterator = loaded.entrySet().iterator();
@@ -182,6 +220,7 @@ public final class SpriteImageCache {
             if (value.references != 0) continue;
             iterator.remove();
             loadedBytes -= value.bytes;
+            releaseMask(value);
             Minecraft.getInstance().getTextureManager().release(value.id);
         }
     }
@@ -199,6 +238,7 @@ public final class SpriteImageCache {
     public static synchronized void clear() {
         generation++;
         for (Loaded value : loaded.values()) {
+            releaseMask(value);
             Minecraft.getInstance().getTextureManager().release(value.id);
         }
         for (NativeImage image : decoded.values()) image.close();

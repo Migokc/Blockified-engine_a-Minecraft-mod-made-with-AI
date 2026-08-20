@@ -1,6 +1,7 @@
 package com.fnfmod.mixin;
 
 import com.fnfmod.client.render.PerformerRotation;
+import com.fnfmod.client.render.BbsObjectBorderRenderer;
 import com.mojang.blaze3d.vertex.PoseStack;
 import net.minecraft.client.player.AbstractClientPlayer;
 import net.minecraft.client.renderer.MultiBufferSource;
@@ -33,5 +34,22 @@ public abstract class BbsMorphRendererMixin {
             float tickDelta, PoseStack poseStack, MultiBufferSource buffers, int light,
             CallbackInfoReturnable<Boolean> callback) {
         PerformerRotation.apply(player, poseStack);
+    }
+
+    /** BBS renders outside Minecraft's buffers; capture its visible form silhouette. */
+    @Inject(
+            method = "renderPlayer",
+            at = @At(
+                    value = "INVOKE",
+                    target = "Lmchorse/bbs_mod/forms/FormUtilsClient;render(Lmchorse/bbs_mod/forms/forms/Form;Lmchorse/bbs_mod/forms/renderers/FormRenderingContext;)V",
+                    shift = At.Shift.AFTER,
+                    remap = false
+            ),
+            remap = false
+    )
+    private static void fnfmod$captureBbsBorder(AbstractClientPlayer player, float yaw,
+            float tickDelta, PoseStack poseStack, MultiBufferSource buffers, int light,
+            CallbackInfoReturnable<Boolean> callback) {
+        BbsObjectBorderRenderer.capture(player, poseStack, light, tickDelta);
     }
 }

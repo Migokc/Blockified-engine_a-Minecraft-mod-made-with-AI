@@ -1,5 +1,6 @@
 package com.fnfmod.client.anim;
 
+import com.fnfmod.client.ClientOptions;
 import com.fnfmod.FnfMod;
 import com.fnfmod.character.CharacterDefinitionPaths;
 import com.fnfmod.song.SongLibrary;
@@ -53,6 +54,20 @@ import java.util.stream.Stream;
  * selected by its chart character IDs and Change Character events.
  */
 public final class CharacterAnimations {
+    /** Explicit Settings skin choice for compatible BBS Steve/Alex forms. */
+    public record SkinChoice(String source, Path file, boolean slim) {
+        public static SkinChoice form() {
+            return new SkinChoice(ClientOptions.SKIN_SOURCE_FORM, null, false);
+        }
+
+        public static SkinChoice player() {
+            return new SkinChoice(ClientOptions.SKIN_SOURCE_PLAYER, null, false);
+        }
+
+        public static SkinChoice file(Path file, boolean slim) {
+            return new SkinChoice(ClientOptions.SKIN_SOURCE_FILE, file, slim);
+        }
+    }
 
     public static final String[] ACTIONS = {"idle", "idle2", "left", "down", "up", "right", "miss", "hey"};
     public static final String NONE_SET = CharacterDefinitionPaths.NONE;
@@ -845,11 +860,17 @@ public final class CharacterAnimations {
     /** playerSkinChoice is the Settings choice and is ignored when the pack locks it. */
     public static synchronized float[] play(Player player, String setName, String role, String action,
                                             boolean playerSkinChoice) {
-        return playResolved(player, setName, role, action, playerSkinChoice);
+        return playResolved(player, setName, role, action,
+                playerSkinChoice ? SkinChoice.player() : SkinChoice.form());
+    }
+
+    public static synchronized float[] play(Player player, String setName, String role, String action,
+                                            SkinChoice skinChoice) {
+        return playResolved(player, setName, role, action, skinChoice);
     }
 
     private static float[] playResolved(Player player, String setName, String role, String action,
-                                        Boolean playerSkinChoice) {
+                                        SkinChoice skinChoice) {
         if (!available || player == null) return null;
         AnimSet set = resolveSet(setName);
         if (set == null) return null;
@@ -861,11 +882,8 @@ public final class CharacterAnimations {
         }
         if (entry == null || entry.state.isBlank()) return null;
 
-        boolean useSkin = playerSkinChoice != null && set.allowPlayerSkinSelection(role)
-                ? playerSkinChoice : set.usePlayerSkin(role);
-        Player skinSource = useSkin
-                ? (playerSkinChoice != null ? net.minecraft.client.Minecraft.getInstance().player : player)
-                : null;
+        BbsFsAnimationBridge.SkinSource skinSource = resolveSkinSource(set, role, player,
+                skinChoice);
         return BbsFsAnimationBridge.play(player, set.form(role), set.bundledForm(role), entry.state,
                 skinSource)
                 ? new float[]{entry.camX, entry.camY} : null;
@@ -878,20 +896,57 @@ public final class CharacterAnimations {
 
     public static synchronized boolean prepare(Player player, String setName, String role,
                                                boolean playerSkinChoice) {
-        return prepareResolved(player, setName, role, playerSkinChoice);
+        return prepareResolved(player, setName, role,
+                playerSkinChoice ? SkinChoice.player() : SkinChoice.form());
+    }
+
+    public static synchronized boolean prepare(Player player, String setName, String role,
+                                               SkinChoice skinChoice) {
+        return prepareResolved(player, setName, role, skinChoice);
     }
 
     private static boolean prepareResolved(Player player, String setName, String role,
-                                           Boolean playerSkinChoice) {
+                                           SkinChoice skinChoice) {
         if (!available || player == null) return false;
         AnimSet set = resolveSet(setName);
         if (set == null) return false;
-        boolean useSkin = playerSkinChoice != null && set.allowPlayerSkinSelection(role)
-                ? playerSkinChoice : set.usePlayerSkin(role);
-        Player skinSource = useSkin
-                ? (playerSkinChoice != null ? net.minecraft.client.Minecraft.getInstance().player : player)
-                : null;
+        BbsFsAnimationBridge.SkinSource skinSource = resolveSkinSource(set, role, player,
+                skinChoice);
         return BbsFsAnimationBridge.prepare(player, set.form(role), set.bundledForm(role), skinSource);
+    }
+
+    private static BbsFsAnimationBridge.SkinSource resolveSkinSource(AnimSet set, String role,
+                                                                      Player performer,
+                                                                      SkinChoice choice) {
+        if (choice == null) {
+            return set.usePlayerSkin(role) ? BbsFsAnimationBridge.SkinSource.player(performer) : null;
+        }
+        if (!set.allowPlayerSkinSelection(role)) return null;
+        if (ClientOptions.SKIN_SOURCE_PLAYER.equals(choice.source())) {
+            return BbsFsAnimationBridge.SkinSource.player(
+                    net.minecraft.client.Minecraft.getInstance().player);
+        }
+        if (ClientOptions.SKIN_SOURCE_FILE.equals(choice.source()) && choice.file() != null) {
+            return BbsFsAnimationBridge.SkinSource.file(choice.file(), choice.slim());
+        }
+        return null;
+    }
+
+    /** Resolves the persisted Settings choice for the player or solo bot. */
+    public static SkinChoice configuredSkin(boolean opponent) {
+        ClientOptions options = ClientOptions.get();
+        String source = opponent ? options.botSkinSource : options.playerSkinSource;
+        String file = opponent ? options.botSkinFile : options.playerSkinFile;
+        boolean slim = opponent ? options.botSkinSlim : options.playerSkinSlim;
+        if (ClientOptions.SKIN_SOURCE_PLAYER.equals(source)) return SkinChoice.player();
+        if (ClientOptions.SKIN_SOURCE_FILE.equals(source) && file != null && !file.isBlank()) {
+            try {
+                return SkinChoice.file(Path.of(file), slim);
+            } catch (RuntimeException ignored) {
+                return SkinChoice.form();
+            }
+        }
+        return SkinChoice.form();
     }
 
     public static void stop(Player player) {
@@ -931,5 +986,19 @@ public final class CharacterAnimations {
             reload();
         }
         return ok;
+    }
+
+    /** Registers a folder of bundled BBS assets (models/textures) with BBS. */
+    public static void registerAssets(Path folder) {
+        BbsFsAnimationBridge.registerAssetPack(folder);
+    }
+
+    /**
+     * Copies the models/textures of every placed BBS model block near the player into
+     * {@code assetsFolder} and registers it, so the world stays renderable when shared.
+     * Returns the number of distinct forms bundled.
+     */
+    public static synchronized int bundleWorldModelBlocks(Path assetsFolder) {
+        return BbsFsAnimationBridge.bundleModelBlockAssets(assetsFolder);
     }
 }

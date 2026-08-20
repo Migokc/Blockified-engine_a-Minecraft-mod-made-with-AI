@@ -125,6 +125,9 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     private String opponentBotRole = "opponent";
     private String playerIdleSuffix = "";
     private String opponentIdleSuffix = "";
+    private record ObjectBorder(double size, int color) {}
+    private ObjectBorder playerObjectBorder = new ObjectBorder(0, 0);
+    private ObjectBorder opponentObjectBorder = new ObjectBorder(0, 0);
     private String eventPlayerIcon;
     private String eventOpponentIcon;
     private final boolean duet;
@@ -1077,7 +1080,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                         if (hold.data.playerSide == myChartSideIsPlayer
                                 && nowMs - lastHoldSingMs[lane] > BBS_HOLD_LOOP_MS && minecraft.player != null) {
                             CharacterAnimations.play(minecraft.player, myAnimSet, myRole(),
-                                    DIR_NAMES[lane] + hold.data.animSuffix, localUsePlayerSkin());
+                                    DIR_NAMES[lane] + hold.data.animSuffix, localSkinChoice());
                             lastHoldSingMs[lane] = nowMs;
                             lastSingMs = nowMs; // suppress idle bop during the hold
                         }
@@ -1182,13 +1185,14 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             long nowMs = System.currentTimeMillis();
             if (nowMs - lastSingMs > singHold && minecraft.player != null
                     && !CharacterAnimations.loopIdle(myAnimSet, myRole())) {
-                playIdle(minecraft.player, myAnimSet, myRole(), pulse, localUsePlayerSkin());
+                playIdle(minecraft.player, myAnimSet, myRole(), pulse, localSkinChoice());
             }
             if (partnerId != null && minecraft.level != null && nowMs - partnerLastSingMs > singHold
                     && !CharacterAnimations.loopIdle(partnerAnimSet, partnerRole())) {
                 Player partner = minecraft.level.getPlayerByUUID(partnerId);
                 if (partner != null) {
-                    playIdle(partner, partnerAnimSet, partnerRole(), pulse, false);
+                    playIdle(partner, partnerAnimSet, partnerRole(), pulse,
+                            CharacterAnimations.SkinChoice.form());
                 }
             }
             // Chart-added 2D and 3D performers use the same written pulse.
@@ -1415,8 +1419,9 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         if (target.equals("boyfriend") || target.equals("dad")) {
             boolean boyfriendSide = target.equals("boyfriend");
             if (performerEntity(boyfriendSide) instanceof Player performer) {
-                boolean useSkin = localControlsRole(target) && performer == minecraft.player
-                        && localUsePlayerSkin();
+                CharacterAnimations.SkinChoice useSkin = localControlsRole(target)
+                        && performer == minecraft.player
+                        ? localSkinChoice() : CharacterAnimations.SkinChoice.form();
                 CharacterAnimations.prepare(performer, activeSet,
                         boyfriendSide ? "player" : "opponent", useSkin);
             }
@@ -1552,8 +1557,8 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     }
 
     /** Skin choice follows the human-controlled performer, independent of chart side. */
-    private boolean localUsePlayerSkin() {
-        return ClientOptions.get().playerUsePlayerSkin;
+    private CharacterAnimations.SkinChoice localSkinChoice() {
+        return CharacterAnimations.configuredSkin(false);
     }
 
     private boolean partnerControlsRole(String role) {
@@ -1569,7 +1574,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         boolean played = false;
         if (localControlsRole(role) && minecraft.player != null) {
             float[] cameraOffset = playMinecraftAnimation(minecraft.player, myAnimSet, myRole(),
-                    animation, localUsePlayerSkin());
+                    animation, localSkinChoice());
             if (cameraOffset != null) {
                 lastSingMs = System.currentTimeMillis();
                 GameplayCamera.sing(role.equals("boyfriend"), cameraOffset[0], cameraOffset[1]);
@@ -1580,7 +1585,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             Player partner = minecraft.level.getPlayerByUUID(partnerId);
             if (partner != null) {
                 float[] cameraOffset = playMinecraftAnimation(partner, partnerAnimSet, partnerRole(),
-                        animation, false);
+                        animation, CharacterAnimations.SkinChoice.form());
                 if (cameraOffset != null) {
                     partnerLastSingMs = System.currentTimeMillis();
                     GameplayCamera.sing(role.equals("boyfriend"), cameraOffset[0], cameraOffset[1]);
@@ -1606,13 +1611,14 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     }
 
     private static float[] playMinecraftAnimation(Player player, String set, String role,
-                                                  String requestedAnimation, boolean usePlayerSkin) {
+                                                  String requestedAnimation,
+                                                  CharacterAnimations.SkinChoice skinChoice) {
         if (requestedAnimation == null || requestedAnimation.isBlank()) return null;
-        float[] exact = CharacterAnimations.play(player, set, role, requestedAnimation, usePlayerSkin);
+        float[] exact = CharacterAnimations.play(player, set, role, requestedAnimation, skinChoice);
         if (exact != null) return exact;
         String conventional = minecraftAnimationName(requestedAnimation);
         return conventional.equalsIgnoreCase(requestedAnimation.trim()) ? null
-                : CharacterAnimations.play(player, set, role, conventional, usePlayerSkin);
+                : CharacterAnimations.play(player, set, role, conventional, skinChoice);
     }
 
     private static String minecraftCharacterRole(String role) {
@@ -1631,7 +1637,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                 + Math.max(0, Math.round(durationSeconds * 1000.0)) - Math.round(singHoldMs());
         if (localControlsRole(role) && minecraft.player != null
                 && CharacterAnimations.play(minecraft.player, myAnimSet, myRole(), "hey",
-                localUsePlayerSkin()) != null) {
+                localSkinChoice()) != null) {
             lastSingMs = idleMarker;
         }
         if (partnerControlsRole(role) && minecraft.level != null) {
@@ -1746,7 +1752,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
      */
     private void prepareCharacterForms() {
         if (minecraft.player != null) {
-            CharacterAnimations.prepare(minecraft.player, myAnimSet, myRole(), localUsePlayerSkin());
+            CharacterAnimations.prepare(minecraft.player, myAnimSet, myRole(), localSkinChoice());
         }
         if (partnerId != null && minecraft.level != null) {
             Player partner = minecraft.level.getPlayerByUUID(partnerId);
@@ -1760,7 +1766,8 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         return Mth.clamp(60000.0 / bpm, 100.0, 3000.0);
     }
 
-    private void playIdle(Player p, String set, String role, int beat, boolean usePlayerSkin) {
+    private void playIdle(Player p, String set, String role, int beat,
+                          CharacterAnimations.SkinChoice skinChoice) {
         String suffix = "player".equals(role) ? playerIdleSuffix : opponentIdleSuffix;
         boolean hasSecondIdle = CharacterAnimations.hasAction(set, role, "idle2");
         // Minecraft animation sets have two canonical idle slots. Non-empty
@@ -1768,9 +1775,9 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         if (!hasSecondIdle && (beat & 1) == 1) return;
         String action = !suffix.isBlank() && hasSecondIdle ? "idle2"
                 : (beat & 1) == 1 ? "idle2" : "idle";
-        if (CharacterAnimations.play(p, set, role, action, usePlayerSkin) == null
+        if (CharacterAnimations.play(p, set, role, action, skinChoice) == null
                 && !"idle".equals(action)) {
-            CharacterAnimations.play(p, set, role, "idle", usePlayerSkin);
+            CharacterAnimations.play(p, set, role, "idle", skinChoice);
         }
     }
 
@@ -2088,6 +2095,38 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         if (performer == null) return false;
         PerformerShadows.setEnabled(performer.getId(), enabled);
         return true;
+    }
+
+    /** Lua setObjectBorder for main, GF-replacement, and Add Character performers. */
+    public boolean psychLuaSetObjectBorder(String tag, double size, int color) {
+        String extra = resolvedExtraCharacterTarget(tag);
+        if (extra != null) return extraCharacters.setBorder(extra, size, color);
+        if (psychScene != null && psychScene.setObjectBorder(tag, size, color)) return true;
+        if (tag == null) return false;
+        String value = tag.trim().toLowerCase(java.util.Locale.ROOT);
+        boolean playerSide;
+        if (java.util.Set.of("bf", "boyfriend", "player", "boyfriendgroup", "0").contains(value)) {
+            playerSide = true;
+            playerObjectBorder = new ObjectBorder(size, color & 0xFFFFFF);
+        } else if (java.util.Set.of("dad", "opponent", "dadgroup", "opponentgroup", "1").contains(value)) {
+            playerSide = false;
+            opponentObjectBorder = new ObjectBorder(size, color & 0xFFFFFF);
+        } else {
+            return false;
+        }
+        applyPerformerObjectBorder(playerSide);
+        return true;
+    }
+
+    private void applyPerformerObjectBorder(boolean playerSide) {
+        ObjectBorder border = playerSide ? playerObjectBorder : opponentObjectBorder;
+        Entity base = performerEntity(playerSide);
+        Player visual = performerVisualPlayer(playerSide);
+        if (visual != null && visual != base) {
+            com.fnfmod.client.render.ObjectBorderRegistry.clear(base);
+        }
+        Entity target = visual != null ? visual : base;
+        com.fnfmod.client.render.ObjectBorderRegistry.set(target, border.size(), border.color());
     }
 
     public boolean psychLuaCharacterShadow(String tag) {
@@ -2710,7 +2749,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             boolean heyNote = !miss && note != null && "Hey!".equalsIgnoreCase(note.noteType);
             String action = heyNote ? "hey" : miss ? "miss" + suffix : DIR_NAMES[lane] + suffix;
             float[] camOff = CharacterAnimations.play(minecraft.player, myAnimSet, myRole(),
-                    action, localUsePlayerSkin());
+                    action, localSkinChoice());
             if (camOff != null && !miss) {
                 GameplayCamera.sing(myChartSideIsPlayer, camOff[0], camOff[1]);
             }
@@ -6136,7 +6175,8 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         if (opponentBot == null) {
             opponentBot = com.fnfmod.client.gameplay.OpponentBotCharacter.create(
                     level, opponentBotSet, opponentBotRole, stand,
-                    ClientOptions.get().botUsePlayerSkin);
+                    CharacterAnimations.configuredSkin(true));
+            if (opponentBot != null) applyPerformerObjectBorder(false);
         }
         if (opponentBot != null) opponentBot.follow(stand);
     }
@@ -6728,6 +6768,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         restorePerformerGravity();
         PerformerCollisions.clear();
         PerformerShadows.clear();
+        com.fnfmod.client.render.ObjectBorderRegistry.clearAll();
         com.fnfmod.client.render.DirectionalShadingControl.restore();
         RenderDistanceControl.restore();
         FieldOfViewControl.restore();

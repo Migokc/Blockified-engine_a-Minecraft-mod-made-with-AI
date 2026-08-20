@@ -19,11 +19,13 @@ import com.fnfmod.gameplay.PlaybackMode;
 import com.fnfmod.gameplay.PlaybackPolicy;
 import com.fnfmod.client.render.LuaWorldObject;
 import com.fnfmod.client.render.LuaWorldObjectRenderer;
+import com.fnfmod.client.render.ObjectBorderRegistry;
 import com.fnfmod.client.render.MissingAssetTexture;
 import com.fnfmod.client.render.WorldTextTextures;
 import com.fnfmod.client.render.WorldSpriteEntityVisuals;
 import com.fnfmod.client.render.HudLayerOrder;
 import com.fnfmod.client.render.SparrowAtlas;
+import com.fnfmod.client.render.AnimateAtlas;
 import com.fnfmod.client.render.SpriteAtlasCache;
 import com.fnfmod.client.render.SpriteImageCache;
 import com.fnfmod.client.render.PsychCanvas;
@@ -60,6 +62,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.EnumSet;
 import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -99,6 +102,7 @@ public final class PsychLuaRuntime implements AutoCloseable {
          */
         ResourceLocation texture;
         int textureWidth, textureHeight;
+        SparrowAtlas sheet;
     }
 
     private static final class LuaObject {
@@ -148,6 +152,9 @@ public final class PsychLuaRuntime implements AutoCloseable {
         double borderSize;
         int borderColor = 0xFF000000;
         String borderStyle = "outline";
+        /** Non-text silhouette outline, measured in fixed 1280x720 Psych pixels. */
+        double objectBorderSize;
+        int objectBorderColor = 0xFF000000;
         String alignment = "left";
         boolean italic;
         /**
@@ -217,6 +224,8 @@ public final class PsychLuaRuntime implements AutoCloseable {
     private static final long DEBUG_LINE_FADE_MS = 1000;
     private static final int DEBUG_LINE_MAX = 20;
     private final Map<String, LuaObject> objects = new LinkedHashMap<>();
+    /** Budget paired with each isolated Globals, including while its file is loading. */
+    private final Map<Globals, BudgetDebugLib> scriptBudgets = new IdentityHashMap<>();
     private static final class WorldEntityBinding {
         final WorldSpriteEntity entity;
         Direction facing = Direction.NORTH;
@@ -474,12 +483,14 @@ public final class PsychLuaRuntime implements AutoCloseable {
     }
 
     private Script loadOne(Path file) {
+        Globals globals = null;
         try {
             Script existing = findScript(file.toString());
             if (existing != null) return existing;
-            Globals globals = JsePlatform.standardGlobals();
+            globals = JsePlatform.standardGlobals();
             BudgetDebugLib budget = new BudgetDebugLib();
             globals.load(budget);
+            scriptBudgets.put(globals, budget);
             sandbox(globals);
             installConstants(globals, file);
             installCallbacks(globals);
@@ -494,6 +505,7 @@ public final class PsychLuaRuntime implements AutoCloseable {
             scriptSnapshot = null;
             return script;
         } catch (Throwable error) {
+            if (globals != null) scriptBudgets.remove(globals);
             report(file.getFileName() + ": " + compactError(error));
             return null;
         }
@@ -525,6 +537,7 @@ public final class PsychLuaRuntime implements AutoCloseable {
     private boolean removeDynamicScript(String raw) {
         Script script = findScript(raw);
         if (script != null && scripts.remove(script)) {
+            scriptBudgets.remove(script.globals);
             scriptSnapshot = null;
             return true;
         }
@@ -775,6 +788,18 @@ public final class PsychLuaRuntime implements AutoCloseable {
 
         fn(g, "makeLuaSprite", args -> { makeObject(args, false, false); return LuaValue.NIL; });
         fn(g, "makeAnimatedLuaSprite", args -> { makeObject(args, false, true); return LuaValue.NIL; });
+        fn(g, "makeFlxAnimateSprite", args -> {
+            LuaObject o = object(args.checkjstring(1));
+            disposeGraphic(o);
+            o.textObject = false;
+            o.image = args.optjstring(2, "");
+            o.x = args.optdouble(3, 0);
+            o.y = args.optdouble(4, 0);
+            o.sizeExplicit = false;
+            return LuaValue.valueOf(loadObjectAtlas(o, o.image, "animateatlas"));
+        });
+        fn(g, "loadAnimateAtlas", args -> LuaValue.valueOf(loadObjectAtlas(
+                object(args.checkjstring(1)), args.optjstring(2, ""), "animateatlas")));
         fn(g, "makeLuaText", args -> { makeObject(args, true, false); return LuaValue.NIL; });
         fn(g, "makeGraphic", args -> { LuaObject o = object(args.checkjstring(1)); disposeGraphic(o);
                 o.image = ""; o.missingAsset = false; o.imageBlockedByPolicy = false;
@@ -820,6 +845,22 @@ public final class PsychLuaRuntime implements AutoCloseable {
             target.borderColor = color(args.optjstring(3, "000000"));
             target.borderStyle = args.optjstring(4, "outline");
             return LuaValue.TRUE;
+        });
+        fn(g, "setObjectBorder", args -> {
+            String tag = args.checkjstring(1);
+            double requested = args.optdouble(2, 0);
+            double size = Double.isFinite(requested) ? Math.max(0, requested) : 0;
+            int borderColor = color(args.optjstring(3, "000000"));
+            String style = args.optjstring(4, "outline");
+            if (style.equalsIgnoreCase("none")) size = 0;
+            LuaObject target = objects.get(tag);
+            if (target != null && !target.textObject) {
+                target.objectBorderSize = size;
+                target.objectBorderColor = borderColor;
+                syncObjectBorder(target);
+                return LuaValue.TRUE;
+            }
+            return LuaValue.valueOf(host.psychLuaSetObjectBorder(tag, size, borderColor));
         });
         fn(g, "setTextColor", args -> { object(args.checkjstring(1)).color = color(args.optjstring(2, "FFFFFF")); return LuaValue.NIL; });
         fn(g, "setObjectCamera", args -> { object(args.checkjstring(1)).camera = args.optjstring(2, "game"); return LuaValue.NIL; });
@@ -871,6 +912,8 @@ public final class PsychLuaRuntime implements AutoCloseable {
         fn(g, "addAnimationByIndices", args -> LuaValue.valueOf(addAnimationByIndices(args, true)));
         fn(g, "luaSpriteAddAnimationByIndices", args -> LuaValue.valueOf(addAnimationByIndices(args, true)));
         fn(g, "addAnimation", args -> LuaValue.valueOf(addAnimationByIndices(args, false)));
+        fn(g, "addAnimationBySymbol", args -> LuaValue.valueOf(addAnimationBySymbol(args, false)));
+        fn(g, "addAnimationBySymbolIndices", args -> LuaValue.valueOf(addAnimationBySymbol(args, true)));
         fn(g, "playAnim", args -> LuaValue.valueOf(playAnimation(args, false)));
         fn(g, "objectPlayAnimation", args -> LuaValue.valueOf(playAnimation(args, false)));
         fn(g, "luaSpritePlayAnimation", args -> LuaValue.valueOf(playAnimation(args, false)));
@@ -1187,9 +1230,6 @@ public final class PsychLuaRuntime implements AutoCloseable {
         // here overwrites its implementation. Only genuinely unsupported Psych
         // functions belong in this list.
         registerNoOps(g,
-                // Adobe Animate texture atlases have no Minecraft equivalent.
-                "makeFlxAnimateSprite", "loadAnimateAtlas", "addAnimationBySymbol",
-                "addAnimationBySymbolIndices",
                 // GLSL shaders on Flixel sprites. The setters report failure by
                 // returning nil; the getters below return typed empties instead,
                 // so a script reading one back does not get a nil arithmetic error.
@@ -1220,8 +1260,11 @@ public final class PsychLuaRuntime implements AutoCloseable {
     private void fn(Globals globals, String name, Function<Varargs, LuaValue> function) {
         globals.set(name, new VarArgFunction() {
             @Override public Varargs invoke(Varargs args) {
+                BudgetDebugLib budget = scriptBudgets.get(globals);
+                if (budget != null) budget.enterHostCall();
                 try { return function.apply(args); }
                 catch (Throwable error) { warnOnce(name + ": " + compactError(error)); return LuaValue.NIL; }
+                finally { if (budget != null) budget.leaveHostCall(); }
             }
         });
     }
@@ -1307,10 +1350,38 @@ public final class PsychLuaRuntime implements AutoCloseable {
         object.image = imageName == null ? "" : imageName;
         if (object.image.isBlank()) return false;
         String type = spriteType == null ? "auto" : spriteType.toLowerCase(Locale.ROOT).replace("_", "");
+        boolean animateType = type.equals("animate") || type.equals("animateatlas")
+                || type.equals("textureatlas") || type.equals("multianimateatlas");
         if (!(type.equals("auto") || type.equals("sparrow") || type.equals("sparrowatlas")
-                || type.equals("sparrowv2"))) {
-            warnOnce("animated sprite type '" + spriteType + "' is not supported; use Sparrow XML");
+                || type.equals("sparrowv2") || animateType)) {
+            warnOnce("animated sprite type '" + spriteType + "' is not supported");
             return false;
+        }
+        Path animateFolder = assets.animateFolder(imageName);
+        if (animateType || type.equals("auto") && animateFolder != null) {
+            SparrowAtlas atlas = AnimateAtlas.load(animateFolder);
+            if (atlas == null || atlas.allFrames().isEmpty()) {
+                if (atlas != null) atlas.close();
+                warnOnce("Animate atlas missing or invalid for " + imageName);
+                return false;
+            }
+            atlas.setAntialiasing(object.antialiasing);
+            disposeGraphic(object);
+            object.image = imageName == null ? "" : imageName;
+            object.imageBlockedByPolicy = false;
+            object.missingAsset = false;
+            object.atlas = atlas;
+            object.texture = atlas.texture();
+            object.textureWidth = atlas.width();
+            object.textureHeight = atlas.height();
+            SparrowAtlas.Frame first = atlas.allFrames().get(0);
+            object.graphicWidth = Math.max(1, first.frameW);
+            object.graphicHeight = Math.max(1, first.frameH);
+            if (!object.sizeExplicit) {
+                object.width = object.graphicWidth;
+                object.height = object.graphicHeight;
+            }
+            return true;
         }
         Path png = resolveImage(imageName);
         if (png == null) {
@@ -1543,6 +1614,7 @@ public final class PsychLuaRuntime implements AutoCloseable {
         animation.frameRate = Math.max(0, frameRate);
         animation.looped = looped;
         if (sheet != null) {
+            animation.sheet = sheet;
             animation.texture = sheet.texture();
             animation.textureWidth = sheet.width();
             animation.textureHeight = sheet.height();
@@ -1576,6 +1648,32 @@ public final class PsychLuaRuntime implements AutoCloseable {
                     luaBoolean(args, 4, false), args.optint(5, 0));
         }
         return host.psychLuaPlayCharacterAnimation(tag, animation, forced);
+    }
+
+    /** Psych's FlxAnimate symbol APIs. */
+    private boolean addAnimationBySymbol(Varargs args, boolean withIndices) {
+        LuaObject object = objects.get(args.checkjstring(1));
+        if (object == null || object.atlas == null) return false;
+        String name = args.checkjstring(2);
+        String symbol = args.checkjstring(3);
+        List<SparrowAtlas.Frame> frames = object.atlas.framesBySymbol(symbol);
+        int rateArg = 4;
+        if (withIndices) {
+            List<Integer> indices = luaIndices(args.arg(4));
+            List<SparrowAtlas.Frame> selected = new ArrayList<>();
+            for (Integer index : indices) {
+                if (index != null && index >= 0 && index < frames.size()) selected.add(frames.get(index));
+            }
+            frames = selected;
+            rateArg = 5;
+        }
+        if (frames.isEmpty()) {
+            warnOnce("Animate symbol '" + symbol + "' not found in " + object.image);
+            return false;
+        }
+        putAnimation(object, name, frames, args.optdouble(rateArg, 24),
+                luaBoolean(args, rateArg + 1, false), object.atlas);
+        return true;
     }
 
     private boolean startAnimation(LuaObject object, String name, boolean forced, boolean reverse, int startFrame) {
@@ -1906,7 +2004,10 @@ public final class PsychLuaRuntime implements AutoCloseable {
         int dot = path.indexOf('.');
         if (dot < 0) { sharedVars.put(path, toLua(value)); return; }
         LuaObject object = objects.get(path.substring(0, dot));
-        if (object != null) setObjectProperty(object, path.substring(dot + 1), value);
+        if (object != null) {
+            setObjectProperty(object, path.substring(dot + 1), value);
+            syncObjectBorder(object);
+        }
         else sharedVars.put(path, toLua(value));
     }
 
@@ -1928,6 +2029,8 @@ public final class PsychLuaRuntime implements AutoCloseable {
             case "rotation.y", "rotationY", "angleY" -> o.rotationY;
             case "rotation.z", "rotationZ", "angleZ" -> o.angle;
             case "color" -> o.color; case "text" -> o.text; case "scale.x" -> o.scaleX;
+            case "borderSize", "objectBorderSize" -> o.textObject ? o.borderSize : o.objectBorderSize;
+            case "borderColor", "objectBorderColor" -> o.textObject ? o.borderColor : o.objectBorderColor;
             case "scale.y" -> o.scaleY; case "offset.x" -> offset[0]; case "offset.y" -> offset[1];
             case "scrollFactor.x" -> o.scrollFactorX; case "scrollFactor.y" -> o.scrollFactorY;
             case "billboard", "worldBillboard", "alwaysFaceCamera" -> o.worldBillboard;
@@ -1960,6 +2063,17 @@ public final class PsychLuaRuntime implements AutoCloseable {
             case "rotation.y", "rotationY", "angleY" -> o.rotationY = number(value, o.rotationY);
             case "rotation.z", "rotationZ", "angleZ" -> o.angle = number(value, o.angle);
             case "visible" -> o.visible = bool(value); case "color" -> o.color = value instanceof Number n ? n.intValue() : color(String.valueOf(value));
+            case "borderSize", "objectBorderSize" -> {
+                double requested = number(value, o.textObject ? o.borderSize : o.objectBorderSize);
+                double size = Double.isFinite(requested) ? Math.max(0, requested) : 0;
+                if (o.textObject) o.borderSize = size;
+                else o.objectBorderSize = size;
+            }
+            case "borderColor", "objectBorderColor" -> {
+                int parsed = value instanceof Number n ? n.intValue() : color(String.valueOf(value));
+                if (o.textObject) o.borderColor = parsed;
+                else o.objectBorderColor = parsed;
+            }
             case "antialiasing" -> setAntialiasing(o, bool(value));
             case "text" -> o.text = String.valueOf(value); case "scale.x" -> o.scaleX = number(value, o.scaleX);
             case "scale.y" -> o.scaleY = number(value, o.scaleY);
@@ -2422,6 +2536,9 @@ public final class PsychLuaRuntime implements AutoCloseable {
         private long deadline = Long.MAX_VALUE;
         private long remainingInstructions = Long.MAX_VALUE;
         private int depth;
+        private int hostDepth;
+        private long suspendedDeadline = Long.MAX_VALUE;
+        private long hostCallStarted;
 
         void begin() {
             if (depth++ > 0) return;
@@ -2437,6 +2554,41 @@ public final class PsychLuaRuntime implements AutoCloseable {
             if (--depth > 0) return;
             remainingInstructions = Long.MAX_VALUE;
             deadline = Long.MAX_VALUE;
+            hostDepth = 0;
+            suspendedDeadline = Long.MAX_VALUE;
+            hostCallStarted = 0;
+        }
+
+        /**
+         * The wall ceiling measures Lua work, not time inside trusted Blockified
+         * APIs. PNG/XML decoding, texture upload and audio pre-cache can legally
+         * take over a second on first load; charging that time terminated large
+         * Psych onCreate callbacks immediately after the host function returned.
+         * The instruction counter remains active throughout the host call.
+         */
+        void enterHostCall() {
+            if (depth <= 0 || hostDepth++ > 0) return;
+            hostCallStarted = System.nanoTime();
+            suspendedDeadline = deadline;
+            deadline = Long.MAX_VALUE;
+        }
+
+        void leaveHostCall() {
+            if (hostDepth <= 0) {
+                hostDepth = 0;
+                return;
+            }
+            if (--hostDepth > 0) return;
+            long elapsed = Math.max(0, System.nanoTime() - hostCallStarted);
+            deadline = suspendedDeadline == Long.MAX_VALUE
+                    ? Long.MAX_VALUE : saturatingAdd(suspendedDeadline, elapsed);
+            suspendedDeadline = Long.MAX_VALUE;
+            hostCallStarted = 0;
+        }
+
+        private static long saturatingAdd(long left, long right) {
+            if (right > 0 && left > Long.MAX_VALUE - right) return Long.MAX_VALUE;
+            return left + right;
         }
 
         @Override
@@ -2680,6 +2832,7 @@ public final class PsychLuaRuntime implements AutoCloseable {
             entity.noPhysics = !o.worldCollision;
             entity.setVisualBounds(o.width * Math.abs(o.scaleX) * LuaWorldObjectRenderer.PIXEL_SCALE,
                     o.height * Math.abs(o.scaleY) * LuaWorldObjectRenderer.PIXEL_SCALE);
+            ObjectBorderRegistry.set(entity, o.objectBorderSize, o.objectBorderColor);
             PerformerShadows.setEnabled(entity.getId(), o.worldShadow);
 
             boolean authored = created || different(o.x, binding.lastX)
@@ -2703,6 +2856,7 @@ public final class PsychLuaRuntime implements AutoCloseable {
         WorldEntityBinding binding = worldSpriteEntities.remove(tag);
         if (binding == null) return;
         WorldSpriteEntityVisuals.unbind(binding.entity);
+        ObjectBorderRegistry.clear(binding.entity);
         PerformerShadows.setEnabled(binding.entity.getId(), true);
         if (binding.entity.level() instanceof ClientLevel level
                 && level.getEntity(binding.entity.getId()) != null) {
@@ -2712,6 +2866,15 @@ public final class PsychLuaRuntime implements AutoCloseable {
 
     private static boolean different(double a, double b) {
         return !Double.isFinite(b) || Math.abs(a - b) > 1.0e-7;
+    }
+
+    private void syncObjectBorder(LuaObject object) {
+        if (object == null) return;
+        WorldEntityBinding binding = worldSpriteEntities.get(object.tag);
+        if (binding != null) {
+            ObjectBorderRegistry.set(binding.entity, object.objectBorderSize,
+                    object.objectBorderColor);
+        }
     }
 
     private static Vec3 worldFromStage(BlockPos speakers, Direction facing,
@@ -2754,6 +2917,9 @@ public final class PsychLuaRuntime implements AutoCloseable {
             drawY = transformed.y();
             cameraScaleX = transformed.scaleX();
             cameraScaleY = transformed.scaleY();
+        }
+        if (!o.textObject && o.objectBorderSize > 0) {
+            renderObjectBorder(gui, o, z, drawX, drawY, cameraScaleX, cameraScaleY, alpha);
         }
         gui.pose().pushPose();
         gui.pose().translate(drawX, drawY, z);
@@ -2810,14 +2976,64 @@ public final class PsychLuaRuntime implements AutoCloseable {
         gui.pose().popPose();
     }
 
+    /** Draws a silhouette around a 2D object in fixed Psych-canvas pixels. */
+    private void renderObjectBorder(GuiGraphics gui, LuaObject o, float z,
+                                    double drawX, double drawY,
+                                    double cameraScaleX, double cameraScaleY, int alpha) {
+        int stroke = borderStroke(o.objectBorderSize);
+        if (stroke == 0 || alpha == 0) return;
+        int color = o.objectBorderColor & 0xFFFFFF;
+        float red = ((color >> 16) & 255) / 255f;
+        float green = ((color >> 8) & 255) / 255f;
+        float blue = (color & 255) / 255f;
+        RenderSystem.enableBlend();
+        RenderSystem.defaultBlendFunc();
+        for (int dx = -stroke; dx <= stroke; dx++) {
+            for (int dy = -stroke; dy <= stroke; dy++) {
+                if (dx == 0 && dy == 0) continue;
+                gui.pose().pushPose();
+                gui.pose().translate(drawX + dx, drawY + dy, z);
+                gui.pose().scale((float) (o.scaleX * cameraScaleX),
+                        (float) (o.scaleY * cameraScaleY), 1);
+                if (o.angle != 0) {
+                    gui.pose().mulPose(com.mojang.math.Axis.ZP.rotationDegrees((float) o.angle));
+                }
+                gui.setColor(red, green, blue, alpha / 255f);
+                SparrowAtlas.Frame frame = currentFrame(o);
+                if (o.texture != null || o.missingAsset) {
+                    if (frame == null) {
+                        int drawWidth = Math.max(1, (int) o.width);
+                        int drawHeight = Math.max(1, (int) o.height);
+                        ResourceLocation mask = activeSilhouetteTexture(o);
+                        gui.blit(mask, 0, 0, 0, 0, drawWidth, drawHeight,
+                                Math.max(1, activeTextureWidth(o)), Math.max(1, activeTextureHeight(o)));
+                    } else {
+                        renderAtlasFrame(gui, o, frame, activeSilhouetteTexture(o));
+                    }
+                } else {
+                    gui.setColor(1, 1, 1, 1);
+                    gui.fill(0, 0, Math.max(1, (int) o.width), Math.max(1, (int) o.height),
+                            alpha << 24 | color);
+                }
+                gui.setColor(1, 1, 1, 1);
+                gui.pose().popPose();
+            }
+        }
+    }
+
     private static SparrowAtlas.Frame currentFrame(LuaObject object) {
         LuaAnimation animation = currentAnimation(object);
         if (animation != null && !animation.frames.isEmpty()) {
-            return animation.frames.get(Math.max(0, Math.min(animation.frames.size() - 1,
+            SparrowAtlas.Frame frame = animation.frames.get(Math.max(0, Math.min(animation.frames.size() - 1,
                     object.animationFrame)));
+            SparrowAtlas sheet = animation.sheet == null ? object.atlas : animation.sheet;
+            if (sheet != null) sheet.prepareFrame(frame);
+            return frame;
         }
-        return object.atlas == null || object.atlas.allFrames().isEmpty()
-                ? null : object.atlas.allFrames().get(0);
+        if (object.atlas == null || object.atlas.allFrames().isEmpty()) return null;
+        SparrowAtlas.Frame frame = object.atlas.allFrames().get(0);
+        object.atlas.prepareFrame(frame);
+        return frame;
     }
 
     /**
@@ -2899,6 +3115,23 @@ public final class PsychLuaRuntime implements AutoCloseable {
         return object.missingAsset ? MissingAssetTexture.texture() : object.texture;
     }
 
+    /** No authored cap; beyond the fixed canvas cannot add visible coverage. */
+    private static int borderStroke(double size) {
+        if (!Double.isFinite(size) || size <= 0) return 0;
+        return (int) Math.min(1280, Math.round(size));
+    }
+
+    private static ResourceLocation activeSilhouetteTexture(LuaObject object) {
+        LuaAnimation animation = currentAnimation(object);
+        if (animation != null && animation.sheet != null) return animation.sheet.silhouetteTexture();
+        if (object.atlas != null) return object.atlas.silhouetteTexture();
+        if (object.imageHandle != null) {
+            ResourceLocation mask = object.imageHandle.silhouetteTexture();
+            if (mask != null) return mask;
+        }
+        return activeTexture(object);
+    }
+
     private static int activeTextureWidth(LuaObject object) {
         LuaAnimation animation = currentAnimation(object);
         if (animation != null && animation.texture != null) return animation.textureWidth;
@@ -2912,6 +3145,11 @@ public final class PsychLuaRuntime implements AutoCloseable {
     }
 
     private static void renderAtlasFrame(GuiGraphics gui, LuaObject object, SparrowAtlas.Frame frame) {
+        renderAtlasFrame(gui, object, frame, activeTexture(object));
+    }
+
+    private static void renderAtlasFrame(GuiGraphics gui, LuaObject object, SparrowAtlas.Frame frame,
+                                         ResourceLocation texture) {
         double[] offset = currentAnimationOffset(object);
         // Keep one scale for the whole atlas. Scaling every frame against its
         // own frameWidth/frameHeight makes trimmed animations wobble and warp.
@@ -2925,7 +3163,7 @@ public final class PsychLuaRuntime implements AutoCloseable {
             gui.pose().translate(0, frame.w, 0);
             gui.pose().mulPose(com.mojang.math.Axis.ZP.rotationDegrees(-90));
         }
-        gui.blit(activeTexture(object), 0, 0, frame.x, frame.y, frame.w, frame.h,
+        gui.blit(texture, 0, 0, frame.x, frame.y, frame.w, frame.h,
                 Math.max(1, activeTextureWidth(object)), Math.max(1, activeTextureHeight(object)));
         gui.pose().popPose();
     }
@@ -3245,6 +3483,7 @@ public final class PsychLuaRuntime implements AutoCloseable {
         for (LuaObject object : objects.values()) disposeGraphic(object);
         soundPlayer.close();
         fontLoader.close();
-        scripts.clear(); scriptSnapshot = null; objects.clear(); timers.clear(); tweens.clear(); sharedVars.clear();
+        scripts.clear(); scriptBudgets.clear(); scriptSnapshot = null;
+        objects.clear(); timers.clear(); tweens.clear(); sharedVars.clear();
     }
 }

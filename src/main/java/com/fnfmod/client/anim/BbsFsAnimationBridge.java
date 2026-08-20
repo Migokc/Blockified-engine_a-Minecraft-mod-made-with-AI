@@ -29,6 +29,17 @@ final class BbsFsAnimationBridge {
 
     private record OriginalForm(Object form) {}
 
+    /** Texture/model override for one of BBS's built-in Steve/Alex form families. */
+    record SkinSource(Player player, java.nio.file.Path file, boolean slim) {
+        static SkinSource player(Player player) {
+            return player == null ? null : new SkinSource(player, null, false);
+        }
+
+        static SkinSource file(java.nio.file.Path file, boolean slim) {
+            return file == null ? null : new SkinSource(null, file.toAbsolutePath().normalize(), slim);
+        }
+    }
+
     private static final Map<UUID, OriginalForm> ORIGINAL_FORMS = new HashMap<>();
     private static final Map<UUID, String> APPLIED_FORMS = new HashMap<>();
     private static final Map<String, Object> FORM_CACHE = new LinkedHashMap<>();
@@ -91,7 +102,13 @@ final class BbsFsAnimationBridge {
     private static Method modelManagerGetModel;
     private static Method modelManagerLoadModel;
     private static Field modelManagerModelsField;
+    // Model-block bundling: read the Form off each placed BBS model block so its
+    // models/textures can be copied into a shared world.
+    private static Class<?> modelBlockEntityClass;
+    private static Method modelBlockGetProperties;
+    private static Method modelPropertiesGetForm;
     private static final java.util.Set<String> REGISTERED_PACKS = new java.util.HashSet<>();
+    private static final Map<String, String> CUSTOM_SKIN_PACKS = new HashMap<>();
     private static final Map<String, Object> BUNDLED_FORMS = new HashMap<>();
     /** Model ids referenced by each bundled form, so a cache hit can still ensure they are loaded. */
     private static final Map<String, java.util.List<String>> BUNDLED_MODEL_IDS = new HashMap<>();
@@ -216,11 +233,16 @@ final class BbsFsAnimationBridge {
      */
     static synchronized boolean prepare(Player player, String requestedForm,
                                         java.nio.file.Path bundledForm) {
-        return prepare(player, requestedForm, bundledForm, null);
+        return prepare(player, requestedForm, bundledForm, (SkinSource) null);
     }
 
     static synchronized boolean prepare(Player player, String requestedForm,
                                         java.nio.file.Path bundledForm, Player skinSource) {
+        return prepare(player, requestedForm, bundledForm, SkinSource.player(skinSource));
+    }
+
+    static synchronized boolean prepare(Player player, String requestedForm,
+                                        java.nio.file.Path bundledForm, SkinSource skinSource) {
         if (!isAvailable() || player == null) return false;
         try {
             Object morph = morphGet.invoke(null, player);
@@ -243,11 +265,16 @@ final class BbsFsAnimationBridge {
 
     static synchronized boolean play(Player player, String requestedForm,
                                      java.nio.file.Path bundledForm, String state) {
-        return play(player, requestedForm, bundledForm, state, null);
+        return play(player, requestedForm, bundledForm, state, (SkinSource) null);
     }
 
     static synchronized boolean play(Player player, String requestedForm,
                                      java.nio.file.Path bundledForm, String state, Player skinSource) {
+        return play(player, requestedForm, bundledForm, state, SkinSource.player(skinSource));
+    }
+
+    static synchronized boolean play(Player player, String requestedForm,
+                                     java.nio.file.Path bundledForm, String state, SkinSource skinSource) {
         if (!isAvailable() || player == null || state == null || state.isBlank()) return false;
 
         try {
@@ -335,7 +362,7 @@ final class BbsFsAnimationBridge {
     }
 
     private static void applyForm(Player player, Object morph, String requestedKey, Object template,
-                                  Player skinSource)
+                                  SkinSource skinSource)
             throws Exception {
         if (template == null) {
             refreshForms();
@@ -353,7 +380,7 @@ final class BbsFsAnimationBridge {
         }
 
         Object copy = formCopy.invoke(null, template);
-        if (applyPlayerSkin(copy, skinSource)) suppressSkinReplacingTextureKeyframes(copy);
+        if (applySelectedSkin(copy, skinSource)) suppressSkinReplacingTextureKeyframes(copy);
         morphSetForm.invoke(morph, copy);
         APPLIED_FORMS.put(player.getUUID(), appliedKey);
         // A newly applied form resets to default lighting; re-force it if requested.
@@ -372,41 +399,80 @@ final class BbsFsAnimationBridge {
         return playerModel(template) != null;
     }
 
-    private static String playerSkinKey(Object template, Player skinSource) {
-        if (!(skinSource instanceof AbstractClientPlayer clientPlayer)
-                || playerModel(template) == null) return "";
+    private static String playerSkinKey(Object template, SkinSource skinSource) {
+        if (skinSource == null || playerModel(template) == null) return "";
         try {
-            PlayerSkin skin = clientPlayer.getSkin();
-            return "|skin:" + skin.model().id() + ":" + String.valueOf(skin.textureUrl());
+            if (skinSource.player() instanceof AbstractClientPlayer clientPlayer) {
+                PlayerSkin skin = clientPlayer.getSkin();
+                return "|skin:" + skin.model().id() + ":" + String.valueOf(skin.textureUrl());
+            }
+            java.nio.file.Path file = skinSource.file();
+            if (file != null && java.nio.file.Files.isRegularFile(file)) {
+                return "|skin:file:" + (skinSource.slim() ? "slim:" : "wide:") + file
+                        + ":" + java.nio.file.Files.size(file)
+                        + ":" + java.nio.file.Files.getLastModifiedTime(file).toMillis();
+            }
         } catch (Throwable ignored) {
-            return "";
+            // Invalid/missing custom file means the form's authored skin is retained.
         }
+        return "";
     }
 
-    /** Applies a live skin only to BBS's bundled Steve/Alex model families. */
-    private static boolean applyPlayerSkin(Object form, Player skinSource) {
+    /** Applies a live or user-selected PNG only to BBS's Steve/Alex model families. */
+    private static boolean applySelectedSkin(Object form, SkinSource skinSource) {
         String currentModel = playerModel(form);
-        if (currentModel == null || !(skinSource instanceof AbstractClientPlayer clientPlayer)
-                || linkCreate == null) return false;
+        if (currentModel == null || skinSource == null || linkCreate == null) return false;
         try {
-            PlayerSkin skin = clientPlayer.getSkin();
-            boolean slim = skin.model() == PlayerSkin.Model.SLIM;
+            boolean slim;
+            Object textureLink;
+            if (skinSource.player() instanceof AbstractClientPlayer clientPlayer) {
+                PlayerSkin skin = clientPlayer.getSkin();
+                slim = skin.model() == PlayerSkin.Model.SLIM;
+                String textureUrl = skin.textureUrl();
+                if (textureUrl == null || textureUrl.isBlank()) return false;
+                textureLink = linkCreate.invoke(null, textureUrl);
+            } else {
+                java.nio.file.Path file = skinSource.file();
+                if (file == null || !java.nio.file.Files.isRegularFile(file)) return false;
+                slim = skinSource.slim();
+                textureLink = customSkinLink(file);
+                if (textureLink == null) return false;
+            }
             String suffix = currentModel.substring((currentModel.startsWith("player/alex")
                     ? "player/alex" : "player/steve").length());
             String targetModel = "player/" + (slim ? "alex" : "steve") + suffix;
             Object modelValue = modelFormModelField.get(form);
             modelValueSet.invoke(modelValue, targetModel);
             ensureModelsLoaded(java.util.List.of(targetModel));
-            String textureUrl = skin.textureUrl();
-            if (textureUrl != null && !textureUrl.isBlank()) {
-                Object textureValue = modelFormTextureField.get(form);
-                textureValueSet.invoke(textureValue, linkCreate.invoke(null, textureUrl));
-            }
+            Object textureValue = modelFormTextureField.get(form);
+            textureValueSet.invoke(textureValue, textureLink);
             return true;
         } catch (Throwable error) {
             warnOnce("Failed to apply a Minecraft skin to a BBS player form", error);
             return false;
         }
+    }
+
+    /** Registers the PNG's parent under an isolated BBS source and returns its link. */
+    private static Object customSkinLink(java.nio.file.Path file) throws Exception {
+        if (!bundlingAvailable || externalPackCtor == null || providerRegister == null) return null;
+        java.nio.file.Path canonicalFile = file.toRealPath();
+        java.nio.file.Path parent = canonicalFile.getParent();
+        if (parent == null) return null;
+        String key = parent.toString();
+        String source = CUSTOM_SKIN_PACKS.get(key);
+        if (source == null) {
+            String base = "blockified_skin_" + Integer.toUnsignedString(key.hashCode(), 36);
+            source = base;
+            int suffix = 2;
+            while (CUSTOM_SKIN_PACKS.containsValue(source)) source = base + "_" + suffix++;
+            Object provider = getProvider.invoke(null);
+            Object pack = externalPackCtor.newInstance(source, parent.toFile());
+            packProvidesFiles.invoke(pack);
+            providerRegister.invoke(provider, pack);
+            CUSTOM_SKIN_PACKS.put(key, source);
+        }
+        return linkCreate.invoke(null, source + ":" + canonicalFile.getFileName());
     }
 
     /**
@@ -589,6 +655,17 @@ final class BbsFsAnimationBridge {
                 modelManagerLoadModel = null;
                 modelManagerModelsField = null;
             }
+            // Optional: read forms off placed BBS model blocks for world bundling.
+            try {
+                modelBlockEntityClass = Class.forName("mchorse.bbs_mod.blocks.entities.ModelBlockEntity");
+                modelBlockGetProperties = modelBlockEntityClass.getMethod("getProperties");
+                modelPropertiesGetForm = modelBlockGetProperties.getReturnType().getMethod("getForm");
+            } catch (Throwable ignored) {
+                modelBlockEntityClass = null;
+                modelBlockGetProperties = null;
+                modelPropertiesGetForm = null;
+            }
+
             bundlingAvailable = true;
         } catch (Throwable error) {
             bundlingAvailable = false;
@@ -723,6 +800,53 @@ final class BbsFsAnimationBridge {
             warnOnce("Failed to export a BBS form bundle", error);
             return false;
         }
+    }
+
+    /**
+     * Copies the models and textures referenced by every placed BBS model block in the
+     * loaded chunks around the local player into {@code assetsFolder} and registers it as
+     * a BBS asset source, so a shared world can still render those blocks where the
+     * original files are absent. Only existing placed blocks contribute — nothing else is
+     * saved. Returns the number of distinct forms bundled.
+     */
+    static synchronized int bundleModelBlockAssets(java.nio.file.Path assetsFolder) {
+        if (!bundlingAvailable || assetsFolder == null || modelBlockEntityClass == null) return 0;
+        Minecraft minecraft = Minecraft.getInstance();
+        net.minecraft.client.multiplayer.ClientLevel level = minecraft.level;
+        Player player = minecraft.player;
+        if (level == null || player == null) return 0;
+
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        int bundled = 0;
+        int radius = Math.max(8, minecraft.options.renderDistance().get());
+        int centerX = player.chunkPosition().x;
+        int centerZ = player.chunkPosition().z;
+        try {
+            for (int dx = -radius; dx <= radius; dx++) {
+                for (int dz = -radius; dz <= radius; dz++) {
+                    net.minecraft.world.level.chunk.LevelChunk chunk =
+                            level.getChunkSource().getChunkNow(centerX + dx, centerZ + dz);
+                    if (chunk == null) continue;
+                    for (net.minecraft.world.level.block.entity.BlockEntity blockEntity
+                            : chunk.getBlockEntities().values()) {
+                        if (!modelBlockEntityClass.isInstance(blockEntity)) continue;
+                        Object properties = modelBlockGetProperties.invoke(blockEntity);
+                        Object form = properties == null ? null : modelPropertiesGetForm.invoke(properties);
+                        if (form == null || !formClass.isInstance(form)) continue;
+                        Object data = formToData.invoke(null, form);
+                        if (data == null) continue;
+                        String json = String.valueOf(dataToString.invoke(null, data, true));
+                        if (!seen.add(json)) continue; // identical form already bundled
+                        copyReferencedAssets(json, assetsFolder);
+                        bundled++;
+                    }
+                }
+            }
+            if (bundled > 0) registerAssetPack(assetsFolder);
+        } catch (Throwable error) {
+            warnOnce("Failed to bundle BBS model-block assets", error);
+        }
+        return bundled;
     }
 
     private static void copyReferencedAssets(String json, java.nio.file.Path targetFolder) {

@@ -47,11 +47,17 @@ public class SparrowAtlas implements AutoCloseable {
     /** kept for CPU recoloring (owned by the DynamicTexture, read-only here) */
     private NativeImage image;
     private DynamicTexture dynamicTexture;
+    private static final class MaskHolder {
+        ResourceLocation id;
+        DynamicTexture texture;
+    }
+    /** Shared by cached atlas views; created only when an object actually has a border. */
+    private MaskHolder mask = new MaskHolder();
     /** Shared-cache views release a reference instead of destroying the backing texture. */
     private Runnable sharedRelease;
     private boolean closed;
 
-    private SparrowAtlas(ResourceLocation textureId, int w, int h) {
+    protected SparrowAtlas(ResourceLocation textureId, int w, int h) {
         this.textureId = textureId;
         this.texWidth = w;
         this.texHeight = h;
@@ -214,11 +220,34 @@ public class SparrowAtlas implements AutoCloseable {
         return Math.max(1L, texWidth) * Math.max(1L, texHeight) * 4L;
     }
 
+    /** White RGB with the atlas' original alpha, suitable for arbitrary-colour outlines. */
+    public ResourceLocation silhouetteTexture() {
+        if (mask.id != null) return mask.id;
+        if (image == null) return textureId;
+        try {
+            NativeImage silhouette = new NativeImage(texWidth, texHeight, true);
+            for (int y = 0; y < texHeight; y++) {
+                for (int x = 0; x < texWidth; x++) {
+                    int alpha = image.getPixelRGBA(x, y) >>> 24;
+                    silhouette.setPixelRGBA(x, y, alpha << 24 | 0xFFFFFF);
+                }
+            }
+            mask.texture = new DynamicTexture(silhouette);
+            mask.id = FnfMod.id("sprite_outline/" + NEXT_ID.incrementAndGet());
+            Minecraft.getInstance().getTextureManager().register(mask.id, mask.texture);
+        } catch (Throwable error) {
+            mask.id = textureId;
+            mask.texture = null;
+        }
+        return mask.id;
+    }
+
     /** Creates an independently closeable view over one cache-owned atlas. */
     SparrowAtlas sharedView(Runnable release) {
         SparrowAtlas view = new SparrowAtlas(textureId, texWidth, texHeight);
         view.image = image;
         view.dynamicTexture = dynamicTexture;
+        view.mask = mask;
         view.animations = animations;
         view.allFrames = allFrames;
         view.sharedRelease = release;
@@ -230,6 +259,7 @@ public class SparrowAtlas implements AutoCloseable {
         if (dynamicTexture == null) return;
         try {
             dynamicTexture.setFilter(enabled, false);
+            if (mask.texture != null) mask.texture.setFilter(enabled, false);
         } catch (Throwable ignored) {
             // Filtering must never make a character fail to load.
         }
@@ -255,6 +285,15 @@ public class SparrowAtlas implements AutoCloseable {
     public List<Frame> framesByPrefix(String prefix) {
         if (prefix == null) return List.of();
         return allFrames.stream().filter(frame -> frame.name.startsWith(prefix)).toList();
+    }
+
+    /** Adobe Animate atlases override this to expose a named library symbol. */
+    public List<Frame> framesBySymbol(String symbol) {
+        return framesByPrefix(symbol);
+    }
+
+    /** Dynamic atlas implementations may upload the selected frame here. */
+    public void prepareFrame(Frame frame) {
     }
 
     /**
@@ -308,6 +347,11 @@ public class SparrowAtlas implements AutoCloseable {
             return;
         }
         if (dynamicTexture != null) {
+            if (mask.texture != null && mask.id != null && !mask.id.equals(textureId)) {
+                Minecraft.getInstance().getTextureManager().release(mask.id);
+                mask.texture = null;
+                mask.id = null;
+            }
             Minecraft.getInstance().getTextureManager().release(textureId);
             dynamicTexture = null;
         }

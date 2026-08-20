@@ -6,6 +6,7 @@ import com.fnfmod.chart.LegacyChartParser;
 import com.fnfmod.chart.SongChart;
 import com.fnfmod.chart.VSliceChartParser;
 import com.fnfmod.world.ModContentScope;
+import com.fnfmod.world.ModWorldOptions;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
@@ -200,8 +201,12 @@ public class SongLibrary {
     public static synchronized void rescan() {
         long started = System.nanoTime();
         ensureFolders();
-        List<String> externalFolders = ModContentScope.mode() == ModContentScope.Mode.ALL
-                ? getExternalFolders() : List.of();
+        // A mod world normally sees only its owning pack; a world that opted into external
+        // content also scans installed packs and configured directories, like an ALL world.
+        boolean modWorldExternal = ModContentScope.mode() == ModContentScope.Mode.MOD_WORLD
+                && ModWorldOptions.allowExternalContent();
+        boolean scanEverything = ModContentScope.mode() == ModContentScope.Mode.ALL || modWorldExternal;
+        List<String> externalFolders = scanEverything ? getExternalFolders() : List.of();
         Map<String, EnumSet<ExternalContent>> externalContent = new LinkedHashMap<>();
         List<Path> fingerprintRoots = new ArrayList<>();
         StringBuilder fingerprintConfig = new StringBuilder("mode=").append(ModContentScope.mode());
@@ -213,7 +218,8 @@ public class SongLibrary {
                         .append(active.root().toAbsolutePath().normalize());
                 fingerprintRoots.add(active.root());
             });
-        } else if (ModContentScope.mode() == ModContentScope.Mode.ALL) {
+        }
+        if (scanEverything) {
             fingerprintRoots.add(modsDir());
             String installedSource = modsDir().toAbsolutePath().normalize().toString();
             fingerprintConfig.append("\ninstalled=").append(getExternalFolderContent(installedSource));
@@ -265,7 +271,8 @@ public class SongLibrary {
         // packs and configured external directories.
         if (ModContentScope.mode() == ModContentScope.Mode.MOD_WORLD) {
             ModContentScope.activeMod().ifPresent(active -> scanPsychRoot(active.root(), found, icons));
-        } else if (ModContentScope.mode() == ModContentScope.Mode.ALL) {
+        }
+        if (scanEverything) {
             scanModsDir(found, icons);
             for (String folder : externalFolders) {
                 try {

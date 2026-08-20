@@ -115,7 +115,7 @@ public final class ClientSession {
         playbackMode = PlaybackMode.fromNetworkId(payload.playbackMode());
         songAssets = payload.songAssets();
         luaAllowed = payload.luaAllowed();
-        List<FnfPayloads.FileMeta> checkedManifest = validateManifest(payload.files(), !payload.luaAllowed());
+        List<FnfPayloads.FileMeta> checkedManifest = validateManifest(payload.files());
         if (checkedManifest == null) {
             fail("Server sent an invalid or oversized song manifest");
             return;
@@ -235,8 +235,7 @@ public final class ClientSession {
         }
     }
 
-    private static List<FnfPayloads.FileMeta> validateManifest(List<FnfPayloads.FileMeta> files,
-                                                               boolean enforceDedicatedLimit) {
+    private static List<FnfPayloads.FileMeta> validateManifest(List<FnfPayloads.FileMeta> files) {
         if (files == null || files.size() > FnfPayloads.MAX_MANIFEST_FILES) return null;
         List<FnfPayloads.FileMeta> checked = new ArrayList<>(files.size());
         java.util.HashSet<String> names = new java.util.HashSet<>();
@@ -246,8 +245,6 @@ public final class ClientSession {
             String name = safeRelativeName(meta.name());
             if (name == null || name.length() > FnfPayloads.MAX_FILE_NAME_LENGTH || !names.add(name)) return null;
             if (meta.size() < 0) return null;
-            if (enforceDedicatedLimit && (meta.size() > SessionManager.MAX_SONG_TRANSFER_BYTES
-                    || total > SessionManager.MAX_SONG_TRANSFER_BYTES - meta.size())) return null;
             if (meta.sha1() == null || !meta.sha1().matches("(?i)[0-9a-f]{40}")) return null;
             if (Long.MAX_VALUE - total < meta.size()) return null;
             total += meta.size();

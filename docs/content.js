@@ -20,7 +20,7 @@
 
   const pages = {};
 
-  pages.home = page("Blockified Engine", "Documentation · Guides · Wiki", "Build Friday Night Funkin' songs, stages, machines, and world scenes inside Minecraft.", ["2.2.9bbs", "NeoForge 1.21.1", "Singleplayer + LAN"],
+  pages.home = page("Blockified Engine", "Documentation · Guides · Wiki", "Build Friday Night Funkin' songs, stages, machines, and world scenes inside Minecraft.", ["2.3.0bbs", "NeoForge 1.21.1", "Singleplayer + LAN"],
     `<div class="hero-panel"><span>DOCUMENTATION · GUIDES · WIKI</span><h2>Build with Blockified.</h2><p>Learn by following a guide, look up exact behavior in documentation, or understand systems through the wiki. This site covers Blockified additions and changes without duplicating unchanged Psych Engine material.</p><div class="hero-actions"><a class="button-link" href="#/quick-start">Start here</a><a class="button-link secondary" href="#/animations">Make animations</a><a class="button-link secondary" href="#/lua-overview">Lua API</a></div></div>`,
     section("choose", "Choose how to use this site", `<div class="card-grid category-grid">
       <a class="doc-card category-card guide-card" href="#/quick-start"><span>GUIDES</span><h3>Make something</h3><p>Follow ordered, practical steps from installation to a playable song, complete pack, animation, or custom machine.</p></a>
@@ -195,9 +195,11 @@ end`)}<p><a href="#/machine-lua">Open full machine Lua reference</a></p>`),
     section("location", "Location", `<p>Place worlds under <code>config/fnfmod/mods/My-Mod/worlds/</code>. Blockified resolves the owning pack from the active world.</p>`),
     section("scope", "Asset scope", `<div class="table-wrap"><table><thead><tr><th>Location</th><th>Available content</th></tr></thead><tbody><tr><td>Pack's bundled world</td><td>Only the owning pack</td></tr><tr><td>Ordinary local/LAN world</td><td>All lightweight songs, installed packs, and external directories</td></tr><tr><td>Dedicated server</td><td>Global song library; machine authoring/menu Lua disabled</td></tr></tbody></table></div>`),
     section("reason", "Why", `<p>Bundled worlds stay self-contained and deterministic, while ordinary worlds preserve Blockified's full global library.</p>`),
-    section("world-options", "World-forced settings", `<p>A bundled world can override the player's own settings while it is being played. Put a <code>blockified-options.json</code> in the world folder (<code>config/fnfmod/mods/My-Mod/worlds/My-World/</code>) with any subset of the user's settings keys, plus the two world-only controls below.</p>${code("json", `{
+    section("world-options", "World-forced settings", `<p>A bundled world can override the player's own settings while it is being played. Put a <code>blockified-options.json</code> in the world folder (<code>config/fnfmod/mods/My-Mod/worlds/My-World/</code>) with any subset of the user's settings keys, plus the world-only controls below.</p>${code("json", `{
   "allowCheats": false,
   "saveOnExit": true,
+  "allowExternalContent": false,
+  "hideSettingsButton": false,
   "downscroll": true,
   "noteSkin": "NOTE_assets-future",
   "hudStyle": "fnf",
@@ -208,8 +210,17 @@ end`)}<p><a href="#/machine-lua">Open full machine Lua reference</a></p>`),
       ${api("Undefined keys", "Fall back to the player's own setting, unchanged.")}
       ${api("allowCheats", "Optional boolean. Enables or disables player command permissions for this bundled world.")}
       ${api("saveOnExit", "Defaults to true. When false, autosaves and exit saves are suppressed, including world, entity, and player progress.")}
+      ${api("allowExternalContent", "Defaults to false. When true, the world may also use installed packs and configured directories, not only its owning pack.")}
+      ${api("hideSettingsButton", "Defaults to false. When true, the in-menu World Settings button is hidden for this world.")}
       ${api("Scope", "Only applies inside that bundled world. Normal/LAN worlds and menus use the player's plain settings.")}
-    </div>${callout("Separate from user options", "World-forced values and world-only controls are read only from this bundled world's blockified-options.json. They are never written to the user's options.json, and the player's own settings return when leaving.")}`)
+    </div>${callout("Separate from user options", "World-forced values and world-only controls are read only from this bundled world's blockified-options.json. They are never written to the user's options.json, and the player's own settings return when leaving.")}`),
+    section("world-settings-menu", "World Settings menu", `<p>Instead of editing the JSON by hand, the host can open a <strong>World Settings</strong> button in the Funkin' Machine song selector while inside a bundled world. It writes the same <code>blockified-options.json</code>.</p><div class="api-list">
+      ${api("World controls", "Toggle cheats (Default / On / Off), Save changes to world, and Content (only this mod vs. allow external packs and directories).")}
+      ${api("Force my gameplay settings", "Snapshots your current gameplay/visual settings (note colors, scroll, HUD, note skin, icons, ...) into the world so every player is forced to them. Mods, directories, personal calibration and skin choice are never forced.")}
+      ${api("Hide this button", "Sets hideSettingsButton so the menu button no longer appears for the world.")}
+    </div>${callout("Host only", "The button appears only for the singleplayer or LAN owner of a verified bundled world, since it writes into the world folder.")}`),
+    section("world-assets", "Share BBS model-block assets", `<p>The World Settings menu's <strong>Bundle BBS model-block assets</strong> action copies the models and textures used by the BBS model blocks placed near you into <code>&lt;world&gt;/bbs-assets/</code> and registers them, so the blocks still render for anyone you share the world with even when the original files are missing on their install. Only existing placed blocks are bundled. Bundled assets are registered automatically when the world is entered.</p>`),
+    section("world-transfer", "Move worlds in and out", `<p>Use <a href="#/commands">/fnf world export &lt;pack&gt;</a> to move an ordinary save into a pack as a bundled world, and <code>/fnf world import</code> to move a bundled world back into your saves. Both play a short transition and reopen the world in its new place.</p>`)
   );
 
   pages.machines = page("Custom machines", "Documentation · Content", "Reskin the Funkin' machine and replace its selector with a Lua menu.", ["Singleplayer", "LAN", "Lua UI"],
@@ -644,6 +655,7 @@ end`))
   pages.commands = page("Commands and recovery", "Documentation · Tools", "Open editors, reload content, and recover from a stuck session.", ["Commands"],
     section("editor", "Editor", api("/fnf editor [song]", "Opens chart editor.", "Command")),
     section("reload", "Reload", `<div class="api-list">${api("/fnf reload all", "Reloads all supported categories.", "Command")}${api("/fnf reload songs", "Reloads song library.", "Command")}${api("/fnf reload skins|splashes|animations|icons|hitsounds|fonts|options|scores", "Reloads one category.", "Command")}</div>`),
+    section("world", "Move a world between saves and packs", `<div class="api-list">${api("/fnf world export &lt;pack&gt;", "Moves the current singleplayer world into an installed pack's worlds/ folder, then reopens it as that pack's bundled world. Works from an ordinary save or from another pack's world; the pack you are already in is not offered.", "Command")}${api("/fnf world import", "Moves the current bundled mod world back into Minecraft's saves folder and reopens it as an ordinary world. Only available while inside a bundled world.", "Command")}</div><p>Both play a short black-screen transition while the world is saved, closed, moved, and reopened — movement and camera are locked and a progress bar tracks the reload. Host-only (singleplayer or the LAN owner). See <a href="#/mod-worlds">Bundled worlds</a>.</p>`),
     section("volume", "Global master volume", `<p>Volume Up and Volume Down default to <code>+</code>/<code>=</code> and <code>-</code>. Rebind either under <strong>Options → Controls → Blockified Engine</strong>. Each press changes Minecraft master volume by 10%, including from Minecraft and Blockified pause menus. A compact top-layer slider animates in over 0.3 seconds and can be dragged wherever the current screen exposes a cursor. Its vanilla click changes pitch from 0.0 at 0% to 2.0 at 100% and plays once per displayed percentage while dragging. Volume shortcuts remain disabled during text entry.</p>`),
     section("emergency", "Emergency exit", `<p><code>Ctrl+Shift+Enter</code> leaves a stuck Blockified gameplay/editor state and returns control to Minecraft.</p>`)
   );

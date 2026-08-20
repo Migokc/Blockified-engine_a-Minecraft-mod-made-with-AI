@@ -7,6 +7,7 @@ import com.fnfmod.client.math.Easing;
 import com.fnfmod.client.render.LuaWorldObject;
 import com.fnfmod.client.render.LuaWorldObjectRenderer;
 import com.fnfmod.client.render.PerformerRotation;
+import com.fnfmod.client.render.ObjectBorderRegistry;
 import com.fnfmod.client.render.SparrowAtlas;
 import com.fnfmod.client.render.WorldSpriteEntityVisuals;
 import com.fnfmod.entity.WorldSpriteEntity;
@@ -240,6 +241,7 @@ public final class ExtraCharacterRoster implements AutoCloseable {
         }
         // Drop the per-entity overrides so a recycled id cannot inherit them.
         PerformerRotation.clear(entry.entity);
+        ObjectBorderRegistry.clear(entry.entity);
         PerformerCollisions.setEnabled(entry.entity.getId(), true);
         PerformerShadows.setEnabled(entry.entity.getId(), true);
         CharacterAnimations.release(entry.entity);
@@ -252,6 +254,12 @@ public final class ExtraCharacterRoster implements AutoCloseable {
 
     public boolean exists(String tag) {
         return entries.containsKey(key(tag));
+    }
+
+    /** Applies a Psych-canvas screen-space outline to either a BBS or 2D extra. */
+    public boolean setBorder(String tag, double size, int color) {
+        Entry entry = entries.get(key(tag));
+        return entry != null && ObjectBorderRegistry.set(physicsEntity(entry), size, color);
     }
 
     /** Stable snapshots used by free cam; callers never receive mutable roster entries. */
@@ -756,6 +764,7 @@ public final class ExtraCharacterRoster implements AutoCloseable {
         WorldSpriteEntity entity = entry.spriteEntity;
         if (entity == null) return;
         WorldSpriteEntityVisuals.unbind(entity);
+        ObjectBorderRegistry.clear(entity);
         PerformerCollisions.setEnabled(entity.getId(), true);
         PerformerShadows.setEnabled(entity.getId(), true);
         if (entity.level() instanceof ClientLevel owner && owner.getEntity(entity.getId()) != null) {

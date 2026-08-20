@@ -75,6 +75,12 @@ public final class FnfClient {
             event.registerEntityRenderer(FnfMod.WORLD_SPRITE_ENTITY.get(),
                     com.fnfmod.client.render.WorldSpriteEntityRenderer::new);
         }
+
+        @SubscribeEvent
+        public static void onRegisterShaders(net.neoforged.neoforge.client.event.RegisterShadersEvent event)
+                throws java.io.IOException {
+            com.fnfmod.client.render.BbsObjectBorderRenderer.registerShader(event);
+        }
     }
 
     @EventBusSubscriber(modid = FnfMod.MODID, value = Dist.CLIENT)
@@ -85,10 +91,21 @@ public final class FnfClient {
             // Re-read options.json from disk each time any world is entered, so
             // settings edited outside the game (including note colors) take effect,
             // then overlay a mod world's forced settings on top.
+            // If a world-import transition was interrupted by a crash/force-close, put the
+            // player's BBS chroma sky back to what it was before the cutscene.
+            com.fnfmod.client.render.BbsChromaSkyControl.recoverIfNeeded();
             ClientOptions.load();
             ClientOptions.applyWorldOverrides(ModContentScope.isModWorld()
                     ? ModContentScope.activeMod().map(ModContentScope.ActiveMod::worldRoot).orElse(null)
                     : null);
+            // A shared mod world may ship bundled BBS model-block assets; register them so
+            // model blocks still render where the original files are absent.
+            if (ModContentScope.isModWorld()) {
+                java.nio.file.Path bundled = com.fnfmod.world.ModWorldOptions.bundledAssetsRoot();
+                if (bundled != null && java.nio.file.Files.isDirectory(bundled)) {
+                    com.fnfmod.client.anim.CharacterAnimations.registerAssets(bundled);
+                }
+            }
             // The skin/colors may have changed; rebuild so the effective values render.
             com.fnfmod.client.render.NoteStyle.reload();
         }
@@ -102,6 +119,7 @@ public final class FnfClient {
             com.fnfmod.client.render.MachineTextureCache.clear();
             com.fnfmod.client.render.SpriteAtlasCache.clear();
             com.fnfmod.client.render.SpriteImageCache.clear();
+            com.fnfmod.client.render.ObjectBorderRegistry.clearAll();
             ModContentScope.clear();
             SongLibrary.rescan();
             MachineLibrary.rescan();
@@ -249,6 +267,18 @@ public final class FnfClient {
                                         openEditor(StringArgumentType.getString(ctx, "song"));
                                         return 1;
                                     })))
+                    .then(literal("world")
+                            .then(literal("export")
+                                    .then(argument("pack", StringArgumentType.word())
+                                            .suggests((ctx, builder) -> {
+                                                com.fnfmod.client.world.WorldImportCutscene.exportTargets()
+                                                        .forEach(builder::suggest);
+                                                return builder.buildFuture();
+                                            })
+                                            .executes(ctx -> exportWorld(ctx.getSource(),
+                                                    StringArgumentType.getString(ctx, "pack")))))
+                            .then(literal("import")
+                                    .executes(ctx -> importWorld(ctx.getSource()))))
                     .then(literal("reload")
                             .executes(ctx -> reloadAll(ctx.getSource()))
                             .then(literal("all").executes(ctx -> reloadAll(ctx.getSource())))
@@ -289,6 +319,46 @@ public final class FnfClient {
                                 feedback(ctx.getSource(), "Reloaded scores.");
                                 return 1;
                             }))));
+        }
+
+        private static int exportWorld(CommandSourceStack source, String pack) {
+            String error = com.fnfmod.client.world.WorldImportCutscene.startExport(pack);
+            if (error != null) {
+                feedback(source, error);
+                return 0;
+            }
+            feedback(source, "Exporting this world into '" + pack + "'...");
+            return 1;
+        }
+
+        private static int importWorld(CommandSourceStack source) {
+            String error = com.fnfmod.client.world.WorldImportCutscene.startImport();
+            if (error != null) {
+                feedback(source, error);
+                return 0;
+            }
+            feedback(source, "Importing this world into your saves...");
+            return 1;
+        }
+
+        @SubscribeEvent
+        public static void onClientTick(net.neoforged.neoforge.client.event.ClientTickEvent.Post event) {
+            com.fnfmod.client.world.WorldImportCutscene.tick();
+        }
+
+        /** Freeze player movement while the world-import cutscene is running. */
+        @SubscribeEvent
+        public static void onMovementInput(net.neoforged.neoforge.client.event.MovementInputUpdateEvent event) {
+            if (!com.fnfmod.client.world.WorldImportCutscene.active()) return;
+            net.minecraft.client.player.Input input = event.getInput();
+            input.forwardImpulse = 0;
+            input.leftImpulse = 0;
+            input.up = false;
+            input.down = false;
+            input.left = false;
+            input.right = false;
+            input.jumping = false;
+            input.shiftKeyDown = false;
         }
 
         private static int reloadAll(CommandSourceStack source) {

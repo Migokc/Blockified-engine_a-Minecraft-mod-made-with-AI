@@ -25,15 +25,16 @@ public final class OpponentBotCharacter {
     private final RemotePlayer entity;
     private final String set;
     private final String role;
-    private final boolean usePlayerSkin;
+    private final CharacterAnimations.SkinChoice skinChoice;
     private long lastSingMs;
     private long lastStatePlayMs;
 
-    private OpponentBotCharacter(RemotePlayer entity, String set, String role, boolean usePlayerSkin) {
+    private OpponentBotCharacter(RemotePlayer entity, String set, String role,
+                                 CharacterAnimations.SkinChoice skinChoice) {
         this.entity = entity;
         this.set = set;
         this.role = role;
-        this.usePlayerSkin = usePlayerSkin;
+        this.skinChoice = skinChoice;
     }
 
     /**
@@ -41,7 +42,7 @@ public final class OpponentBotCharacter {
      * (the caller then keeps the armor stand). {@code role} is "player"/"opponent".
      */
     public static OpponentBotCharacter create(ClientLevel level, String set, String role, Entity stand,
-                                              boolean usePlayerSkin) {
+                                              CharacterAnimations.SkinChoice skinChoice) {
         if (level == null || set == null || stand == null || CharacterAnimations.isDisabled(set)) return null;
         UUID id = UUID.nameUUIDFromBytes(("blockified:bot:" + role).getBytes(StandardCharsets.UTF_8));
         String name = "Bot_" + role;
@@ -53,11 +54,11 @@ public final class OpponentBotCharacter {
         level.addEntity(player);
         // Apply the BBS form. If the character/animation name has no form, bail so the
         // caller falls back to the plain armor stand.
-        if (!CharacterAnimations.prepare(player, set, role, usePlayerSkin)) {
+        if (!CharacterAnimations.prepare(player, set, role, skinChoice)) {
             level.removeEntity(player.getId(), Entity.RemovalReason.DISCARDED);
             return null;
         }
-        return new OpponentBotCharacter(player, set, role, usePlayerSkin);
+        return new OpponentBotCharacter(player, set, role, skinChoice);
     }
 
     /** Keeps the character on the bot stand's spot and hides the stand. Call each frame. */
@@ -108,7 +109,7 @@ public final class OpponentBotCharacter {
     }
 
     private float[] playStateWithCameraOffset(String action, boolean sing) {
-        float[] cameraOffset = CharacterAnimations.play(entity, set, role, action, usePlayerSkin);
+        float[] cameraOffset = CharacterAnimations.play(entity, set, role, action, skinChoice);
         if (cameraOffset == null) return null;
         long now = System.currentTimeMillis();
         lastStatePlayMs = now;

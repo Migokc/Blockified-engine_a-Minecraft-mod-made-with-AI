@@ -114,6 +114,9 @@ public final class ModContentScope {
         State current = state;
         if (current.mode() == Mode.ALL) return true;
         if (current.mode() != Mode.MOD_WORLD || current.activeMod() == null) return false;
+        // A mod world that opted into external content may use any local content path,
+        // matching what its library scan exposes.
+        if (ModWorldOptions.allowExternalContent()) return true;
         return isContainedByRealPath(current.activeMod().root(), candidate);
     }
 

@@ -97,6 +97,18 @@ public class SongSelectScreen extends Screen {
                     SongLibrary.processNonce(), SongLibrary.rescanGeneration()));
         }).bounds(right, 106, 100, 20).build());
 
+        // Editing world settings writes into the world folder, so it is host-only, in a
+        // verified bundled mod world, and can be hidden per-world.
+        java.nio.file.Path worldRoot = com.fnfmod.world.ModContentScope.activeMod()
+                .map(com.fnfmod.world.ModContentScope.ActiveMod::worldRoot).orElse(null);
+        if (worldRoot != null && minecraft.hasSingleplayerServer()
+                && com.fnfmod.world.ModContentScope.isModWorld()
+                && !com.fnfmod.world.ModWorldOptions.hideSettingsButton()) {
+            addRenderableWidget(Button.builder(Component.literal("World Settings"), b ->
+                    minecraft.setScreen(new WorldSettingsScreen(this, worldRoot)))
+                    .bounds(right, 128, 100, 20).build());
+        }
+
         addRenderableWidget(Button.builder(Component.literal("Close"), b -> {
             ClientSession.leave();
             onClose();
