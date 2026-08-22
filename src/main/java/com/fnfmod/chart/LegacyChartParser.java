@@ -43,9 +43,17 @@ public final class LegacyChartParser {
         chart.player2 = optString(song, "player2", "dad");
         chart.player3 = optString(song, "gfVersion", optString(song, "player3", "gf"));
         chart.stage = optString(song, "stage", "stage");
+        // Pixel UI: Blockified's own "uiStyle" (pixel/normal) or Psych's legacy isPixelStage.
+        String uiStyle = optString(song, "uiStyle", "").trim().toLowerCase(java.util.Locale.ROOT);
+        chart.pixelUi = uiStyle.equals("pixel") || uiStyle.endsWith("-pixel")
+                || optBool(song, "isPixelStage", false);
+        chart.disableNoteRgb = optBool(song, "disableNoteRGB", false);
         chart.noteTexture = optString(song, "arrowSkin", optString(song, "noteTexture", ""));
         chart.noteSplashTexture = optString(song, "splashSkin",
                 optString(song, "noteSplashTexture", ""));
+        chart.holdSplashTexture = optString(song, "holdSplashSkin",
+                optString(song, "holdSplashTexture",
+                        optString(song, "holdCoverTexture", "")));
 
         // Psych Engine 1.0+ ("psych_v1", "psych_v1_convert") stores lanes absolutely:
         // 0-3 = player, 4-7 = opponent. Older charts are mustHitSection-relative.

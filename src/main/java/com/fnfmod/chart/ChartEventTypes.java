@@ -220,12 +220,14 @@ public final class ChartEventTypes {
                     "Value 7: Move duration in seconds. Empty uses the default 0.5s; a larger value makes the camera glide to the position more slowly.");
             case CAMERA_ROTATION_3D -> String.join("\n",
                     "Rotates Minecraft's world camera in three axes.",
-                    "While Camera Orbit is active, these values rotate the camera position around that orbit's pivot instead.",
+                    "The Normal / Orbit layer behaves like the original event: while Camera Orbit is active, it rotates the camera position around the pivot.",
+                    "The Camera View layer always rotates only the camera's own view, so it can animate independently while orbiting.",
                     "Value 1: X rotation (pitch) in degrees.",
                     "Value 2: Y rotation (yaw) in degrees.",
                     "Value 3: Z rotation (roll) in degrees.",
                     "Value 4: Easing. Leave all rotation values empty to return to the normal camera rotation.",
-                    "Value 5: Rotation duration in seconds. Empty uses the original 0.5s duration.");
+                    "Value 5: Rotation duration in seconds. Empty uses the original 0.5s duration.",
+                    "Value 6: Rotation layer. Empty/normal/orbit uses the original layer; camera/view/local uses the independent Camera View layer. Each layer keeps its own tween state.");
             case CAMERA_ORBIT -> String.join("\n",
                     "Enables or disables a pivot for Minecraft's world camera. FNF presentation ignores it. Camera Follow Pos sets the camera position/radius; Camera Rotation 3D rotates it around the pivot.",
                     "Value 1: on starts orbit mode; off/stop/normal ends it.",
@@ -379,7 +381,9 @@ public final class ChartEventTypes {
     }
 
     public static String value6Hint(String name) {
-        return isCameraFollowPos(name) ? "machine facing or camera" : "value 6";
+        if (isCameraFollowPos(name)) return "machine facing or camera";
+        if (isCameraRotation3d(name)) return "normal/orbit or camera view";
+        return "value 6";
     }
 
     public static String value7Hint(String name) {

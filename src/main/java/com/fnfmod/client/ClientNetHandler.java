@@ -51,7 +51,7 @@ public final class ClientNetHandler {
         } else if (payload instanceof FnfPayloads.SessionStateS2C p) {
             if (p.state() == 0) {
                 mc.setScreen(new WaitingScreen(Component.literal(
-                        "Waiting for player 2... (they must click the machine)")));
+                        "Waiting for player 2 (they must click the machine)...")));
             } else if (p.state() == 1 && mc.screen instanceof WaitingScreen) {
                 mc.setScreen(new WaitingScreen(Component.literal(
                         p.partnerName() + " joined! Preparing...")));

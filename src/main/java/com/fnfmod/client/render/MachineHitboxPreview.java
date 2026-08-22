@@ -6,6 +6,7 @@ import com.fnfmod.net.FnfPayloads;
 import com.mojang.blaze3d.vertex.PoseStack;
 import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.renderer.LevelRenderer;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
@@ -49,11 +50,14 @@ public final class MachineHitboxPreview {
     public static void render(PoseStack poseStack, Camera camera) {
         Minecraft minecraft = Minecraft.getInstance();
         if (minecraft.player == null || stage == 0) return;
-        boolean designer = minecraft.player.getMainHandItem().is(FnfMod.FUNKIN_DESIGNER.get())
-                || minecraft.player.getOffhandItem().is(FnfMod.FUNKIN_DESIGNER.get());
+        boolean designer = holdingDesigner(minecraft);
         boolean anchor = minecraft.player.getMainHandItem().is(FnfMod.MACHINE_ANCHOR_ITEM.get())
                 || minecraft.player.getOffhandItem().is(FnfMod.MACHINE_ANCHOR_ITEM.get());
         if (stage < 3 && !designer || stage == 3 && !designer && !anchor) return;
+        // Before a precise first click there is no world volume yet. A tiny cube
+        // was offset by its mandatory minimum size and looked disconnected from
+        // the aim point, so the HUD crosshair indicator represents this stage.
+        if (stage == 1 && mode == MachineHitboxService.PRECISE) return;
 
         AABB bounds = stage == 3 ? readyBounds : liveBounds(minecraft);
         if (bounds == null) return;
@@ -72,6 +76,48 @@ public final class MachineHitboxPreview {
         }
         poseStack.popPose();
         buffers.endBatch(lines);
+    }
+
+    /** Yellow outline around the vanilla crosshair while choosing precise corner one. */
+    public static void renderHud(GuiGraphics gui) {
+        Minecraft minecraft = Minecraft.getInstance();
+        if (stage != 1 || mode != MachineHitboxService.PRECISE
+                || minecraft.screen != null || !holdingDesigner(minecraft)) return;
+        int cx = gui.guiWidth() / 2;
+        int cy = gui.guiHeight() / 2;
+        // The vanilla sprite is 15x15, but its only opaque pixels are a 9-pixel
+        // horizontal and vertical stroke. Trace that alpha silhouette instead of
+        // outlining the full transparent image rectangle.
+        int spriteLeft = cx - 7;
+        int spriteTop = cy - 7;
+        int yellow = 0xFFFFD83D;
+        for (int y = 0; y < 15; y++) {
+            for (int x = 0; x < 15; x++) {
+                if (crosshairPixel(x, y)) continue;
+                boolean touches = false;
+                for (int oy = -1; oy <= 1 && !touches; oy++) {
+                    for (int ox = -1; ox <= 1; ox++) {
+                        if ((ox != 0 || oy != 0) && crosshairPixel(x + ox, y + oy)) {
+                            touches = true;
+                            break;
+                        }
+                    }
+                }
+                if (touches) gui.fill(spriteLeft + x, spriteTop + y,
+                        spriteLeft + x + 1, spriteTop + y + 1, yellow);
+            }
+        }
+    }
+
+    private static boolean crosshairPixel(int x, int y) {
+        return x >= 0 && x < 15 && y >= 0 && y < 15
+                && (x == 7 && y >= 3 && y <= 11 || y == 7 && x >= 3 && x <= 11);
+    }
+
+    private static boolean holdingDesigner(Minecraft minecraft) {
+        return minecraft.player != null
+                && (minecraft.player.getMainHandItem().is(FnfMod.FUNKIN_DESIGNER.get())
+                || minecraft.player.getOffhandItem().is(FnfMod.FUNKIN_DESIGNER.get()));
     }
 
     private static AABB liveBounds(Minecraft minecraft) {

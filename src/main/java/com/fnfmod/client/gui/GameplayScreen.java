@@ -6,6 +6,7 @@ import com.fnfmod.chart.ChartEventTypes;
 import com.fnfmod.chart.SongChart;
 import com.fnfmod.client.ClientOptions;
 import com.fnfmod.client.ClientSession;
+import com.fnfmod.client.ClientStorySession;
 import com.fnfmod.client.FnfKeys;
 import com.fnfmod.client.anim.CharacterAnimations;
 import com.fnfmod.client.anim.ExtraCharacterRoster;
@@ -235,11 +236,15 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     private final List<GameNote>[] activeHolds = new List[4];
     private final double[] myStrumFlash = new double[4];   // >0 confirm remaining ms
     private final double[] otherStrumFlash = new double[4];
-    /** Custom sustain-arrow playback: one XML/spritesheet frame per two rendered frames. */
-    private final GameNote[] mySustainArrowNote = new GameNote[4];
-    private final GameNote[] otherSustainArrowNote = new GameNote[4];
-    private final long[] mySustainArrowRenderFrames = new long[4];
-    private final long[] otherSustainArrowRenderFrames = new long[4];
+    /** Independent animation clocks, matching the delta-time behavior of 2D characters. */
+    private final long[] myConfirmStartedNanos = new long[4];
+    private final long[] otherConfirmStartedNanos = new long[4];
+    private final double[] myLastRenderedFlash = new double[4];
+    private final double[] otherLastRenderedFlash = new double[4];
+    private final GameNote[] myAnimatedSustain = new GameNote[4];
+    private final GameNote[] otherAnimatedSustain = new GameNote[4];
+    private final long[] mySustainStartedNanos = new long[4];
+    private final long[] otherSustainStartedNanos = new long[4];
     private double voicesMutedUntil = -1;
 
     // partner
@@ -263,6 +268,8 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     private final List<Splash> splashes = new ArrayList<>();
     private record CoverEnd(int lane, float x, float y, long bornMs) {}
     private final List<CoverEnd> coverEnds = new ArrayList<>();
+    /** Per-lane origin for Psych holdSplash start -> hold animation timing. */
+    private final long[] holdCoverStartedMs = new long[4];
     private static final double SPLASH_FPS = 24.0;
     private final List<MeterSegment> meterSegments;
     private int lastMeterSegment = -1;
@@ -283,6 +290,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     private final long[] lastHoldSingMs = new long[4];
     private long lastFrameNano;
     private boolean endSent;
+    private boolean songFailed;
     private int pauseSelection;
     private long pausedAtMs;
     private boolean openingMinecraftPause;
@@ -295,7 +303,28 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     private boolean enterReady = true;
     private boolean editorPlaytest;
     private boolean editorPreview;
-    private double editorStartMs;
+    private boolean editorFastForwarding;
+    private double editorFastForwardTargetMs = -1;
+    private float editorNormalPlaybackRate = 1f;
+    private boolean editorFastForwardResumePlaying = true;
+    private double editorSimulationPositionMs;
+    private double editorForcedSongPosMs = Double.NaN;
+    private boolean editorSimulationStep;
+    private boolean editorSimulationInitialized;
+    private boolean editorRollbackPending;
+    private double editorRollbackTargetMs;
+    private boolean editorRollbackResumePlaying = true;
+    private boolean editorTransportPaused;
+    private long editorTransportPausedAtMs;
+    private boolean editorTimelineDragging;
+    private double editorTimelineDragMs;
+    /** Hidden reconstruction uses a valid low-FPS delta instead of rendering accelerated gameplay. */
+    private static final double EDITOR_RECONSTRUCTION_STEP_MS = 50.0;
+    private static final long EDITOR_RECONSTRUCTION_MAX_BUDGET_NANOS = 60_000_000L;
+
+    public boolean isEditorReconstructing() {
+        return editorPlaytest && (editorSimulationStep || editorFastForwarding || editorRollbackPending);
+    }
     // Free-camera playtest state (Ctrl+Shift+Space). Holding LMB in empty viewport
     // space captures the mouse for spectator move/look; wheel adjusts freeCamSpeed.
     private boolean freeCam;
@@ -316,6 +345,14 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     /** Export a static camera pose or pivot-orbit mode beginning at that pose. */
     private boolean freeCamOrbitShot;
     private boolean freeCamOrbitPinned;
+    /**
+     * Authored Camera Orbit XYZ. Keep these separate from freeCamFocusPoint:
+     * that point is also used by viewport navigation and is intentionally
+     * replaced/cleared by several camera operations. Reconstructing the panel
+     * values from it made typed pivot values appear to revert.
+     */
+    private final double[] freeCamOrbitPivot = new double[3];
+    private boolean freeCamOrbitPivotInitialized;
     /** False = object authoring tab; true = camera authoring tab. */
     private boolean freeCamCameraTab;
     // On-screen free-cam control panel. Clickable when the cursor is released
@@ -549,7 +586,17 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                 null, "", CharacterAnimations.DEFAULT_SET, -1, System.currentTimeMillis() + 1000);
         screen.editorPlaytest = true;
         screen.editorPreview = preview;
-        screen.editorStartMs = Math.max(0, startMs);
+        // Open the authoritative rollback journal before the stage teleport or
+        // any chart/Lua command can reach the integrated server. Packet ordering
+        // keeps subsequent playtest commands behind this snapshot request.
+        PacketDistributor.sendToServer(new FnfPayloads.EditorPlaytestC2S(
+                machinePos, FnfPayloads.EditorPlaytestC2S.BEGIN));
+        // A playtest always builds state from time zero. Starting from the editor
+        // playhead is an accelerated simulation, never a direct clock/note jump.
+        screen.editorNormalPlaybackRate = player.playbackRate();
+        screen.editorFastForwardTargetMs = Math.max(0, startMs);
+        screen.editorFastForwarding = screen.editorFastForwardTargetMs > 0.5;
+        screen.editorSimulationPositionMs = 0;
         screen.editorReturnFactory = returnFactory;
         screen.runtimeSongId = songId;
         screen.runtimeSongFolder = songFolder;
@@ -583,7 +630,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         GameplayCamera.end();
         screen.beginCamera();
         screen.applyPsychCameraDefaults();
-        screen.prepareEditorStart();
+        if (screen.editorFastForwarding) screen.parkEditorAudioAt(screen.editorFastForwardTargetMs);
         return screen;
     }
 
@@ -607,28 +654,6 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         } catch (Exception ignored) {
             // No command permission: the client-side setPos is the best we can do.
         }
-    }
-
-    private void prepareEditorStart() {
-        if (!editorPlaytest || editorStartMs <= 0) return;
-        double cutoff = editorStartMs - SHIT;
-        for (int lane = 0; lane < 4; lane++) {
-            myLaneIndex[lane] = skipNotesBefore(myLanes[lane], cutoff);
-            otherLaneIndex[lane] = skipNotesBefore(otherLanes[lane], cutoff);
-        }
-        // Keep the event cursor at zero. When playback starts, events up to the
-        // requested conductor time run immediately so camera/event state is
-        // reconstructed instead of silently discarded.
-    }
-
-    private static int skipNotesBefore(List<GameNote> notes, double cutoff) {
-        int index = 0;
-        while (index < notes.size() && notes.get(index).endMs() < cutoff) {
-            GameNote note = notes.get(index++);
-            note.hit = true;
-            note.holdComplete = true;
-        }
-        return index;
     }
 
     private void beginCamera() {
@@ -809,8 +834,13 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     private void updateSongPos() {
         if (phase == Phase.PAUSED || phase == Phase.GAMEOVER) return;
         // A substate opened with pauseGame holds the song where it is, like Psych.
-        if (luaRuntime != null && luaRuntime.substatePausesGame()) return;
-        double base = editorPlaytest ? editorStartMs : 0;
+        if (!editorSimulationStep && luaRuntime != null && luaRuntime.substatePausesGame()) return;
+        if (Double.isFinite(editorForcedSongPosMs)) {
+            songPos = editorForcedSongPosMs;
+            if (phase == Phase.COUNTDOWN && songPos >= 0) phase = Phase.PLAYING;
+            return;
+        }
+        double base = 0;
         double audioOffset = chart.offsetMs;
         if (!songPlayer.isStarted()) {
             double countdownTime = System.currentTimeMillis() - startAtEpochMs;
@@ -948,14 +978,26 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         double dtMs = (now - lastFrameNano) / 1_000_000.0;
         lastFrameNano = now;
         if (dtMs > 100) dtMs = 100;
+        if (editorRollbackPending) return;
+        if (editorFastForwarding) {
+            runEditorCatchUp(dtMs);
+            return;
+        }
+        logicStep(dtMs);
+    }
+
+    private void logicStep(double dtMs) {
+        double editorTimeScale = 1.0;
 
         // Freeze the animation clock whenever the song is not advancing, so tweens,
         // timers and camera moves hold their progress across a pause instead of
         // finishing while the game is frozen. Runs before the early returns below.
         boolean songRunning = (phase == Phase.PLAYING || phase == Phase.COUNTDOWN)
                 && !freeCam
-                && !(luaRuntime != null && luaRuntime.substatePausesGame());
+                && !editorTransportPaused
+                && (editorSimulationStep || !(luaRuntime != null && luaRuntime.substatePausesGame()));
         GameplayClock.setRunning(songRunning);
+        if (songRunning && editorSimulationStep) GameplayClock.advance(Math.round(dtMs));
 
         // Free camera freezes the song like a pause; only the camera updates.
         if (freeCam) {
@@ -974,22 +1016,30 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         if (phase == Phase.COUNTDOWN) prepareCharacterForms();
         // Load-triggered events must run before updateSongPos can start audio.
         if (!preSongEventsProcessed && phase == Phase.COUNTDOWN) processPreSongEvents();
+        if (editorTransportPaused) {
+            songPlayer.applyVolumes();
+            return;
+        }
         updateSongPos();
         if (psychScene != null && (phase == Phase.PLAYING || phase == Phase.COUNTDOWN)) {
             double stepMs = 15000.0 / Math.max(1, conductor.bpmAt(Math.max(0, songPos)));
-            psychScene.update(dtMs / 1000.0, stepMs, songPlayer.playbackRate());
+            psychScene.update(dtMs / 1000.0, stepMs,
+                    editorSimulationStep ? 1.0 : songPlayer.playbackRate());
         }
         // Psych scripts run after camera follow calculation. Their camFollow /
         // camFollowPos writes therefore win for this frame, matching Psych.
         if (luaRuntime != null && (phase == Phase.PLAYING || phase == Phase.COUNTDOWN)) {
-            luaRuntime.update(dtMs / 1000.0);
+            luaRuntime.update(dtMs / 1000.0 * editorTimeScale);
         }
         // Extra-character tweens run independently of Lua so Legacy and Minecraft
         // charts can animate performers through the Tween Character event alone.
-        extraCharacters.update(15000.0 / Math.max(1, conductor.bpmAt(Math.max(0, songPos))));
+        extraCharacters.update(15000.0 / Math.max(1, conductor.bpmAt(Math.max(0, songPos))),
+                editorTimeScale, editorSimulationStep ? dtMs / 1000.0 : Double.NaN);
         applyPerformerTweens();
-        songPlayer.applyVolumes();
-        syncVanillaHud();
+        if (!editorSimulationStep) {
+            songPlayer.applyVolumes();
+            syncVanillaHud();
+        }
 
         // keep bodies square with the look direction so animations stay oriented
         alignBody(minecraft.player);
@@ -998,10 +1048,10 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         }
 
         if (phase != Phase.PLAYING && phase != Phase.COUNTDOWN) return;
-        syncSubstatePause();
+        if (!editorSimulationStep) syncSubstatePause();
         // While a pausing substate is open the chart does not advance, so notes,
         // events and holds are all left exactly where they were.
-        if (luaRuntime != null && luaRuntime.substatePausesGame()) return;
+        if (!editorSimulationStep && luaRuntime != null && luaRuntime.substatePausesGame()) return;
 
         // Judge queued precise-input presses before misses are swept, so a late
         // press can still hit a note about to scroll past — same order the direct
@@ -1022,7 +1072,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             java.util.Arrays.fill(glfwLaneHeld, false);
         }
 
-        songPlayer.resync();
+        if (!editorSimulationStep) songPlayer.resync();
         if (phase == Phase.PLAYING) processEvents();
 
         // un-mute vocals after miss
@@ -1204,9 +1254,103 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         }
 
         // song end
-        if (phase == Phase.PLAYING && songPlayer.isFinished()) {
+        if (!editorSimulationStep && phase == Phase.PLAYING && songPlayer.isFinished()) {
             if (!anyNotesLeft(myLanes, myLaneIndex)) finishSong(false);
         }
+    }
+
+    /**
+     * Reconstructs playstate invisibly while audio waits at a fixed target. A 50 ms
+     * delta is equivalent to ordinary 20 FPS gameplay: dt-driven Lua/tweens remain
+     * valid, while a long chart needs only one third as many calls as 60 FPS replay.
+     */
+    private void runEditorCatchUp(double renderedFrameMs) {
+        if (editorTransportPaused) {
+            GameplayClock.setRunning(false);
+            return;
+        }
+        final double stepMs = EDITOR_RECONSTRUCTION_STEP_MS;
+        // Reconstruction is a short loading operation, so give it substantially
+        // more CPU than an interactive gameplay frame while still yielding often
+        // enough for the window and progress overlay to remain responsive.
+        long budgetNanos = (long) (Mth.clamp(renderedFrameMs * 2.0, 20.0,
+                EDITOR_RECONSTRUCTION_MAX_BUDGET_NANOS / 1_000_000.0) * 1_000_000.0);
+        final long deadline = System.nanoTime() + budgetNanos;
+        editorSimulationStep = true;
+        try {
+            // Time zero is a real step. Lua onCreate has loaded by the time
+            // before-song events execute, and ordinary events at t=0 run after it.
+            if (!editorSimulationInitialized) {
+                editorForcedSongPosMs = 0;
+                logicStep(0);
+                editorSimulationInitialized = true;
+                editorSimulationPositionMs = 0;
+            }
+            int guard = 0;
+            while (editorSimulationPositionMs < editorFastForwardTargetMs
+                    && guard++ < 100_000 && System.nanoTime() < deadline) {
+                double next = Math.min(editorFastForwardTargetMs,
+                        editorSimulationPositionMs + stepMs);
+                double elapsed = next - editorSimulationPositionMs;
+                editorForcedSongPosMs = next;
+                logicStep(elapsed);
+                editorSimulationPositionMs = next;
+            }
+        } finally {
+            editorForcedSongPosMs = Double.NaN;
+            editorSimulationStep = false;
+        }
+        if (editorFastForwardTargetMs - editorSimulationPositionMs <= stepMs) {
+            finishEditorCatchUp();
+        }
+    }
+
+    private void finishEditorCatchUp() {
+        double target = songPlayer.isStarted() && !songPlayer.isPaused()
+                ? editorAudioSongPosition() : editorFastForwardTargetMs;
+        if (luaRuntime != null) luaRuntime.finishEditorReconstructionAudio();
+        editorFastForwarding = false;
+        editorFastForwardTargetMs = -1;
+        songPos = target;
+        songPlayer.setPlaybackRate(editorNormalPlaybackRate);
+        if (editorFastForwardResumePlaying) {
+            editorTransportPaused = false;
+            editorTransportPausedAtMs = 0;
+            if (songPlayer.isStarted() && songPlayer.isPaused()) {
+                songPlayer.resume();
+            }
+            else if (!songPlayer.isStarted()) {
+                startAtEpochMs = System.currentTimeMillis() - Math.max(0, (long) target);
+            }
+            GameplayClock.setRunning(true);
+        } else {
+            editorTransportPaused = true;
+            editorTransportPausedAtMs = System.currentTimeMillis();
+            if (songPlayer.isStarted() && !songPlayer.isPaused()) songPlayer.pause();
+            if (!songPlayer.isStarted()) {
+                startAtEpochMs = System.currentTimeMillis() - Math.max(0, (long) target);
+            }
+            GameplayClock.setRunning(false);
+        }
+        lastFrameNano = System.nanoTime();
+    }
+
+    /** Seeks audio immediately, then holds it silently until reconstruction completes. */
+    private void parkEditorAudioAt(double targetMs) {
+        songPlayer.setPlaybackRate(editorNormalPlaybackRate);
+        double audioMs = targetMs - chart.offsetMs - ClientOptions.get().offsetMs;
+        if (audioMs >= 0) {
+            songPlayer.seekMs(audioMs);
+            if (songPlayer.isStarted() && !songPlayer.isPaused()) songPlayer.pause();
+        } else {
+            if (songPlayer.isStarted()) songPlayer.reset();
+            startAtEpochMs = System.currentTimeMillis() - Math.max(0, (long) targetMs);
+        }
+    }
+
+    private double editorAudioSongPosition() {
+        if (!songPlayer.isStarted()) return songPos;
+        return songPlayer.positionMs() + chart.offsetMs + ClientOptions.get().offsetMs;
     }
 
     /** Loads Lua/onCreate exactly once, early enough for first-frame world objects. */
@@ -1355,8 +1499,8 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
 
     @Override
     public void eventCameraRotation(Double pitch, Double yaw, Double roll, String easing,
-                                    Double durationSeconds) {
-        GameplayCamera.rotateTo(pitch, yaw, roll, easing, durationSeconds);
+                                    Double durationSeconds, boolean cameraViewLayer) {
+        GameplayCamera.rotateTo(pitch, yaw, roll, easing, durationSeconds, cameraViewLayer);
     }
 
     @Override
@@ -1697,10 +1841,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         return myStrumFlash;
     }
 
-    /**
-     * Frame for a custom skin's animated confirm arrow. A negative value means
-     * there is no actively held sustain, so normal static/press rendering is used.
-     */
+    /** 24-FPS frame for an actively held sustain, or -1 when no hold is active. */
     private long customSustainStrumFrame(boolean mine, int lane) {
         GameNote sustain = null;
         if (mine) {
@@ -1723,19 +1864,49 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                 }
             }
         }
-        GameNote[] activeNotes = mine ? mySustainArrowNote : otherSustainArrowNote;
-        long[] renderFrames = mine ? mySustainArrowRenderFrames : otherSustainArrowRenderFrames;
+        GameNote[] animated = mine ? myAnimatedSustain : otherAnimatedSustain;
+        long[] started = mine ? mySustainStartedNanos : otherSustainStartedNanos;
         if (sustain == null) {
-            activeNotes[lane] = null;
-            renderFrames[lane] = 0;
+            animated[lane] = null;
+            started[lane] = 0;
             return -1;
         }
-        if (activeNotes[lane] != sustain) {
-            activeNotes[lane] = sustain;
-            renderFrames[lane] = 0;
+        if (animated[lane] != sustain) {
+            animated[lane] = sustain;
+            started[lane] = System.nanoTime();
         }
-        // Hold each atlas frame for exactly two screen renders, then advance.
-        return renderFrames[lane]++ / 2;
+        return animationFrame24(started[lane]);
+    }
+
+    private record ReceptorAnimation(long frame, boolean loop) {}
+
+    /**
+     * Uses the same animated confirm path for tap notes and sustains. This only
+     * affects receptor drawing; hit windows, scoring, and hold logic stay unchanged.
+     */
+    private ReceptorAnimation receptorAnimation(boolean mine, int lane) {
+        long sustainFrame = customSustainStrumFrame(mine, lane);
+        double flash = (mine ? myStrumFlash : otherStrumFlash)[lane];
+        long[] started = mine ? myConfirmStartedNanos : otherConfirmStartedNanos;
+        double[] previous = mine ? myLastRenderedFlash : otherLastRenderedFlash;
+        if (sustainFrame >= 0) {
+            previous[lane] = flash;
+            return new ReceptorAnimation(sustainFrame, true);
+        }
+        if (flash <= 0) {
+            previous[lane] = 0;
+            return null;
+        }
+        // A hit refreshes the countdown to 150 ms. Detect that rise and restart
+        // the confirm atlas so every tap begins on its first authored frame.
+        if (previous[lane] <= 0 || flash > previous[lane] + 1) started[lane] = System.nanoTime();
+        previous[lane] = flash;
+        return new ReceptorAnimation(animationFrame24(started[lane]), false);
+    }
+
+    private static long animationFrame24(long startedNanos) {
+        if (startedNanos <= 0) return 0;
+        return Math.max(0L, (long) ((System.nanoTime() - startedNanos) * 24.0 / 1_000_000_000.0));
     }
 
     private void spawnCoverEnd(int lane) {
@@ -2236,6 +2407,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
      * up to a full frame late (very noticeable with v-sync / capped fps).
      */
     private double liveSongPos() {
+        if (editorSimulationStep) return songPos;
         if (songPlayer.isStarted() && !songPlayer.isPaused()) {
             return songPlayer.positionMs() + chart.offsetMs + ClientOptions.get().offsetMs;
         }
@@ -2248,6 +2420,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
      * up-to-one-frame timing error, which is what a high-rate input path needs.
      */
     private double liveSongPosAt(long eventNano) {
+        if (editorSimulationStep) return songPos;
         if (songPlayer.isStarted() && !songPlayer.isPaused()) {
             return songPlayer.positionMsAt(eventNano) + chart.offsetMs + ClientOptions.get().offsetMs;
         }
@@ -2292,7 +2465,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
 
     /** Bot auto-hits your notes on time and sustains holds. Score is not saved. */
     private void botplayTick() {
-        if (!ClientOptions.get().botplay || phase != Phase.PLAYING) return;
+        if ((!ClientOptions.get().botplay && !editorFastForwarding) || phase != Phase.PLAYING) return;
         for (int lane = 0; lane < 4; lane++) {
             List<GameNote> list = myLanes[lane];
             for (int i = myLaneIndex[lane]; i < list.size(); i++) {
@@ -2468,7 +2641,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         if (hitsoundSnapshot.wasClaimed(lane, best.data.timeMs)) {
             hitsoundSnapshot.release(lane, best.data.timeMs);
         } else {
-            com.fnfmod.client.input.HitsoundSnapshot.play(hittableFor(best));
+            if (!editorSimulationStep) com.fnfmod.client.input.HitsoundSnapshot.play(hittableFor(best));
         }
 
         creditHit(best, judgement);
@@ -2768,6 +2941,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
 
     private void finishSong(boolean failed) {
         if (!endSent && luaRuntime != null && !luaRuntime.onEndSong()) return;
+        songFailed |= failed;
         if (editorPlaytest) {
             endSent = true;
             if (!failed) phase = Phase.RESULTS;
@@ -2869,6 +3043,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             forceExit();
             return true;
         }
+        if (editorPlaytest && (editorRollbackPending || editorFastForwarding)) return true;
         // Ctrl+Shift+Space toggles the free camera during an editor playtest.
         if (editorPlaytest && keyCode == GLFW.GLFW_KEY_SPACE
                 && (modifiers & GLFW.GLFW_MOD_CONTROL) != 0
@@ -3136,6 +3311,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         freeCamHelp = false;
         freeCamFocusing = false;
         freeCamFocusPoint = null;
+        freeCamOrbitPivotInitialized = false;
         freeCamViewportDragging = false;
         freeCamViewportIgnoreWarpMotion = false;
         freeCamViewportPivot = null;
@@ -3322,6 +3498,9 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         tween.setScaleX(o.scaleX);
         tween.setScaleY(o.scaleY);
         tween.setScaleZ(o.scaleZ);
+        // Free cam pauses normal gameplay, so applyPerformerTweens() is not running.
+        // Re-pin now or the BBS model trails the render-rate selection gizmo.
+        applyPerformer(playerSide, tween);
     }
 
     private String performerSet(boolean playerSide) {
@@ -3382,7 +3561,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         double sensitivity = 0.15;
         if (dx != 0 || dy != 0) {
             GameplayCamera.turnFreeCam(dx * sensitivity, dy * sensitivity);
-            freeCamFocusPoint = null;
+            if (!freeCamOrbitShot) freeCamFocusPoint = null;
         }
 
         // Shift = finer, Ctrl = coarser rate for movement, roll and zoom.
@@ -3411,7 +3590,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             double moveZ = (forward * cos - strafe * sin) * step;
             double moveY = vertical * step;
             GameplayCamera.moveFreeCam(moveX, moveY, moveZ);
-            freeCamFocusPoint = null;
+            if (!freeCamOrbitShot) freeCamFocusPoint = null;
         }
 
         clampFreeCamToLoadedWorld();
@@ -3495,7 +3674,10 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         if (freeCamOrbitShot) {
             Camera camera = minecraft.gameRenderer.getMainCamera();
             freeCamFocusPoint = viewportPivot(camera);
+            captureFreeCamOrbitPivot(freeCamFocusPoint);
             GameplayCamera.aimFreeCamAt(freeCamFocusPoint, camera.getYRot(), camera.getXRot());
+        } else {
+            freeCamOrbitPivotInitialized = false;
         }
     }
 
@@ -3511,30 +3693,85 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     }
 
     private double[] freeCamOrbitPivotValues() {
+        ensureFreeCamOrbitPivot();
+        return freeCamOrbitPivot.clone();
+    }
+
+    /** Stores a world pivot in the currently selected pinned/follow coordinate mode. */
+    private void captureFreeCamOrbitPivot(Vec3 worldPivot) {
+        if (worldPivot == null) return;
+        double[] local = GameplayCamera.worldToFreeOffset(worldPivot);
+        if (!freeCamOrbitPinned) {
+            double[] focus = GameplayCamera.worldToFreeOffset(GameplayCamera.focusWorldPos());
+            local[0] -= focus[0];
+            local[1] -= focus[1];
+            local[2] -= focus[2];
+        }
+        System.arraycopy(local, 0, freeCamOrbitPivot, 0, 3);
+        freeCamOrbitPivotInitialized = true;
+        freeCamFocusPoint = worldPivot;
+    }
+
+    private void ensureFreeCamOrbitPivot() {
+        if (freeCamOrbitPivotInitialized) return;
         Camera camera = minecraft.gameRenderer.getMainCamera();
-        Vec3 pivot = freeCamFocusPoint == null ? viewportPivot(camera) : freeCamFocusPoint;
-        double[] local = GameplayCamera.worldToFreeOffset(pivot);
-        if (freeCamOrbitPinned) return local;
-        double[] focus = GameplayCamera.worldToFreeOffset(GameplayCamera.focusWorldPos());
-        return new double[]{local[0] - focus[0], local[1] - focus[1], local[2] - focus[2]};
+        captureFreeCamOrbitPivot(freeCamFocusPoint == null ? viewportPivot(camera) : freeCamFocusPoint);
+    }
+
+    /** Resolves the authored values against the live character focus when following. */
+    private Vec3 freeCamOrbitWorldPoint() {
+        ensureFreeCamOrbitPivot();
+        Vec3 origin = freeCamOrbitPinned ? null : GameplayCamera.focusWorldPos();
+        return GameplayCamera.stageOffsetFrom(origin,
+                freeCamOrbitPivot[0], freeCamOrbitPivot[1], freeCamOrbitPivot[2]);
     }
 
     private void setFreeCamOrbitPivotValue(int axis, double value) {
         if (!Double.isFinite(value)) return;
-        double[] pivot = freeCamOrbitPivotValues();
-        pivot[Math.max(0, Math.min(2, axis))] = value;
-        Vec3 origin = freeCamOrbitPinned ? null : GameplayCamera.focusWorldPos();
-        freeCamFocusPoint = GameplayCamera.stageOffsetFrom(origin, pivot[0], pivot[1], pivot[2]);
+        ensureFreeCamOrbitPivot();
+        freeCamOrbitPivot[Math.max(0, Math.min(2, axis))] = value;
+        freeCamFocusing = false;
+        freeCamViewportPivot = null;
+        freeCamFocusPoint = freeCamOrbitWorldPoint();
         Camera camera = minecraft.gameRenderer.getMainCamera();
         GameplayCamera.aimFreeCamAt(freeCamFocusPoint, camera.getYRot(), camera.getXRot());
+    }
+
+    /** Edits one displayed Camera Follow Pos component while preserving the other two. */
+    private void setFreeCamPositionValue(int axis, double value) {
+        if (!Double.isFinite(value)) return;
+        int safeAxis = Math.max(0, Math.min(2, axis));
+        double[] current = freeCamFollowValues();
+        double delta = value - current[safeAxis];
+        if (Math.abs(delta) < 1.0e-10) return;
+        freeCamFocusing = false;
+        freeCamViewportPivot = null;
+        Camera camera = minecraft.gameRenderer.getMainCamera();
+        if (!freeCamCameraFrame) {
+            GameplayCamera.moveFreeCam(safeAxis == 0 ? delta : 0,
+                    safeAxis == 1 ? delta : 0, safeAxis == 2 ? delta : 0);
+        } else {
+            Vec3 basis = switch (safeAxis) {
+                case 0 -> new Vec3(camera.getLeftVector()).scale(-1);
+                case 1 -> new Vec3(camera.getUpVector());
+                default -> new Vec3(camera.getLookVector());
+            };
+            setFreeCamWorldPosition(GameplayCamera.freeCamWorldPos().add(basis.scale(delta)));
+        }
+        clampFreeCamToLoadedWorld();
+        if (freeCamOrbitShot && freeCamFocusPoint != null) {
+            GameplayCamera.aimFreeCamAt(freeCamFocusPoint, camera.getYRot(), camera.getXRot());
+        } else {
+            freeCamFocusPoint = null;
+        }
     }
 
     private void toggleFreeCamOrbitPinned() {
         // The represented world point must not move when switching between an
         // absolute pinned pivot and a focus-relative pivot.
-        Camera camera = minecraft.gameRenderer.getMainCamera();
-        if (freeCamFocusPoint == null) freeCamFocusPoint = viewportPivot(camera);
+        Vec3 worldPivot = freeCamOrbitWorldPoint();
         freeCamOrbitPinned = !freeCamOrbitPinned;
+        captureFreeCamOrbitPivot(worldPivot);
     }
 
     private static double round2(double value) {
@@ -3648,22 +3885,40 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
      * carried over into the next attempt. Rebuilding cannot miss anything.
      */
     private void restart() {
-        if (!editorPlaytest) {
-            if (restartPending) return;
-            restartPending = true;
-            PacketDistributor.sendToServer(new FnfPayloads.RestartSongC2S(machinePos));
+        if (editorPlaytest) {
+            requestEditorRollback(0, true);
             return;
         }
-        rebuildForRestart(botEntityId, 2000);
+        if (restartPending) return;
+        restartPending = true;
+        PacketDistributor.sendToServer(new FnfPayloads.RestartSongC2S(machinePos));
     }
 
     /** Called after the server restored a normal solo session to its pre-song state. */
     public void onServerRestart(FnfPayloads.RestartSongS2C payload) {
-        if (editorPlaytest || resourcesDisposed || !machinePos.equals(payload.pos())) return;
+        if (resourcesDisposed || !machinePos.equals(payload.pos())) return;
+        if (editorPlaytest) {
+            if (!editorRollbackPending) return;
+            editorRollbackPending = false;
+            editorFastForwardResumePlaying = editorRollbackResumePlaying;
+            editorFastForwardTargetMs = editorRollbackResumePlaying && songPlayer.isStarted()
+                    ? Math.max(editorRollbackTargetMs, editorAudioSongPosition())
+                    : editorRollbackTargetMs;
+            editorFastForwarding = editorFastForwardTargetMs > 0.5;
+            editorSimulationPositionMs = 0;
+            editorSimulationInitialized = false;
+            editorTransportPaused = !editorFastForwarding && !editorRollbackResumePlaying;
+            rebuildForRestart(payload.botEntityId(), 0, true);
+            return;
+        }
         rebuildForRestart(payload.botEntityId(), Math.max(0, payload.startDelayMs()));
     }
 
     private void rebuildForRestart(int nextBotEntityId, long startDelayMs) {
+        rebuildForRestart(nextBotEntityId, startDelayMs, false);
+    }
+
+    private void rebuildForRestart(int nextBotEntityId, long startDelayMs, boolean preserveAudio) {
         // The machine cannot rotate between runs, so keep the captured facing
         // across the teardown: the new screen's stage teleport then uses it even
         // if the player wandered far and the machine chunk is currently unloaded.
@@ -3686,7 +3941,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         originalLuaNotes.stream().map(SongChart.Note::copy).forEach(chart.notes::add);
         chart.sortNotes();
 
-        songPlayer.reset();
+        if (!preserveAudio) songPlayer.reset();
         songPlayer.setPlaybackRate(1f);
         songPlayer.setPlayerVoiceVolume(1f);
         songPlayer.setOpponentVoiceVolume(1f);
@@ -3707,7 +3962,18 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     private void carryEditorPlaytestState(GameplayScreen next) {
         next.editorPlaytest = true;
         next.editorPreview = editorPreview;
-        next.editorStartMs = editorStartMs;
+        next.editorNormalPlaybackRate = editorNormalPlaybackRate;
+        next.editorFastForwardTargetMs = editorFastForwardTargetMs;
+        next.editorFastForwarding = editorFastForwardTargetMs > 0.5;
+        next.editorFastForwardResumePlaying = editorFastForwardResumePlaying;
+        next.editorSimulationPositionMs = 0;
+        next.editorSimulationInitialized = false;
+        next.editorRollbackPending = false;
+        next.editorRollbackTargetMs = editorRollbackTargetMs;
+        next.editorRollbackResumePlaying = editorRollbackResumePlaying;
+        next.editorTransportPaused = !next.editorFastForwarding && editorTransportPaused;
+        next.editorTransportPausedAtMs = next.editorTransportPaused ? System.currentTimeMillis() : 0;
+        next.songPlayer.setPlaybackRate(editorNormalPlaybackRate);
         next.editorReturnFactory = editorReturnFactory;
         next.editorReturnPos = editorReturnPos;
         next.editorReturnYaw = editorReturnYaw;
@@ -3735,28 +4001,30 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         GameplayCamera.end();
         next.beginCamera();
         next.applyPsychCameraDefaults();
-        next.prepareEditorStart();
+        if (next.editorFastForwarding) {
+            next.parkEditorAudioAt(next.editorFastForwardTargetMs);
+        }
     }
 
     private void exit() {
         GameplayCamera.end();
         if (editorPlaytest) {
             songPlayer.dispose();
-            if (minecraft.player != null) {
-                CharacterAnimations.stop(minecraft.player);
-                if (editorReturnPos != null) {
-                    minecraft.player.setPos(editorReturnPos.x, editorReturnPos.y, editorReturnPos.z);
-                    minecraft.player.setYRot(editorReturnYaw);
-                    minecraft.player.setXRot(editorReturnPitch);
-                    // Same reason as the stage placement: without a server tp the
-                    // player would be snapped back to the playtest spot on exit.
-                    editorServerTeleport(editorReturnPos.x, editorReturnPos.y, editorReturnPos.z,
-                            editorReturnYaw);
-                }
-            }
-            minecraft.setScreen(editorReturnFactory == null ? null : editorReturnFactory.get());
+            if (minecraft.player != null) CharacterAnimations.stop(minecraft.player);
+            Screen destination = editorReturnFactory == null ? null : editorReturnFactory.get();
+            PacketDistributor.sendToServer(new FnfPayloads.EditorPlaytestC2S(
+                    machinePos, FnfPayloads.EditorPlaytestC2S.END));
+            minecraft.setScreen(new RollbackWaitingScreen(machinePos, destination));
             return;
         }
+        if (endSent && !songFailed && !duet && ClientStorySession.active()
+                && ClientStorySession.songIndex() + 1 < ClientStorySession.songCount()) {
+            songPlayer.dispose();
+            if (minecraft.player != null) CharacterAnimations.stop(minecraft.player);
+            ClientSession.reset();
+            if (ClientStorySession.advance(machinePos)) return;
+        }
+        if (ClientStorySession.active()) ClientStorySession.clear();
         // Direct custom-menu launches may return to that same menu or close every
         // menu. Built-in selection keeps its existing selector return. Duets always
         // return to the world to avoid host/guest contention over one machine.
@@ -3793,15 +4061,174 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                 && (modifiers & GLFW.GLFW_MOD_SHIFT) != 0;
     }
 
+    private boolean showEditorPlaybackControls() {
+        return editorPlaytest && !editorPreview && !freeCam
+                && ClientOptions.get().editorPlaytestPlaybackControls
+                && phase != Phase.RESULTS && phase != Phase.GAMEOVER;
+    }
+
+    private double editorPlaytestDurationMs() {
+        double duration = Math.max(0, songPlayer.durationMs() + chart.offsetMs
+                + ClientOptions.get().offsetMs);
+        for (SongChart.Note note : chart.notes) {
+            duration = Math.max(duration, note.timeMs + Math.max(0, note.sustainMs));
+        }
+        for (SongChart.Event event : chart.events) duration = Math.max(duration, event.timeMs);
+        return Math.max(1, duration);
+    }
+
+    private int editorTimelineLeft() { return 12; }
+    private int editorTimelineRight() { return Math.max(editorTimelineLeft() + 20, width - 12); }
+    private int editorTimelineY() { return height - 9; }
+    private int editorTransportButtonY() { return height - 42; }
+
+    private boolean overEditorTimeline(double mouseX, double mouseY) {
+        return mouseX >= editorTimelineLeft() && mouseX <= editorTimelineRight()
+                && mouseY >= editorTimelineY() - 4 && mouseY <= editorTimelineY() + 7;
+    }
+
+    private double editorTimelinePosition(double mouseX) {
+        double fraction = Mth.clamp((mouseX - editorTimelineLeft())
+                / Math.max(1.0, editorTimelineRight() - editorTimelineLeft()), 0.0, 1.0);
+        return fraction * editorPlaytestDurationMs();
+    }
+
+    private void toggleEditorTransportPause() {
+        if (editorTransportPaused) {
+            long held = Math.max(0, System.currentTimeMillis() - editorTransportPausedAtMs);
+            startAtEpochMs += held;
+            shiftEditorVisualClocks(held);
+            editorTransportPaused = false;
+            editorTransportPausedAtMs = 0;
+            if (!editorFastForwarding && songPlayer.isStarted() && songPlayer.isPaused()) {
+                songPlayer.resume();
+            }
+            if (editorFastForwarding) editorFastForwardResumePlaying = true;
+            lastFrameNano = System.nanoTime();
+        } else {
+            editorTransportPaused = true;
+            editorTransportPausedAtMs = System.currentTimeMillis();
+            if (!editorFastForwarding && songPlayer.isStarted() && !songPlayer.isPaused()) {
+                songPlayer.pause();
+            }
+            if (editorFastForwarding) editorFastForwardResumePlaying = false;
+            GameplayClock.setRunning(false);
+        }
+    }
+
+    private void shiftEditorVisualClocks(long heldMs) {
+        if (heldMs <= 0) return;
+        long heldNanos = heldMs * 1_000_000L;
+        for (long[] clocks : List.of(myConfirmStartedNanos, otherConfirmStartedNanos,
+                mySustainStartedNanos, otherSustainStartedNanos)) {
+            for (int i = 0; i < clocks.length; i++) if (clocks[i] > 0) clocks[i] += heldNanos;
+        }
+        for (int i = 0; i < holdCoverStartedMs.length; i++) {
+            if (holdCoverStartedMs[i] > 0) holdCoverStartedMs[i] += heldMs;
+            if (lastHoldSingMs[i] > 0) lastHoldSingMs[i] += heldMs;
+        }
+        if (lastSingMs > 0) lastSingMs += heldMs;
+        if (partnerLastSingMs > 0) partnerLastSingMs += heldMs;
+        for (int i = 0; i < splashes.size(); i++) {
+            Splash splash = splashes.get(i);
+            splashes.set(i, new Splash(splash.lane(), splash.variant(), splash.x(), splash.y(),
+                    splash.bornMs() + heldMs, splash.texture(), splash.alpha()));
+        }
+        for (int i = 0; i < coverEnds.size(); i++) {
+            CoverEnd end = coverEnds.get(i);
+            coverEnds.set(i, new CoverEnd(end.lane(), end.x(), end.y(), end.bornMs() + heldMs));
+        }
+    }
+
+    private void seekEditorPlaytest(double requestedMs) {
+        double target = Mth.clamp(requestedMs, 0, editorPlaytestDurationMs());
+        if (Math.abs(target - songPos) < 1.0) return;
+        boolean resumePlaying = !editorTransportPaused;
+        if (target < songPos) {
+            // Rewinding an event/Lua world in place cannot undo arbitrary script
+            // side effects. Rebuild a clean playtest and simulate forward instead.
+            requestEditorRollback(target, resumePlaying);
+            return;
+        }
+        if (editorTransportPaused) {
+            startAtEpochMs += Math.max(0, System.currentTimeMillis() - editorTransportPausedAtMs);
+            editorTransportPaused = false;
+            editorTransportPausedAtMs = 0;
+        }
+        if (luaRuntime != null) luaRuntime.beginEditorReconstructionAudio();
+        editorFastForwardTargetMs = target;
+        editorFastForwarding = true;
+        editorFastForwardResumePlaying = resumePlaying;
+        editorSimulationPositionMs = Math.max(0, songPos);
+        editorSimulationInitialized = true;
+        parkEditorAudioAt(target);
+        lastFrameNano = System.nanoTime();
+    }
+
+    private void requestEditorRollback(double targetMs, boolean resumePlaying) {
+        if (!editorPlaytest || editorRollbackPending) return;
+        if (luaRuntime != null) luaRuntime.beginEditorReconstructionAudio();
+        editorRollbackPending = true;
+        editorRollbackTargetMs = Math.max(0, targetMs);
+        editorRollbackResumePlaying = resumePlaying;
+        editorFastForwardResumePlaying = resumePlaying;
+        // Hold audio at the requested point while the server restores the previous
+        // attempt. Once acknowledged, clean gameplay state is reconstructed invisibly.
+        parkEditorAudioAt(editorRollbackTargetMs);
+        PacketDistributor.sendToServer(new FnfPayloads.EditorPlaytestC2S(
+                machinePos, FnfPayloads.EditorPlaytestC2S.RESET));
+    }
+
+    private boolean handleEditorTransportClick(double mouseX, double mouseY, int button) {
+        if (!showEditorPlaybackControls() || button != GLFW.GLFW_MOUSE_BUTTON_LEFT) return false;
+        int y = editorTransportButtonY();
+        int center = width / 2;
+        if (mouseY >= y && mouseY < y + 18) {
+            if (mouseX >= center - 62 && mouseX < center - 24) {
+                seekEditorPlaytest(songPos - 5000);
+                return true;
+            }
+            if (mouseX >= center - 20 && mouseX < center + 20) {
+                toggleEditorTransportPause();
+                return true;
+            }
+            if (mouseX >= center + 24 && mouseX < center + 62) {
+                seekEditorPlaytest(songPos + 5000);
+                return true;
+            }
+        }
+        if (overEditorTimeline(mouseX, mouseY)) {
+            editorTimelineDragging = true;
+            editorTimelineDragMs = editorTimelinePosition(mouseX);
+            return true;
+        }
+        return false;
+    }
+
     @Override
     public void mouseMoved(double mouseX, double mouseY) {
         markGameplayCursorActive();
+        if (freeCam && !freeCamMove && !freeCamTextEntry && !freeCamColorPicker) {
+            if (freeCamObjects.isTransforming()) {
+                freeCamObjects.updateTransform(minecraft.gameRenderer.getMainCamera(),
+                        machinePos, StageOrientation.facing(), mouseX, mouseY,
+                        width / 2.0, height / 2.0,
+                        minecraft.options.fov().get() * GameplayCamera.fovScale(),
+                        hasShiftDown(), hasControlDown());
+                applyExistingFreeCamEdits();
+            } else if (freeCamObjects.isSnapDragging()) {
+                freeCamObjects.snapToFace(raycastFromCursor(mouseX, mouseY),
+                        machinePos, StageOrientation.facing());
+                applyExistingFreeCamEdits();
+            }
+        }
         super.mouseMoved(mouseX, mouseY);
     }
 
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
         markGameplayCursorActive();
+        if (editorPlaytest && (editorRollbackPending || editorFastForwarding)) return true;
         if (freeCam) {
             // The help modal swallows the next click to dismiss it.
             if (freeCamHelp) { freeCamHelp = false; return true; }
@@ -3884,6 +4311,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             }
             return true;
         }
+        if (handleEditorTransportClick(mouseX, mouseY, button)) return true;
         if (phase == Phase.PAUSED) {
             int idx = pauseOptionAt(mouseY);
             if (idx >= 0) {
@@ -3927,6 +4355,11 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     @Override
     public boolean mouseDragged(double mouseX, double mouseY, int button, double dragX, double dragY) {
         markGameplayCursorActive();
+        if (editorPlaytest && (editorRollbackPending || editorFastForwarding)) return true;
+        if (editorTimelineDragging && button == GLFW.GLFW_MOUSE_BUTTON_LEFT) {
+            editorTimelineDragMs = editorTimelinePosition(mouseX);
+            return true;
+        }
         if (freeCam && freeCamColorPicker && pickDrag != 0) {
             updatePicker(mouseX, mouseY);
             return true;
@@ -3955,6 +4388,13 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     @Override
     public boolean mouseReleased(double mouseX, double mouseY, int button) {
         markGameplayCursorActive();
+        if (editorPlaytest && (editorRollbackPending || editorFastForwarding)) return true;
+        if (editorTimelineDragging && button == GLFW.GLFW_MOUSE_BUTTON_LEFT) {
+            editorTimelineDragging = false;
+            editorTimelineDragMs = editorTimelinePosition(mouseX);
+            seekEditorPlaytest(editorTimelineDragMs);
+            return true;
+        }
         if (freeCam && pickDrag != 0) { pickDrag = 0; return true; }
         if (freeCam && button == 0 && freeCamObjects.isSnapDragging()) {
             freeCamObjects.endSnapDrag();
@@ -3999,6 +4439,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     @Override
     public boolean mouseScrolled(double mouseX, double mouseY, double scrollX, double scrollY) {
         markGameplayCursorActive();
+        if (editorPlaytest && (editorRollbackPending || editorFastForwarding)) return true;
         if (freeCam) {
             // Fly/look mode follows Blender's fly navigation: wheel adjusts travel speed.
             if (freeCamMove) {
@@ -4969,6 +5410,10 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     public void render(GuiGraphics gui, int mouseX, int mouseY, float partialTick) {
         updateGameplayCursor();
         logic();
+        if (editorPlaytest && (editorRollbackPending || editorFastForwarding)) {
+            renderEditorReconstruction(gui);
+            return;
+        }
         // Hide-GUI: draw only the free-cam menu; notes/HUD and the vanilla hotbar (via
         // hideGui) are gone, while the world and placed objects still render in the level pass.
         if (freeCam && freeCamHideGui) {
@@ -5016,15 +5461,20 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         for (int lane = 0; lane < 4; lane++) {
             int myState = myStrumFlash[lane] > 0 ? 2 : (laneHeld[lane] ? 1 : 0);
             float strumX = laneX(true, lane), strumY = laneY(true, lane);
-            long sustainFrame = customSustainStrumFrame(true, lane);
+            ReceptorAnimation animation = receptorAnimation(true, lane);
             NoteStyle.setDrawAlpha((float) luaStrumAlpha[(myChartSideIsPlayer || playBoth ? 4 : 0) + lane]);
-            boolean custom = !NoteStyle.songSkinActive() && sustainFrame >= 0
-                    && customNoteTextures.drawSustainReceptor(
-                    gui, chartDefaultNoteTexture(), lane, sustainFrame, strumX, strumY, noteSize);
+            boolean custom = !NoteStyle.songSkinActive() && animation != null
+                    && customNoteTextures.drawConfirmReceptor(gui, chartDefaultNoteTexture(), lane,
+                    animation.frame(), animation.loop(), strumX, strumY, noteSize);
             if (!custom && !NoteStyle.songSkinActive()) custom = customNoteTextures.drawReceptor(gui,
                     chartDefaultNoteTexture(), lane, myState, strumX, strumY, noteSize);
             if (!custom) {
-                NoteStyle.drawReceptor(gui, lane, strumX, strumY, noteSize, myState);
+                if (animation != null) {
+                    NoteStyle.drawConfirmReceptor(gui, lane, animation.frame(), animation.loop(),
+                            strumX, strumY, noteSize);
+                } else {
+                    NoteStyle.drawReceptor(gui, lane, strumX, strumY, noteSize, myState);
+                }
             }
         }
         NoteStyle.setDrawAlpha(1f);
@@ -5033,16 +5483,21 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             for (int lane = 0; lane < 4; lane++) {
                 int otherState = otherStrumFlash[lane] > 0 ? 2 : 0;
                 float strumX = laneX(false, lane), strumY = laneY(false, lane);
-                long sustainFrame = customSustainStrumFrame(false, lane);
+                ReceptorAnimation animation = receptorAnimation(false, lane);
                 int side = myChartSideIsPlayer ? 0 : 4;
                 NoteStyle.setDrawAlpha((float) (luaStrumAlpha[side + lane] * (fadeOpponent ? 0.6 : 1)));
-                boolean custom = !NoteStyle.songSkinActive() && sustainFrame >= 0
-                        && customNoteTextures.drawSustainReceptor(
-                        gui, chartDefaultNoteTexture(), lane, sustainFrame, strumX, strumY, noteSize);
+                boolean custom = !NoteStyle.songSkinActive() && animation != null
+                        && customNoteTextures.drawConfirmReceptor(gui, chartDefaultNoteTexture(), lane,
+                        animation.frame(), animation.loop(), strumX, strumY, noteSize);
                 if (!custom && !NoteStyle.songSkinActive()) custom = customNoteTextures.drawReceptor(gui,
                         chartDefaultNoteTexture(), lane, otherState, strumX, strumY, noteSize);
                 if (!custom) {
-                    NoteStyle.drawReceptor(gui, lane, strumX, strumY, noteSize, otherState);
+                    if (animation != null) {
+                        NoteStyle.drawConfirmReceptor(gui, lane, animation.frame(), animation.loop(),
+                                strumX, strumY, noteSize);
+                    } else {
+                        NoteStyle.drawReceptor(gui, lane, strumX, strumY, noteSize, otherState);
+                    }
                 }
             }
             if (fadeOpponent) NoteStyle.setDrawAlpha(1f);
@@ -5076,7 +5531,8 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             }
             NoteStyle.setDrawAlpha(s.alpha);
             if (customFrames <= 0 || !customNoteTextures.drawSplash(gui, s.texture, s.lane, s.variant,
-                    frame, s.x, s.y, noteSize * 2.2f)) {
+                    frame, s.x, s.y, noteSize * 2.2f,
+                    NoteStyle.currentSkinConfig().splash())) {
                 NoteStyle.drawSplash(gui, s.lane, s.variant, frame, s.x, s.y, noteSize * 2.2f);
             }
         }
@@ -5085,10 +5541,11 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         // hold covers: looping effect over the receptor while a sustain is held
         for (int lane = 0; lane < 4; lane++) {
             if (!activeHolds[lane].isEmpty() && laneHeld[lane] && NoteStyle.hasHoldCover(lane)) {
-                // Epoch milliseconds at 24 FPS exceeds int range and used to clamp
-                // at Integer.MAX_VALUE, selecting the same atlas frame forever.
-                long frame = (long) (nowMs * SPLASH_FPS / 1000.0);
+                if (holdCoverStartedMs[lane] == 0) holdCoverStartedMs[lane] = nowMs;
+                long frame = (long) ((nowMs - holdCoverStartedMs[lane]) * SPLASH_FPS / 1000.0);
                 NoteStyle.drawHoldCover(gui, lane, frame, laneX(true, lane), laneY(true, lane), noteSize);
+            } else {
+                holdCoverStartedMs[lane] = 0;
             }
         }
         // one-shot burst when a sustain finishes cleanly
@@ -5163,12 +5620,73 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         // Song-warning flag rides on top of everything, in plain screen space.
         WarningFlag.render(gui, height);
 
+        if (showEditorPlaybackControls()) renderEditorPlaybackControls(gui, mouseX, mouseY);
+
         // Outside free cam this remains a playtest aid. While free cam is active,
         // renderFreeCamOverlay owns it so it follows menu visibility.
         if (editorPlaytest && !freeCam && ClientOptions.get().editorShowAxisGizmo) renderAxisGizmo(gui);
         if (freeCam) renderFreeCamOverlay(gui, mouseX, mouseY);
         // Psych debugPrint trace lines ride on top of everything, top-left.
         if (luaRuntime != null) luaRuntime.renderDebugOverlay(gui);
+    }
+
+    private void renderEditorPlaybackControls(GuiGraphics gui, int mouseX, int mouseY) {
+        int panelTop = height - 48;
+        gui.fill(0, panelTop, width, height, 0xB0000000);
+        int center = width / 2;
+        int buttonY = editorTransportButtonY();
+        drawEditorTransportButton(gui, center - 62, buttonY, 38, 18, "-5s", mouseX, mouseY);
+        drawEditorTransportButton(gui, center - 20, buttonY, 40, 18,
+                editorTransportPaused ? ">" : "||", mouseX, mouseY);
+        drawEditorTransportButton(gui, center + 24, buttonY, 38, 18, "+5s", mouseX, mouseY);
+
+        double duration = editorPlaytestDurationMs();
+        double shownPosition = editorTimelineDragging ? editorTimelineDragMs : songPos;
+        shownPosition = Mth.clamp(shownPosition, 0, duration);
+        int left = editorTimelineLeft(), right = editorTimelineRight(), y = editorTimelineY();
+        gui.fill(left, y, right, y + 3, 0xFF3A3A44);
+        int filled = left + (int) Math.round((right - left) * shownPosition / duration);
+        gui.fill(left, y, filled, y + 3, 0xFFFF4FFF);
+        gui.fill(filled - 2, y - 3, filled + 3, y + 6, 0xFFFFFFFF);
+        String time = formatEditorTime(shownPosition) + " / " + formatEditorTime(duration);
+        if (editorFastForwarding) {
+            time = "Catching up  " + formatEditorTime(editorSimulationPositionMs)
+                    + "  -> " + formatEditorTime(editorFastForwardTargetMs);
+        }
+        gui.drawCenteredString(font, time, center, height - 20, 0xFFCCCCCC);
+    }
+
+    /** Opaque loading state: intermediate reconstructed frames never reach the user. */
+    private void renderEditorReconstruction(GuiGraphics gui) {
+        gui.fill(0, 0, width, height, 0xFF0B0B12);
+        int panelWidth = Math.min(320, Math.max(180, width - 36));
+        int panelX = (width - panelWidth) / 2;
+        int panelY = height / 2 - 34;
+        gui.fill(panelX, panelY, panelX + panelWidth, panelY + 68, 0xEE191820);
+        gui.renderOutline(panelX, panelY, panelWidth, 68, 0xFF9C43E8);
+        String title = editorRollbackPending ? "Restoring playtest state..." : "Preparing playtest...";
+        gui.drawCenteredString(font, title, width / 2, panelY + 13, 0xFFFFFFFF);
+        double target = editorRollbackPending ? editorRollbackTargetMs : editorFastForwardTargetMs;
+        double progress = target <= 0 ? 0 : Mth.clamp(editorSimulationPositionMs / target, 0, 1);
+        int left = panelX + 16, right = panelX + panelWidth - 16, barY = panelY + 36;
+        gui.fill(left, barY, right, barY + 5, 0xFF34313E);
+        gui.fill(left, barY, left + (int) Math.round((right - left) * progress), barY + 5, 0xFFFF4FFF);
+        String time = editorRollbackPending ? "Waiting for rollback..."
+                : formatEditorTime(editorSimulationPositionMs) + " / " + formatEditorTime(target);
+        gui.drawCenteredString(font, time, width / 2, panelY + 49, 0xFFBEB8C5);
+    }
+
+    private void drawEditorTransportButton(GuiGraphics gui, int x, int y, int w, int h,
+                                           String label, int mouseX, int mouseY) {
+        boolean hover = mouseX >= x && mouseX < x + w && mouseY >= y && mouseY < y + h;
+        gui.fill(x, y, x + w, y + h, hover ? 0xCC66666F : 0xCC33333B);
+        gui.renderOutline(x, y, w, h, 0xFF999999);
+        gui.drawCenteredString(font, label, x + w / 2, y + 5, 0xFFFFFFFF);
+    }
+
+    private static String formatEditorTime(double milliseconds) {
+        long totalSeconds = Math.max(0, Math.round(milliseconds / 1000.0));
+        return String.format(java.util.Locale.ROOT, "%d:%02d", totalSeconds / 60, totalSeconds % 60);
     }
 
     /** Free-camera HUD: control menu on the left, live readout on the right. */
@@ -5195,6 +5713,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                     width / 2.0, height / 2.0,
                     minecraft.options.fov().get() * GameplayCamera.fovScale(),
                     hasShiftDown(), hasControlDown());
+            applyExistingFreeCamEdits();
             wrapTransformCursor(mouseX, mouseY);
             String status = freeCamObjects.transformStatus();
             drawOutlined(gui, status, (width - font.width(status)) / 2, height / 2 + 16, 0xFFFFEE66);
@@ -5203,6 +5722,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         if (freeCamObjects.isSnapDragging()) {
             freeCamObjects.snapToFace(raycastFromCursor(mouseX, mouseY),
                     machinePos, StageOrientation.facing());
+            applyExistingFreeCamEdits();
         }
 
         renderFreeCamPanel(gui, mouseX, mouseY);
@@ -5233,7 +5753,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                 GameplayCamera.freePitch(), GameplayCamera.freeYaw(), GameplayCamera.freeRoll()),
                 right, y, 0xFFE0E0E0);
         y += 13;
-        drawRight(gui, "Zoom", right, y, 0xFFE0A24A);
+        drawRight(gui, "Zoom", right, y, BlockifiedScreenStyle.ACCENT_LIGHT);
         y += 11;
         drawRight(gui, String.format(java.util.Locale.ROOT, "%.2f", GameplayCamera.freeZoom()),
                 right, y, 0xFFE0E0E0);
@@ -5250,7 +5770,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         }
         if (freeCamEntryCameraPos != null) {
             y += 13;
-            drawRight(gui, "Entry camera (world)", right, y, 0xFFFFC440);
+            drawRight(gui, "Entry camera (world)", right, y, BlockifiedScreenStyle.ACCENT);
             y += 11;
             drawRight(gui, String.format(java.util.Locale.ROOT,
                     "X %.2f   Y %.2f   Z %.2f", freeCamEntryCameraPos.x,
@@ -5335,6 +5855,9 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         String label = switch (freeCamTextTarget) {
             case "name" -> "Object name"; case "fps" -> "Animation FPS";
             case "text" -> "Text";
+            case "cameraposx" -> "Camera position X (right / left)";
+            case "cameraposy" -> "Camera position Y (up / down)";
+            case "cameraposz" -> "Camera position Z (forward / back)";
             case "pivotx" -> "Pivot X (right / left)";
             case "pivoty" -> "Pivot Y (up / down)";
             case "pivotz" -> "Pivot Z (forward / back)";
@@ -5413,7 +5936,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         gui.drawString(font, title, keyX, y, 0xFFFFEE66, false);
         y += 22;
         for (String[] row : rows) {
-            gui.drawString(font, row[0], keyX, y, 0xFFFFD24A, false);
+            gui.drawString(font, row[0], keyX, y, BlockifiedScreenStyle.ACCENT_LIGHT, false);
             gui.drawString(font, row[1], descX, y, 0xFFE0E0E0, false);
             y += 11;
         }
@@ -5501,6 +6024,18 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                 "Frame: " + (freeCamCameraFrame ? "Camera" : "Machine"),
                 mouseX, mouseY, canClick, () -> freeCamCameraFrame = !freeCamCameraFrame);
         by += bh + gap;
+
+        double[] cameraPosition = freeCamFollowValues();
+        String[] cameraAxes = {"X", "Y", "Z"};
+        for (int axis = 0; axis < 3; axis++) {
+            int selectedAxis = axis;
+            addFreeCamBtn(gui, bx, by, bw, bh,
+                    "Position " + cameraAxes[axis] + ": " + num(round2(cameraPosition[axis])),
+                    mouseX, mouseY, canClick,
+                    () -> beginTextEntry("camerapos" + cameraAxes[selectedAxis].toLowerCase(java.util.Locale.ROOT),
+                            num(freeCamFollowValues()[selectedAxis])));
+            by += bh + gap;
+        }
 
         addFreeCamBtn(gui, bx, by, bw, bh,
                 "Camera mode: " + (freeCamOrbitShot ? "Orbit" : "Normal"),
@@ -5758,6 +6293,13 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
                         : freeCamTextTarget.equals("pivoty") ? 1 : 2;
                 setFreeCamOrbitPivotValue(axis, value);
             } catch (NumberFormatException ignored) { }
+        } else if (freeCamTextTarget.startsWith("camerapos")) {
+            try {
+                double value = Double.parseDouble(raw.trim());
+                int axis = freeCamTextTarget.equals("cameraposx") ? 0
+                        : freeCamTextTarget.equals("cameraposy") ? 1 : 2;
+                setFreeCamPositionValue(axis, value);
+            } catch (NumberFormatException ignored) { }
         }
         freeCamTextEntry = false;
         freeCamTextBox = null;
@@ -5780,6 +6322,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         freeCamFocusStart = System.nanoTime();
         freeCamFocusDur = 300_000_000L;   // 0.3s
         freeCamFocusPoint = obj;
+        if (freeCamOrbitShot) captureFreeCamOrbitPivot(obj);
         freeCamFocusing = true;
     }
 
@@ -5787,7 +6330,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     private void beginFreeCamViewportDrag() {
         Camera camera = minecraft.gameRenderer.getMainCamera();
         freeCamFocusing = false;
-        freeCamViewportPivot = viewportPivot(camera);
+        freeCamViewportPivot = freeCamOrbitShot ? freeCamOrbitWorldPoint() : viewportPivot(camera);
         freeCamFocusPoint = freeCamViewportPivot;
         freeCamViewportIgnoreWarpMotion = false;
         freeCamViewportDragging = true;
@@ -5814,6 +6357,7 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
             setFreeCamWorldPosition(camera.getPosition().add(delta));
             freeCamViewportPivot = freeCamViewportPivot.add(delta);
             freeCamFocusPoint = freeCamViewportPivot;
+            if (freeCamOrbitShot) captureFreeCamOrbitPivot(freeCamViewportPivot);
         } else if (ctrl) {
             dollyFreeCamAround(freeCamViewportPivot, -dragY * 0.06);
         } else {
@@ -6188,8 +6732,20 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
     private void applySongNoteSkin() {
         String tex = chart.noteTexture == null ? "" : chart.noteTexture.trim();
         java.nio.file.Path[] files = tex.isEmpty() ? null : customNoteTextures.resolveSkinFiles(tex);
-        if (files != null) NoteStyle.useSongSkin(files[0], files[1], files[2]);
-        else NoteStyle.useSongSkin(null, null, null);
+        boolean pixel = chart.pixelUi || (assetResolver != null
+                && assetResolver.stageUsesPixelUi(chart.stage));
+        NoteStyle.setSongRgbAllowed(!chart.disableNoteRgb);
+        String holdTexture = chart.holdSplashTexture == null ? "" : chart.holdSplashTexture.trim();
+        java.nio.file.Path[] holdSplash = customNoteTextures.resolveHoldSplashFiles(holdTexture, pixel);
+        java.nio.file.Path holdPng = holdSplash == null ? null : holdSplash[0];
+        java.nio.file.Path holdXml = holdSplash == null ? null : holdSplash[1];
+        if (files != null) {
+            NoteStyle.useSongSkin(files[0], files[1], files[2], pixel, holdPng, holdXml,
+                    !holdTexture.isBlank());
+        } else {
+            NoteStyle.useSongSkin(null, null, null, pixel, holdPng, holdXml,
+                    !holdTexture.isBlank());
+        }
     }
 
     /**
@@ -6779,6 +7335,9 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         if (luaRuntime != null) luaRuntime.close();
         PerformerRotation.clear(performerVisualPlayer(true));
         PerformerRotation.clear(performerVisualPlayer(false));
+        // BBS persists the current morph in player NBT. Restore the form that was
+        // active before Blockified before the world/server gets a chance to save.
+        CharacterAnimations.stop(minecraft == null ? null : minecraft.player);
         extraCharacters.close();
         if (opponentBot != null) {
             opponentBot.remove(minecraft.level == null ? null : minecraft.level.getEntity(botEntityId));
@@ -6786,7 +7345,8 @@ public class GameplayScreen extends Screen implements PsychBuiltinEventHandler.H
         }
         customNoteTextures.close();
         // Release the song's arrowSkin from the note pipeline so menus/other songs reset.
-        NoteStyle.useSongSkin(null, null, null);
+        NoteStyle.setSongRgbAllowed(true);
+        NoteStyle.useSongSkin(null, null, null, false);
         if (psychScene != null) psychScene.close();
         if (freeCamMove) setFreeCamMove(false);
         gameplayCursorFade.close();

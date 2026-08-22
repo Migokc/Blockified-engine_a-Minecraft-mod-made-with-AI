@@ -31,7 +31,9 @@ import java.util.Map;
  * change, avoiding repeated parsing of thousands of charts on normal startup.
  */
 final class SongLibraryIndex {
-    private static final int SCHEMA = 1;
+    // Schema 2 rebuilds cached menu metadata so Blockified animation-defined
+    // health icons participate in Freeplay resolution.
+    private static final int SCHEMA = 2;
     private static final String FILE_NAME = "song-library-index-v1.json";
 
     record Snapshot(Map<String, SongEntry> songs, Map<String, Path> icons) {}

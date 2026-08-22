@@ -232,6 +232,9 @@ public final class PsychLuaRuntime implements AutoCloseable {
         double lastX = Double.NaN, lastY = Double.NaN, lastZ = Double.NaN;
         WorldEntityBinding(WorldSpriteEntity entity) { this.entity = entity; }
     }
+
+    /** Looping audio requested during hidden editor reconstruction, started only when it is revealed. */
+    private record DeferredSound(String name, float volume, String tag, boolean loop) {}
     private final Map<String, WorldEntityBinding> worldSpriteEntities = new LinkedHashMap<>();
     private final Map<String, LuaValue> sharedVars = new HashMap<>();
     /**
@@ -244,6 +247,7 @@ public final class PsychLuaRuntime implements AutoCloseable {
     private final List<String> substateMembers = new ArrayList<>();
     private final Map<String, Timer> timers = new LinkedHashMap<>();
     private final Map<String, Tween> tweens = new LinkedHashMap<>();
+    private final Map<String, DeferredSound> reconstructionSounds = new LinkedHashMap<>();
     private final Set<String> warned = new LinkedHashSet<>();
     private final LuaFontLoader fontLoader;
     private final Random random = new Random();
@@ -614,10 +618,9 @@ public final class PsychLuaRuntime implements AutoCloseable {
         g.set("difficulty", difficulty);
         g.set("difficultyNameTranslation", difficulty);
         g.set("chartPath", songFolder == null ? "" : songFolder.toString());
-        // Blockified has no story mode, so Psych's week fields stay empty rather
-        // than inventing a value a script could branch on incorrectly.
-        g.set("week", "");
-        g.set("weekRaw", "");
+        String activeWeek = com.fnfmod.client.ClientStorySession.weekId();
+        g.set("week", activeWeek);
+        g.set("weekRaw", activeWeek);
         g.set("seenCutscene", LuaValue.FALSE);
         g.set("deaths", 0);
         g.set("healthGainMult", 1.0);
@@ -656,6 +659,8 @@ public final class PsychLuaRuntime implements AutoCloseable {
                 ? "Default" : chart.noteTexture);
         g.set("splashSkin", chart.noteSplashTexture == null || chart.noteSplashTexture.isBlank()
                 ? "Psych" : chart.noteSplashTexture);
+        g.set("holdSplashSkin", chart.holdSplashTexture == null || chart.holdSplashTexture.isBlank()
+                ? "Default" : chart.holdSplashTexture);
         g.set("splashAlpha", 0.6);
         g.set("noteSkinPostfix", "");
         g.set("splashSkinPostfix", "");
@@ -1173,21 +1178,25 @@ public final class PsychLuaRuntime implements AutoCloseable {
         fn(g, "precacheMusic", args -> LuaValue.valueOf(soundPlayer.precache(args.optjstring(1, ""))));
         fn(g, "playSound", args -> {
             String tag = args.optjstring(3, "");
-            boolean played = soundPlayer.play(args.optjstring(1, ""), (float) args.optdouble(2, 1),
+            boolean played = playOrDeferSound(args.optjstring(1, ""), (float) args.optdouble(2, 1),
                     tag, args.optboolean(4, false));
             return played && !tag.isBlank() ? LuaValue.valueOf(tag) : LuaValue.NIL;
         });
-        fn(g, "playMusic", args -> LuaValue.valueOf(soundPlayer.play(
+        fn(g, "playMusic", args -> LuaValue.valueOf(playOrDeferSound(
                 "@music/" + args.optjstring(1, ""), (float) args.optdouble(2, 1),
                 "__music", args.optboolean(3, false))));
         fn(g, "stopSound", args -> { String tag = args.optjstring(1, "");
-                soundPlayer.stop(tag.isBlank() ? "__music" : tag); return LuaValue.NIL; });
+                tag = tag.isBlank() ? "__music" : tag;
+                reconstructionSounds.remove(tag); soundPlayer.stop(tag); return LuaValue.NIL; });
         fn(g, "pauseSound", args -> { soundPlayer.pause(args.optjstring(1, "")); return LuaValue.NIL; });
         fn(g, "resumeSound", args -> { soundPlayer.resume(args.optjstring(1, "")); return LuaValue.NIL; });
-        fn(g, "luaSoundExists", args -> LuaValue.valueOf(soundPlayer.exists(args.optjstring(1, ""))));
+        fn(g, "luaSoundExists", args -> { String tag = args.optjstring(1, "");
+                return LuaValue.valueOf(reconstructionSounds.containsKey(tag) || soundPlayer.exists(tag)); });
         fn(g, "getSoundPitch", args -> LuaValue.valueOf(soundPlayer.pitch(args.optjstring(1, ""))));
         fn(g, "getSoundTime", args -> LuaValue.valueOf(soundPlayer.timeMs(args.optjstring(1, ""))));
-        fn(g, "getSoundVolume", args -> LuaValue.valueOf(soundPlayer.volume(args.optjstring(1, ""))));
+        fn(g, "getSoundVolume", args -> { String tag = args.optjstring(1, "");
+                DeferredSound sound = reconstructionSounds.get(tag);
+                return LuaValue.valueOf(sound == null ? soundPlayer.volume(tag) : sound.volume()); });
         fn(g, "soundFadeIn", args -> {
             soundPlayer.fade(soundTag(args.optjstring(1, "")), (float) args.optdouble(2, 1),
                     (float) args.optdouble(3, 0), (float) args.optdouble(4, 1), false);
@@ -1218,8 +1227,12 @@ public final class PsychLuaRuntime implements AutoCloseable {
                 (float) args.optdouble(2, 1)); return LuaValue.NIL; });
         fn(g, "setSoundTime", args -> { soundPlayer.setTimeMs(args.optjstring(1, ""),
                 (float) args.optdouble(2, 0)); return LuaValue.NIL; });
-        fn(g, "setSoundVolume", args -> { soundPlayer.setVolume(args.optjstring(1, ""),
-                (float) args.optdouble(2, 1)); return LuaValue.NIL; });
+        fn(g, "setSoundVolume", args -> { String tag = args.optjstring(1, "");
+                float volume = (float) args.optdouble(2, 1);
+                DeferredSound sound = reconstructionSounds.get(tag);
+                if (sound != null) reconstructionSounds.put(tag,
+                        new DeferredSound(sound.name(), volume, sound.tag(), sound.loop()));
+                soundPlayer.setVolume(tag, volume); return LuaValue.NIL; });
         fn(g, "setHealthBarColors", args -> {
             host.psychLuaSetProperty("healthBar.leftBar.color", color(args.optjstring(1, "FF0000")));
             host.psychLuaSetProperty("healthBar.rightBar.color", color(args.optjstring(2, "00FF00")));
@@ -2312,9 +2325,24 @@ public final class PsychLuaRuntime implements AutoCloseable {
         int section = host.psychLuaSection();
         int meterBeat = host.psychLuaMeterBeat();
         int measure = host.psychLuaMeasure();
-        if (step != lastStep) { lastStep = step; setAll("curStep", step); call("onStepHit"); }
-        if (beat != lastBeat) { lastBeat = beat; setAll("curBeat", beat); call("onBeatHit"); }
-        if (section != lastSection) { lastSection = section; setAll("curSection", section); call("onSectionHit"); }
+        if (lastStep == Integer.MIN_VALUE || step < lastStep) lastStep = step - 1;
+        for (int guard = 0; lastStep < step && guard < 512; guard++) {
+            lastStep++;
+            setAll("curStep", lastStep);
+            call("onStepHit");
+        }
+        if (lastBeat == Integer.MIN_VALUE || beat < lastBeat) lastBeat = beat - 1;
+        for (int guard = 0; lastBeat < beat && guard < 128; guard++) {
+            lastBeat++;
+            setAll("curBeat", lastBeat);
+            call("onBeatHit");
+        }
+        if (lastSection == Integer.MIN_VALUE || section < lastSection) lastSection = section - 1;
+        for (int guard = 0; lastSection < section && guard < 64; guard++) {
+            lastSection++;
+            setAll("curSection", lastSection);
+            call("onSectionHit");
+        }
         if (meterBeat != lastMeterBeat) {
             lastMeterBeat = meterBeat;
             call("onMeterBeatHit", host.psychLuaBeatInMeasure(),
@@ -2399,13 +2427,23 @@ public final class PsychLuaRuntime implements AutoCloseable {
             }
             if (t >= 1) { tweens.remove(tween.tag); call("onTweenCompleted", tween.tag); }
         }
-        for (Timer timer : new ArrayList<>(timers.values())) {
-            if (now < timer.nextAt) continue;
-            int completed = timer.completed + 1;
-            int left = Math.max(0, timer.totalLoops - completed);
-            call("onTimerCompleted", timer.tag, completed, left);
-            if (left == 0) timers.remove(timer.tag);
-            else timers.put(timer.tag, timer.advance(now + timer.intervalMs));
+        for (Timer initial : new ArrayList<>(timers.values())) {
+            Timer timer = initial;
+            int guard = 0;
+            while (timer != null && now >= timer.nextAt && guard++ < 512) {
+                int completed = timer.completed + 1;
+                int left = Math.max(0, timer.totalLoops - completed);
+                call("onTimerCompleted", timer.tag, completed, left);
+                // The callback may cancel or replace its own tag. Respect that
+                // instead of restoring an old timer over the script's decision.
+                if (timers.get(timer.tag) != timer) break;
+                if (left == 0) {
+                    timers.remove(timer.tag);
+                    break;
+                }
+                timer = timer.advance(timer.nextAt + timer.intervalMs);
+                timers.put(timer.tag, timer);
+            }
         }
     }
 
@@ -2749,6 +2787,10 @@ public final class PsychLuaRuntime implements AutoCloseable {
                 animation.looped = edit.loop();
             }
         }
+        // Free-cam edits arrive at render-rate. Refresh the entity host now instead
+        // of waiting for the next gameplay/Lua tick, keeping art and gizmo together.
+        syncWorldSpriteEntities(host.psychLuaMachinePosition(),
+                com.fnfmod.client.gameplay.StageOrientation.facing());
         return true;
     }
 
@@ -3184,7 +3226,30 @@ public final class PsychLuaRuntime implements AutoCloseable {
     }
 
     public boolean playSoundEvent(String sound, float volume) {
-        return soundPlayer.play(sound, volume, "", false);
+        return playOrDeferSound(sound, volume, "", false);
+    }
+
+    private boolean playOrDeferSound(String name, float volume, String tag, boolean loop) {
+        if (!host.isEditorReconstructing()) return soundPlayer.play(name, volume, tag, loop);
+        // Transient untagged sounds should have finished before the selected point.
+        // Preserve tagged loops because they represent ongoing stage/menu music.
+        if (tag != null && !tag.isBlank()) {
+            if (loop) reconstructionSounds.put(tag, new DeferredSound(name, volume, tag, true));
+            else reconstructionSounds.remove(tag);
+        }
+        return true;
+    }
+
+    public void beginEditorReconstructionAudio() {
+        soundPlayer.pauseAll();
+    }
+
+    public void finishEditorReconstructionAudio() {
+        for (DeferredSound sound : List.copyOf(reconstructionSounds.values())) {
+            soundPlayer.play(sound.name(), sound.volume(), sound.tag(), sound.loop());
+        }
+        reconstructionSounds.clear();
+        soundPlayer.resumeAll();
     }
 
     private String readSafe(String path) {

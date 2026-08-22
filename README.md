@@ -2,13 +2,42 @@
 
 A feature-full Friday Night Funkin' engine inside of Minecraft — **NeoForge 1.21.1**.
 
-Current release: **2.3.0bbs**.
+Current release: **2.3.4bbs**.
 
 Documentation: **[Blockified Engine Docs](https://migokc.github.io/Blockified-engine_a-Minecraft-mod-made-with-AI/)**.
 
 > **Unofficial fan project.** Blockified Engine is not affiliated with or
 > endorsed by Mojang Studios, Microsoft, The Funkin' Crew, or Friday Night
 > Funkin'. All referenced names and trademarks belong to their respective owners.
+
+### 2.3.4bbs highlights
+
+- The Song Menu now separates Freeplay, Psych-compatible Story Mode, and Settings.
+  Weeks have ordered song playback, difficulty lists, score summaries, scrolling,
+  artwork, a Week Maker, and Lua-readable metadata. Machine menus can use multiple
+  Lua screens while tagged audio and shared data continue between them.
+- Note Settings is now a full live chart/song preview and music player. It supports
+  per-part Base, Highlight, and Outline RGB colors, delay fine-tuning, note-skin
+  transforms, pixel notes, sustain pieces, splashes, hold covers, chart/difficulty
+  selection, real-time skin changes, and Save/Cancel semantics for both skin JSON
+  and user settings. Gameplay receptors use the same 24 FPS animation behavior.
+- Chart editing and playtesting gained improved timeline playback, optional playtest
+  controls, state-preserving catch-up, stronger rollback when seeking, charting
+  offset, Psych/Codename/V-Slice compatibility fixes, and formatted chart/event
+  output. Free Camera gained precise numeric position editing and an independent
+  Camera View rotation layer alongside normal/orbit rotation.
+- The redesigned Blockified screens now share one responsive visual system centered
+  on the signature `#B82BFF` purple palette. Settings, Mods, selectors, character and
+  machine tools, Story Mode, quick actions, dialogs, and Free Camera use consistent
+  panels, spacing, selection states, clipping, and scrolling.
+- Mods settings recognizes Psych packs and V-Slice/Polymod metadata, shows pack
+  details and permissions in one scrollable panel, and adds combined upstream,
+  Blockified, V-Slice, and Psych credits. Character animation selectors support
+  local PNGs or Minecraft account skins and preserve texture-keyframed forms.
+- Character Editor form bundles no longer duplicate a BBS form that already has the
+  same name/identity. Temporary forms recover after interrupted sessions, bundled
+  forms can be installed into BBS Recent, and BBS URL texture cache files are cleared
+  on world exit, game shutdown, or the launch following a hard crash.
 
 ### 2.3.0bbs highlights
 
@@ -30,6 +59,12 @@ Documentation: **[Blockified Engine Docs](https://migokc.github.io/Blockified-en
   outlines controlled from Lua.
 - Dedicated servers no longer cap per-song transfer size; songs of any size transfer,
   while the file-count, name, SHA-1, and overflow checks stay in place.
+- Note Settings timeline dragging supports Shift precision mode. Its free-camera
+  editor now keeps existing runtime objects synchronized with the selection gizmo
+  at mouse/render rate, including paused main BBS performers.
+- The free-cam Camera tab exposes editable Position X/Y/Z values in the currently
+  selected machine/camera frame, allowing exact camera placement without moving it
+  through the viewport controls.
 
 ### 2.2.9bbs highlights
 
@@ -40,10 +75,11 @@ Documentation: **[Blockified Engine Docs](https://migokc.github.io/Blockified-en
   scripting and complete mod assets.
 - The Mods settings page detects either complete mod folders or containers of
   isolated Psych-style packs, reads `pack.json`/`pack.png`, shows compact paths and
-  pack detail screens, and provides per-source/per-pack drag-editable permissions.
+  shows selected-pack details and scrollable per-source/per-pack permissions.
   Intentionally blocked images stay hidden instead of becoming missing textures.
 - Camera Orbit now owns an offsettable or pinned XYZ pivot with duration/easing,
-  while Camera Rotation 3D animates around it. Focus changes tween the pivot through
+  while Camera Rotation 3D's normal layer animates around it. Its independent Camera
+  View layer can rotate the view without changing the orbit. Focus changes tween the pivot through
   Camera Behavior, animation offsets can be disabled, and extra characters plus
   Minecraft/Legacy GF replacements participate in camera and character routing.
 - Gameplay world sprites and 2D world characters use client-side entity hosts with
@@ -69,6 +105,15 @@ Documentation: **[Blockified Engine Docs](https://migokc.github.io/Blockified-en
   live preview on the right. Configured note keys preview directions, dual idles
   alternate at 120 BPM, native looping idles remain native, and the Character
   Editor animation button can be cycled directly with the mouse wheel.
+- Loading a Character Editor animation with a bundled BBS form imports a private
+  copy into BBS's Recent category. Player and distinct opponent bundles are both
+  imported, and reloading the same bundle replaces its prior Recent entry.
+- Temporary BBS forms used by gameplay and animation previews are restored before
+  logout. A tiny per-world recovery journal restores the original form on the next
+  login if Minecraft was closed or crashed before normal cleanup could run.
+- Freeplay uses an animation definition's `icon` when the chart character has no
+  Psych/V-Slice character JSON. If both definitions share a name, the character
+  JSON and its health icon take priority.
 - Chart audio import accepts multiple selected files, recognizes common Inst and
   voice names, renames only the saved copies, and converts common audio formats
   to OGG through FFmpeg. Ctrl+S uses the assigned folder or the normal song-folder
@@ -385,11 +430,21 @@ The settings page calls external directories **Mods**. It always lists
 descriptions plus `pack.png`, and shows each direct child pack separately.
 Added Psych `mods` roots can be expanded with the arrow beside them instead of
 blending every child into one asset namespace. Paths display only their final
-three folders; selecting a pack opens its icon/name/description details page.
+three folders; selecting a pack shows its icon/name/description in the left panel.
 You may add either a complete mod folder directly or a container `mods` folder.
-The left-side Permissions drawer controls resource categories for the selected
+The bottom of that scrollable panel controls resource categories for the selected
 source or individual child pack; click-drag paints several permissions on/off,
 with bright buttons enabled and gray buttons disabled.
+
+V-Slice/Polymod packs are recognized through `_polymod_meta.json` and
+`_polymod_icon.png`. Their title, description, `mod_version`, license, and
+contributors appear in Mods settings alongside Psych `pack.json` metadata.
+
+The Song Menu's **Settings** tab has a small **C** button in the bottom-right for
+Credits. The scrollable screen contains verified hardcoded Blockified, Psych
+Engine, Funkin Crew, and Codename Engine credits, then imports installed V-Slice
+contributors and Psych `data/credits.txt` entries. Imported names with valid HTTP(S)
+links are clickable; hardcoded names deliberately are not.
 
 After selecting a song, the **Look** button chooses its presentation profile:
 
@@ -452,11 +507,12 @@ All difficulties inside a V-Slice chart are selectable. Audio must be **OGG** (t
 what FNF mods ship anyway). `inst.ogg` / `voices.ogg` lower-case also works;
 vocal files containing `player`/`bf` or `opponent`/`dad` in the name are split stems.
 
-Psych chart-level `arrowSkin` and `splashSkin` are supported. Their matching
-PNG/XML Sparrow atlases are resolved from a complete active pack's `images/` folder.
-They affect receptors, note heads, sustains, and hit splashes. The chart editor's
-Data tab exposes these as **Note Texture** and **Note Splash Texture** and previews
-the selected note atlas on its grid.
+Psych chart-level `arrowSkin` and `splashSkin` are supported, plus Blockified's
+`holdSplashSkin` extension. Their matching PNG/XML Sparrow atlases are resolved
+from a complete active pack's `images/` folder. The chart editor's Data tab exposes
+these as **Note Texture**, **Note Splash Texture**, and **Hold Cover Texture**.
+Each value may name a PNG/XML stem or a folder pack; folder packs use the same
+layouts as the user's note skins, hit splashes, and hold covers.
 
 ## Complete engine-style mod packs
 
@@ -505,6 +561,9 @@ config/fnfmod/mods/My-Mod/
   machines/neon/
     machine.json
     menu.lua
+    screens/               <- optional extra Lua screens
+      story.lua
+      settings.lua
     textures/machine.png
 ```
 
@@ -563,6 +622,15 @@ Normal Lua variables, tables, functions work. Widgets expose mutable `text`, `x`
 `y`, `width`, `height`, `visible`, `color`, `alpha`, plus type fields.
 `ui.get(id)`, `ui.remove(id)`, `ui.clear()`, `onOpen()`, `onUpdate(dt)`, `onClose()`
 supported. `machineData` persists per placed machine/world save.
+
+One machine menu can be split into multiple files. Keep the initial page as
+`menu.lua`, put additional pages in `screens/<name>.lua`, then call
+`machine.openScreen('name')`. `machine.getScreen()` returns the current page and
+`machine.getScreens()` lists every discovered page. Widgets, tweens, timers, and
+page callbacks reset during navigation; `machineData` and tagged `playSound`
+audio stay alive, so looping menu music does not restart or cut between pages.
+Shared audio follows Minecraft's master-volume setting immediately. Use
+`soundExists('menuMusic')` before starting a shared track when a page may reopen.
 
 Machine menus use a fixed 1280x720 canvas, scaled uniformly and centered. Window
 resolution and Minecraft GUI scale therefore do not change widget layout;
@@ -687,6 +755,23 @@ if machine.hasSong('earrings') then
     look = 'minecraft' -- minecraft, fnf, legacy
   })
 end
+```
+
+Psych `weeks/*.json`, `weekList.txt`, story-menu images, difficulties,
+`weekCharacters`, visibility flags, and `weekBefore` are discovered from installed
+packs. The built-in Story Mode tab shows each week as a list with its image, songs,
+and combined saved score. Playback follows the declared order from the first song
+through the last; incomplete weeks are not launched. Press **8** in the Song Menu and open **Week Maker** to
+create/preview a compatible week. Lua can inspect the same data:
+
+```lua
+for _, week in ipairs(machine.getWeeks()) do
+  -- week.id/name/storyName/weekName/background/weekBefore/image
+  -- week.difficulties, week.characters, week.songs
+end
+
+local week = machine.getWeek('week1') -- nil when unavailable
+if machine.hasWeek('week1') then print(week.songs[1].id) end
 ```
 
 `machine.playSong(id, difficulty)` also works with solo/player/Minecraft defaults.
@@ -1093,7 +1178,10 @@ characters, stages, and other resources are never copied.
 
 Press **Enter** to playtest from the beginning, or **Shift+Enter** to playtest from
 the conductor's current time. Mid-song playtests reconstruct the event and camera
-state up to that point; F12 remains the quick preview shortcut.
+state up to that point. **F12** opens an automatic notes-only preview using the
+same stable 24 FPS tap/hold animation model as Note Settings; tap confirms play
+once, sustain confirms loop until their tails, and consumed sustain pieces do not
+remain behind the receptors.
 
 Lua runs client-side in a sandbox. Direct Java access, process execution, and
 unrestricted filesystem access are disabled. Psych features that require its actual
@@ -1256,10 +1344,15 @@ setCharacterIRLightsShadows('gf', true)
 
 Character packs can control whether players may replace a compatible BBS
 Steve/Alex form with their selected Minecraft skin/model. In the Character
-Editor, use **Player Skin Choice: Allowed/Locked**. This writes
+Editor, open **Skin / Model Rules**. It controls whether player overrides are allowed
+and whether the authored form uses its own skin, the performer skin, or a named
+Minecraft account's skin and slim/wide model. The permission writes
 `"allowPlayerSkinSelection": true/false` to the role's character JSON and
 defaults to `true` for older packs. When locked, the Player/Bot Skin control in
 the animation selector is disabled and gameplay keeps the form author's choice.
+Both Player and Bot animation selectors can independently use the form skin, current
+player skin, a PNG file with Slim/Wide selection, or a Minecraft account name. The
+account dialog remains open with a loading indicator until the skin is resolved.
 When a Minecraft skin is selected, BBS main-model texture keyframes no longer
 cover that skin; pose and non-skin animation keyframes continue normally.
 
@@ -1272,7 +1365,7 @@ config/fnfmod/skins/<skin-name>/NOTE_assets.png
 config/fnfmod/skins/<skin-name>/NOTE_assets.xml
 ```
 
-Each subfolder is a selectable skin — pick one in Settings → Visuals and UI.
+Each subfolder is a selectable skin — pick one in Settings → Note Settings.
 
 The selector also has two built-in choices:
 
@@ -1286,13 +1379,89 @@ including `frameX/frameY` trim offsets. Base-game and Psych naming conventions
 are recognized (`purple0000`, `arrowLEFT`, `left confirm`, `purple hold piece`, ...).
 Named skin folders override the chart's default note and splash textures.
 
-Optional `skin.json` values can adjust each part's scale, opacity, and position.
+Each note skin decides whether its artwork uses Psych-style RGB-template recoloring
+with `"rgb": true` or `"rgb": false` in its skin JSON. Settings → Note Settings →
+**Skin Uses RGB** edits that value. When enabled, the configured lane colors are
+always applied; there is no separate global RGB switch. The chart editor no longer
+stores this choice in song data. Imported Psych `disableNoteRGB` fields remain
+readable for round-trip compatibility but do not override the skin JSON. All three
+Psych template channels are configurable per direction: red is **Primary**, green
+is **Secondary** (white by default), and blue is **Outline**. Existing user configs
+automatically receive white secondary colors.
+The same Note Settings page has a temporary **Preview UI: Normal/Pixel** control;
+it previews the selected skin's Pixel UI artwork without changing chart data.
+
+### Splash packs
+
+Splash selections support the same folder-pack layout as note skins:
+
+```text
+config/fnfmod/splashes/<pack-name>/noteSplashes.png
+config/fnfmod/splashes/<pack-name>/noteSplashes.xml
+config/fnfmod/splashes/<pack-name>/pixelUI/noteSplashes.png
+config/fnfmod/splashes/<pack-name>/pixelUI/noteSplashes.xml
+```
+
+The atlas files may instead use the pack folder's name, `splash`, or any matching
+PNG/XML stem. Pixel UI automatically chooses the pair inside `pixelUI`; without
+one, the normal atlas remains as a nearest-filtered fallback. Existing flat pairs
+directly inside `config/fnfmod/splashes` remain supported. A note-skin folder can
+bundle its own normal and pixel splashes using the same `noteSplashes` paths.
+
+Hold-cover files are intentionally separate from hit-splash packs. A
+`splashes/<pack-name>/` subfolder cannot provide a hold cover; files named
+`holdSplash`/`holdCover` there are ignored by the hit-splash selector.
+
+Install user-selectable hold-cover packs only under:
+
+```text
+config/fnfmod/splashes/holdSplashes/holdSplash.png
+config/fnfmod/splashes/holdSplashes/holdSplash.xml
+config/fnfmod/splashes/holdSplashes/pixelUI/holdSplash.png
+config/fnfmod/splashes/holdSplashes/pixelUI/holdSplash.xml
+
+config/fnfmod/splashes/holdSplashes/<pack-name>/holdSplash.png
+config/fnfmod/splashes/holdSplashes/<pack-name>/holdSplash.xml
+config/fnfmod/splashes/holdSplashes/<pack-name>/pixelUI/holdSplash.png
+config/fnfmod/splashes/holdSplashes/<pack-name>/pixelUI/holdSplash.xml
+```
+
+Flat named pairs such as `holdSplashes/my-cover.png/.xml` and freely named
+matching PNG/XML pairs inside a pack folder also work. Choose one with
+Settings → Note Settings → **Hold Cover**. **Default (chart)** uses the chart's
+`holdSplashSkin`, then Psych's standard
+`images/noteSplashes/holdSplashes/holdSplash` asset, then the root default shown
+above. **OFF** suppresses generic hold covers; a cover bundled by the active note
+skin belongs to that skin and takes priority.
+
+Its `start` animation plays once when holding begins, `hold` loops during the
+sustain, and `end` plays after a clean finish. RGB-template artwork follows the
+skin JSON's `rgb` value. Legacy
+per-skin `holdCover<Color>` atlases remain supported and take priority over a
+separately chosen chart or settings hold-cover pack.
+
+Notes, receptors, sustain bodies, and sustain ends use one shared source-pixel
+scale. Their authored frame resolutions therefore determine their relative size;
+for example, a 114 px sustain beside a 152 px note renders 114/152 as wide.
+This applies to both Sparrow XML and XML-less Pixel UI sheets.
+
+Optional note-skin JSON values can override the natural result by adjusting each
+part's scale, opacity, and position. Scale values are multipliers applied after
+resolution-based sizing, so old compensating values may need to be reset to `1.0`.
 Position values are offsets in the part's source-art pixels. They scale with the
 part, resolution, and vanilla GUI scale, preserving the same relative alignment.
 Negative X moves left and negative Y moves up.
 
+Hold covers use a corrected internal neutral baseline equivalent to the old
+`holdCoverScale: 1.7` and `holdCoverY: 35` workaround. Their editable JSON values
+therefore remain intuitive: scale `1.0` and position `0, 0` mean the corrected
+default. Existing files containing that exact workaround are normalized to these
+neutral values when loaded and saved.
+
 ```json
 {
+  "rgb": true,
+
   "noteScale": 1.0,
   "noteAlpha": 1.0,
   "noteX": 0,
@@ -1319,6 +1488,33 @@ Negative X moves left and negative Y moves up.
   "holdCoverY": 0
 }
 ```
+
+Settings → **Note Settings** provides both gameplay-style strumlines on the
+left and all note options on the right. It can load a chart from an installed
+mod, play that chart's instrumental/vocals, and preview its difficulty, Pixel UI,
+notes, sustains, hit splashes, and hold covers. The Note Skin, Splashes, and Hold
+Cover selectors live here instead of Visuals and UI. Its centered chart picker
+uses the same icon-card grid, search, scrollbar, and eased scrolling as the song
+selector. The strumline box also acts as a small song player: restart, five-second
+rewind/forward, play/pause, and a draggable timeline seek the loaded song. Hold
+Shift while dragging the timeline for one-fifth-speed precision without snapping
+when Shift is pressed or released mid-drag.
+Click a visible note or either matching receptor to choose the direction whose
+colors are being edited; the selected direction is outlined. Primary, Secondary,
+and Outline are separate color-part buttons.
+
+Choose **Edit Part** to adjust Scale, Alpha, X, and Y for notes, receptors,
+sustains, splashes, or hold covers, then use the fixed **Save** button beside
+**Cancel**. Changes remain live only for preview until then. **Save** writes both
+the active skin JSON (when editable) and the complete Note Settings user options;
+**Cancel** restores every user option to its value from when the screen opened.
+New configs use the active PNG's basename (for example,
+`NOTE_assets.png` saves as `NOTE_assets.json`). If a skin already has a JSON,
+Blockified preserves that file's current name. Splash and
+hold-cover transforms always come from the active note skin's JSON, even when the
+effect atlas is stored in a separate splash/hold pack or selected by the chart.
+When a note skin bundles its own splash or per-lane hold-cover artwork, that skin
+owns the effect: the corresponding selector is disabled and displays **From note skin**.
 
 ## Character animations (BBS FS) + animation sets
 
@@ -1459,10 +1655,13 @@ restored afterwards.
   `Z = camera-forward`), Value 4 selects easing, and Value 5 can override normal
   and Lua focus movement. Empty extra values retain normal Psych behavior.
 - **Camera Rotation 3D** uses Values 1/2/3 for additive pitch/yaw/roll, Value 4
-  for easing, and Value 5 for duration in seconds (blank keeps the original 0.5s).
+  for easing, Value 5 for duration in seconds (blank keeps the original 0.5s), and
+  Value 6 for the rotation layer. Blank/`normal`/`orbit` retains the original layer;
+  `camera`/`view`/`local` selects an independent view-only layer.
   Leave all three rotations empty to return to the normal view. While **Camera
-  Orbit** is active, those axes instead animate the camera position around its
-  pivot; Camera Orbit itself only enables/disables and positions that pivot.
+  Orbit** is active, the original layer animates camera position around its pivot,
+  while the view-only layer continues rotating the camera itself. The two layers
+  retain independent tween state. Camera Orbit itself only enables/disables and positions that pivot.
   Value 2 selects a focus-following or pinned pivot, and Value 3 supplies all-axis
   `X,Y,Z` coordinates: focus-relative offsets when following, absolute stage-local
   coordinates when pinned. Values 4/5 set the duration and easing used when an
@@ -1503,6 +1702,9 @@ In the song select screen: **Play as** (Player / Opponent / Both — solo only;
 Both puts you center stage playing every note, and one keypress hits overlapping
 notes on both strumlines), Downscroll, Ghost Tapping. More in
 `config/fnfmod/options.json` (`offsetMs` for audio calibration, `scrollSpeedMult`).
+Audio delay is adjustable directly in Note Settings with live song/chart feedback.
+Use the slider for broad changes or its `-`/`+` buttons for fine tuning: click for
+1 ms, or Shift-click for 8 ms.
 Player and opponent icon choices apply globally to every song. **Default (song)**
 uses each chart character's health icon; **None** hides that side's icon.
 

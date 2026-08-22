@@ -244,6 +244,7 @@ public class SongEntry {
             SongChart chart = SongLibrary.loadChart(this, difficulty);
             addTexturePair(out, runtimeRoot, chart.noteTexture);
             addTexturePair(out, runtimeRoot, chart.noteSplashTexture);
+            addTexturePair(out, runtimeRoot, chart.holdSplashTexture);
         } catch (Exception ignored) {}
     }
 
@@ -255,8 +256,18 @@ public class SongEntry {
             texture = texture.substring(0, texture.length() - 4);
         }
         Path normalizedRoot = root.toAbsolutePath().normalize();
-        for (String extension : new String[]{".png", ".xml"}) {
-            for (String prefix : new String[]{"images", "assets/images", ""}) {
+        for (String prefix : new String[]{"images", "shared/images", "assets/images",
+                "assets/shared/images", ""}) {
+            Path base = prefix.isBlank() ? normalizedRoot : normalizedRoot.resolve(prefix);
+            Path folder = base.resolve(texture).normalize();
+            if (folder.startsWith(normalizedRoot) && Files.isDirectory(folder)) {
+                addTree(out, folder);
+                return;
+            }
+        }
+        for (String extension : new String[]{".png", ".xml", ".json"}) {
+            for (String prefix : new String[]{"images", "shared/images", "assets/images",
+                    "assets/shared/images", ""}) {
                 Path base = prefix.isBlank() ? normalizedRoot : normalizedRoot.resolve(prefix);
                 Path candidate = base.resolve(texture + extension).normalize();
                 if (candidate.startsWith(normalizedRoot) && Files.isRegularFile(candidate)) {

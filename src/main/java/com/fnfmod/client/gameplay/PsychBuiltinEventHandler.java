@@ -18,7 +18,7 @@ public final class PsychBuiltinEventHandler {
                                boolean overrideMovement, boolean cameraRelative, boolean extended,
                                Double durationSeconds);
         void eventCameraRotation(Double pitch, Double yaw, Double roll, String easing,
-                                 Double durationSeconds);
+                                 Double durationSeconds, boolean cameraViewLayer);
         void eventCameraOrbit(boolean enabled, boolean pinned,
                               double pivotX, double pivotY, double pivotZ,
                               double durationSeconds, String easing);
@@ -70,7 +70,7 @@ public final class PsychBuiltinEventHandler {
         } else if (ChartEventTypes.is(name, ChartEventTypes.CAMERA_ROTATION_3D)) {
             host.eventCameraRotation(optionalNumber(value1), optionalNumber(value2),
                     optionalNumber(text(event.value3)), text(event.value4),
-                    optionalNumber(text(event.value5)));
+                    optionalNumber(text(event.value5)), cameraViewRotation(text(event.value6)));
         } else if (ChartEventTypes.is(name, ChartEventTypes.CAMERA_ORBIT)) {
             String state = value1.toLowerCase(Locale.ROOT);
             boolean enabled = !(state.equals("stop") || state.equals("off")
@@ -213,5 +213,13 @@ public final class PsychBuiltinEventHandler {
         return value.equals("camera") || value.equals("cam") || value.equals("rotation")
                 || value.equals("rotated") || value.equals("camerarotation")
                 || value.equals("view") || value.equals("screen");
+    }
+
+    /** Alternate Camera Rotation 3D layer which changes view orientation, never orbit position. */
+    private static boolean cameraViewRotation(String raw) {
+        String value = text(raw).toLowerCase(Locale.ROOT);
+        return value.equals("camera") || value.equals("view") || value.equals("local")
+                || value.equals("screen") || value.equals("always")
+                || value.equals("cameraview") || value.equals("camera view");
     }
 }

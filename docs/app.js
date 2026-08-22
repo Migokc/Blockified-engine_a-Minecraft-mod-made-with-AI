@@ -98,7 +98,8 @@
       group.pages.map((slug) => {
         const homeLogo = slug === "home";
         const label = homeLogo
-          ? '<img class="nav-home-logo" src="./assets/blockified-engine-logo.png" alt="Blockified Engine" width="1024" height="284">'
+          ? '<img class="nav-home-logo" src="./assets/blockified-engine-logo.png" alt="" width="1024" height="284">' +
+            '<span class="nav-home-text">Home</span>'
           : escapeHtml(docs.pages[slug].title);
         return '<a class="nav-link' + (homeLogo ? ' home-logo-link' : '') + '" data-page="' + slug +
           '" href="#/' + slug + '">' + label + '</a>';
@@ -125,6 +126,8 @@
       link.classList.toggle("active", active);
       active ? link.setAttribute("aria-current", "page") : link.removeAttribute("aria-current");
     });
+    const homeLogoLink = nav.querySelector(".home-logo-link");
+    if (homeLogoLink) homeLogoLink.classList.toggle("home-text-mode", slug === "home");
 
     content.querySelectorAll("pre").forEach((pre) => {
       const button = document.createElement("button");

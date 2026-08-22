@@ -36,11 +36,19 @@ public final class PsychChartWriter {
         song.addProperty("player2", chart.player2);
         song.addProperty("gfVersion", chart.player3);
         song.addProperty("stage", chart.stage);
+        if (chart.pixelUi) {
+            song.addProperty("uiStyle", "pixel");
+            song.addProperty("isPixelStage", true); // legacy Psych compatibility
+        }
+        if (chart.disableNoteRgb) song.addProperty("disableNoteRGB", true);
         if (chart.noteTexture != null && !chart.noteTexture.isBlank()) {
             song.addProperty("arrowSkin", chart.noteTexture.trim());
         }
         if (chart.noteSplashTexture != null && !chart.noteSplashTexture.isBlank()) {
             song.addProperty("splashSkin", chart.noteSplashTexture.trim());
+        }
+        if (chart.holdSplashTexture != null && !chart.holdSplashTexture.isBlank()) {
+            song.addProperty("holdSplashSkin", chart.holdSplashTexture.trim());
         }
         song.addProperty("validScore", true);
         chart.sortEvents();

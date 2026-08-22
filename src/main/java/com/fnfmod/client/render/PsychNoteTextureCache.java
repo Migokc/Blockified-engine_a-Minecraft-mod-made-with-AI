@@ -28,7 +28,7 @@ public final class PsychNoteTextureCache implements AutoCloseable {
         final String[] ends = new String[4];
         @SuppressWarnings("unchecked")
         final List<String>[] splashes = new List[4];
-        float referenceSize = 155;
+        float referenceSize;
 
         Style(SparrowAtlas atlas) {
             this.atlas = atlas;
@@ -55,18 +55,25 @@ public final class PsychNoteTextureCache implements AutoCloseable {
                 if (pieces[lane] == null) pieces[lane] = findLaneAnimation(atlas, lane, Part.HOLD);
                 if (ends[lane] == null) ends[lane] = findLaneAnimation(atlas, lane, Part.END);
                 SparrowAtlas.Frame head = frame(heads[lane]);
-                if (head != null) referenceSize = Math.max(referenceSize,
-                        Math.max(head.frameW, head.frameH));
+                if (head != null && referenceSize <= 0) {
+                    referenceSize = Math.max(1, Math.max(head.frameW, head.frameH));
+                }
                 List<String> variants = new ArrayList<>();
+                List<String> genericVariants = new ArrayList<>();
                 for (String animation : atlas.animationNames()) {
                     String lower = animation.toLowerCase(Locale.ROOT);
                     boolean splash = lower.contains("splash") || lower.contains("impact");
                     boolean laneMatch = lower.contains(COLORS[lane]) || lower.contains(DIRECTIONS[lane]);
-                    if (splash && laneMatch) variants.add(animation);
+                    if (splash) {
+                        genericVariants.add(animation);
+                        if (laneMatch) variants.add(animation);
+                    }
                 }
+                if (variants.isEmpty()) variants.addAll(genericVariants);
                 Collections.sort(variants);
                 splashes[lane] = variants;
             }
+            if (referenceSize <= 0) referenceSize = 155;
         }
 
         SparrowAtlas.Frame frame(String animation) {
@@ -187,12 +194,24 @@ public final class PsychNoteTextureCache implements AutoCloseable {
     /** Custom-skin confirm animation used only while a sustain is actively held. */
     public boolean drawSustainReceptor(GuiGraphics gui, String texture, int lane,
                                        long animationFrame, float centerX, float centerY, float size) {
+        return drawConfirmReceptor(gui, texture, lane, animationFrame, true, centerX, centerY, size);
+    }
+
+    /** Draws a confirm animation at an explicit 24-FPS frame; taps clamp, holds loop. */
+    public boolean drawConfirmReceptor(GuiGraphics gui, String texture, int lane,
+                                       long animationFrame, boolean loop,
+                                       float centerX, float centerY, float size) {
         Style style = style(texture);
         if (style == null) return false;
         int safeLane = Math.floorMod(lane, 4);
         String animation = style.receptors[safeLane][2];
         if (animation == null) return false;
-        SparrowAtlas.Frame frame = style.loopedFrame(animation, animationFrame);
+        List<SparrowAtlas.Frame> frames = style.atlas.frames(animation);
+        if (frames.isEmpty()) return false;
+        int index = loop
+                ? (int) Math.floorMod(animationFrame, (long) frames.size())
+                : (int) Math.min(Math.max(0, animationFrame), frames.size() - 1L);
+        SparrowAtlas.Frame frame = frames.get(index);
         if (frame == null) return false;
         NoteStyle.prepareCustomNoteDraw();
         style.atlas.drawScaled(gui, frame, centerX, centerY,
@@ -266,6 +285,13 @@ public final class PsychNoteTextureCache implements AutoCloseable {
 
     public boolean drawSplash(GuiGraphics gui, String texture, int lane, int variant, int frameIndex,
                               float centerX, float centerY, float size) {
+        return drawSplash(gui, texture, lane, variant, frameIndex, centerX, centerY, size,
+                NoteSkinConfig.DEFAULT.splash());
+    }
+
+    /** Draws an external/chart splash using the active note skin's transforms. */
+    public boolean drawSplash(GuiGraphics gui, String texture, int lane, int variant, int frameIndex,
+                              float centerX, float centerY, float size, NoteSkinConfig.Part config) {
         Style style = style(texture);
         if (style == null) return false;
         List<String> variants = style.splashes[Math.floorMod(lane, 4)];
@@ -274,9 +300,13 @@ public final class PsychNoteTextureCache implements AutoCloseable {
                 variants.get(Math.floorMod(variant, variants.size())));
         if (frameIndex < 0 || frameIndex >= frames.size()) return false;
         SparrowAtlas.Frame frame = frames.get(frameIndex);
-        NoteStyle.prepareCustomNoteDraw();
-        style.atlas.drawScaled(gui, frame, centerX, centerY,
-                size / Math.max(1, Math.max(frame.frameW, frame.frameH)));
+        NoteSkinConfig.Part transform = config == null ? NoteSkinConfig.DEFAULT.splash() : config;
+        NoteStyle.prepareCustomSplashDraw(transform.alpha());
+        float pixelScale = size * transform.scale()
+                / Math.max(1, Math.max(frame.frameW, frame.frameH));
+        style.atlas.drawScaled(gui, frame,
+                centerX + transform.x() * pixelScale,
+                centerY + transform.y() * pixelScale, pixelScale);
         return true;
     }
 
@@ -288,28 +318,121 @@ public final class PsychNoteTextureCache implements AutoCloseable {
     public Path[] resolveSkinFiles(String rawTexture) {
         if (rawTexture == null || rawTexture.isBlank()) return null;
         String texture = stripExtension(rawTexture.trim().replace('\\', '/'));
+        Path folder = resolveDirectory(texture);
+        if (folder != null && folderHasNoteAtlas(folder)) {
+            return new Path[]{folder, null, folder.resolve("skin.json")};
+        }
         Path png = resolve(texture + ".png");
         Path xml = resolve(texture + ".xml");
-        if (png == null || xml == null) return null;
-        return new Path[]{png, xml, resolve(texture + ".json")};
+        if (png != null && xml != null) {
+            Path json = resolve(texture + ".json");
+            if (json == null) {
+                json = png.resolveSibling(stripExtension(png.getFileName().toString()) + ".json");
+            }
+            return new Path[]{png, xml, json};
+        }
+        // A valid Psych pixel skin may ship only images/pixelUI/<arrowSkin>.png.
+        // Return its corresponding classic location even when that pair is absent;
+        // NoteStyle uses it as the stable name/path from which to find the XML-less grid.
+        String pixelTexture = texture.regionMatches(true, 0, "pixelUI/", 0, 8)
+                ? texture : "pixelUI/" + texture;
+        Path pixel = resolve(pixelTexture + ".png");
+        Path classic = classicPathForPixel(pixel);
+        if (classic == null) return null;
+        String stem = stripExtension(classic.getFileName().toString());
+        Path json = resolve(texture + ".json");
+        if (json == null) json = classic.resolveSibling(stem + ".json");
+        return new Path[]{classic, classic.resolveSibling(stem + ".xml"), json};
+    }
+
+    /** Backward-compatible lookup of Psych's standard shared sustain cover. */
+    public Path[] resolveHoldSplashFiles(boolean pixelUi) {
+        return resolveHoldSplashFiles("", pixelUi);
+    }
+
+    /** Resolves an explicit hold-cover atlas/stem/folder, or Psych's default when blank. */
+    public Path[] resolveHoldSplashFiles(String rawTexture, boolean pixelUi) {
+        String base = rawTexture == null || rawTexture.isBlank()
+                ? "noteSplashes/holdSplashes/holdSplash"
+                : stripExtension(rawTexture.trim().replace('\\', '/'));
+        Path folder = resolveDirectory(base);
+        if (folder != null) {
+            Path[] normal = folderAtlasPair(folder, "holdSplash", "holdCover");
+            Path[] selected = normal;
+            if (pixelUi) {
+                String normalStem = normal == null ? "holdSplash" : stripExtension(normal[0].getFileName().toString());
+                Path[] pixel = folderAtlasPair(folder.resolve("pixelUI"), normalStem, "holdSplash", "holdCover");
+                if (pixel != null) selected = pixel;
+            }
+            return selected;
+        }
+        Path png = resolve(base + ".png");
+        Path xml = resolve(base + ".xml");
+        if (pixelUi) {
+            Path pixelPng = resolvePixel(base + ".png");
+            Path pixelXml = resolvePixel(base + ".xml");
+            if (pixelPng != null && pixelXml != null) {
+                png = pixelPng;
+                xml = pixelXml;
+            }
+        }
+        return png != null && xml != null ? new Path[]{png, xml} : null;
+    }
+
+    private static Path classicPathForPixel(Path pixel) {
+        if (pixel == null) return null;
+        Path cursor = pixel.getParent();
+        while (cursor != null && cursor.getFileName() != null) {
+            if (cursor.getFileName().toString().equalsIgnoreCase("pixelUI")) {
+                Path parent = cursor.getParent();
+                return parent == null ? null : parent.resolve(cursor.relativize(pixel)).normalize();
+            }
+            cursor = cursor.getParent();
+        }
+        return null;
     }
 
     private Style style(String rawTexture) {
         if (!enabled || rawTexture == null || rawTexture.isBlank()) return null;
         String texture = stripExtension(rawTexture.trim().replace('\\', '/'));
-        String key = texture.toLowerCase(Locale.ROOT);
+        boolean pixel = NoteStyle.pixelUi();
+        String key = (pixel ? "pixel:" : "normal:") + texture.toLowerCase(Locale.ROOT);
         if (styles.containsKey(key)) return styles.get(key);
         if (missing.contains(key)) return null;
 
-        Path png = resolve(texture + ".png");
-        Path xml = resolve(texture + ".xml");
+        Path png;
+        Path xml;
+        Path folder = resolveDirectory(texture);
+        if (folder != null) {
+            String folderName = folder.getFileName() == null ? "" : folder.getFileName().toString();
+            Path[] pair = folderAtlasPair(folder, folderName, "NOTE_assets", "noteSplashes", "splash");
+            if (pixel) {
+                String stem = pair == null ? folderName : stripExtension(pair[0].getFileName().toString());
+                Path[] pixelPair = folderAtlasPair(folder.resolve("pixelUI"), stem,
+                        folderName, "NOTE_assets", "noteSplashes", "splash");
+                if (pixelPair != null) pair = pixelPair;
+            }
+            png = pair == null ? null : pair[0];
+            xml = pair == null ? null : pair[1];
+        } else {
+            png = resolve(texture + ".png");
+            xml = resolve(texture + ".xml");
+            if (pixel) {
+                Path pixelPng = resolvePixel(texture + ".png");
+                Path pixelXml = resolvePixel(texture + ".xml");
+                if (pixelPng != null && pixelXml != null) {
+                    png = pixelPng;
+                    xml = pixelXml;
+                }
+            }
+        }
         if (png == null || xml == null) {
             missing.add(key);
             FnfMod.LOGGER.warn("Custom note texture {} needs matching PNG and XML files in {}",
                     rawTexture, roots);
             return null;
         }
-        SparrowAtlas atlas = SparrowAtlas.load(png, xml);
+        SparrowAtlas atlas = SparrowAtlas.load(png, xml, !pixel);
         if (atlas == null) {
             missing.add(key);
             return null;
@@ -333,6 +456,105 @@ public final class PsychNoteTextureCache implements AutoCloseable {
                 if (slash < 0 && dot > 0) {
                     String name = relative.substring(0, dot);
                     Path nested = base.resolve(name).resolve(relative).normalize();
+                    if (nested.startsWith(root) && Files.isRegularFile(nested)) return nested;
+                }
+            }
+        }
+        return null;
+    }
+
+    /** Directory equivalent of resolve(), confined to this song/mod's permitted roots. */
+    private Path resolveDirectory(String relative) {
+        if (relative == null || relative.isBlank()) return null;
+        for (Path root : roots) {
+            for (String prefix : new String[]{"images", "shared/images", "assets/images",
+                    "assets/shared/images", ""}) {
+                Path base = prefix.isBlank() ? root : root.resolve(prefix);
+                Path candidate = base.resolve(relative).normalize();
+                if (candidate.startsWith(root) && Files.isDirectory(candidate)) return candidate;
+            }
+        }
+        return null;
+    }
+
+    private static Path firstRegular(Path path) {
+        return path != null && Files.isRegularFile(path) ? path : null;
+    }
+
+    private static Path namedIgnoreCase(Path folder, String fileName) {
+        if (folder == null || !Files.isDirectory(folder)) return null;
+        try (var files = Files.list(folder)) {
+            return files.filter(Files::isRegularFile)
+                    .filter(path -> path.getFileName().toString().equalsIgnoreCase(fileName))
+                    .findFirst().orElse(null);
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private static Path[] folderAtlasPair(Path folder, String... preferredStems) {
+        if (folder == null || !Files.isDirectory(folder)) return null;
+        for (String stem : preferredStems) {
+            if (stem == null || stem.isBlank()) continue;
+            Path png = namedIgnoreCase(folder, stem + ".png");
+            Path xml = namedIgnoreCase(folder, stem + ".xml");
+            if (png != null && xml != null) return new Path[]{png, xml};
+        }
+        try (var files = Files.list(folder)) {
+            for (Path png : files.filter(Files::isRegularFile)
+                    .filter(path -> path.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".png"))
+                    .sorted().toList()) {
+                String stem = stripExtension(png.getFileName().toString());
+                Path xml = namedIgnoreCase(folder, stem + ".xml");
+                if (xml != null) return new Path[]{png, xml};
+            }
+        } catch (Exception ignored) {}
+        return null;
+    }
+
+    private static boolean folderHasNoteAtlas(Path folder) {
+        if (folder == null || !Files.isDirectory(folder)) return false;
+        String folderName = folder.getFileName() == null ? "" : folder.getFileName().toString();
+        if (namedIgnoreCase(folder, "NOTE_assets.png") != null
+                && namedIgnoreCase(folder, "NOTE_assets.xml") != null
+                || !folderName.isBlank() && namedIgnoreCase(folder, folderName + ".png") != null
+                && namedIgnoreCase(folder, folderName + ".xml") != null) return true;
+        return hasNoteAssetsVariant(folder, true)
+                || firstRegular(folder.resolve("notes.png")) != null
+                && firstRegular(folder.resolve("notes.xml")) != null
+                || firstRegular(folder.resolve("noteStrumline.png")) != null
+                && firstRegular(folder.resolve("noteStrumline.xml")) != null
+                || folderAtlasPair(folder.resolve("pixelUI"), "NOTE_assets", folderName) != null;
+    }
+
+    private static boolean hasNoteAssetsVariant(Path folder, boolean requireXml) {
+        if (folder == null || !Files.isDirectory(folder)) return false;
+        try (var files = Files.list(folder)) {
+            return files.filter(Files::isRegularFile).anyMatch(path -> {
+                String name = path.getFileName().toString();
+                String lower = name.toLowerCase(Locale.ROOT);
+                if (!lower.startsWith("note_assets-") || !lower.endsWith(".png")) return false;
+                if (!requireXml) return true;
+                String stem = stripExtension(name);
+                return namedIgnoreCase(folder, stem + ".xml") != null;
+            });
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    /** Psych pixel counterpart: images/pixelUI/<same relative path>. */
+    private Path resolvePixel(String relative) {
+        String safe = relative.replace('\\', '/');
+        for (Path root : roots) {
+            for (String prefix : new String[]{"images/pixelUI", "shared/images/pixelUI",
+                    "assets/images/pixelUI", "assets/shared/images/pixelUI", "pixelUI"}) {
+                Path base = root.resolve(prefix);
+                Path candidate = base.resolve(safe).normalize();
+                if (candidate.startsWith(root) && Files.isRegularFile(candidate)) return candidate;
+                // Common flat request "foo" may be stored under pixelUI/noteSplashes/foo.
+                if (!safe.contains("/")) {
+                    Path nested = base.resolve("noteSplashes").resolve(safe).normalize();
                     if (nested.startsWith(root) && Files.isRegularFile(nested)) return nested;
                 }
             }

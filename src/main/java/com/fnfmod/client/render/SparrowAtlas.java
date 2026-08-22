@@ -94,7 +94,12 @@ public class SparrowAtlas implements AutoCloseable {
 
     /** Returns null on any failure (missing files, bad xml). */
     public static SparrowAtlas load(Path png, Path xml) {
-        return finish(decode(png, xml));
+        return finish(decode(png, xml), true);
+    }
+
+    /** Loads an atlas, choosing bilinear ({@code smooth}) or nearest (pixel-art) filtering. */
+    public static SparrowAtlas load(Path png, Path xml, boolean smooth) {
+        return finish(decode(png, xml), smooth);
     }
 
     /**
@@ -143,8 +148,76 @@ public class SparrowAtlas implements AutoCloseable {
         }
     }
 
+    /**
+     * Decodes a Psych pixel-UI note sheet, which ships no XML: the sprite grid itself defines
+     * frame size and position. {@code pixelUI/<skin>.png} is a 4x5 grid (row 0 receptors, row 1
+     * notes, rows 2-4 press/confirm) and {@code pixelUI/<skin>ENDS.png} is a 4x2 grid (row 0
+     * hold pieces, row 1 hold ends). Frames are named like the classic NOTE_assets animations so
+     * the rest of the note pipeline resolves them unchanged.
+     */
+    public static Decoded decodePixelGrid(Path png, boolean ends) {
+        NativeImage image = null;
+        try {
+            if (png == null || !Files.isRegularFile(png)) return null;
+            try (InputStream in = Files.newInputStream(png)) {
+                image = NativeImage.read(in);
+            }
+            int columns = 4;
+            int rows = ends ? 2 : 5;
+            int cellW = Math.max(1, image.getWidth() / columns);
+            int cellH = Math.max(1, image.getHeight() / rows);
+
+            String[] colors = {"purple", "blue", "green", "red"};
+            String[] caps = {"Left", "Down", "Up", "Right"};
+            List<Frame> allFrames = new ArrayList<>();
+            Map<String, List<Frame>> animations = new LinkedHashMap<>();
+
+            for (int index = 0; index < columns * rows; index++) {
+                int lane = index % columns;
+                int row = index / columns;
+                Frame f = new Frame();
+                f.x = lane * cellW;
+                f.y = row * cellH;
+                f.w = cellW;
+                f.h = cellH;
+                f.frameW = cellW;
+                f.frameH = cellH;
+                // Psych's fixed pixel frame layout, mapped onto the usual animation names.
+                String name;
+                if (ends) {
+                    name = row == 0 ? colors[lane] + " hold piece" : colors[lane] + " hold end";
+                } else {
+                    name = switch (row) {
+                        case 0 -> "arrow" + caps[lane].toUpperCase(java.util.Locale.ROOT);
+                        case 1 -> colors[lane] + "0";
+                        case 2 -> caps[lane].toLowerCase(java.util.Locale.ROOT) + " press";
+                        default -> caps[lane].toLowerCase(java.util.Locale.ROOT) + " confirm";
+                    };
+                }
+                f.name = name;
+                allFrames.add(f);
+                animations.computeIfAbsent(stripFrameNumber(name), k -> new ArrayList<>()).add(f);
+            }
+            return new Decoded(image, allFrames, animations);
+        } catch (Exception e) {
+            if (image != null) image.close();
+            FnfMod.LOGGER.warn("Failed to decode pixel note sheet {}: {}", png, e.toString());
+            return null;
+        }
+    }
+
+    /** Loads a pixel-UI grid sheet with nearest filtering (never smoothed). */
+    public static SparrowAtlas loadPixelGrid(Path png, boolean ends) {
+        return finish(decodePixelGrid(png, ends), false);
+    }
+
     /** Uploads a decoded atlas to a GL texture. Must run on the render thread. */
     public static SparrowAtlas finish(Decoded decoded) {
+        return finish(decoded, true);
+    }
+
+    /** Uploads a decoded atlas, using nearest filtering when {@code smooth} is false (pixel UI). */
+    public static SparrowAtlas finish(Decoded decoded, boolean smooth) {
         if (decoded == null) return null;
         NativeImage image = decoded.image;
         DynamicTexture texture = null;
@@ -155,7 +228,8 @@ public class SparrowAtlas implements AutoCloseable {
             texture = new DynamicTexture(image);
             Minecraft.getInstance().getTextureManager().register(id, texture);
             registered = true;
-            Textures.smooth(texture); // antialias custom skin art (default skin = procedural arrows, untouched)
+            // Bilinear for normal skins; nearest (default) keeps pixel-art skins crisp.
+            if (smooth) Textures.smooth(texture);
 
             SparrowAtlas atlas = new SparrowAtlas(id, image.getWidth(), image.getHeight());
             atlas.image = image;

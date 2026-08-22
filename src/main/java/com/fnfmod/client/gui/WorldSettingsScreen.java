@@ -26,8 +26,6 @@ import java.nio.file.Path;
  */
 public class WorldSettingsScreen extends Screen {
 
-    private static final int PANEL = 0xFF181820;
-
     private enum Tab {
         WORLD("World"), GAMEPLAY("Gameplay"), ASSETS("Assets");
         final String label;
@@ -168,9 +166,12 @@ public class WorldSettingsScreen extends Screen {
 
     @Override
     public void render(GuiGraphics gui, int mouseX, int mouseY, float partialTick) {
-        gui.fill(0, 0, width, height, 0xFF101014);
-        gui.fill(panelX() - 6, 24, panelX() + panelWidth() + 6, height - 34, PANEL);
-        gui.drawCenteredString(font, title, width / 2, 12, 0xFFFFFFFF);
+        BlockifiedScreenStyle.backdrop(gui, width, height);
+        BlockifiedScreenStyle.panel(gui, panelX() - 10, 6, panelWidth() + 20, height - 12);
+        BlockifiedScreenStyle.inner(gui, panelX() - 2, 54, panelWidth() + 4, height - 94);
+        gui.drawString(font, "BLOCKIFIED SETTINGS", panelX(), 13,
+                BlockifiedScreenStyle.ACCENT, false);
+        gui.drawCenteredString(font, title, width / 2, 27, BlockifiedScreenStyle.TEXT);
         super.render(gui, mouseX, mouseY, partialTick);
         String hint = switch (activeTab) {
             case WORLD -> "Controls for this bundled world.";

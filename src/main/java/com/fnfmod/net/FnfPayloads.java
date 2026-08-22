@@ -450,6 +450,26 @@ public final class FnfPayloads {
         public Type<? extends CustomPacketPayload> type() { return TYPE; }
     }
 
+    /**
+     * Controls the isolated rollback transaction used by chart-editor playtests.
+     * action: 0 = begin, 1 = restore and begin again, 2 = restore and finish.
+     */
+    public record EditorPlaytestC2S(BlockPos pos, byte action) implements CustomPacketPayload {
+        public static final byte BEGIN = 0;
+        public static final byte RESET = 1;
+        public static final byte END = 2;
+        public static final Type<EditorPlaytestC2S> TYPE = new Type<>(FnfMod.id("editor_playtest"));
+        public static final StreamCodec<FriendlyByteBuf, EditorPlaytestC2S> CODEC = StreamCodec.of(
+                (buf, value) -> {
+                    buf.writeBlockPos(value.pos());
+                    buf.writeByte(value.action());
+                },
+                buf -> new EditorPlaytestC2S(buf.readBlockPos(), buf.readByte()));
+
+        @Override
+        public Type<? extends CustomPacketPayload> type() { return TYPE; }
+    }
+
     public record NoteEventC2S(BlockPos pos, int lane, byte judgement, int combo, int score)
             implements CustomPacketPayload {
         public static final Type<NoteEventC2S> TYPE = new Type<>(FnfMod.id("note_event"));

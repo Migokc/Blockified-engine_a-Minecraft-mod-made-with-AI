@@ -73,11 +73,18 @@ public final class GameplayCamera {
     private static Vec3 rotationEventTarget = Vec3.ZERO;
     private static long rotationEventStart;
     private static String rotationEventEase = "smooth";
+    /** View-only rotation; unlike the normal layer, it never moves an orbiting camera. */
+    private static Vec3 viewRotationFrom = Vec3.ZERO;
+    private static Vec3 viewRotationCurrent = Vec3.ZERO;
+    private static Vec3 viewRotationTarget = Vec3.ZERO;
+    private static long viewRotationStart;
+    private static String viewRotationEase = "smooth";
     private static final double CAMERA_EVENT_DURATION_MS = 500.0;
     /** Follow-pos move duration; the shared default until an event supplies one. */
     private static double positionEventDurationMs = CAMERA_EVENT_DURATION_MS;
     /** Rotation duration; blank/invalid event values retain the historical 0.5s. */
     private static double rotationEventDurationMs = CAMERA_EVENT_DURATION_MS;
+    private static double viewRotationDurationMs = CAMERA_EVENT_DURATION_MS;
     private static long gameShakeEnd, hudShakeEnd;
     private static float gameShakeIntensity, hudShakeIntensity;
     // persistent event zoom, tweened to a target over a fixed short transition
@@ -188,10 +195,13 @@ public final class GameplayCamera {
         detachedCameraBaselineWorld = camPos.subtract(lastNormalWorldOffset).subtract(cameraBase);
         // Rotation is applied additively (Camera Rotation 3D semantics), so start
         // from the active rotation-event offset, not the absolute camera angles.
-        updateRotationEvent(GameplayClock.now());
-        freePitch = rotationEventCurrent.x;
-        freeYaw = rotationEventCurrent.y;
-        freeRoll = rotationEventCurrent.z;
+        long now = GameplayClock.now();
+        updateRotationEvent(now);
+        updateViewRotationEvent(now);
+        Vec3 combinedRotation = rotationEventCurrent.add(viewRotationCurrent);
+        freePitch = combinedRotation.x;
+        freeYaw = combinedRotation.y;
+        freeRoll = combinedRotation.z;
         updateEventZoom(GameplayClock.now());
         freeZoom = eventZoom;
         freeCamInitialized = true;
@@ -423,7 +433,12 @@ public final class GameplayCamera {
         // malformed/manual events stay visible and deterministic.
         if (orbitStartOffset.lengthSqr() < 1.0e-8) orbitStartOffset = forward.scale(-1);
         orbitStartRoll = roll;
-        updateRotationEvent(GameplayClock.now());
+        long now = GameplayClock.now();
+        updateRotationEvent(now);
+        updateViewRotationEvent(now);
+        // CameraMixin has already applied both layers to the captured roll.
+        // Remove the view layer here; orbitPose adds its live value exactly once.
+        orbitStartRoll -= (float) viewRotationCurrent.z;
         orbitStartRotationOffset = rotationEventCurrent;
         orbitCapturePending = false;
     }
@@ -438,6 +453,7 @@ public final class GameplayCamera {
         long now = GameplayClock.now();
         Vec3 pivot = updateOrbitFocusPivot(dt, now);
         updateRotationEvent(now);
+        updateViewRotationEvent(now);
         Vec3 rotationDelta = rotationEventCurrent.subtract(orbitStartRotationOffset);
         Vec3 orbitalOffset = orbitStartOffset;
         // Rotation 3D values are extrinsic stage rotations: X around right,
@@ -455,9 +471,11 @@ public final class GameplayCamera {
         Vec3 direction = pivot.subtract(position);
         if (direction.lengthSqr() < 1.0e-10) direction = new Vec3(0, 0, 1);
         direction = direction.normalize();
-        yaw = (float) Math.toDegrees(Math.atan2(-direction.x, direction.z));
-        pitch = (float) Math.toDegrees(-Math.asin(Math.max(-1, Math.min(1, direction.y))));
-        roll = orbitStartRoll;
+        yaw = (float) Math.toDegrees(Math.atan2(-direction.x, direction.z))
+                + (float) viewRotationCurrent.y;
+        pitch = (float) Math.toDegrees(-Math.asin(Math.max(-1, Math.min(1, direction.y))))
+                + (float) viewRotationCurrent.x;
+        roll = orbitStartRoll + (float) viewRotationCurrent.z;
         return new OrbitPose(position, yaw, pitch, roll);
     }
 
@@ -592,6 +610,9 @@ public final class GameplayCamera {
         rotationEventFrom = rotationEventCurrent = rotationEventTarget = Vec3.ZERO;
         rotationEventStart = 0;
         rotationEventDurationMs = CAMERA_EVENT_DURATION_MS;
+        viewRotationFrom = viewRotationCurrent = viewRotationTarget = Vec3.ZERO;
+        viewRotationStart = 0;
+        viewRotationDurationMs = CAMERA_EVENT_DURATION_MS;
         gameShakeEnd = hudShakeEnd = 0;
         gameShakeIntensity = hudShakeIntensity = 0;
         CameraOverlay.reset();
@@ -653,6 +674,9 @@ public final class GameplayCamera {
         rotationEventFrom = rotationEventCurrent = rotationEventTarget = Vec3.ZERO;
         rotationEventStart = 0;
         rotationEventDurationMs = CAMERA_EVENT_DURATION_MS;
+        viewRotationFrom = viewRotationCurrent = viewRotationTarget = Vec3.ZERO;
+        viewRotationStart = 0;
+        viewRotationDurationMs = CAMERA_EVENT_DURATION_MS;
         gameShakeEnd = hudShakeEnd = 0;
         gameShakeIntensity = hudShakeIntensity = 0;
         CameraOverlay.reset();
@@ -872,17 +896,32 @@ public final class GameplayCamera {
         }
     }
 
-    /** X=pitch, Y=yaw, Z=roll. Empty XYZ eases back to normal rotation. */
+    /**
+     * X=pitch, Y=yaw, Z=roll. The default layer drives normal rotation or
+     * orbital position; cameraViewLayer always changes view orientation only.
+     * Empty XYZ eases the selected layer back to zero.
+     */
     public static void rotateTo(Double pitch, Double yaw, Double roll, String easing,
-                                Double durationSeconds) {
+                                Double durationSeconds, boolean cameraViewLayer) {
         if (!active) return;
-        updateRotationEvent(GameplayClock.now());
-        rotationEventFrom = rotationEventCurrent;
-        rotationEventTarget = new Vec3(finite(pitch), finite(yaw), finite(roll));
-        rotationEventEase = normalizeCameraEase(easing);
-        rotationEventDurationMs = durationSeconds != null && durationSeconds > 0
-                ? durationSeconds * 1000.0 : CAMERA_EVENT_DURATION_MS;
-        rotationEventStart = GameplayClock.now();
+        long now = GameplayClock.now();
+        if (cameraViewLayer) {
+            updateViewRotationEvent(now);
+            viewRotationFrom = viewRotationCurrent;
+            viewRotationTarget = new Vec3(finite(pitch), finite(yaw), finite(roll));
+            viewRotationEase = normalizeCameraEase(easing);
+            viewRotationDurationMs = durationSeconds != null && durationSeconds > 0
+                    ? durationSeconds * 1000.0 : CAMERA_EVENT_DURATION_MS;
+            viewRotationStart = now;
+        } else {
+            updateRotationEvent(now);
+            rotationEventFrom = rotationEventCurrent;
+            rotationEventTarget = new Vec3(finite(pitch), finite(yaw), finite(roll));
+            rotationEventEase = normalizeCameraEase(easing);
+            rotationEventDurationMs = durationSeconds != null && durationSeconds > 0
+                    ? durationSeconds * 1000.0 : CAMERA_EVENT_DURATION_MS;
+            rotationEventStart = now;
+        }
     }
 
     /** Additive pitch/yaw/roll applied by CameraMixin after vanilla setup. */
@@ -891,8 +930,10 @@ public final class GameplayCamera {
         if (freeCamEngaged && freeCamInitialized) {
             return new Vec3(freePitch, freeYaw, freeRoll);
         }
-        updateRotationEvent(GameplayClock.now());
-        return rotationEventCurrent;
+        long now = GameplayClock.now();
+        updateRotationEvent(now);
+        updateViewRotationEvent(now);
+        return rotationEventCurrent.add(viewRotationCurrent);
     }
 
     private static double finite(Double value) {
@@ -923,6 +964,18 @@ public final class GameplayCamera {
         } else {
             rotationEventCurrent = rotationEventFrom.lerp(rotationEventTarget,
                     easeF(rotationEventEase, t));
+        }
+    }
+
+    private static void updateViewRotationEvent(long nowMs) {
+        if (viewRotationStart == 0) return;
+        double t = (nowMs - viewRotationStart) / viewRotationDurationMs;
+        if (t >= 1) {
+            viewRotationCurrent = viewRotationTarget;
+            viewRotationStart = 0;
+        } else {
+            viewRotationCurrent = viewRotationFrom.lerp(viewRotationTarget,
+                    easeF(viewRotationEase, t));
         }
     }
 

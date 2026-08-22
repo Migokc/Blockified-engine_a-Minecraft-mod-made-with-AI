@@ -143,6 +143,7 @@ public final class MasterVolumeOverlay {
         double current = mc.options.getSoundSourceVolume(SoundSource.MASTER);
         if (Math.abs(current - volume) < 0.000001) return false;
         mc.options.getSoundSourceOptionInstance(SoundSource.MASTER).set(volume);
+        com.fnfmod.client.audio.PsychSoundPlayer.refreshMasterVolumes();
         // Dragging remains smooth, but feedback follows the number shown in the
         // overlay instead of every sub-percent mouse movement.
         if (Math.round(current * 100) != Math.round(volume * 100)) {

@@ -30,6 +30,8 @@ public final class MachineMenuScreen extends Screen implements MachineMenuRuntim
     private MachineMenuRuntime runtime;
     private String loadError;
     private boolean closing;
+    /** Direct settings navigation suspends this screen without destroying shared Lua audio. */
+    private boolean preserveRuntimeForSettings;
     // Silent preload gate: while menuLoading the screen renders nothing and input
     // stays blocked. Heavy asset decoding runs on a worker thread; the cheap GL
     // upload finalizes on the render thread afterwards.
@@ -53,6 +55,8 @@ public final class MachineMenuScreen extends Screen implements MachineMenuRuntim
     @Override
     protected void init() {
         closing = false;
+        preserveRuntimeForSettings = false;
+        preloadCancelled.set(false);
         loadError = null;
         MachineDefinition definition = MachineLibrary.find(profileId).orElse(null);
         if (compatibilityError != null) {
@@ -228,7 +232,15 @@ public final class MachineMenuScreen extends Screen implements MachineMenuRuntim
 
     @Override
     public void openSettings() {
-        if (minecraft != null) minecraft.setScreen(new FnfSettingsScreen(this));
+        if (minecraft != null) {
+            preserveRuntimeForSettings = true;
+            minecraft.setScreen(new FnfSettingsScreen(this));
+        }
+    }
+
+    /** Note Settings calls this once it starts chart-owned preview audio. */
+    public void stopSharedAudio() {
+        if (runtime != null) runtime.stopSharedAudio();
     }
 
     @Override
@@ -285,6 +297,11 @@ public final class MachineMenuScreen extends Screen implements MachineMenuRuntim
 
     @Override
     public void removed() {
+        if (preserveRuntimeForSettings) {
+            preserveRuntimeForSettings = false;
+            super.removed();
+            return;
+        }
         closing = true;
         // Esc/close during loading cancels the background decode and frees anything
         // it decoded that never got uploaded.

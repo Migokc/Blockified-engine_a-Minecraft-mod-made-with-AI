@@ -59,6 +59,9 @@ public final class FnfClient {
                 com.fnfmod.client.render.IconLibrary.rescan();
                 ClientOptions.load();
                 CharacterAnimations.init();
+                // URL textures are temporary. This also removes remnants left by
+                // a prior crash before the player opens another world.
+                com.fnfmod.client.render.BbsUrlCacheControl.initialize();
             });
         }
 
@@ -85,6 +88,9 @@ public final class FnfClient {
 
     @EventBusSubscriber(modid = FnfMod.MODID, value = Dist.CLIENT)
     public static final class GameBus {
+        private static int bbsFormRecoveryDelay;
+        private static int bbsFormRecoveryAttempts;
+
         /** Overlay a bundled mod world's forced settings once the world scope is bound. */
         @SubscribeEvent
         public static void onClientLogin(ClientPlayerNetworkEvent.LoggingIn event) {
@@ -108,10 +114,17 @@ public final class FnfClient {
             }
             // The skin/colors may have changed; rebuild so the effective values render.
             com.fnfmod.client.render.NoteStyle.reload();
+            // Wait briefly for BBS's normal login morph synchronization, then
+            // replace a temporary form that survived an interrupted prior run.
+            bbsFormRecoveryDelay = 20;
+            bbsFormRecoveryAttempts = 5;
         }
 
         @SubscribeEvent
         public static void onClientLogout(ClientPlayerNetworkEvent.LoggingOut event) {
+            CharacterAnimations.stopPreview();
+            bbsFormRecoveryDelay = 0;
+            bbsFormRecoveryAttempts = 0;
             ClientSession.reset();
             ClientOptions.applyWorldOverrides(null);
             com.fnfmod.client.render.MachineHitboxPreview.clear();
@@ -124,6 +137,7 @@ public final class FnfClient {
             SongLibrary.rescan();
             MachineLibrary.rescan();
             IconLibrary.rescan();
+            com.fnfmod.client.render.BbsUrlCacheControl.cleanAfterWorld();
         }
 
         /** Add a "Mod Worlds" button to the singleplayer world-selection screen. */
@@ -175,6 +189,7 @@ public final class FnfClient {
         public static void onGuiRender(RenderGuiEvent.Post event) {
             Minecraft mc = Minecraft.getInstance();
             if (mc.screen == null) {
+                com.fnfmod.client.render.MachineHitboxPreview.renderHud(event.getGuiGraphics());
                 MasterVolumeOverlay.render(event.getGuiGraphics(), Integer.MIN_VALUE, Integer.MIN_VALUE, null);
             }
         }
@@ -257,6 +272,9 @@ public final class FnfClient {
         @SubscribeEvent
         public static void onRegisterClientCommands(RegisterClientCommandsEvent event) {
             event.getDispatcher().register(literal("fnf")
+                    // Client commands must follow the same authority rule as
+                    // vanilla cheat commands: cheats in singleplayer, OP on a server.
+                    .requires(source -> source.hasPermission(2))
                     .then(literal("editor")
                             .executes(ctx -> {
                                 openEditor(null);
@@ -344,6 +362,17 @@ public final class FnfClient {
         @SubscribeEvent
         public static void onClientTick(net.neoforged.neoforge.client.event.ClientTickEvent.Post event) {
             com.fnfmod.client.world.WorldImportCutscene.tick();
+            if (bbsFormRecoveryDelay > 0 && --bbsFormRecoveryDelay == 0) {
+                Minecraft minecraft = Minecraft.getInstance();
+                if (minecraft.player != null
+                        && !CharacterAnimations.recoverTemporaryForm(minecraft.player)) {
+                    // The player/morph can become available a few ticks after the
+                    // connection event. Retry briefly without polling disk forever.
+                    if (--bbsFormRecoveryAttempts > 0) bbsFormRecoveryDelay = 20;
+                } else {
+                    bbsFormRecoveryAttempts = 0;
+                }
+            }
         }
 
         /** Freeze player movement while the world-import cutscene is running. */

@@ -12,6 +12,8 @@ import com.fnfmod.machine.MachineDefinition;
 import com.fnfmod.machine.MachineLibrary;
 import com.fnfmod.net.FnfPayloads;
 import com.fnfmod.song.SongLibrary;
+import com.fnfmod.song.WeekDefinition;
+import com.fnfmod.song.WeekLibrary;
 import com.fnfmod.world.ModContentScope;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
@@ -146,6 +148,9 @@ public final class MachineMenuRuntime implements AutoCloseable {
     private LuaTable cursor;
     /** Widget ids currently hovered, so onHover/onHoverExit fire once per transition. */
     private final java.util.Set<String> hoveredWidgets = new java.util.HashSet<>();
+    /** Extra Lua pages live in machine/screens/&lt;name&gt;.lua and share this runtime/audio player. */
+    private String currentScreen = "main";
+    private String pendingScreen;
 
     public MachineMenuRuntime(MachineDefinition definition, String snbt,
                               List<FnfPayloads.SongInfo> songs, Host host) {
@@ -191,6 +196,13 @@ public final class MachineMenuRuntime implements AutoCloseable {
 
     public String dataSnbt() {
         return MachineLuaData.toNbt(machineData).toString();
+    }
+
+    /** Stops page-shared audio when another screen takes ownership of song preview audio. */
+    public void stopSharedAudio() {
+        if (soundPlayer == null) return;
+        soundPlayer.close();
+        soundPlayer = null;
     }
 
     private void loadScript() {
@@ -606,6 +618,29 @@ public final class MachineMenuRuntime implements AutoCloseable {
             String id = args.arg(offset(args, machine)).optjstring("");
             return LuaValue.valueOf(findSong(id).isPresent());
         }));
+        machine.set("getWeeks", function(args -> weeksTable()));
+        machine.set("getWeek", function(args -> {
+            String id = args.arg(offset(args, machine)).optjstring("");
+            WeekDefinition week = WeekLibrary.find(id);
+            return week == null ? LuaValue.NIL : weekTable(week);
+        }));
+        machine.set("hasWeek", function(args -> {
+            String id = args.arg(offset(args, machine)).optjstring("");
+            return LuaValue.valueOf(WeekLibrary.find(id) != null);
+        }));
+        machine.set("getScreen", function(args -> LuaValue.valueOf(currentScreen)));
+        machine.set("getScreens", function(args -> {
+            LuaTable table = new LuaTable();
+            List<String> screens = availableScreens();
+            for (int i = 0; i < screens.size(); i++) table.set(i + 1, screens.get(i));
+            return table;
+        }));
+        machine.set("openScreen", function(args -> {
+            String name = args.arg(offset(args, machine)).optjstring("").trim();
+            if (screenScript(name) == null) return LuaValue.FALSE;
+            pendingScreen = canonicalScreen(name);
+            return LuaValue.TRUE;
+        }));
         machine.set("setSongExitTarget", function(args -> {
             int at = offset(args, machine);
             songExitTarget = parseSongExitTarget(args.arg(at), songExitTarget);
@@ -693,6 +728,44 @@ public final class MachineMenuRuntime implements AutoCloseable {
             difficulties.set(i + 1, song.difficulties().get(i));
         }
         table.set("difficulties", difficulties);
+        return table;
+    }
+
+    private LuaTable weeksTable() {
+        LuaTable table = new LuaTable();
+        List<WeekDefinition> values = WeekLibrary.all();
+        for (int i = 0; i < values.size(); i++) table.set(i + 1, weekTable(values.get(i)));
+        return table;
+    }
+
+    private LuaTable weekTable(WeekDefinition week) {
+        LuaTable table = new LuaTable();
+        table.set("id", week.id());
+        table.set("name", week.displayName());
+        table.set("storyName", week.storyName());
+        table.set("weekName", week.weekName());
+        table.set("background", week.background());
+        table.set("weekBefore", week.weekBefore());
+        table.set("startUnlocked", LuaValue.valueOf(week.startUnlocked()));
+        table.set("hiddenUntilUnlocked", LuaValue.valueOf(week.hiddenUntilUnlocked()));
+        table.set("hideStoryMode", LuaValue.valueOf(week.hideStoryMode()));
+        table.set("hideFreeplay", LuaValue.valueOf(week.hideFreeplay()));
+        table.set("image", week.imageFile() == null ? LuaValue.NIL : LuaValue.valueOf(week.imageFile().toString()));
+        LuaTable difficulties = new LuaTable();
+        for (int i = 0; i < week.difficulties().size(); i++) difficulties.set(i + 1, week.difficulties().get(i));
+        table.set("difficulties", difficulties);
+        LuaTable characters = new LuaTable();
+        for (int i = 0; i < week.characters().size(); i++) characters.set(i + 1, week.characters().get(i));
+        table.set("characters", characters);
+        LuaTable weekSongs = new LuaTable();
+        for (int i = 0; i < week.songs().size(); i++) {
+            WeekDefinition.Song song = week.songs().get(i);
+            LuaTable value = new LuaTable();
+            value.set("id", song.id()); value.set("icon", song.icon()); value.set("color", song.color());
+            value.set("playable", LuaValue.valueOf(findSong(song.id()).isPresent()));
+            weekSongs.set(i + 1, value);
+        }
+        table.set("songs", weekSongs);
         return table;
     }
 
@@ -851,6 +924,68 @@ public final class MachineMenuRuntime implements AutoCloseable {
     public void tick() {
         if (soundPlayer != null) soundPlayer.update();
         callGlobal("onUpdate", LuaValue.valueOf(0.05));
+        if (pendingScreen != null && error == null) switchScreen();
+    }
+
+    private void switchScreen() {
+        String next = pendingScreen;
+        pendingScreen = null;
+        Path script = screenScript(next);
+        if (script == null || next.equals(currentScreen)) return;
+        callGlobal("onClose");
+        if (error != null) return;
+        widgets.clear();
+        animatedStates.clear();
+        hoveredWidgets.clear();
+        tweens.clear();
+        timers.clear();
+        nextWidgetOrder = 0;
+        for (String callback : List.of("onOpen", "onClose", "onUpdate", "onTimerCompleted",
+                "onTweenCompleted", "onSoundFinished", "onMouseDown", "onMouseUp", "onClick",
+                "onHover", "onHoverExit")) globals.set(callback, LuaValue.NIL);
+        try {
+            scriptSource = Files.readString(script);
+            budget.begin();
+            globals.load(scriptSource, script.toString()).call();
+            budget.end();
+            currentScreen = next;
+            callGlobal("onOpen");
+        } catch (Throwable throwable) {
+            budget.end();
+            fail(throwable);
+        }
+    }
+
+    private List<String> availableScreens() {
+        List<String> result = new ArrayList<>();
+        result.add("main");
+        if (definition.root() == null) return result;
+        Path directory = definition.root().resolve("screens").normalize();
+        if (!Files.isDirectory(directory) || !ModContentScope.allowsContentPath(directory)) return result;
+        try (var files = Files.list(directory)) {
+            files.filter(Files::isRegularFile).map(path -> path.getFileName().toString())
+                    .filter(name -> name.toLowerCase(Locale.ROOT).endsWith(".lua"))
+                    .map(name -> name.substring(0, name.length() - 4))
+                    .sorted().forEach(result::add);
+        } catch (Exception ignored) {}
+        return result;
+    }
+
+    private Path screenScript(String name) {
+        String id = canonicalScreen(name);
+        if (id.equals("main")) return definition.menuScript();
+        if (definition.root() == null || !id.matches("[a-z0-9_.-]+")) return null;
+        Path root = definition.root().toAbsolutePath().normalize();
+        Path file = root.resolve("screens").resolve(id + ".lua").normalize();
+        if (!file.startsWith(root) || !Files.isRegularFile(file) || !ModContentScope.allowsContentPath(file)) return null;
+        return file;
+    }
+
+    private static String canonicalScreen(String name) {
+        if (name == null || name.isBlank()) return "main";
+        String value = name.trim().toLowerCase(Locale.ROOT);
+        if (value.endsWith(".lua")) value = value.substring(0, value.length() - 4);
+        return value;
     }
 
     private void advanceTweens() {
@@ -1366,6 +1501,24 @@ public final class MachineMenuRuntime implements AutoCloseable {
             }
             return LuaValue.NIL;
         }));
+        globals.set("soundExists", function(args -> LuaValue.valueOf(soundPlayer != null
+                && soundPlayer.exists(args.arg(1).optjstring("")))));
+        globals.set("getSoundVolume", function(args -> LuaValue.valueOf(soundPlayer == null ? 0
+                : soundPlayer.volume(args.arg(1).optjstring("")))));
+        globals.set("setSoundPitch", function(args -> {
+            if (soundPlayer != null) soundPlayer.setPitch(args.arg(1).optjstring(""),
+                    (float) args.arg(2).optdouble(1));
+            return LuaValue.NIL;
+        }));
+        globals.set("getSoundPitch", function(args -> LuaValue.valueOf(soundPlayer == null ? 1
+                : soundPlayer.pitch(args.arg(1).optjstring("")))));
+        globals.set("setSoundTime", function(args -> {
+            if (soundPlayer != null) soundPlayer.setTimeMs(args.arg(1).optjstring(""),
+                    (float) args.arg(2).optdouble(0));
+            return LuaValue.NIL;
+        }));
+        globals.set("getSoundTime", function(args -> LuaValue.valueOf(soundPlayer == null ? 0
+                : soundPlayer.timeMs(args.arg(1).optjstring("")))));
         globals.set("precacheSound", function(args -> {
             String name = args.arg(1).optjstring("");
             // Before the menu opens, defer to the preload gate so the decode happens
@@ -1729,8 +1882,7 @@ public final class MachineMenuRuntime implements AutoCloseable {
         timers.clear();
         fontLoader.close();
         if (soundPlayer != null) {
-            soundPlayer.close();
-            soundPlayer = null;
+            stopSharedAudio();
         }
     }
 

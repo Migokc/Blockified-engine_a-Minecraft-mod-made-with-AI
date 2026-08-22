@@ -26,6 +26,11 @@ public final class ModDetailsScreen extends Screen {
 
     @Override
     public void render(GuiGraphics gui, int mouseX, int mouseY, float partialTick) {
+        int panelWidth = Math.min(500, width - 20);
+        int panelX = (width - panelWidth) / 2;
+        BlockifiedScreenStyle.backdrop(gui, width, height);
+        BlockifiedScreenStyle.panel(gui, panelX, 6, panelWidth, height - 12);
+        BlockifiedScreenStyle.inner(gui, panelX + 12, 28, panelWidth - 24, height - 70);
         super.render(gui, mouseX, mouseY, partialTick);
         int iconSize = Math.min(96, Math.max(48, height / 4));
         int iconY = 34;
@@ -39,7 +44,8 @@ public final class ModDetailsScreen extends Screen {
                     iconY + iconSize / 2 - 4, 0xFFAAAAAA);
         }
         int textY = iconY + iconSize + 14;
-        gui.drawCenteredString(font, pack.name(), width / 2, textY, 0xFFFFFFFF);
+        gui.drawCenteredString(font, pack.name(), width / 2, textY,
+                BlockifiedScreenStyle.ACCENT);
         textY += 20;
         int wrapWidth = Math.min(420, Math.max(140, width - 40));
         for (var line : font.split(Component.literal(pack.description()), wrapWidth)) {
@@ -60,4 +66,7 @@ public final class ModDetailsScreen extends Screen {
 
     @Override
     public boolean isPauseScreen() { return false; }
+
+    @Override
+    public void renderBackground(GuiGraphics gui, int mouseX, int mouseY, float partialTick) {}
 }

@@ -49,7 +49,11 @@ public final class MachineMenuService {
     }
 
     public static void handleDirectPlay(ServerPlayer player, FnfPayloads.MachineDirectPlayC2S payload) {
-        if (machine(player, payload.pos()) == null || !customMenusAllowed(player)) return;
+        // Direct play is also used by the built-in Story Mode playlist between
+        // songs. It still requires a reachable real/anchored machine and every
+        // song/difficulty is validated below; only executable custom menus remain
+        // restricted to integrated mod worlds.
+        if (machine(player, payload.pos()) == null) return;
         SongEntry song = SongLibrary.get(payload.songId());
         if (song == null) {
             player.displayClientMessage(net.minecraft.network.chat.Component.literal(

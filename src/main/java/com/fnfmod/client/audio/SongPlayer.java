@@ -33,6 +33,7 @@ public class SongPlayer {
         int buffer;
         int source;
         float volume = 1.0f;
+        float appliedGain = Float.NaN;
         double durationMs;
     }
 
@@ -297,7 +298,10 @@ public class SongPlayer {
         float global = options.getSoundSourceVolume(SoundSource.MASTER)
                 * options.getSoundSourceVolume(SoundSource.RECORDS);
         for (Track t : tracks) {
-            AL10.alSourcef(t.source, AL10.AL_GAIN, Math.max(0f, Math.min(1f, t.volume * global)));
+            float gain = Math.max(0f, Math.min(1f, t.volume * global));
+            if (Float.compare(gain, t.appliedGain) == 0) continue;
+            AL10.alSourcef(t.source, AL10.AL_GAIN, gain);
+            t.appliedGain = gain;
         }
     }
 

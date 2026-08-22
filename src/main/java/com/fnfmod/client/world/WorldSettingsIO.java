@@ -33,8 +33,8 @@ public final class WorldSettingsIO {
     public static final List<String> GAMEPLAY_KEYS = List.of(
             "downscroll", "middlescroll", "ghostTapping", "botplay",
             "scrollSpeedMult", "constantScrollSpeed", "hudStyle",
-            "noteSkin", "splashSkin", "hitsound", "hitsoundVolume",
-            "noteColorsEnabled", "noteColorBase", "noteColorOutline",
+            "noteSkin", "splashSkin", "holdSplashSkin", "hitsound", "hitsoundVolume",
+            "noteColorBase", "noteColorHighlight", "noteColorOutline",
             "playAs", "animationSet", "opponentAnimationSet",
             "playerIcon", "botIcon", "ratingX", "ratingY");
 

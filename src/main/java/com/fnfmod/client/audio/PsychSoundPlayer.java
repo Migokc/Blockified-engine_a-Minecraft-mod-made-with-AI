@@ -24,10 +24,14 @@ import java.util.List;
 import java.util.Map;
 import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.Set;
+import java.util.WeakHashMap;
 
 /** Per-song OpenAL player for Psych Lua and chart-event sounds. */
 public final class PsychSoundPlayer implements AutoCloseable {
     private static final int UNTAGGED_POOL = 16;
+    private static final Set<PsychSoundPlayer> LIVE_PLAYERS =
+            java.util.Collections.newSetFromMap(new WeakHashMap<>());
 
     private final Function<String, Path> resolver;
     private final Consumer<String> finishedCallback;
@@ -37,6 +41,8 @@ public final class PsychSoundPlayer implements AutoCloseable {
     private final Map<Path, Pcm> pendingPcm = new HashMap<>();
     private final Map<String, Integer> taggedSources = new LinkedHashMap<>();
     private final List<Integer> untaggedSources = new ArrayList<>();
+    /** Requested (pre-master) gain, retained so live settings changes affect playing audio. */
+    private final Map<Integer, Float> logicalVolumes = new HashMap<>();
     private final Map<String, Fade> fades = new LinkedHashMap<>();
     private int nextUntagged;
 
@@ -52,6 +58,20 @@ public final class PsychSoundPlayer implements AutoCloseable {
     public PsychSoundPlayer(Function<String, Path> resolver, Consumer<String> finishedCallback) {
         this.resolver = resolver;
         this.finishedCallback = finishedCallback;
+        synchronized (LIVE_PLAYERS) { LIVE_PLAYERS.add(this); }
+    }
+
+    /** Immediately applies a changed Minecraft master volume to all active Lua audio. */
+    public static void refreshMasterVolumes() {
+        List<PsychSoundPlayer> players;
+        synchronized (LIVE_PLAYERS) { players = List.copyOf(LIVE_PLAYERS); }
+        for (PsychSoundPlayer player : players) player.applyMasterVolume();
+    }
+
+    private void applyMasterVolume() {
+        for (var volume : new ArrayList<>(logicalVolumes.entrySet())) {
+            try { applyVolume(volume.getKey(), volume.getValue()); } catch (Throwable ignored) {}
+        }
     }
 
     public boolean precache(String name) {
@@ -92,7 +112,7 @@ public final class PsychSoundPlayer implements AutoCloseable {
             AL10.alSourcei(source, AL10.AL_BUFFER, buffer);
             AL10.alSourcei(source, AL10.AL_SOURCE_RELATIVE, AL10.AL_TRUE);
             AL10.alSourcei(source, AL10.AL_LOOPING, loop ? AL10.AL_TRUE : AL10.AL_FALSE);
-            setVolume(source, volume);
+            setSourceVolume(source, volume);
             AL10.alSourcePlay(source);
             return true;
         } catch (Throwable error) {
@@ -139,6 +159,9 @@ public final class PsychSoundPlayer implements AutoCloseable {
 
     public void update() {
         updateFades();
+        // The Minecraft master slider may change while a shared machine-menu track
+        // keeps playing across Lua screens. Re-apply it without losing script gain.
+        applyMasterVolume();
         List<String> finished = new ArrayList<>();
         var iterator = taggedSources.entrySet().iterator();
         while (iterator.hasNext()) {
@@ -148,6 +171,7 @@ public final class PsychSoundPlayer implements AutoCloseable {
                     int source = entry.getValue();
                     String tag = entry.getKey();
                     iterator.remove();
+                    logicalVolumes.remove(source);
                     AL10.alDeleteSources(source);
                     finished.add(tag);
                 }
@@ -161,14 +185,34 @@ public final class PsychSoundPlayer implements AutoCloseable {
     public void pause(String tag) { sourceAction(tag, AL10::alSourcePause, false); }
     public void resume(String tag) { sourceAction(tag, AL10::alSourcePlay, false); }
 
+    public void pauseAll() {
+        for (int source : new ArrayList<>(taggedSources.values())) {
+            try { AL10.alSourcePause(source); } catch (Throwable ignored) {}
+        }
+        // Fire-and-forget effects have no meaningful state at a seek target.
+        for (int source : new ArrayList<>(untaggedSources)) {
+            try { AL10.alSourceStop(source); } catch (Throwable ignored) {}
+        }
+    }
+
+    public void resumeAll() {
+        for (int source : new ArrayList<>(taggedSources.values())) {
+            try {
+                if (AL10.alGetSourcei(source, AL10.AL_SOURCE_STATE) == AL10.AL_PAUSED) {
+                    AL10.alSourcePlay(source);
+                }
+            } catch (Throwable ignored) {}
+        }
+    }
+
     public void setVolume(String tag, float volume) {
         Integer source = taggedSources.get(tag);
-        if (source != null) setVolume(source, volume);
+        if (source != null) setSourceVolume(source, volume);
     }
 
     public float volume(String tag) {
         Integer source = taggedSources.get(tag);
-        return source == null ? 0 : AL10.alGetSourcef(source, AL10.AL_GAIN);
+        return source == null ? 0 : logicalVolumes.getOrDefault(source, 1f);
     }
 
     public void setPitch(String tag, float pitch) {
@@ -196,6 +240,7 @@ public final class PsychSoundPlayer implements AutoCloseable {
             Integer old = taggedSources.remove(tag);
             if (old != null) {
                 AL10.alSourceStop(old);
+                logicalVolumes.remove(old);
                 AL10.alDeleteSources(old);
             }
             int source = AL10.alGenSources();
@@ -216,11 +261,18 @@ public final class PsychSoundPlayer implements AutoCloseable {
         try { action.accept(source); } catch (Throwable ignored) {}
         if (remove) {
             taggedSources.remove(tag);
+            logicalVolumes.remove(source);
             try { AL10.alDeleteSources(source); } catch (Throwable ignored) {}
         }
     }
 
-    private static void setVolume(int source, float volume) {
+    private void setSourceVolume(int source, float volume) {
+        float safe = Math.max(0, Math.min(1, volume));
+        logicalVolumes.put(source, safe);
+        applyVolume(source, safe);
+    }
+
+    private static void applyVolume(int source, float volume) {
         float master = Minecraft.getInstance().options.getSoundSourceVolume(SoundSource.MASTER);
         AL10.alSourcef(source, AL10.AL_GAIN, Math.max(0, Math.min(1, volume * master)));
     }
@@ -272,6 +324,7 @@ public final class PsychSoundPlayer implements AutoCloseable {
 
     @Override
     public synchronized void close() {
+        synchronized (LIVE_PLAYERS) { LIVE_PLAYERS.remove(this); }
         for (int source : taggedSources.values()) {
             try { AL10.alSourceStop(source); AL10.alDeleteSources(source); } catch (Throwable ignored) {}
         }
@@ -284,6 +337,7 @@ public final class PsychSoundPlayer implements AutoCloseable {
         for (Pcm data : pendingPcm.values()) {
             try { org.lwjgl.system.libc.LibCStdlib.free(data.pcm()); } catch (Throwable ignored) {}
         }
-        taggedSources.clear(); untaggedSources.clear(); buffers.clear(); pendingPcm.clear(); fades.clear();
+        taggedSources.clear(); untaggedSources.clear(); logicalVolumes.clear();
+        buffers.clear(); pendingPcm.clear(); fades.clear();
     }
 }

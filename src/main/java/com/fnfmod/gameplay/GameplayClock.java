@@ -18,13 +18,15 @@ public final class GameplayClock {
 
     private static long pausedAt = -1;   // wall-clock time the pause began, or -1 while running
     private static long pausedTotal;     // accumulated paused milliseconds
+    /** Extra virtual time consumed by an editor playtest fast-forward. */
+    private static long advancedTotal;
 
     private GameplayClock() {}
 
     /** Milliseconds elapsed for gameplay, excluding time spent paused. */
     public static long now() {
         long reference = pausedAt >= 0 ? pausedAt : System.currentTimeMillis();
-        return reference - pausedTotal;
+        return reference - pausedTotal + advancedTotal;
     }
 
     /** Called each frame with whether the song is currently advancing. */
@@ -48,5 +50,11 @@ public final class GameplayClock {
     public static void reset() {
         pausedAt = -1;
         pausedTotal = 0;
+        advancedTotal = 0;
+    }
+
+    /** Advances gameplay timers/tweens without waiting in real time. Editor playtests only. */
+    public static void advance(long milliseconds) {
+        if (milliseconds > 0) advancedTotal += milliseconds;
     }
 }

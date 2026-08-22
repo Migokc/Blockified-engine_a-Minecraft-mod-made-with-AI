@@ -429,10 +429,19 @@ public final class ExtraCharacterRoster implements AutoCloseable {
     public void update() { update(150); }
 
     /** Advances active tweens and 2D-character animations; call once per client frame. */
-    public void update(double stepMs) {
+    public void update(double stepMs) { update(stepMs, 1.0, Double.NaN); }
+
+    /** Playback-scaled variant used while an editor playtest fast-forwards. */
+    public void update(double stepMs, double playbackRate) {
+        update(stepMs, playbackRate, Double.NaN);
+    }
+
+    /** Explicit elapsed time lets rapid editor simulation advance without wall-clock waiting. */
+    public void update(double stepMs, double playbackRate, double simulatedSeconds) {
         if (entries.isEmpty()) return;
         long nowNano = System.nanoTime();
-        double dt = lastUpdateNano == 0 ? 0 : Math.min(0.1, (nowNano - lastUpdateNano) / 1.0e9);
+        double dt = Double.isFinite(simulatedSeconds) ? Math.max(0, simulatedSeconds)
+                : lastUpdateNano == 0 ? 0 : Math.min(0.1, (nowNano - lastUpdateNano) / 1.0e9);
         lastUpdateNano = nowNano;
         long now = GameplayClock.now();
         for (Entry entry : entries.values()) {
@@ -456,7 +465,7 @@ public final class ExtraCharacterRoster implements AutoCloseable {
             } else if (entry.spriteEntity != null) {
                 update2DTransform(entry, false);
             }
-            if (entry.world2d != null) entry.world2d.update(dt, stepMs, 1);
+            if (entry.world2d != null) entry.world2d.update(dt, stepMs, playbackRate);
         }
     }
 

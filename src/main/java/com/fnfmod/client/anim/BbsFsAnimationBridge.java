@@ -1,6 +1,11 @@
 package com.fnfmod.client.anim;
 
 import com.fnfmod.FnfMod;
+import com.fnfmod.song.SongLibrary;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+import com.mojang.authlib.GameProfile;
+import com.mojang.authlib.yggdrasil.ProfileResult;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.AbstractClientPlayer;
 import net.minecraft.client.resources.PlayerSkin;
@@ -10,6 +15,14 @@ import net.minecraft.world.entity.player.Player;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.lang.reflect.Field;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.time.Duration;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -18,6 +31,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Reflection boundary between native NeoForge/Mojmap code and BBS FS running
@@ -30,13 +45,18 @@ final class BbsFsAnimationBridge {
     private record OriginalForm(Object form) {}
 
     /** Texture/model override for one of BBS's built-in Steve/Alex form families. */
-    record SkinSource(Player player, java.nio.file.Path file, boolean slim) {
+    record SkinSource(Player player, java.nio.file.Path file, boolean slim, String account) {
         static SkinSource player(Player player) {
-            return player == null ? null : new SkinSource(player, null, false);
+            return player == null ? null : new SkinSource(player, null, false, "");
         }
 
         static SkinSource file(java.nio.file.Path file, boolean slim) {
-            return file == null ? null : new SkinSource(null, file.toAbsolutePath().normalize(), slim);
+            return file == null ? null : new SkinSource(null, file.toAbsolutePath().normalize(), slim, "");
+        }
+
+        static SkinSource account(String account) {
+            String clean = account == null ? "" : account.trim();
+            return clean.isBlank() ? null : new SkinSource(null, null, false, clean);
         }
     }
 
@@ -110,6 +130,11 @@ final class BbsFsAnimationBridge {
     private static final java.util.Set<String> REGISTERED_PACKS = new java.util.HashSet<>();
     private static final Map<String, String> CUSTOM_SKIN_PACKS = new HashMap<>();
     private static final Map<String, Object> BUNDLED_FORMS = new HashMap<>();
+    /** Last copy of each bundled editor form inserted into BBS's Recent category. */
+    private static final Map<String, Object> RECENT_IMPORTED_FORMS = new HashMap<>();
+    /** Official-account lookups stay in memory; Minecraft owns its normal texture cache. */
+    private static final Map<String, CompletableFuture<PlayerSkin>> ACCOUNT_SKINS =
+            new ConcurrentHashMap<>();
     /** Model ids referenced by each bundled form, so a cache hit can still ensure they are loaded. */
     private static final Map<String, java.util.List<String>> BUNDLED_MODEL_IDS = new HashMap<>();
     private static boolean bundlingAvailable;
@@ -329,7 +354,10 @@ final class BbsFsAnimationBridge {
                 Object original = entry.getValue().form();
                 Object restored = original == null ? null : formCopy.invoke(null, original);
                 morphSetForm.invoke(morph, restored);
-                if (isLocalPlayer(player)) sendPlayerForm.invoke(null, restored);
+                if (isLocalPlayer(player)) {
+                    sendPlayerForm.invoke(null, restored);
+                    clearFormRecovery(player);
+                }
             } catch (Throwable error) {
                 warnOnce("Failed to restore a BBS FS form after gameplay", error);
             }
@@ -355,7 +383,10 @@ final class BbsFsAnimationBridge {
             Object original = saved.form();
             Object restored = original == null ? null : formCopy.invoke(null, original);
             morphSetForm.invoke(morph, restored);
-            if (isLocalPlayer(player)) sendPlayerForm.invoke(null, restored);
+            if (isLocalPlayer(player)) {
+                sendPlayerForm.invoke(null, restored);
+                clearFormRecovery(player);
+            }
         } catch (Throwable error) {
             warnOnce("Failed to restore one BBS FS performer", error);
         }
@@ -376,6 +407,7 @@ final class BbsFsAnimationBridge {
         if (!ORIGINAL_FORMS.containsKey(player.getUUID())) {
             Object current = morphGetForm.invoke(morph);
             Object original = current == null ? null : formCopy.invoke(null, current);
+            if (isLocalPlayer(player)) writeFormRecovery(player, original);
             ORIGINAL_FORMS.put(player.getUUID(), new OriginalForm(original));
         }
 
@@ -386,6 +418,114 @@ final class BbsFsAnimationBridge {
         // A newly applied form resets to default lighting; re-force it if requested.
         applyLighting(player, copy);
         if (isLocalPlayer(player)) sendPlayerForm.invoke(null, copy);
+    }
+
+    /**
+     * Restores a local BBS form left in player NBT when Minecraft closed before
+     * Blockified's normal song/editor teardown ran. The backup is scoped to the
+     * player and current world/server, and is removed only after the restored form
+     * has been applied locally and sent back to BBS's server handler.
+     */
+    static synchronized boolean recoverTemporaryForm(Player player) {
+        if (!isAvailable() || player == null || !isLocalPlayer(player)
+                || formFromData == null || dataFromString == null) return false;
+        Path file = formRecoveryFile(player);
+        if (!Files.isRegularFile(file)) return true;
+        try {
+            JsonObject json = JsonParser.parseString(Files.readString(file)).getAsJsonObject();
+            if (!player.getUUID().toString().equals(json.has("player")
+                    ? json.get("player").getAsString() : "")) return true;
+            String session = json.has("session") ? json.get("session").getAsString() : "";
+            if (!session.equals(formRecoverySession())) return true;
+
+            Object restored = null;
+            boolean empty = json.has("empty") && json.get("empty").getAsBoolean();
+            if (!empty) {
+                String encoded = json.has("form") ? json.get("form").getAsString() : "";
+                if (encoded.isBlank()) return true;
+                Object data = dataFromString.invoke(null, encoded);
+                restored = data == null ? null : formFromData.invoke(null, data);
+                if (restored == null) return true;
+            }
+
+            Object morph = morphGet.invoke(null, player);
+            if (morph == null) return false;
+            Object copy = restored == null ? null : formCopy.invoke(null, restored);
+            morphSetForm.invoke(morph, copy);
+            sendPlayerForm.invoke(null, copy);
+            Files.deleteIfExists(file);
+            ORIGINAL_FORMS.remove(player.getUUID());
+            APPLIED_FORMS.remove(player.getUUID());
+            FORCED_LIGHTING.remove(player.getUUID());
+            FnfMod.LOGGER.info("Recovered the player's BBS form after an interrupted Blockified session");
+            return true;
+        } catch (Throwable error) {
+            FnfMod.LOGGER.warn("Could not recover the player's BBS form: {}", error.toString());
+            return false;
+        }
+    }
+
+    private static void writeFormRecovery(Player player, Object original) {
+        if (player == null || formToData == null || dataToString == null) return;
+        Path file = formRecoveryFile(player);
+        // The first backup is the real pre-Blockified form. Never replace it with
+        // another temporary form if screens/songs transition without cleanup.
+        if (Files.isRegularFile(file)) return;
+        try {
+            JsonObject json = new JsonObject();
+            json.addProperty("player", player.getUUID().toString());
+            json.addProperty("session", formRecoverySession());
+            json.addProperty("empty", original == null);
+            if (original != null) {
+                Object data = formToData.invoke(null, original);
+                if (data == null) return;
+                json.addProperty("form", String.valueOf(dataToString.invoke(null, data, true)));
+            }
+            Files.createDirectories(file.getParent());
+            Path temporary = file.resolveSibling(file.getFileName() + ".tmp");
+            Files.writeString(temporary, json.toString());
+            try {
+                Files.move(temporary, file, StandardCopyOption.REPLACE_EXISTING,
+                        StandardCopyOption.ATOMIC_MOVE);
+            } catch (Exception unsupportedAtomicMove) {
+                Files.move(temporary, file, StandardCopyOption.REPLACE_EXISTING);
+            }
+        } catch (Throwable error) {
+            FnfMod.LOGGER.warn("Could not back up the player's BBS form: {}", error.toString());
+        }
+    }
+
+    private static void clearFormRecovery(Player player) {
+        if (player == null) return;
+        try {
+            Files.deleteIfExists(formRecoveryFile(player));
+        } catch (Exception error) {
+            FnfMod.LOGGER.warn("Could not clear the BBS form recovery backup: {}", error.toString());
+        }
+    }
+
+    private static Path formRecoveryFile(Player player) {
+        String identity = player.getUUID() + "|" + formRecoverySession();
+        String key = Integer.toUnsignedString(identity.hashCode(), 36);
+        return SongLibrary.root().resolve("recovery")
+                .resolve("bbs-form-" + player.getUUID() + "-" + key + ".json");
+    }
+
+    private static String formRecoverySession() {
+        Minecraft minecraft = Minecraft.getInstance();
+        try {
+            if (minecraft.hasSingleplayerServer() && minecraft.getSingleplayerServer() != null) {
+                return "world:" + minecraft.getSingleplayerServer().getWorldData().getLevelName();
+            }
+            Method getter = minecraft.getClass().getMethod("getCurrentServer");
+            Object server = getter.invoke(minecraft);
+            if (server != null) {
+                Field name = server.getClass().getField("name");
+                Field ip = server.getClass().getField("ip");
+                return "server:" + String.valueOf(name.get(server)) + "|" + String.valueOf(ip.get(server));
+            }
+        } catch (Throwable ignored) {}
+        return "connection:unknown";
     }
 
     static synchronized boolean supportsPlayerSkin(String requestedForm,
@@ -402,8 +542,9 @@ final class BbsFsAnimationBridge {
     private static String playerSkinKey(Object template, SkinSource skinSource) {
         if (skinSource == null || playerModel(template) == null) return "";
         try {
-            if (skinSource.player() instanceof AbstractClientPlayer clientPlayer) {
-                PlayerSkin skin = clientPlayer.getSkin();
+            PlayerSkin selected = selectedPlayerSkin(skinSource);
+            if (selected != null) {
+                PlayerSkin skin = selected;
                 return "|skin:" + skin.model().id() + ":" + String.valueOf(skin.textureUrl());
             }
             java.nio.file.Path file = skinSource.file();
@@ -411,6 +552,9 @@ final class BbsFsAnimationBridge {
                 return "|skin:file:" + (skinSource.slim() ? "slim:" : "wide:") + file
                         + ":" + java.nio.file.Files.size(file)
                         + ":" + java.nio.file.Files.getLastModifiedTime(file).toMillis();
+            }
+            if (skinSource.account() != null && !skinSource.account().isBlank()) {
+                return "|skin:account:" + skinSource.account().toLowerCase(Locale.ROOT) + ":pending";
             }
         } catch (Throwable ignored) {
             // Invalid/missing custom file means the form's authored skin is retained.
@@ -425,8 +569,9 @@ final class BbsFsAnimationBridge {
         try {
             boolean slim;
             Object textureLink;
-            if (skinSource.player() instanceof AbstractClientPlayer clientPlayer) {
-                PlayerSkin skin = clientPlayer.getSkin();
+            PlayerSkin selected = selectedPlayerSkin(skinSource);
+            if (selected != null) {
+                PlayerSkin skin = selected;
                 slim = skin.model() == PlayerSkin.Model.SLIM;
                 String textureUrl = skin.textureUrl();
                 if (textureUrl == null || textureUrl.isBlank()) return false;
@@ -451,6 +596,57 @@ final class BbsFsAnimationBridge {
             warnOnce("Failed to apply a Minecraft skin to a BBS player form", error);
             return false;
         }
+    }
+
+    private static PlayerSkin selectedPlayerSkin(SkinSource source) {
+        if (source.player() instanceof AbstractClientPlayer clientPlayer) return clientPlayer.getSkin();
+        if (source.account() == null || source.account().isBlank()) return null;
+        String account = source.account().trim();
+        if (!account.matches("[A-Za-z0-9_]{1,16}")) return null;
+        CompletableFuture<PlayerSkin> future = ACCOUNT_SKINS.computeIfAbsent(
+                account.toLowerCase(Locale.ROOT), ignored -> loadAccountSkin(account));
+        if (!future.isDone() || future.isCompletedExceptionally()) return null;
+        return future.getNow(null);
+    }
+
+    /** Starts/polls an official account lookup for settings UI feedback. */
+    static String accountSkinStatus(String rawAccount) {
+        String account = rawAccount == null ? "" : rawAccount.trim();
+        if (!account.matches("[A-Za-z0-9_]{1,16}")) return "invalid";
+        CompletableFuture<PlayerSkin> future = ACCOUNT_SKINS.computeIfAbsent(
+                account.toLowerCase(Locale.ROOT), ignored -> loadAccountSkin(account));
+        if (!future.isDone()) return "loading";
+        if (future.isCompletedExceptionally()) return "failed";
+        return future.getNow(null) == null ? "failed" : "ready";
+    }
+
+    /** Uses Mojang's official name lookup, then Minecraft's normal skin manager/cache. */
+    private static CompletableFuture<PlayerSkin> loadAccountSkin(String account) {
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                HttpRequest request = HttpRequest.newBuilder(URI.create(
+                                "https://api.minecraftservices.com/minecraft/profile/lookup/name/" + account))
+                        .timeout(Duration.ofSeconds(8)).GET().build();
+                HttpResponse<String> response = HttpClient.newHttpClient().send(
+                        request, HttpResponse.BodyHandlers.ofString());
+                if (response.statusCode() != 200) return null;
+                String compactId = JsonParser.parseString(response.body()).getAsJsonObject()
+                        .get("id").getAsString();
+                if (!compactId.matches("[0-9a-fA-F]{32}")) return null;
+                String uuidText = compactId.replaceFirst(
+                        "([0-9a-fA-F]{8})([0-9a-fA-F]{4})([0-9a-fA-F]{4})([0-9a-fA-F]{4})([0-9a-fA-F]{12})",
+                        "$1-$2-$3-$4-$5");
+                Minecraft mc = Minecraft.getInstance();
+                ProfileResult result = mc.getMinecraftSessionService().fetchProfile(
+                        UUID.fromString(uuidText), true);
+                GameProfile profile = result == null ? null : result.profile();
+                return profile == null ? null : mc.getSkinManager().getOrLoad(profile).join();
+            } catch (Throwable error) {
+                FnfMod.LOGGER.warn("Could not load Minecraft account skin for {}: {}",
+                        account, error.toString());
+                return null;
+            }
+        });
     }
 
     /** Registers the PNG's parent under an isolated BBS source and returns its link. */
@@ -696,9 +892,101 @@ final class BbsFsAnimationBridge {
         return bundlingAvailable && loadBundledForm(formJson) != null;
     }
 
+    /**
+     * Imports a self-contained Character Editor form into BBS's Recent category.
+     * This mirrors BBS's shared-form receiver: the Recent entry is a private copy,
+     * while Blockified's cached template remains untouched. A form already present
+     * in any BBS category with the same custom name (or raw ID when unnamed) wins;
+     * Blockified does not add another copy to Recent.
+     */
+    static synchronized boolean importBundledFormToRecent(java.nio.file.Path formJson) {
+        if (!isAvailable() || !bundlingAvailable || formJson == null) return false;
+        Object bundled = loadBundledForm(formJson);
+        if (bundled == null) return false;
+        try {
+            Object categories = getFormCategories.invoke(null);
+            if (categories == null) return false;
+            if (hasMatchingCategorizedForm(categories, bundled)) return false;
+            Object recentSection = categories.getClass().getMethod("getRecentForms").invoke(categories);
+            Object rawCategories = recentSection == null ? null
+                    : recentSection.getClass().getMethod("getCategories").invoke(recentSection);
+            if (!(rawCategories instanceof List<?> list) || list.isEmpty()) return false;
+            Object recentCategory = list.get(0);
+
+            String key = bundledKey(formJson);
+            Object previous = RECENT_IMPORTED_FORMS.remove(key);
+            if (previous != null) {
+                recentCategory.getClass().getMethod("removeForm", formClass)
+                        .invoke(recentCategory, previous);
+            }
+
+            Object imported = formCopy.invoke(null, bundled);
+            if (imported == null) return false;
+            recentCategory.getClass().getMethod("addForm", formClass)
+                    .invoke(recentCategory, imported);
+            RECENT_IMPORTED_FORMS.put(key, imported);
+            registerForm(imported);
+            return true;
+        } catch (Throwable error) {
+            warnOnce("Failed to import a Character Editor form into BBS Recent", error);
+            return false;
+        }
+    }
+
+    /** True when any installed/recent BBS form already owns this form identity. */
+    private static boolean hasMatchingCategorizedForm(Object categories, Object candidate) throws Exception {
+        java.util.Set<String> wanted = formIdentities(candidate);
+        if (wanted.isEmpty()) return false;
+
+        Object all = getAllCategories.invoke(categories);
+        if (!(all instanceof Iterable<?> categoryIterable)) return false;
+        for (Object category : categoryIterable) {
+            Object forms = categoryGetForms.invoke(category);
+            if (!(forms instanceof Iterable<?> formIterable)) continue;
+            for (Object existing : formIterable) {
+                for (String identity : formIdentities(existing)) {
+                    if (wanted.contains(identity)) return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * A BBS raw ID identifies the form type, not necessarily one configured form.
+     * Prefer the custom name; only unnamed forms use that raw ID for deduplication.
+     */
+    private static java.util.Set<String> formIdentities(Object form) {
+        java.util.Set<String> identities = new java.util.LinkedHashSet<>();
+        if (form == null || !formClass.isInstance(form)) return identities;
+
+        String rawId = invokeString(formGetId, form);
+        String idOrName = invokeString(formGetIdOrName, form);
+        String displayName = invokeString(formGetDisplayName, form);
+        boolean customName = idOrName != null && !idOrName.isBlank()
+                && (rawId == null || !idOrName.equalsIgnoreCase(rawId));
+
+        if (customName) {
+            addIdentity(identities, idOrName);
+            addIdentity(identities, displayName);
+        } else {
+            addIdentity(identities, rawId);
+            addIdentity(identities, idOrName);
+            addIdentity(identities, displayName);
+        }
+        return identities;
+    }
+
+    private static void addIdentity(java.util.Set<String> identities, String value) {
+        if (value == null || value.isBlank()) return;
+        identities.add(value.trim().toLowerCase(Locale.ROOT));
+    }
+
     static synchronized void clearBundledForms() {
         BUNDLED_FORMS.clear();
         BUNDLED_MODEL_IDS.clear();
+        // Keep Recent-entry references so reloading an animation can replace its
+        // prior BBS category copy instead of leaving a duplicate behind.
     }
 
     private static Object loadBundledForm(java.nio.file.Path formJson) {

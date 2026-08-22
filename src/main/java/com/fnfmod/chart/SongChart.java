@@ -28,10 +28,16 @@ public class SongChart {
     public String player3 = "gf";
     /** Psych stage id used to discover stages/<stage>.lua. */
     public String stage = "stage";
+    /** Pixel UI: render notes/skin crisply (nearest filtering), like Psych's isPixelStage. */
+    public boolean pixelUi = false;
+    /** Psych disableNoteRGB: preserve an RGB-template skin's authored colors for this song. */
+    public boolean disableNoteRgb = false;
     /** Psych arrowSkin: Sparrow atlas used by receptors, notes, and sustains. */
     public String noteTexture = "";
     /** Psych splashSkin: Sparrow atlas used by note splashes. */
     public String noteSplashTexture = "";
+    /** Blockified holdSplashSkin: sustain-cover atlas or folder-pack path. */
+    public String holdSplashTexture = "";
 
     public final List<BpmChange> bpmChanges = new ArrayList<>();
     /** Exact timed meter changes used by formats such as V-Slice. */

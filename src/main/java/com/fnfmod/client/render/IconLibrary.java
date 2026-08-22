@@ -286,6 +286,22 @@ public final class IconLibrary {
         drawIcon(gui, getByPath(path), frame, cx, cy, size, flipX);
     }
 
+    /** Draws a complete image from disk, preserving its aspect ratio inside the requested bounds. */
+    public static void drawImageFile(GuiGraphics gui, String path, float cx, float cy,
+                                     float maxWidth, float maxHeight) {
+        Icon icon = getByPath(path);
+        if (icon == null || icon.texW <= 0 || icon.texH <= 0) return;
+        float scale = Math.min(maxWidth / icon.texW, maxHeight / icon.texH);
+        int drawWidth = Math.max(1, Math.round(icon.texW * scale));
+        int drawHeight = Math.max(1, Math.round(icon.texH * scale));
+        int x = Math.round(cx - drawWidth / 2f);
+        int y = Math.round(cy - drawHeight / 2f);
+        RenderSystem.enableBlend();
+        RenderSystem.defaultBlendFunc();
+        gui.blit(icon.tex, x, y, drawWidth, drawHeight,
+                0f, 0f, icon.texW, icon.texH, icon.texW, icon.texH);
+    }
+
     /** Health bar color from the character json, or -1 if none. */
     public static int barColor(String name) {
         Icon icon = get(name);

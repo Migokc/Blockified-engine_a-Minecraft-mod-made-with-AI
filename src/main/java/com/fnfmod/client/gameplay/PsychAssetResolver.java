@@ -153,6 +153,23 @@ public final class PsychAssetResolver {
                 "stages", "shared/stages", "data/stages", "assets/stages", "assets/shared/stages");
     }
 
+    /** Psych stage metadata can select pixel UI independently of the song chart. */
+    public boolean stageUsesPixelUi(String id) {
+        Path json = stage(id);
+        if (json == null) return false;
+        try {
+            JsonObject object = JsonParser.parseString(Files.readString(json)).getAsJsonObject();
+            if (object.has("stageUI") && !object.get("stageUI").isJsonNull()
+                    && "pixel".equalsIgnoreCase(object.get("stageUI").getAsString().trim())) {
+                return true;
+            }
+            return object.has("isPixelStage") && !object.get("isPixelStage").isJsonNull()
+                    && object.get("isPixelStage").getAsBoolean();
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
     public Path character(String id) {
         if (id == null || id.isBlank()) return null;
         return find(roots(SongLibrary.ExternalContent.CHARACTERS), withExtension(id, ".json"),

@@ -146,6 +146,9 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
     private com.fnfmod.client.input.EditorTickScheduler tickScheduler;
     private boolean schedulerActive;
     private PsychNoteTextureCache noteTextures;
+    private PsychAssetResolver noteAssetResolver;
+    /** True when stages/<stage>.json selects stageUI=pixel or isPixelStage=true. */
+    private boolean stagePixelUi;
     private String songId;
     private String saveId;
     private String importModName;
@@ -172,8 +175,10 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
     private double leadInBaseView;
     // F12 note-only preview inside the editor (no characters/camera/HUD).
     private boolean previewMode;
-    private final java.util.Set<SongChart.Note> previewHitNotes = new java.util.HashSet<>();
-    private final long[] previewFlashUntil = new long[8];
+    private final SongChart.Note[] previewAnimatedNote = new SongChart.Note[8];
+    private final boolean[] previewAnimationLoops = new boolean[8];
+    private final long[] previewAnimationStartedNanos = new long[8];
+    private double previousEditorPreviewPosition = Double.NaN;
     private int snapIndex = 3;
     private int shownSection = -1;
     /** Playback may cross sections while a field/slider owns input; rebuild after release instead. */
@@ -293,6 +298,7 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
     private EditBox eventValue7Field;
     private EditBox noteTextureField;
     private EditBox noteSplashTextureField;
+    private EditBox holdSplashTextureField;
 
     public ChartEditorScreen(String songId) {
         this(songId, null, null, null, null, null);
@@ -456,14 +462,40 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
         if (noteTextures != null) noteTextures.close();
         Path folder = entry != null && entry.folder != null ? entry.folder : suppliedSongFolder;
         PlaybackPolicy policy = PlaybackPolicy.resolve(PlaybackMode.LEGACY, entry);
-        PsychAssetResolver resolver = new PsychAssetResolver(folder, entry, policy, chart.stage);
+        noteAssetResolver = new PsychAssetResolver(folder, entry, policy, chart.stage);
+        stagePixelUi = noteAssetResolver.stageUsesPixelUi(chart.stage);
         boolean enabled = entry == null || policy.allows(entry, SongLibrary.ExternalContent.IMAGES);
         List<Path> roots = entry == null
                 ? java.util.Arrays.asList(folder,
                 SongLibrary.primaryExternalAssetRoot(SongLibrary.ExternalContent.IMAGES))
-                : resolver.customNoteRoots();
+                : noteAssetResolver.customNoteRoots();
         noteTextures = new PsychNoteTextureCache(
                 roots, enabled);
+        refreshEditorNoteStyle();
+    }
+
+    private boolean effectivePixelUi() {
+        return chart != null && (chart.pixelUi || stagePixelUi);
+    }
+
+    private String pixelUiLabel() {
+        if (stagePixelUi && !chart.pixelUi) return "Pixel (Stage)";
+        return effectivePixelUi() ? "Pixel" : "Normal";
+    }
+
+    /** Keeps the editor grid/preview and gameplay on the same exact song atlas. */
+    private void refreshEditorNoteStyle() {
+        if (chart == null || noteTextures == null) return;
+        String texture = chart.noteTexture == null ? "" : chart.noteTexture.trim();
+        Path[] files = texture.isEmpty() ? null : noteTextures.resolveSkinFiles(texture);
+        String holdTexture = chart.holdSplashTexture == null ? "" : chart.holdSplashTexture.trim();
+        Path[] hold = noteTextures.resolveHoldSplashFiles(holdTexture, effectivePixelUi());
+        Path holdPng = hold == null ? null : hold[0];
+        Path holdXml = hold == null ? null : hold[1];
+        if (files == null) NoteStyle.useSongSkin(null, null, null, effectivePixelUi(),
+                holdPng, holdXml, !holdTexture.isBlank());
+        else NoteStyle.useSongSkin(files[0], files[1], files[2], effectivePixelUi(),
+                holdPng, holdXml, !holdTexture.isBlank());
     }
 
     private void ensureAudioLoaded() {
@@ -533,7 +565,7 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
         noteTimeField = sustainField = saveIdField = importModNameField = null;
         eventTimeField = eventValue1Field = eventValue2Field = null;
         eventValue3Field = eventValue4Field = eventValue5Field = eventValue6Field = eventValue7Field = null;
-        noteTextureField = noteSplashTextureField = null;
+        noteTextureField = noteSplashTextureField = holdSplashTextureField = null;
     }
 
     private void buildTopBar() {
@@ -593,6 +625,12 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
         button(x, y, w, "Allow Vocals: " + onOff(chart.needsVoices), b -> {
             chart.needsVoices = !chart.needsVoices;
             b.setMessage(Component.literal("Allow Vocals: " + onOff(chart.needsVoices)));
+        });
+        y += 18;
+        button(x, y, w, "UI Style: " + pixelUiLabel(), b -> {
+            chart.pixelUi = !chart.pixelUi;
+            b.setMessage(Component.literal("UI Style: " + pixelUiLabel()));
+            refreshEditorNoteStyle();
         });
         y += 18;
         button(x, y, w, entry == null || entry.instFor(loadedDifficulty) == null
@@ -866,13 +904,25 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
         noteTextureField = labeledBox("Note Texture", x, y, w,
                 chart.noteTexture == null ? "" : chart.noteTexture, "images/NOTE_assets");
         noteTextureField.setMaxLength(Integer.MAX_VALUE);
-        noteTextureField.setResponder(value -> chart.noteTexture = value.trim());
+        noteTextureField.setResponder(value -> {
+            chart.noteTexture = value.trim();
+            refreshEditorNoteStyle();
+        });
         y += 27;
         noteSplashTextureField = labeledBox("Note Splash Texture", x, y, w,
                 chart.noteSplashTexture == null ? "" : chart.noteSplashTexture,
                 "images/noteSplashes/noteSplashes");
         noteSplashTextureField.setMaxLength(Integer.MAX_VALUE);
         noteSplashTextureField.setResponder(value -> chart.noteSplashTexture = value.trim());
+        y += 27;
+        holdSplashTextureField = labeledBox("Hold Cover Texture", x, y, w,
+                chart.holdSplashTexture == null ? "" : chart.holdSplashTexture,
+                "images/noteSplashes/holdSplashes/holdSplash");
+        holdSplashTextureField.setMaxLength(Integer.MAX_VALUE);
+        holdSplashTextureField.setResponder(value -> {
+            chart.holdSplashTexture = value.trim();
+            refreshEditorNoteStyle();
+        });
     }
 
     private void buildEventsTab() {
@@ -989,7 +1039,16 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
             } else if (tweenCharacter || cameraRotation) {
                 eventValue5Field = eventValueBox("Value 5", x, y + 153, w,
                         eventValue5Draft, ChartEventTypes.value5Hint(eventTypeDraft));
-                actionsY = y + 180;
+                if (cameraRotation) {
+                    label("Value 6", x, y + 180, 0xFFDDDDDD, false);
+                    button(x, y + 190, w,
+                            cameraRotationUsesViewLayer(eventValue6Draft)
+                                    ? "Layer: Camera View" : "Layer: Normal / Orbit",
+                            b -> cycleCameraRotationLayer());
+                    actionsY = y + 207;
+                } else {
+                    actionsY = y + 180;
+                }
             } else {
                 actionsY = y + 180;
             }
@@ -1261,6 +1320,15 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
             axisGizmo.setTooltip(Tooltip.create(Component.literal(
                     "Shows a world XYZ axis gizmo in the bottom-right while playtesting. "
                             + "Y points up."))); y += 16;
+            Button playbackControls = button(x + 4, y, w - 8,
+                    "Playtest Playback Controls: " + onOff(options.editorPlaytestPlaybackControls), b -> {
+                        options.editorPlaytestPlaybackControls = !options.editorPlaytestPlaybackControls;
+                        ClientOptions.save();
+                        rebuildUi();
+                    });
+            playbackControls.setTooltip(Tooltip.create(Component.literal(
+                    "Shows pause, ±5 second, and draggable timeline controls in playtests. "
+                            + "Seeking simulates skipped time so events, Lua timers, and tweens still run."))); y += 16;
             button(x + 4, y, w - 8, "Waveforms: " + onOff(options.editorWaveforms), b -> {
                 options.editorWaveforms = !options.editorWaveforms;
                 ClientOptions.save();
@@ -1387,6 +1455,9 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
         if (noteTextureField != null) chart.noteTexture = noteTextureField.getValue().trim();
         if (noteSplashTextureField != null) {
             chart.noteSplashTexture = noteSplashTextureField.getValue().trim();
+        }
+        if (holdSplashTextureField != null) {
+            chart.holdSplashTexture = holdSplashTextureField.getValue().trim();
         }
 
         if (eventTimeField != null) eventTimeDraft = Math.max(0, parseNumber(eventTimeField, eventTimeDraft));
@@ -2481,32 +2552,14 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
         setFocused(null);
         openMenu = TopMenu.NONE;
         previewMode = true;
-        previewHitNotes.clear();
-        java.util.Arrays.fill(previewFlashUntil, 0);
+        clearEditorPreviewAnimations();
         if (!isPlaying()) beginPlayback();
-    }
-
-    /** Registers a manual hit on the nearest unhit player note in this lane. */
-    private void previewHitLane(int lane) {
-        previewFlashUntil[4 + lane] = System.currentTimeMillis() + 120;
-        double now = viewPositionMs;
-        SongChart.Note best = null;
-        double bestDist = 180; // ms hit window
-        for (SongChart.Note note : chart.notes) {
-            if (!note.playerSide || note.lane != lane || previewHitNotes.contains(note)) continue;
-            double dist = Math.abs(note.timeMs - now);
-            if (dist < bestDist) {
-                bestDist = dist;
-                best = note;
-            }
-        }
-        if (best != null) previewHitNotes.add(best);
     }
 
     private void exitPreview() {
         if (!previewMode) return;
         previewMode = false;
-        previewHitNotes.clear();
+        clearEditorPreviewAnimations();
         if (isPlaying()) {
             if (leadInStartNano >= 0) {
                 leadInStartNano = -1;
@@ -2595,6 +2648,7 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
         if (audio != null && audio.isStarted()) audio.seekMs(viewToAudio(viewPositionMs));
         resetHitsoundIndex(viewPositionMs);
         resetVortexNoteIndex(viewPositionMs);
+        if (previewMode) clearEditorPreviewAnimations();
     }
 
     private void scrub(double steps) {
@@ -2913,11 +2967,6 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
             return true;
         }
         if (previewMode) {
-            int previewLane = com.fnfmod.client.FnfKeys.laneForKey(keyCode, scanCode);
-            if (previewLane >= 0) {
-                previewHitLane(previewLane);
-                return true;
-            }
             switch (keyCode) {
                 case GLFW.GLFW_KEY_ESCAPE, GLFW.GLFW_KEY_ENTER, GLFW.GLFW_KEY_KP_ENTER,
                         GLFW.GLFW_KEY_F12 -> exitPreview();
@@ -2963,6 +3012,8 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
         }
         if (keyCode == GLFW.GLFW_KEY_F12) { enterPreview(); return true; }
         if (keyCode == GLFW.GLFW_KEY_ENTER || keyCode == GLFW.GLFW_KEY_KP_ENTER) {
+            // Shift+Enter catch-up is a launch behavior, independent of whether the
+            // optional in-playtest transport overlay is visible.
             if (canPlaytest()) launchPlaytest(shiftDown(), false);
             else setStatus("Playtest needs a Funkin' Machine — use F12 to preview the notes");
             return true;
@@ -3512,64 +3563,114 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
         if (sectionNow != shownSection) rebuildUi();
     }
 
-    /** Notes-only playback preview: a strumline highway at the current playhead. */
+    /** F12 notes-only preview, using the same deterministic bot preview as Note Settings. */
     private void renderPreview(GuiGraphics gui) {
         NoteStyle.setDrawAlpha(1f);
         NoteStyle.setMissed(false);
-        double now = viewPositionMs;
-        // Match gameplay's scroll speed exactly (the inputted Scroll Speed × the
-        // player's multiplier, or constant mode) so the preview reads true.
-        var opts = ClientOptions.get();
-        double effSpeed = opts.constantScrollSpeed ? opts.scrollSpeedMult
-                : Math.max(0.01, chart.speed) * opts.scrollSpeedMult;
-        double px = 0.45 * effSpeed;
-        boolean down = opts.downscroll;
-        float size = Math.min(30f, width / 12f);
-        int gap = (int) (size + 8);
-        int totalW = gap * 8;
-        int baseX = width / 2 - totalW / 2 + gap / 2;
-        int receptorY = down ? height - 90 : 90;
+        double position = viewPositionMs;
+        var options = ClientOptions.get();
+        double speed = options.constantScrollSpeed ? options.scrollSpeedMult
+                : Math.max(0.01, chart.speed) * options.scrollSpeedMult;
+        double pxPerMs = 0.32 * Math.max(0.01, speed);
+        boolean downscroll = options.downscroll;
+        float noteSize = Math.min(42f, Math.max(22f, width / 17f));
+        float spacing = noteSize * 1.08f;
+        float totalWidth = spacing * 7 + noteSize + 10f;
+        float startX = (width - totalWidth) / 2f + noteSize / 2f;
+        float receptorY = downscroll ? height - 70f : 70f;
 
-        // divider between opponent (left four) and player (right four)
-        int divX = baseX + 4 * gap - gap / 2 - 4;
-        gui.fill(divX, 0, divX + 1, height, 0x33FFFFFF);
-
-        long nowMs = System.currentTimeMillis();
-        for (int col = 0; col < 8; col++) {
-            int lane = col % 4;
-            float cx = baseX + col * gap;
-            int state = previewFlashUntil[col] > nowMs ? 2 : 0;
-            boolean custom = noteTextures != null && noteTextures.drawReceptor(gui,
-                    editorChartNoteTexture(), lane, state, cx, receptorY, size);
-            if (!custom) NoteStyle.drawReceptor(gui, lane, cx, receptorY, size, state);
-        }
-
+        SongChart.Note[] active = new SongChart.Note[8];
+        boolean[] looping = new boolean[8];
         for (SongChart.Note note : chart.notes) {
-            if (previewHitNotes.contains(note)) continue;
-            double distHead = (note.timeMs - now) * px;
-            double distEnd = (note.timeMs + note.sustainMs - now) * px;
-            float y = (float) (down ? receptorY - distHead : receptorY + distHead);
-            float yEnd = (float) (down ? receptorY - distEnd : receptorY + distEnd);
-            float lo = Math.min(y, yEnd), hi = Math.max(y, yEnd);
-            if (hi < -size || lo > height + size) continue;
-            int col = (note.playerSide ? 4 : 0) + note.lane;
-            float cx = baseX + col * gap;
-            if (note.sustainMs > 0) {
-                boolean customHold = noteTextures != null && noteTextures.drawHold(gui,
-                        editorNoteTexture(note), note.lane, cx, lo, hi, size, yEnd < y);
-                if (!customHold) NoteStyle.drawHoldPiece(gui, note.lane, cx, lo, hi, size, yEnd < y);
-            }
-            if (y > -size && y < height + size) {
-                boolean customNote = noteTextures != null && noteTextures.drawNote(gui,
-                        editorNoteTexture(note), note.lane, cx, y, size);
-                if (!customNote) NoteStyle.drawNote(gui, note.lane, cx, y, size);
+            double sinceHit = position - note.timeMs;
+            boolean hold = editorPreviewHolds(note, position);
+            if (!hold && (sinceHit < 0 || sinceHit >= 150)) continue;
+            int column = (note.playerSide ? 4 : 0) + Math.floorMod(note.lane, 4);
+            if (active[column] == null || hold) {
+                active[column] = note;
+                looping[column] = hold;
             }
         }
 
-        drawCentered(gui, "PREVIEW  —  play your lane keys  •  Esc/Enter exit  •  Space pause",
+        long nowNanos = System.nanoTime();
+        String chartTexture = editorChartNoteTexture();
+        for (int column = 0; column < 8; column++) {
+            int lane = column % 4;
+            float x = previewLaneX(startX, spacing, column);
+            SongChart.Note note = active[column];
+            if (note == null) {
+                previewAnimatedNote[column] = null;
+                previewAnimationStartedNanos[column] = 0;
+                boolean custom = useEditorCustomNoteTexture(chartTexture)
+                        && noteTextures.drawReceptor(gui, chartTexture, lane, 0, x, receptorY, noteSize);
+                if (!custom) NoteStyle.drawReceptor(gui, lane, x, receptorY, noteSize, 0);
+                continue;
+            }
+            if (previewAnimatedNote[column] != note || previewAnimationLoops[column] != looping[column]) {
+                previewAnimatedNote[column] = note;
+                previewAnimationLoops[column] = looping[column];
+                previewAnimationStartedNanos[column] = nowNanos;
+            }
+            long frame = Math.max(0, (long) ((nowNanos - previewAnimationStartedNanos[column])
+                    * 24.0 / 1_000_000_000.0));
+            boolean custom = useEditorCustomNoteTexture(chartTexture)
+                    && noteTextures.drawConfirmReceptor(gui, chartTexture, lane, frame, looping[column],
+                    x, receptorY, noteSize);
+            if (!custom) NoteStyle.drawConfirmReceptor(gui, lane, frame, looping[column], x, receptorY, noteSize);
+        }
+
+        double visibleFuture = (height + 200) / Math.max(0.01, pxPerMs);
+        for (SongChart.Note note : chart.notes) {
+            double delta = note.timeMs - position;
+            double endDelta = note.timeMs + Math.max(0, note.sustainMs) - position;
+            if (delta > visibleFuture || endDelta < -200) continue;
+            int column = (note.playerSide ? 4 : 0) + Math.floorMod(note.lane, 4);
+            float x = previewLaneX(startX, spacing, column);
+            float headY = (float) (downscroll ? receptorY - delta * pxPerMs : receptorY + delta * pxPerMs);
+            float endY = (float) (downscroll ? receptorY - endDelta * pxPerMs : receptorY + endDelta * pxPerMs);
+            boolean activeHold = editorPreviewHolds(note, position);
+            if (note.sustainMs > 30 && endDelta > 0) {
+                float from = activeHold ? receptorY : headY;
+                float lo = Math.min(from, endY), hi = Math.max(from, endY);
+                boolean custom = useEditorCustomNoteTexture(editorNoteTexture(note))
+                        && noteTextures.drawHold(gui, editorNoteTexture(note), note.lane,
+                        x, lo, hi, noteSize, downscroll);
+                if (!custom) NoteStyle.drawHoldPiece(gui, note.lane, x, lo, hi, noteSize, downscroll);
+            }
+            if (delta >= 0 && headY > -noteSize && headY < height + noteSize) {
+                boolean custom = useEditorCustomNoteTexture(editorNoteTexture(note))
+                        && noteTextures.drawNote(gui, editorNoteTexture(note), note.lane, x, headY, noteSize);
+                if (!custom) NoteStyle.drawNote(gui, note.lane, x, headY, noteSize);
+            }
+        }
+        previousEditorPreviewPosition = position;
+
+        int dividerX = Math.round(previewLaneX(startX, spacing, 3)
+                + (previewLaneX(startX, spacing, 4) - previewLaneX(startX, spacing, 3)) / 2f);
+        gui.fill(dividerX, 0, dividerX + 1, height, 0x33FFFFFF);
+        drawCentered(gui, "F12 PREVIEW  •  automatic hits  •  Esc/Enter exit  •  Space pause",
                 width / 2, height - 14, 0xFFFFFF66);
-        drawCentered(gui, String.format(Locale.ROOT, "%.1fx", playbackRate),
-                width / 2, 8, 0xFFAAAAAA);
+        drawCentered(gui, String.format(Locale.ROOT, "%.1fx", playbackRate), width / 2, 8, 0xFFAAAAAA);
+    }
+
+    private boolean editorPreviewHolds(SongChart.Note note, double position) {
+        if (note.sustainMs <= 30 || position < note.timeMs) return false;
+        double end = note.timeMs + note.sustainMs;
+        if (position <= end) return true;
+        return Double.isFinite(previousEditorPreviewPosition)
+                && previousEditorPreviewPosition <= end
+                && position - previousEditorPreviewPosition < 250;
+    }
+
+    private static float previewLaneX(float startX, float spacing, int column) {
+        return startX + column * spacing + (column >= 4 ? 10f : 0f);
+    }
+
+    private void clearEditorPreviewAnimations() {
+        java.util.Arrays.fill(previewAnimatedNote, null);
+        java.util.Arrays.fill(previewAnimationLoops, false);
+        java.util.Arrays.fill(previewAnimationStartedNanos, 0);
+        previousEditorPreviewPosition = Double.NaN;
     }
 
     private void renderGrid(GuiGraphics gui) {
@@ -3644,7 +3745,8 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
             if (note.sustainMs > 0) {
                 int endY = (int) Math.round(beatToY(conductor.beatAt(
                         note.timeMs + note.sustainMs)) + gridCellHeight() / 2.0);
-                boolean customHold = noteTextures != null && noteTextures.drawHold(gui,
+                boolean customHold = useEditorCustomNoteTexture(editorNoteTexture(note))
+                        && noteTextures.drawHold(gui,
                         editorNoteTexture(note), note.lane, x + cw / 2f,
                         Math.min(noteY, endY), Math.max(noteY, endY), noteSize, endY < noteY);
                 if (!customHold) {
@@ -3653,7 +3755,8 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
                 }
             }
             if (noteY + noteSize / 2 >= top && noteY - noteSize / 2 <= bottom) {
-                boolean customNote = noteTextures != null && noteTextures.drawNote(gui,
+                boolean customNote = useEditorCustomNoteTexture(editorNoteTexture(note))
+                        && noteTextures.drawNote(gui,
                         editorNoteTexture(note), note.lane, x + cw / 2f, noteY, noteSize);
                 if (!customNote) NoteStyle.drawNote(gui, note.lane, x + cw / 2f, noteY, noteSize);
                 if (selectedNotes.contains(note)) {
@@ -3674,7 +3777,8 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
             int lane = column % 4;
             float centerX = gx + column * cw + cw / 2f;
             float centerY = top - cw / 2f;
-            boolean custom = noteTextures != null && noteTextures.drawReceptor(gui,
+            boolean custom = useEditorCustomNoteTexture(editorChartNoteTexture())
+                    && noteTextures.drawReceptor(gui,
                     editorChartNoteTexture(), lane, 0, centerX, centerY, noteSize);
             if (!custom) {
                 drawCentered(gui, glyphs[lane], (int) centerX,
@@ -3701,7 +3805,8 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
                 if (holding) {
                     long animationFrame = vortexHoldRenderFrames[column] / 2;
                     if (isPlaying()) vortexHoldRenderFrames[column]++;
-                    custom = noteTextures != null && noteTextures.drawSustainReceptor(gui,
+                    custom = useEditorCustomNoteTexture(editorChartNoteTexture())
+                            && noteTextures.drawSustainReceptor(gui,
                             editorChartNoteTexture(), lane, animationFrame,
                             centerX, previewY, noteSize);
                     if (!custom) {
@@ -3711,7 +3816,8 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
                     }
                 }
                 if (!custom) {
-                    custom = noteTextures != null && noteTextures.drawReceptor(gui,
+                    custom = useEditorCustomNoteTexture(editorChartNoteTexture())
+                            && noteTextures.drawReceptor(gui,
                             editorChartNoteTexture(), lane, state, centerX, previewY, noteSize);
                     if (!custom) NoteStyle.drawReceptor(gui, lane, centerX, previewY, noteSize, state);
                 }
@@ -4129,6 +4235,18 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
                 ? chart.noteTexture : "";
     }
 
+    /**
+     * Pixel UI routes the chart's default atlas through NoteStyle, which understands Psych's
+     * XML-less pixel grid. A genuinely different per-note texture remains a normal override.
+     */
+    private boolean useEditorCustomNoteTexture(String texture) {
+        if (noteTextures == null) return false;
+        if (!effectivePixelUi() || !NoteStyle.songSkinActive()) return true;
+        String chartTexture = editorChartNoteTexture() == null ? "" : editorChartNoteTexture().trim();
+        String requested = texture == null ? "" : texture.trim();
+        return !requested.isEmpty() && !requested.equalsIgnoreCase(chartTexture);
+    }
+
     private void writeOriginalReference(Path directory, String fallbackId) throws Exception {
         if (originalDirectory == null) return;
         String chartName = originalChartName == null || originalChartName.isBlank()
@@ -4433,6 +4551,13 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
         rebuildUi();
     }
 
+    private void cycleCameraRotationLayer() {
+        commitVisibleFields();
+        // Blank is the backwards-compatible normal/orbit layer.
+        setEventValue(6, cameraRotationUsesViewLayer(eventValue6Draft) ? "" : "camera");
+        rebuildUi();
+    }
+
     private void cycleCameraBehaviorOffsets() {
         commitVisibleFields();
         setEventValue(3, cameraBehaviorOffsetsEnabled(eventValue3Draft) ? "false" : "true");
@@ -4476,6 +4601,13 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
         return value.equals("camera") || value.equals("cam") || value.equals("rotation")
                 || value.equals("rotated") || value.equals("camerarotation")
                 || value.equals("view") || value.equals("screen");
+    }
+
+    private static boolean cameraRotationUsesViewLayer(String raw) {
+        String value = raw == null ? "" : raw.trim().toLowerCase(Locale.ROOT);
+        return value.equals("camera") || value.equals("view") || value.equals("local")
+                || value.equals("screen") || value.equals("always")
+                || value.equals("cameraview") || value.equals("camera view");
     }
 
     private void cycleCameraFocusTarget() {
@@ -4624,6 +4756,8 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
         disposeScheduler();
         disposeAudio();
         disposeNoteTextures();
+        NoteStyle.setSongRgbAllowed(true);
+        NoteStyle.useSongSkin(null, null, null, false);
         for (Path folder : temporaryAudioFolders) ChartAudioImport.delete(folder);
         temporaryAudioFolders.clear();
         pendingAudioFolder = null;

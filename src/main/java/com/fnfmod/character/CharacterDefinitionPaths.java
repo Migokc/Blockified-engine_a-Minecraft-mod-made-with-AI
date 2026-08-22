@@ -25,7 +25,12 @@ public final class CharacterDefinitionPaths {
      * are exposed; installed mod definitions are deliberately absent.
      */
     public static List<String> selectableGlobalNames() {
-        Path root = SongLibrary.animationsDir().toAbsolutePath().normalize();
+        return selectableNames(SongLibrary.animationsDir());
+    }
+
+    /** Editor-facing definitions from one explicit animations folder. */
+    public static List<String> selectableNames(Path animationsRoot) {
+        Path root = animationsRoot.toAbsolutePath().normalize();
         Map<String, String> names = new LinkedHashMap<>();
         if (!Files.isDirectory(root)) return List.of();
 
@@ -54,6 +59,10 @@ public final class CharacterDefinitionPaths {
                     });
         } catch (Exception ignored) {}
         return List.copyOf(names.values());
+    }
+
+    public static Path characterJsonExact(Path animationsRoot, String setName, boolean opponent) {
+        return definitionJson(animationsRoot, setName, opponent, false);
     }
 
     /** Marks a definition name as private to the currently playing mod. */

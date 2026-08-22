@@ -1,16 +1,11 @@
 package com.fnfmod.client.gameplay;
 
-import com.fnfmod.block.FunkinMachineBlock;
 import com.fnfmod.chart.ChartEventTypes;
-import com.fnfmod.chart.CommandEventPlaceholders;
 import com.fnfmod.chart.SongChart;
 import com.fnfmod.client.camera.GameplayCamera;
 import com.fnfmod.client.render.DirectionalShadingControl;
 import com.fnfmod.net.FnfPayloads;
-import net.minecraft.client.Minecraft;
 import net.minecraft.core.BlockPos;
-import net.minecraft.core.Direction;
-import net.minecraft.network.chat.Component;
 import net.neoforged.neoforge.network.PacketDistributor;
 
 import java.util.function.BooleanSupplier;
@@ -72,37 +67,20 @@ public final class GameplayEventDispatcher {
             PacketDistributor.sendToServer(new FnfPayloads.CommandEventC2S(machinePosition, eventIndex));
             return;
         }
-        runPlayerCommand(event.value1);
+        // An editor playtest has its own server rollback journal. Sending the raw
+        // command through the Lua-command route keeps unsaved charts usable while
+        // still tracking blocks, player state, time and gamemode.
+        PacketDistributor.sendToServer(new FnfPayloads.LuaCommandC2S(
+                machinePosition, event.value1, event.value2 == null ? "player" : event.value2));
     }
 
     /** Lua-facing command entry point. Uses same placeholders as chart events. */
     public boolean runLuaCommand(String rawCommand, String runner) {
         if (rawCommand == null || rawCommand.isBlank()) return false;
-        if (!editorPlaytest.getAsBoolean()) {
-            // Server preserves runner permissions and journals mutations.
-            PacketDistributor.sendToServer(new FnfPayloads.LuaCommandC2S(
-                    machinePosition, rawCommand, runner == null ? "player" : runner));
-            return true;
-        }
-        return runPlayerCommand(rawCommand);
-    }
-
-    private boolean runPlayerCommand(String rawCommand) {
-        Minecraft minecraft = Minecraft.getInstance();
-        if (minecraft.player == null || minecraft.player.connection == null || rawCommand == null) return false;
-        Direction facing = StageOrientation.facingOr(minecraft.level, machinePosition);
-        // Playtest has no tagged session entities, so role selectors point at the
-        // testing player (@s), who is the one performer on the editor stage.
-        String command = CommandEventPlaceholders.expand(rawCommand, machinePosition, facing, true).trim();
-        while (command.startsWith("/")) command = command.substring(1).trim();
-        if (command.isEmpty()) return false;
-        try {
-            minecraft.player.connection.sendCommand(command);
-            return true;
-        } catch (Exception error) {
-            minecraft.player.displayClientMessage(
-                    Component.literal("FNF event command failed: " + error.getMessage()), false);
-            return false;
-        }
+        // Server preserves runner permissions and journals mutations for both a
+        // normal session and the isolated editor-playtest transaction.
+        PacketDistributor.sendToServer(new FnfPayloads.LuaCommandC2S(
+                machinePosition, rawCommand, runner == null ? "player" : runner));
+        return true;
     }
 }

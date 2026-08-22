@@ -53,10 +53,15 @@ public final class AnimationSetPickerScreen extends Screen implements TextInputA
     private Path botSkinFile;
     private boolean playerSkinSlim;
     private boolean botSkinSlim;
+    private String playerSkinAccount = "";
+    private String botSkinAccount = "";
     private SkinDialog skinDialog = SkinDialog.NONE;
     private Path pendingSkinFile;
+    private EditBox accountField;
+    private boolean accountLoading;
+    private String accountError = "";
 
-    private enum SkinDialog { NONE, SOURCE, MODEL }
+    private enum SkinDialog { NONE, SOURCE, MODEL, ACCOUNT }
 
     public AnimationSetPickerScreen(Screen parent, boolean opponent) {
         super(Component.literal(opponent ? "Opponent Animations" : "Player Animations"));
@@ -77,6 +82,8 @@ public final class AnimationSetPickerScreen extends Screen implements TextInputA
         botSkinFile = pathOrNull(options.botSkinFile);
         playerSkinSlim = options.playerSkinSlim;
         botSkinSlim = options.botSkinSlim;
+        playerSkinAccount = options.playerSkinAccount;
+        botSkinAccount = options.botSkinAccount;
         selectedIndex = Math.max(0, indexOf(visible, current));
         resetScroll(true);
 
@@ -249,11 +256,13 @@ public final class AnimationSetPickerScreen extends Screen implements TextInputA
             options.botSkinSource = botSkinSource;
             options.botSkinFile = botSkinFile == null ? "" : botSkinFile.toString();
             options.botSkinSlim = botSkinSlim;
+            options.botSkinAccount = botSkinAccount;
             options.botUsePlayerSkin = ClientOptions.SKIN_SOURCE_PLAYER.equals(botSkinSource);
         } else {
             options.playerSkinSource = playerSkinSource;
             options.playerSkinFile = playerSkinFile == null ? "" : playerSkinFile.toString();
             options.playerSkinSlim = playerSkinSlim;
+            options.playerSkinAccount = playerSkinAccount;
             options.playerUsePlayerSkin = ClientOptions.SKIN_SOURCE_PLAYER.equals(playerSkinSource);
         }
         ClientOptions.save();
@@ -264,9 +273,13 @@ public final class AnimationSetPickerScreen extends Screen implements TextInputA
         String source = opponent ? botSkinSource : playerSkinSource;
         Path file = opponent ? botSkinFile : playerSkinFile;
         boolean slim = opponent ? botSkinSlim : playerSkinSlim;
+        String account = opponent ? botSkinAccount : playerSkinAccount;
         if (ClientOptions.SKIN_SOURCE_PLAYER.equals(source)) return CharacterAnimations.SkinChoice.player();
         if (ClientOptions.SKIN_SOURCE_FILE.equals(source) && file != null) {
             return CharacterAnimations.SkinChoice.file(file, slim);
+        }
+        if (ClientOptions.SKIN_SOURCE_ACCOUNT.equals(source) && account != null && !account.isBlank()) {
+            return CharacterAnimations.SkinChoice.account(account);
         }
         return CharacterAnimations.SkinChoice.form();
     }
@@ -297,16 +310,20 @@ public final class AnimationSetPickerScreen extends Screen implements TextInputA
             String name = file == null ? "Missing" : file.getFileName().toString();
             return trim(owner + " Skin: " + name + " (" + (slim ? "Slim" : "Wide") + ")", 31);
         }
+        if (ClientOptions.SKIN_SOURCE_ACCOUNT.equals(source)) {
+            String account = opponent ? botSkinAccount : playerSkinAccount;
+            return trim(owner + " Skin: @" + (account == null || account.isBlank()
+                    ? "Account" : account), 31);
+        }
         return owner + " Skin: Form";
     }
 
     @Override
     public void render(GuiGraphics gui, int mouseX, int mouseY, float partialTick) {
-        gui.fill(0, 0, width, height, 0xF20A0A10);
+        BlockifiedScreenStyle.backdrop(gui, width, height);
         int x0 = panelX(), y0 = panelY(), boxW = panelWidth(), boxH = panelHeight();
         int listRight = listRight();
-        gui.fill(x0, y0, x0 + boxW, y0 + boxH, 0xFF101018);
-        gui.renderOutline(x0, y0, boxW, boxH, 0xFF6A70FF);
+        BlockifiedScreenStyle.panel(gui, x0, y0, boxW, boxH);
         gui.drawCenteredString(font, title, x0 + boxW / 2, y0 + 9, 0xFFFFFFFF);
 
         clampSelection();
@@ -324,7 +341,8 @@ public final class AnimationSetPickerScreen extends Screen implements TextInputA
             boolean hovered = mouseX >= x0 + 12 && mouseX < listRight
                     && mouseY >= Math.max(top, rowY) && mouseY < Math.min(top + height, rowY + ROW - 1);
             gui.fill(x0 + 12, rowY, listRight, rowY + ROW - 1,
-                    selected ? 0xFF4B5070 : hovered ? 0xFF303442 : 0xFF20202A);
+                    selected ? BlockifiedScreenStyle.ACCENT_DARK
+                            : hovered ? BlockifiedScreenStyle.ACCENT_DEEP : 0xFF20202A);
             gui.drawString(font, displayName(name), x0 + 18, rowY + 8,
                     selected ? 0xFFFFFFFF : 0xFFCCCCCC, false);
         }
@@ -350,24 +368,42 @@ public final class AnimationSetPickerScreen extends Screen implements TextInputA
     }
 
     private void renderSkinDialog(GuiGraphics gui, int mouseX, int mouseY) {
+        pollAccountSkin();
+        if (skinDialog == SkinDialog.NONE) return;
         gui.pose().pushPose();
         gui.pose().translate(0, 0, 1000);
         gui.fill(0, 0, width, height, 0xB8000000);
         int w = Math.min(280, width - 32);
-        int rows = skinDialog == SkinDialog.SOURCE ? 4 : 3;
+        int rows = skinDialog == SkinDialog.SOURCE ? 5
+                : skinDialog == SkinDialog.ACCOUNT ? 4 : 3;
         int h = 38 + rows * 24;
         int x = (width - w) / 2;
         int y = (height - h) / 2;
-        gui.fill(x, y, x + w, y + h, 0xFF101018);
-        gui.renderOutline(x, y, w, h, 0xFF8A90FF);
+        BlockifiedScreenStyle.panel(gui, x, y, w, h);
         gui.drawCenteredString(font, skinDialog == SkinDialog.SOURCE
-                        ? "Choose skin source" : "Is this skin Slim or Wide?",
+                        ? "Choose skin source" : skinDialog == SkinDialog.ACCOUNT
+                        ? "Minecraft account name" : "Is this skin Slim or Wide?",
                 x + w / 2, y + 10, 0xFFFFFFFF);
         if (skinDialog == SkinDialog.SOURCE) {
             renderModalButton(gui, x + 12, y + 30, w - 24, "Form's Skin", mouseX, mouseY);
             renderModalButton(gui, x + 12, y + 54, w - 24, "Current Player Skin", mouseX, mouseY);
-            renderModalButton(gui, x + 12, y + 78, w - 24, "Choose PNG File...", mouseX, mouseY);
-            renderModalButton(gui, x + 12, y + 102, w - 24, "Cancel", mouseX, mouseY);
+            renderModalButton(gui, x + 12, y + 78, w - 24, "Minecraft Account...", mouseX, mouseY);
+            renderModalButton(gui, x + 12, y + 102, w - 24, "Choose PNG File...", mouseX, mouseY);
+            renderModalButton(gui, x + 12, y + 126, w - 24, "Cancel", mouseX, mouseY);
+        } else if (skinDialog == SkinDialog.ACCOUNT) {
+            if (accountField != null) {
+                accountField.setX(x + 12);
+                accountField.setY(y + 30);
+                accountField.setWidth(w - 24);
+                accountField.render(gui, mouseX, mouseY, 0);
+            }
+            String action = accountLoading ? "Loading..." : "Use Account";
+            renderModalButton(gui, x + 12, y + 54, w - 24, action, mouseX, mouseY,
+                    !accountLoading);
+            renderModalButton(gui, x + 12, y + 78, w - 24, "Cancel", mouseX, mouseY);
+            if (!accountError.isBlank()) {
+                gui.drawCenteredString(font, accountError, x + w / 2, y + 102, 0xFFFF7777);
+            }
         } else {
             String file = pendingSkinFile == null ? "" : trim(pendingSkinFile.getFileName().toString(), 32);
             gui.drawCenteredString(font, file, x + w / 2, y + 25, 0xFFAAAEC5);
@@ -383,6 +419,11 @@ public final class AnimationSetPickerScreen extends Screen implements TextInputA
         renderButton(gui, x, y, w, text, mouseX, mouseY);
     }
 
+    private void renderModalButton(GuiGraphics gui, int x, int y, int w, String text,
+                                   int mouseX, int mouseY, boolean enabled) {
+        renderButton(gui, x, y, w, text, mouseX, mouseY, enabled);
+    }
+
     private void renderScrollbar(GuiGraphics gui, int listRight, int top, int height) {
         double max = maxScroll();
         if (max <= 0) return;
@@ -391,13 +432,13 @@ public final class AnimationSetPickerScreen extends Screen implements TextInputA
                 (int) Math.round(height * (height / (visible.size() * (double) ROW))));
         int thumbY = top + (int) Math.round((height - thumbHeight) * (scrollPx / max));
         gui.fill(trackX, top, trackX + 2, top + height, 0xFF252733);
-        gui.fill(trackX, thumbY, trackX + 2, thumbY + thumbHeight, 0xFF8A90C0);
+        gui.fill(trackX, thumbY, trackX + 2, thumbY + thumbHeight,
+                BlockifiedScreenStyle.ACCENT);
     }
 
     private void renderPreview(GuiGraphics gui, int left, int top, int right, int bottom) {
         if (right - left < 70 || bottom - top < 80) return;
-        gui.fill(left, top, right, bottom, 0xFF161720);
-        gui.renderOutline(left, top, right - left, bottom - top, 0xFF454A68);
+        BlockifiedScreenStyle.inner(gui, left, top, right - left, bottom - top);
         gui.drawCenteredString(font, displayName(previewedSet), (left + right) / 2,
                 top + 7, 0xFFFFFFFF);
 
@@ -452,8 +493,15 @@ public final class AnimationSetPickerScreen extends Screen implements TextInputA
     public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
         if (skinDialog != SkinDialog.NONE) {
             if (keyCode == GLFW.GLFW_KEY_ESCAPE) {
-                skinDialog = SkinDialog.NONE;
+                skinDialog = skinDialog == SkinDialog.ACCOUNT ? SkinDialog.SOURCE : SkinDialog.NONE;
                 pendingSkinFile = null;
+                accountField = null;
+                accountLoading = false;
+                accountError = "";
+            } else if (skinDialog == SkinDialog.ACCOUNT && accountField != null) {
+                if (keyCode == GLFW.GLFW_KEY_ENTER || keyCode == GLFW.GLFW_KEY_KP_ENTER) {
+                    if (!accountLoading) applyAccountField();
+                } else if (!accountLoading) accountField.keyPressed(keyCode, scanCode, modifiers);
             }
             return true;
         }
@@ -526,6 +574,15 @@ public final class AnimationSetPickerScreen extends Screen implements TextInputA
     }
 
     @Override
+    public boolean charTyped(char codePoint, int modifiers) {
+        if (skinDialog == SkinDialog.ACCOUNT && accountField != null) {
+            if (accountLoading) return true;
+            return accountField.charTyped(codePoint, modifiers);
+        }
+        return super.charTyped(codePoint, modifiers);
+    }
+
+    @Override
     public boolean mouseScrolled(double mouseX, double mouseY, double scrollX, double scrollY) {
         if (skinDialog != SkinDialog.NONE) return true;
         if (scrollY != 0) {
@@ -555,7 +612,7 @@ public final class AnimationSetPickerScreen extends Screen implements TextInputA
 
     @Override
     public boolean isTextInputActive() {
-        return search != null && search.isFocused();
+        return skinDialog == SkinDialog.ACCOUNT || search != null && search.isFocused();
     }
 
     @Override
@@ -583,23 +640,37 @@ public final class AnimationSetPickerScreen extends Screen implements TextInputA
     private boolean clickSkinDialog(double mouseX, double mouseY, int button) {
         if (button != GLFW.GLFW_MOUSE_BUTTON_LEFT) return true;
         int w = Math.min(280, width - 32);
-        int rows = skinDialog == SkinDialog.SOURCE ? 4 : 3;
+        int rows = skinDialog == SkinDialog.SOURCE ? 5
+                : skinDialog == SkinDialog.ACCOUNT ? 4 : 3;
         int h = 38 + rows * 24;
         int x = (width - w) / 2;
         int y = (height - h) / 2;
         if (mouseX < x + 12 || mouseX >= x + w - 12) return true;
         if (skinDialog == SkinDialog.SOURCE) {
-            int row = modalRow(mouseY, y + 30, 4);
+            int row = modalRow(mouseY, y + 30, 5);
             if (row == 0) applySkinSource(ClientOptions.SKIN_SOURCE_FORM, null, false);
             else if (row == 1) applySkinSource(ClientOptions.SKIN_SOURCE_PLAYER, null, false);
             else if (row == 2) {
+                openAccountField();
+            } else if (row == 3) {
                 NativeFilePicker.openFile("Choose Minecraft skin", new String[]{"*.png"}, "PNG skin")
                         .filter(Files::isRegularFile)
                         .ifPresent(path -> {
                             pendingSkinFile = path.toAbsolutePath().normalize();
                             skinDialog = SkinDialog.MODEL;
                         });
-            } else if (row == 3) skinDialog = SkinDialog.NONE;
+            } else if (row == 4) skinDialog = SkinDialog.NONE;
+        } else if (skinDialog == SkinDialog.ACCOUNT) {
+            if (!accountLoading && accountField != null
+                    && accountField.mouseClicked(mouseX, mouseY, button)) return true;
+            int row = modalRow(mouseY, y + 54, 2);
+            if (row == 0 && !accountLoading) applyAccountField();
+            else if (row == 1) {
+                accountLoading = false;
+                accountError = "";
+                accountField = null;
+                skinDialog = SkinDialog.SOURCE;
+            }
         } else {
             int row = modalRow(mouseY, y + 42, 3);
             if (row == 0 || row == 1) {
@@ -633,6 +704,43 @@ public final class AnimationSetPickerScreen extends Screen implements TextInputA
         }
         skinDialog = SkinDialog.NONE;
         previewSelection();
+    }
+
+    private void openAccountField() {
+        accountField = new EditBox(font, 0, 0, 100, 18, Component.literal("Minecraft account"));
+        accountField.setMaxLength(16);
+        accountField.setFilter(value -> value.matches("[A-Za-z0-9_]{0,16}"));
+        accountField.setValue(opponent ? botSkinAccount : playerSkinAccount);
+        accountField.setFocused(true);
+        accountLoading = false;
+        accountError = "";
+        skinDialog = SkinDialog.ACCOUNT;
+    }
+
+    private void applyAccountField() {
+        if (accountField == null || accountField.getValue().isBlank()) {
+            accountError = "Enter a Minecraft account name";
+            return;
+        }
+        accountLoading = true;
+        accountError = "";
+        pollAccountSkin();
+    }
+
+    private void pollAccountSkin() {
+        if (!accountLoading || accountField == null) return;
+        String account = accountField.getValue().trim();
+        String status = CharacterAnimations.accountSkinStatus(account);
+        if ("loading".equals(status)) return;
+        accountLoading = false;
+        if (!"ready".equals(status)) {
+            accountError = "Account or skin could not be loaded";
+            return;
+        }
+        if (opponent) botSkinAccount = account;
+        else playerSkinAccount = account;
+        accountField = null;
+        applySkinSource(ClientOptions.SKIN_SOURCE_ACCOUNT, null, false);
     }
 
     private static Path pathOrNull(String value) {

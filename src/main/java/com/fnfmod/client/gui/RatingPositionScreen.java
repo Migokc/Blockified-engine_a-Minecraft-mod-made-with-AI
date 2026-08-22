@@ -47,8 +47,14 @@ public class RatingPositionScreen extends Screen {
 
     @Override
     public void render(GuiGraphics gui, int mouseX, int mouseY, float partialTick) {
+        BlockifiedScreenStyle.backdrop(gui, width, height);
+        BlockifiedScreenStyle.panel(gui, 6, 6, width - 12, height - 12);
+        BlockifiedScreenStyle.inner(gui, 14, 36, width - 28, height - 100);
         super.render(gui, mouseX, mouseY, partialTick);
-        gui.drawCenteredString(font, "Drag the rating to reposition it", width / 2, 16, 0xFFFFFF);
+        gui.drawString(font, "BLOCKIFIED SETTINGS", 16, 13,
+                BlockifiedScreenStyle.ACCENT, false);
+        gui.drawCenteredString(font, "Drag the rating to reposition it", width / 2, 20,
+                BlockifiedScreenStyle.TEXT);
 
         // preview rating popups stacked at the chosen spot
         drawPreview(gui, "SICK!!", 0xFF66FFFF, 0);
@@ -91,4 +97,7 @@ public class RatingPositionScreen extends Screen {
     public void onClose() {
         minecraft.setScreen(parent);
     }
+
+    @Override
+    public void renderBackground(GuiGraphics gui, int mouseX, int mouseY, float partialTick) {}
 }

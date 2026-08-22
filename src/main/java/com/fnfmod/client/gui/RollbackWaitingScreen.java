@@ -1,6 +1,5 @@
 package com.fnfmod.client.gui;
 
-import com.fnfmod.client.gui.editor.ChartEditorScreen;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.core.BlockPos;
@@ -10,16 +9,16 @@ import net.minecraft.network.chat.Component;
 public final class RollbackWaitingScreen extends Screen {
 
     private final BlockPos machinePos;
-    private final ChartEditorScreen editor;
+    private final Screen destination;
 
-    public RollbackWaitingScreen(BlockPos machinePos, ChartEditorScreen editor) {
+    public RollbackWaitingScreen(BlockPos machinePos, Screen destination) {
         super(Component.literal("Restoring song changes"));
         this.machinePos = machinePos.immutable();
-        this.editor = editor;
+        this.destination = destination;
     }
 
     public void complete(BlockPos acknowledgedPos) {
-        if (minecraft != null && machinePos.equals(acknowledgedPos)) minecraft.setScreen(editor);
+        if (minecraft != null && machinePos.equals(acknowledgedPos)) minecraft.setScreen(destination);
     }
 
     @Override

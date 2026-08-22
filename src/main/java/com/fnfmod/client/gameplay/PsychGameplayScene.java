@@ -9,6 +9,7 @@ import com.fnfmod.client.render.AnimateAtlas;
 import com.fnfmod.client.render.SparrowAtlas;
 import com.fnfmod.client.render.SpriteAtlasCache;
 import com.fnfmod.gameplay.PlaybackPolicy;
+import com.fnfmod.gameplay.GameplayClock;
 import com.fnfmod.song.SongEntry;
 import com.fnfmod.song.SongLibrary;
 import com.google.gson.JsonArray;
@@ -637,7 +638,7 @@ public final class PsychGameplayScene implements AutoCloseable {
     public void forceCameraExtended(Double x, Double y, boolean overrideMovement, String easing) {
         cameraEventFromX = cameraX;
         cameraEventFromY = cameraY;
-        cameraEventTransitionStart = System.currentTimeMillis();
+        cameraEventTransitionStart = GameplayClock.now();
         cameraEventEase = GameplayCamera.normalizeCameraEase(easing);
         cameraOffsetEventX = x == null ? 0 : x * 128.0;
         cameraOffsetEventY = y == null ? 0 : -y * 128.0;
@@ -663,7 +664,7 @@ public final class PsychGameplayScene implements AutoCloseable {
             cameraY = targetCameraY;
             cameraInitialized = true;
         } else if (cameraEventTransitionStart != 0) {
-            double progress = (System.currentTimeMillis() - cameraEventTransitionStart) / 500.0;
+            double progress = (GameplayClock.now() - cameraEventTransitionStart) / 500.0;
             double eased = Easing.apply(cameraEventEase, progress);
             cameraX = cameraEventFromX + (targetCameraX - cameraEventFromX) * eased;
             cameraY = cameraEventFromY + (targetCameraY - cameraEventFromY) * eased;

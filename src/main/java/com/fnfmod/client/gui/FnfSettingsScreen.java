@@ -27,12 +27,14 @@ import java.nio.file.Path;
 
 /**
  * Options menu laid out like Psych Engine's: a category list
- * (Controls / Adjust Delay and Combo / Visuals and UI / Gameplay),
+ * (Controls / Visuals and UI / Gameplay / Mods),
  * each opening its own page.
  */
 public class FnfSettingsScreen extends Screen {
 
     private final Screen parent;
+    /** True when the Song Menu opened a section directly, bypassing the legacy category page. */
+    private boolean directCategory;
     /** null = category list, otherwise the open category */
     private String category;
 
@@ -58,14 +60,18 @@ public class FnfSettingsScreen extends Screen {
     private boolean draggingFolderThumb;
     private String selectedFolder;
     private Path selectedPackRoot;
-    private boolean filtersOpen;
-    private record PermissionWidget(Button button, SongLibrary.ExternalContent content) {}
+    private record PermissionWidget(Button button, SongLibrary.ExternalContent content, int baseY) {}
     private final List<PermissionWidget> permissionWidgets = new ArrayList<>();
     private final Set<SongLibrary.ExternalContent> permissionDragVisited =
             java.util.EnumSet.noneOf(SongLibrary.ExternalContent.class);
     private boolean draggingPermissions;
     private boolean permissionDragEnables;
     private String permissionTargetLabel = "";
+    private ModPackInfo selectedPackInfo;
+    private double packScrollPx, packScrollTargetPx, packScrollFromPx;
+    private long packScrollTweenStart;
+    private boolean packScrollTweenActive, draggingPackThumb;
+    private int packContentHeight;
     // Directory edits rescan the whole library, which is heavy; defer that until
     // the user leaves the Directories page instead of running it per change.
     private boolean foldersDirty;
@@ -75,6 +81,23 @@ public class FnfSettingsScreen extends Screen {
         this.parent = parent;
     }
 
+    /** Opens one built-in category directly (used by the Song Menu Settings tab). */
+    public FnfSettingsScreen(Screen parent, String category) {
+        this(parent);
+        this.directCategory = true;
+        this.category = switch (category == null ? "" : category) {
+            case "visuals", "gameplay", "folders", "colors" -> category;
+            default -> null;
+        };
+    }
+
+    /** Prevents custom machine music from competing with a selected Note Settings chart. */
+    void stopParentMachineAudio() {
+        if (parent instanceof com.fnfmod.client.gui.machine.MachineMenuScreen menu) {
+            menu.stopSharedAudio();
+        }
+    }
+
     @Override
     protected void init() {
         clearWidgets();
@@ -82,22 +105,23 @@ public class FnfSettingsScreen extends Screen {
         folderWidgets.clear();
         suppressedFolderWidgets.clear();
         permissionWidgets.clear();
+        selectedPackInfo = null;
+        packContentHeight = 0;
         if (category == null) {
             initCategories();
             capturePageWidgets();
             addRenderableWidget(Button.builder(Component.literal("Done"), b -> onClose())
-                    .bounds(width / 2 - 60, height - 32, 120, 20).build());
+                    .bounds(width / 2 - 80, height - 32, 160, 20).build());
         } else {
             switch (category) {
-                case "delay" -> initDelay();
                 case "visuals" -> initVisuals();
                 case "gameplay" -> initGameplay();
                 case "folders" -> initFolders();
                 case "colors" -> initColors();
             }
             if (!"folders".equals(category)) capturePageWidgets();
-            addRenderableWidget(Button.builder(Component.literal("Back"), b -> switchTo(null))
-                    .bounds(width / 2 - 60, height - 32, 120, 20).build());
+            addRenderableWidget(Button.builder(Component.literal("Back"), b -> leaveCategory())
+                    .bounds(width / 2 - 80, height - 32, 160, 20).build());
         }
         clampScrolls();
         applyPageWidgetScroll();
@@ -111,10 +135,26 @@ public class FnfSettingsScreen extends Screen {
             foldersDirty = false;
             SongLibrary.rescan();
         }
+        if ("colors".equals(category) && !"colors".equals(newCategory)) restoreColorPreview();
         category = newCategory;
         pageScrollPx = pageScrollTargetPx = pageScrollFromPx = 0;
         pageScrollTweenActive = false;
         init();
+    }
+
+    private void leaveCategory() {
+        if (!directCategory) {
+            switchTo(null);
+            return;
+        }
+        // Direct sections belong to the Song Menu's Settings tab. Apply the
+        // same deferred cleanup as switchTo(), then return there immediately.
+        if ("folders".equals(category) && foldersDirty) {
+            foldersDirty = false;
+            SongLibrary.rescan();
+        }
+        if ("colors".equals(category)) restoreColorPreview();
+        minecraft.setScreen(parent);
     }
 
     private int rowY(int index) {
@@ -123,17 +163,16 @@ public class FnfSettingsScreen extends Screen {
 
     private int pageViewportTop() { return 44; }
     private int pageViewportBottom() {
-        int reserved = "visuals".equals(category) ? 64 : "delay".equals(category) ? 54 : 40;
+        int reserved = "visuals".equals(category) ? 64 : 40;
         return Math.max(pageViewportTop() + 20, height - reserved);
     }
 
     private int pageContentBottom() {
         return switch (category == null ? "categories" : category) {
-            case "categories" -> 50 + 6 * 26 + 20;
-            case "visuals" -> 50 + 7 * 26 + 20;
-            case "gameplay" -> 50 + 8 * 26 + 20;
-            case "colors" -> 50 + 3 * 26 + 78 + 28;
-            case "delay" -> 50 + 26 + 20;
+            case "categories" -> 50 + 5 * 26 + 20;
+            case "visuals" -> 50 + 6 * 26 + 20;
+            case "gameplay" -> 50 + 9 * 26 + 20;
+            case "colors" -> 50 + 4 * 26 + 78 + 28;
             default -> pageViewportBottom();
         };
     }
@@ -195,26 +234,23 @@ public class FnfSettingsScreen extends Screen {
     // ------------------------------------------------------------------ pages
 
     private void initCategories() {
-        int w = 160;
+        int w = Math.min(260, width - 56);
         int x = width / 2 - w / 2;
-        addRenderableWidget(Button.builder(Component.literal("Note Colors"),
-                        b -> switchTo("colors"))
+        addRenderableWidget(Button.builder(Component.literal("Note Settings"),
+                        b -> minecraft.setScreen(new NoteSettingsScreen(this)))
                 .bounds(x, rowY(0), w, 20).build());
         addRenderableWidget(Button.builder(Component.literal("Controls"),
                         b -> minecraft.setScreen(new KeyBindsScreen(this, minecraft.options)))
                 .bounds(x, rowY(1), w, 20).build());
-        addRenderableWidget(Button.builder(Component.literal("Adjust Delay and Combo"),
-                        b -> switchTo("delay"))
-                .bounds(x, rowY(2), w, 20).build());
         addRenderableWidget(Button.builder(Component.literal("Visuals and UI"),
                         b -> switchTo("visuals"))
-                .bounds(x, rowY(3), w, 20).build());
+                .bounds(x, rowY(2), w, 20).build());
         addRenderableWidget(Button.builder(Component.literal("Gameplay"),
                         b -> switchTo("gameplay"))
-                .bounds(x, rowY(4), w, 20).build());
+                .bounds(x, rowY(3), w, 20).build());
         addRenderableWidget(Button.builder(Component.literal("Mods"),
                         b -> switchTo("folders"))
-                .bounds(x, rowY(5), w, 20).build());
+                .bounds(x, rowY(4), w, 20).build());
     }
 
     // ------------------------------------------------------------------ note colors
@@ -225,6 +261,11 @@ public class FnfSettingsScreen extends Screen {
     private EditBox hexBox;
     private boolean updatingHex;
     private boolean colorDirty;
+    /** Legacy inline note preview state; the dedicated Note Settings screen supersedes it. */
+    private boolean colorPixelPreview;
+    private boolean colorPreviewCaptured;
+    private boolean colorPreviewPreviousPixel;
+    private boolean colorPreviewPreviousSongRgb;
     /** 0 = none, 1 = saturation/brightness square, 2 = hue bar. */
     private int colorDragTarget;
 
@@ -234,22 +275,23 @@ public class FnfSettingsScreen extends Screen {
 
     /** True while the current mod world forces the note colour values (locked in-game). */
     private static boolean noteColorValuesLocked() {
-        return ClientOptions.isLocked("noteColorBase") || ClientOptions.isLocked("noteColorOutline");
+        return ClientOptions.isLocked("noteColorBase")
+                || ClientOptions.isLocked("noteColorHighlight")
+                || ClientOptions.isLocked("noteColorOutline");
     }
 
     private void initColors() {
+        beginColorPreview();
         colorDragTarget = 0;
         int w = 170;
         int x = width / 2 - 85;
-        boolean enabledLocked = ClientOptions.isLocked("noteColorsEnabled");
         boolean valuesLocked = noteColorValuesLocked();
 
-        var toggle = addRenderableWidget(Button.builder(coloredNotesLabel(), b -> {
-            ClientOptions.get().noteColorsEnabled = !ClientOptions.get().noteColorsEnabled;
-            ClientOptions.save();
-            b.setMessage(coloredNotesLabel());
+        addRenderableWidget(Button.builder(pixelPreviewLabel(), b -> {
+            colorPixelPreview = !colorPixelPreview;
+            NoteStyle.setPixelUi(colorPixelPreview);
+            b.setMessage(pixelPreviewLabel());
         }).bounds(x, rowY(0), w, 20).build());
-        toggle.active = !enabledLocked;
 
         String[] laneNames = {"Left", "Down", "Up", "Right"};
         addRenderableWidget(Button.builder(Component.literal("Note: " + laneNames[selLane]), b -> {
@@ -280,6 +322,7 @@ public class FnfSettingsScreen extends Screen {
 
         var reset = addRenderableWidget(Button.builder(Component.literal("Reset Lane"), b -> {
             ClientOptions.get().noteColorBase[selLane] = ClientOptions.defaultBase()[selLane];
+            ClientOptions.get().noteColorHighlight[selLane] = ClientOptions.defaultHighlight()[selLane];
             ClientOptions.get().noteColorOutline[selLane] = ClientOptions.defaultOutline()[selLane];
             ClientOptions.save();
             NoteStyle.rebuildLaneColors(selLane);
@@ -290,8 +333,26 @@ public class FnfSettingsScreen extends Screen {
         loadSelectedColor();
     }
 
-    private Component coloredNotesLabel() {
-        return Component.literal("Colored Notes: " + (ClientOptions.get().noteColorsEnabled ? "ON" : "OFF"));
+    private Component pixelPreviewLabel() {
+        return Component.literal("Preview UI: " + (colorPixelPreview ? "Pixel" : "Normal"));
+    }
+
+    private void beginColorPreview() {
+        if (colorPreviewCaptured) return;
+        colorPreviewCaptured = true;
+        colorPreviewPreviousPixel = NoteStyle.pixelUi();
+        colorPreviewPreviousSongRgb = NoteStyle.songRgbAllowed();
+        colorPixelPreview = colorPreviewPreviousPixel;
+        // The settings preview demonstrates the player's RGB switch, independently of a
+        // paused song's disableNoteRGB author setting.
+        NoteStyle.setSongRgbAllowed(true);
+    }
+
+    private void restoreColorPreview() {
+        if (!colorPreviewCaptured) return;
+        colorPreviewCaptured = false;
+        NoteStyle.setSongRgbAllowed(colorPreviewPreviousSongRgb);
+        NoteStyle.setPixelUi(colorPreviewPreviousPixel);
     }
 
     private int selectedColor() {
@@ -379,6 +440,7 @@ public class FnfSettingsScreen extends Screen {
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
         if ("folders".equals(category) && button == 0 && beginPermissionPaint(mouseX, mouseY)) return true;
+        if ("folders".equals(category) && button == 0 && clickPackScrollbar(mouseX, mouseY)) return true;
         if ("folders".equals(category) && button == 0 && clickFolderScrollbar(mouseX, mouseY)) return true;
         if (super.mouseClicked(mouseX, mouseY, button)) return true;
         return "colors".equals(category) && button == 0 && beginColorPick(mouseX, mouseY);
@@ -394,6 +456,10 @@ public class FnfSettingsScreen extends Screen {
             scrollFoldersTo(mouseY);
             return true;
         }
+        if ("folders".equals(category) && draggingPackThumb) {
+            scrollPackTo(mouseY);
+            return true;
+        }
         if ("colors".equals(category) && button == 0 && colorDragTarget != 0) {
             return updateColorPick(mouseX, mouseY);
         }
@@ -403,6 +469,7 @@ public class FnfSettingsScreen extends Screen {
     @Override
     public boolean mouseReleased(double mouseX, double mouseY, int button) {
         draggingFolderThumb = false;
+        draggingPackThumb = false;
         draggingPermissions = false;
         permissionDragVisited.clear();
         if (button == 0) colorDragTarget = 0;
@@ -415,7 +482,12 @@ public class FnfSettingsScreen extends Screen {
     public boolean mouseScrolled(double mouseX, double mouseY, double scrollX, double scrollY) {
         if ("folders".equals(category)) {
             if (scrollY == 0) return super.mouseScrolled(mouseX, mouseY, scrollX, scrollY);
-            scrollFoldersToPx(folderScrollTargetPx - scrollY * (FOLDER_ROW_H / 2.0));
+            if (mouseX >= permissionPanelX() - 6
+                    && mouseX < permissionPanelX() + permissionPanelWidth() + 6) {
+                scrollPackToPx(packScrollTargetPx - scrollY * 18.0);
+            } else {
+                scrollFoldersToPx(folderScrollTargetPx - scrollY * (FOLDER_ROW_H / 2.0));
+            }
             return true;
         }
         if (scrollY != 0 && pageMaxScroll() > 0) {
@@ -426,11 +498,6 @@ public class FnfSettingsScreen extends Screen {
     }
 
     private void initFolders() {
-        Button permissionsToggle = addRenderableWidget(Button.builder(
-                Component.literal(filtersOpen ? "Close Permissions" : "Permissions"), b -> {
-            filtersOpen = !filtersOpen;
-            switchTo("folders");
-        }).bounds(8, 18, 104, 20).build());
         int headerWidth = Math.min(170, folderListWidth());
         int headerX = folderListX() + (folderListWidth() - headerWidth) / 2;
         addRenderableWidget(Button.builder(Component.literal("Add Mods Folder..."), b -> pickFolder())
@@ -448,9 +515,7 @@ public class FnfSettingsScreen extends Screen {
                 && !selectedFolder.equals(installedSource) && !folders.contains(selectedFolder)) {
             selectedFolder = null;
             selectedPackRoot = null;
-            filtersOpen = false;
         }
-        permissionsToggle.active = selectedFolder != null;
         record Source(String key, Path path, String label, boolean installed, boolean direct,
                       int externalIndex, List<ModPackInfo> packs) {}
         List<Source> sources = new ArrayList<>();
@@ -490,7 +555,7 @@ public class FnfSettingsScreen extends Screen {
         for (Source source : sources) {
             int baseY = folderListTop() + row++ * FOLDER_ROW_H;
             boolean hasPacks = !source.direct() && !source.packs().isEmpty();
-            int controls = source.installed() ? 0 : source.direct() ? 84 : 63;
+            int controls = source.installed() ? 0 : 63;
             int arrowWidth = hasPacks ? 21 : 0;
             if (hasPacks) {
                 String arrow = expandedSources.contains(source.key()) ? "▼" : "▶";
@@ -509,18 +574,13 @@ public class FnfSettingsScreen extends Screen {
                     (sourceIcon == null ? "" : "    ") + sourceLabel), button -> {
                 selectedFolder = sourceId;
                 selectedPackRoot = source.direct() ? source.path() : null;
+                resetPackScroll();
                 switchTo("folders");
             }).bounds(listX + arrowWidth, baseY, listW - controls - arrowWidth, 20).build());
             Path sourceSelection = source.direct() ? source.path() : null;
             pathButton.active = !sourceId.equals(selectedFolder)
                     || !java.util.Objects.equals(sourceSelection, selectedPackRoot);
             folderWidgets.add(new FolderWidget(pathButton, baseY, sourceIcon));
-            if (source.direct() && !source.packs().isEmpty()) {
-                Button info = addRenderableWidget(Button.builder(Component.literal("i"), button ->
-                                minecraft.setScreen(new ModDetailsScreen(this, source.packs().get(0))))
-                        .bounds(listX + listW - 84, baseY, 20, 20).build());
-                folderWidgets.add(new FolderWidget(info, baseY, null));
-            }
             String f = source.installed() ? null : folders.get(source.externalIndex());
             int folderIndex = source.externalIndex();
             Button up = addRenderableWidget(Button.builder(Component.literal("↑"), b -> moveFolder(f, -1))
@@ -563,21 +623,18 @@ public class FnfSettingsScreen extends Screen {
                             button -> {
                                 selectedFolder = sourceId;
                                 selectedPackRoot = pack.root();
+                                resetPackScroll();
                                 switchTo("folders");
                             })
-                            .bounds(listX + 20, packY, listW - 43, 20).build());
+                            .bounds(listX + 20, packY, listW - 20, 20).build());
                     mod.active = !(sourceId.equals(selectedFolder)
                             && pack.root().equals(selectedPackRoot));
                     folderWidgets.add(new FolderWidget(mod, packY, icon));
-                    Button info = addRenderableWidget(Button.builder(Component.literal("i"), button ->
-                                    minecraft.setScreen(new ModDetailsScreen(this, pack)))
-                            .bounds(listX + listW - 22, packY, 20, 20).build());
-                    folderWidgets.add(new FolderWidget(info, packY, null));
                 }
             }
         }
 
-        if (filtersOpen && selectedFolder != null) initPermissionPanel();
+        if (selectedFolder != null) initPackPanel();
     }
 
     private String displayPath(Path path) {
@@ -586,36 +643,143 @@ public class FnfSettingsScreen extends Screen {
         return "..." + java.io.File.separator + path.subpath(count - 3, count);
     }
 
+    private int permissionPanelX() { return 16; }
     private int permissionPanelWidth() { return Math.min(150, Math.max(108, width / 3)); }
-
-    private void initPermissionPanel() {
-        if (selectedPackRoot != null) permissionTargetLabel = ModPackInfo.read(selectedPackRoot).name();
-        else if (selectedFolder != null && selectedFolder.equals(
-                SongLibrary.modsDir().toAbsolutePath().normalize().toString())) permissionTargetLabel = "Installed Mods";
-        else {
-            try { permissionTargetLabel = displayPath(Path.of(selectedFolder)); }
-            catch (Exception ignored) { permissionTargetLabel = "Selected source"; }
+    private int packViewportTop() { return 48; }
+    private int packViewportBottom() { return Math.max(packViewportTop() + 24, height - 42); }
+    private int packIconSize() { return Math.min(48, Math.max(28, permissionPanelWidth() - 30)); }
+    private int packNameY() { return packViewportTop() + 8 + packIconSize() + 6; }
+    private int packDescriptionY() { return packNameY() + font.lineHeight + 5; }
+    private List<net.minecraft.util.FormattedCharSequence> packDescriptionLines() {
+        String description = selectedPackInfo == null ? "Select a mod to inspect it."
+                : selectedPackInfo.description();
+        return font.split(Component.literal(description), permissionPanelWidth() - 10);
+    }
+    private int packPathY() {
+        return packDescriptionY() + packDescriptionLines().size() * (font.lineHeight + 1) + 5;
+    }
+    private int packMetadataY() { return packPathY() + font.lineHeight + 5; }
+    private List<net.minecraft.util.FormattedCharSequence> packMetadataLines() {
+        if (selectedPackInfo == null) return List.of();
+        List<net.minecraft.util.FormattedCharSequence> lines = new ArrayList<>();
+        if (!selectedPackInfo.version().isBlank()) {
+            lines.addAll(font.split(Component.literal("Version: " + selectedPackInfo.version()),
+                    permissionPanelWidth() - 10));
         }
+        if (!selectedPackInfo.license().isBlank()) {
+            lines.addAll(font.split(Component.literal("License: " + selectedPackInfo.license()),
+                    permissionPanelWidth() - 10));
+        }
+        if (!selectedPackInfo.contributors().isEmpty()) {
+            lines.add(net.minecraft.util.FormattedCharSequence.forward("Contributors",
+                    net.minecraft.network.chat.Style.EMPTY));
+            for (ModPackInfo.Contributor contributor : selectedPackInfo.contributors()) {
+                String role = contributor.role().isBlank() ? "" : " — " + contributor.role();
+                lines.addAll(font.split(Component.literal(contributor.name() + role),
+                        permissionPanelWidth() - 10));
+            }
+        }
+        return lines;
+    }
+    private int packPermissionsTitleY() {
+        return packMetadataY() + packMetadataLines().size() * (font.lineHeight + 1) + 5;
+    }
+    private int packPermissionTop() { return packPermissionsTitleY() + 14; }
+
+    private void initPackPanel() {
+        Path selectedPath;
+        try { selectedPath = selectedPackRoot != null ? selectedPackRoot : Path.of(selectedFolder); }
+        catch (Exception ignored) { selectedPath = SongLibrary.modsDir(); }
+        selectedPackInfo = selectedPackRoot != null ? ModPackInfo.read(selectedPackRoot)
+                : new ModPackInfo(selectedPath, selectedPath.equals(SongLibrary.modsDir().toAbsolutePath().normalize())
+                ? "Installed Mods" : displayPath(selectedPath),
+                selectedPackRoot == null ? "Mod source containing one or more packs." : "No description provided.",
+                null, "", "", List.of());
+        permissionTargetLabel = selectedPackInfo.name();
         SongLibrary.ExternalContent[] types = SongLibrary.ExternalContent.values();
         int panelW = permissionPanelWidth();
-        int availableRows = Math.max(2, (height - 112) / 23);
-        int columns = Math.max(2, (types.length + availableRows - 1) / availableRows);
-        columns = Math.min(3, columns);
+        int columns = panelW >= 138 ? 2 : 1;
         int gap = 3;
-        int buttonW = (panelW - 12 - gap * (columns - 1)) / columns;
-        int top = 64;
+        int buttonW = (panelW - gap * (columns - 1)) / columns;
+        int top = packPermissionTop();
         var selected = selectedPermissionContent();
         for (int i = 0; i < types.length; i++) {
             SongLibrary.ExternalContent type = types[i];
-            int x = 6 + (i % columns) * (buttonW + gap);
+            int x = permissionPanelX() + (i % columns) * (buttonW + gap);
             int y = top + (i / columns) * 23;
             Button button = addRenderableWidget(Button.builder(Component.literal(permissionName(type)), b -> {
                 boolean enable = !selectedPermissionContent().contains(type);
                 setSelectedPermission(type, enable);
             }).bounds(x, y, buttonW, 20).build());
             button.setAlpha(selected.contains(type) ? 1.0f : 0.42f);
-            permissionWidgets.add(new PermissionWidget(button, type));
+            permissionWidgets.add(new PermissionWidget(button, type, y));
         }
+        int rows = (types.length + columns - 1) / columns;
+        packContentHeight = top + rows * 23 + 8 - packViewportTop();
+        clampPackScroll();
+    }
+
+    private double packMaxScrollPx() {
+        return Math.max(0, packContentHeight - (packViewportBottom() - packViewportTop()));
+    }
+    private void clampPackScroll() {
+        packScrollPx = Mth.clamp(packScrollPx, 0, packMaxScrollPx());
+        packScrollTargetPx = Mth.clamp(packScrollTargetPx, 0, packMaxScrollPx());
+        applyPackWidgetScroll();
+    }
+    private void resetPackScroll() {
+        packScrollPx = packScrollTargetPx = packScrollFromPx = 0;
+        packScrollTweenActive = false;
+        draggingPackThumb = false;
+    }
+    private void scrollPackToPx(double target) {
+        updatePackScrollTween();
+        packScrollFromPx = packScrollPx;
+        packScrollTargetPx = Mth.clamp(target, 0, packMaxScrollPx());
+        packScrollTweenStart = System.nanoTime();
+        packScrollTweenActive = Math.abs(packScrollTargetPx - packScrollFromPx) > 0.01;
+        if (!packScrollTweenActive) packScrollPx = packScrollTargetPx;
+    }
+    private void updatePackScrollTween() {
+        if (!packScrollTweenActive) return;
+        double progress = (System.nanoTime() - packScrollTweenStart) / (double) SCROLL_TWEEN_NANOS;
+        if (progress >= 1) {
+            packScrollPx = packScrollTargetPx;
+            packScrollTweenActive = false;
+        } else {
+            packScrollPx = packScrollFromPx + (packScrollTargetPx - packScrollFromPx)
+                    * Easing.apply("expoOut", progress);
+        }
+        applyPackWidgetScroll();
+    }
+    private void applyPackWidgetScroll() {
+        int offset = (int) Math.round(packScrollPx);
+        int top = packViewportTop(), bottom = packViewportBottom();
+        for (PermissionWidget permission : permissionWidgets) {
+            int y = permission.baseY() - offset;
+            permission.button().setY(y);
+            permission.button().visible = y + permission.button().getHeight() > top && y < bottom;
+        }
+    }
+    private void scrollPackTo(double mouseY) {
+        double max = packMaxScrollPx();
+        if (max <= 0) return;
+        int top = packViewportTop(), height = packViewportBottom() - top;
+        int thumb = Math.max(14, (int) (height * height / (double) Math.max(height, packContentHeight)));
+        double fraction = (mouseY - top - thumb / 2.0) / Math.max(1, height - thumb);
+        packScrollPx = Mth.clamp(fraction, 0, 1) * max;
+        packScrollTargetPx = packScrollFromPx = packScrollPx;
+        packScrollTweenActive = false;
+        applyPackWidgetScroll();
+    }
+    private boolean clickPackScrollbar(double mouseX, double mouseY) {
+        if (packMaxScrollPx() <= 0) return false;
+        int x = permissionPanelX() + permissionPanelWidth() + 1;
+        if (mouseX < x - 2 || mouseX >= x + 7
+                || mouseY < packViewportTop() || mouseY >= packViewportBottom()) return false;
+        draggingPackThumb = true;
+        scrollPackTo(mouseY);
+        return true;
     }
 
     private String permissionName(SongLibrary.ExternalContent type) {
@@ -647,7 +811,7 @@ public class FnfSettingsScreen extends Screen {
     }
 
     private boolean beginPermissionPaint(double mouseX, double mouseY) {
-        if (!filtersOpen) return false;
+        if (selectedFolder == null) return false;
         for (PermissionWidget permission : permissionWidgets) {
             if (!permission.button().visible || !permission.button().isMouseOver(mouseX, mouseY)) continue;
             permissionDragEnables = !selectedPermissionContent().contains(permission.content());
@@ -697,14 +861,14 @@ public class FnfSettingsScreen extends Screen {
         return Math.max(folderListTop() + FOLDER_ROW_H, height - 64);
     }
     private int folderListWidth() {
-        int reservedLeft = filtersOpen ? permissionPanelWidth() + 18 : 20;
-        return Math.min(360, Math.max(130, width - reservedLeft - 20));
+        int available = folderAreaRight() - folderAreaLeft() - 12;
+        return Math.min(360, Math.max(70, available));
     }
     private int folderListX() {
-        if (!filtersOpen) return width / 2 - folderListWidth() / 2;
-        int left = permissionPanelWidth() + 12;
-        return left + Math.max(0, (width - left - folderListWidth()) / 2);
+        return folderAreaLeft() + Math.max(0, (folderAreaRight() - folderAreaLeft() - folderListWidth()) / 2);
     }
+    private int folderAreaLeft() { return permissionPanelX() + permissionPanelWidth() + 10; }
+    private int folderAreaRight() { return width - 16; }
     private int folderVisibleRows() {
         return Math.max(1, (folderListBottom() - folderListTop()) / FOLDER_ROW_H);
     }
@@ -798,24 +962,6 @@ public class FnfSettingsScreen extends Screen {
         }, "fnf-folder-picker").start();
     }
 
-    private void initDelay() {
-        int y = rowY(1);
-        int cx = width / 2;
-        lockIf(addRenderableWidget(Button.builder(Component.literal("-10"), b -> nudgeOffset(-10))
-                .bounds(cx - 90, y, 40, 20).build()), "offsetMs");
-        lockIf(addRenderableWidget(Button.builder(Component.literal("-1"), b -> nudgeOffset(-1))
-                .bounds(cx - 46, y, 40, 20).build()), "offsetMs");
-        lockIf(addRenderableWidget(Button.builder(Component.literal("+1"), b -> nudgeOffset(1))
-                .bounds(cx + 6, y, 40, 20).build()), "offsetMs");
-        lockIf(addRenderableWidget(Button.builder(Component.literal("+10"), b -> nudgeOffset(10))
-                .bounds(cx + 50, y, 40, 20).build()), "offsetMs");
-    }
-
-    private void nudgeOffset(double delta) {
-        ClientOptions.get().offsetMs += delta;
-        ClientOptions.save();
-    }
-
     /** Grays out and disables a control whose setting is forced by the current mod world. */
     private static <T extends net.minecraft.client.gui.components.AbstractWidget> T lockIf(T widget, String field) {
         if (ClientOptions.isLocked(field)) widget.active = false;
@@ -823,32 +969,15 @@ public class FnfSettingsScreen extends Screen {
     }
 
     private void initVisuals() {
-        int w = 170;
+        int w = Math.min(260, width - 56);
         int x = width / 2 - w / 2;
-        lockIf(addRenderableWidget(Button.builder(noteSkinLabel(), b ->
-                cycle(NoteStyle.listSkins(), ClientOptions.get().noteSkin, false, next -> {
-                    ClientOptions.get().noteSkin = next;
-                    ClientOptions.save();
-                    NoteStyle.reload();
-                    b.setMessage(noteSkinLabel());
-                })).bounds(x, rowY(0), w, 20).build()), "noteSkin");
-
-        Button splashBtn = addRenderableWidget(Button.builder(splashLabel(), b ->
-                cycle(NoteStyle.listSplashes(), ClientOptions.get().splashSkin, true, next -> {
-                    ClientOptions.get().splashSkin = next;
-                    ClientOptions.save();
-                    NoteStyle.reload();
-                    b.setMessage(splashLabel());
-                })).bounds(x, rowY(1), w, 20).build());
-        splashBtn.active = !NoteStyle.skinHasOwnSplash() && !ClientOptions.isLocked("splashSkin");
-
         lockIf(addRenderableWidget(Button.builder(animsLabel(false), b ->
                 minecraft.setScreen(new AnimationSetPickerScreen(this, false)))
-                .bounds(x, rowY(2), w, 20).build()), "animationSet");
+                .bounds(x, rowY(0), w, 20).build()), "animationSet");
 
         lockIf(addRenderableWidget(Button.builder(animsLabel(true), b ->
                 minecraft.setScreen(new AnimationSetPickerScreen(this, true)))
-                .bounds(x, rowY(3), w, 20).build()), "opponentAnimationSet");
+                .bounds(x, rowY(1), w, 20).build()), "opponentAnimationSet");
 
         lockIf(addRenderableWidget(Button.builder(hudStyleLabel(), b ->
                 cycle(List.of("default", "abbreviated", "numbers", "vanilla", "fnf"),
@@ -856,18 +985,18 @@ public class FnfSettingsScreen extends Screen {
                             ClientOptions.get().hudStyle = next;
                             ClientOptions.save();
                             b.setMessage(hudStyleLabel());
-                        })).bounds(x, rowY(4), w, 20).build()), "hudStyle");
+                        })).bounds(x, rowY(2), w, 20).build()), "hudStyle");
 
         // icon selectors open a searchable list
         lockIf(addRenderableWidget(Button.builder(iconLabel(true),
                 b -> minecraft.setScreen(new IconPickerScreen(this, true)))
-                .bounds(x, rowY(5), w, 20).build()), "playerIcon");
+                .bounds(x, rowY(3), w, 20).build()), "playerIcon");
         lockIf(addRenderableWidget(Button.builder(iconLabel(false),
                 b -> minecraft.setScreen(new IconPickerScreen(this, false)))
-                .bounds(x, rowY(6), w, 20).build()), "botIcon");
+                .bounds(x, rowY(4), w, 20).build()), "botIcon");
         addRenderableWidget(Button.builder(Component.literal("Rating Position..."),
                 b -> minecraft.setScreen(new RatingPositionScreen(this)))
-                .bounds(x, rowY(7), w, 20).build());
+                .bounds(x, rowY(5), w, 20).build());
     }
 
     private Component iconLabel(boolean player) {
@@ -897,8 +1026,19 @@ public class FnfSettingsScreen extends Screen {
         return Component.literal("Splashes: " + (cur == null || cur.isEmpty() ? "OFF" : cur));
     }
 
+    private Component holdSplashLabel() {
+        if (NoteStyle.skinHasOwnHoldCover()) {
+            return Component.literal("Hold Cover: (from skin)");
+        }
+        String current = ClientOptions.get().holdSplashSkin;
+        String shown = current == null || current.isBlank()
+                || current.equalsIgnoreCase(ClientOptions.NOTE_SKIN_DEFAULT) ? "Default (chart)"
+                : current.equalsIgnoreCase(ClientOptions.NOTE_SKIN_NONE) ? "OFF" : current;
+        return Component.literal("Hold Cover: " + shown);
+    }
+
     private void initGameplay() {
-        int w = 170;
+        int w = Math.min(260, width - 56);
         int x = width / 2 - w / 2;
         lockIf(addRenderableWidget(Button.builder(toggleLabel("Downscroll", ClientOptions.get().downscroll), b -> {
             ClientOptions.get().downscroll = !ClientOptions.get().downscroll;
@@ -1021,7 +1161,7 @@ public class FnfSettingsScreen extends Screen {
     private void renderColorPicker(GuiGraphics gui) {
         int sx = sbX(), sy = sbY();
 
-        gui.drawString(font, "Hex:", sx - 4, rowY(2) + 6, 0xFFFFFF);
+        gui.drawString(font, "Hex:", sx - 4, rowY(3) + 6, 0xFFFFFF);
 
         // saturation/brightness square for the current hue
         for (int col = 0; col < 72; col++) {
@@ -1062,7 +1202,7 @@ public class FnfSettingsScreen extends Screen {
         }
 
         if (!NoteStyle.skinIsColorable()) {
-            gui.drawCenteredString(font, "Current skin has no RGB template - colors won't apply to it.",
+            gui.drawCenteredString(font, "Current skin has no atlas available for RGB colors.",
                     width / 2, hueY() + 16, 0xFFFF8866);
         }
     }
@@ -1125,24 +1265,42 @@ public class FnfSettingsScreen extends Screen {
     public void render(GuiGraphics gui, int mouseX, int mouseY, float partialTick) {
         updatePageScrollTween();
         updateFolderScrollTween();
-        if ("folders".equals(category) && filtersOpen) renderPermissionPanelBackground(gui);
+        updatePackScrollTween();
+        int shellX = "folders".equals(category) ? 6 : Math.max(6, width / 2 - Math.min(230, (width - 12) / 2));
+        int shellWidth = "folders".equals(category) ? width - 12 : Math.min(460, width - 12);
+        BlockifiedScreenStyle.backdrop(gui, width, height);
+        BlockifiedScreenStyle.panel(gui, shellX, 6, shellWidth, height - 12);
+        BlockifiedScreenStyle.inner(gui, shellX + 10, pageViewportTop() - 2,
+                shellWidth - 20, pageViewportBottom() - pageViewportTop() + 4);
+        if ("folders".equals(category)) renderPackPanelBackground(gui);
         if ("folders".equals(category)) {
             // Render list rows ourselves inside one scissor. Merely hiding rows
             // whose origins are outside the viewport allowed partially visible
             // buttons/text to paint over the filter controls.
             for (FolderWidget row : folderWidgets) row.widget().visible = false;
+            for (PermissionWidget permission : permissionWidgets) permission.button().visible = false;
+        } else {
+            // Render scrolling page controls ourselves under one scissor. Merely
+            // hiding controls whose origins left the viewport allowed partially
+            // visible buttons to paint over headers/footers on compact screens.
+            for (AbstractWidget widget : pageWidgetBaseY.keySet()) widget.visible = false;
         }
         super.render(gui, mouseX, mouseY, partialTick);
-        if ("folders".equals(category)) renderFolderRows(gui, mouseX, mouseY, partialTick);
+        if ("folders".equals(category)) {
+            renderFolderRows(gui, mouseX, mouseY, partialTick);
+            renderPackPanelContent(gui, mouseX, mouseY, partialTick);
+        }
+        else renderPageRows(gui, mouseX, mouseY, partialTick);
         String title = switch (category == null ? "" : category) {
-            case "delay" -> "Adjust Delay and Combo";
             case "visuals" -> "Visuals and UI";
             case "gameplay" -> "Gameplay";
             case "folders" -> "Mods";
-            case "colors" -> "Note Colors";
+            case "colors" -> "Note Settings";
             default -> "Options";
         };
-        gui.drawCenteredString(font, title, width / 2, 20, 0xFFFFFF);
+        gui.drawString(font, "BLOCKIFIED SETTINGS", shellX + 14, 13,
+                BlockifiedScreenStyle.ACCENT, false);
+        gui.drawCenteredString(font, title, width / 2, 27, BlockifiedScreenStyle.TEXT);
 
         if ("colors".equals(category)) {
             gui.enableScissor(0, pageViewportTop(), width, pageViewportBottom());
@@ -1159,11 +1317,8 @@ public class FnfSettingsScreen extends Screen {
                 int thumbY = trackTop + (int) ((trackH - thumbH)
                         * (folderScrollPx / folderMaxScrollPx(folderTotalRows)));
                 gui.fill(trackX, trackTop, trackX + 5, folderListBottom(), 0x55000000);
-                gui.fill(trackX, thumbY, trackX + 5, thumbY + thumbH, 0xFFAAAAAA);
-            }
-            if (selectedFolder == null) {
-                gui.drawCenteredString(font, "Installed mods are always available",
-                        width / 2, folderListBottom() + 3, 0xAAAAAA);
+                gui.fill(trackX, thumbY, trackX + 5, thumbY + thumbH,
+                        BlockifiedScreenStyle.ACCENT);
             }
         } else if (pageMaxScroll() > 0) {
             int top = pageViewportTop(), bottom = pageViewportBottom();
@@ -1172,28 +1327,86 @@ public class FnfSettingsScreen extends Screen {
             int thumbH = Math.max(16, trackH * trackH / Math.max(trackH, contentH));
             int thumbY = top + (int) ((trackH - thumbH) * (pageScrollPx / pageMaxScroll()));
             gui.fill(width - 7, top, width - 4, bottom, 0x55000000);
-            gui.fill(width - 7, thumbY, width - 4, thumbY + thumbH, 0xFFAAAAAA);
+            gui.fill(width - 7, thumbY, width - 4, thumbY + thumbH,
+                    BlockifiedScreenStyle.ACCENT);
         }
 
-        if ("delay".equals(category)) {
-            gui.drawCenteredString(font, String.format("Audio Offset: %.0f ms", ClientOptions.get().offsetMs),
-                    width / 2, rowY(0) + 6, 0xFFFF66);
-            gui.drawCenteredString(font, "Positive = notes judged later. Tune until hits feel centered.",
-                    width / 2, hintY(0), 0xAAAAAA);
-        } else if ("visuals".equals(category)) {
-            gui.drawCenteredString(font, "skins/  splashes/  animations/<name>.json  icons/<pack>/<name>.png",
+        if ("visuals".equals(category)) {
+            gui.drawCenteredString(font, "animations/<name>.json  icons/<pack>/<name>.png",
                     width / 2, hintY(1), 0xAAAAAA);
             gui.drawCenteredString(font, "All folders under config/fnfmod/",
                     width / 2, hintY(0), 0xAAAAAA);
         }
     }
 
-    private void renderPermissionPanelBackground(GuiGraphics gui) {
+    private void renderPackPanelBackground(GuiGraphics gui) {
+        int panelX = permissionPanelX();
         int panelW = permissionPanelWidth();
-        gui.fill(2, 42, panelW, height - 40, 0xE6181822);
-        gui.renderOutline(2, 42, panelW - 2, height - 82, 0xFF555566);
-        String label = shortenPath(permissionTargetLabel, panelW - 12);
-        gui.drawCenteredString(font, label, panelW / 2, 49, 0xFFFFFFFF);
+        BlockifiedScreenStyle.inner(gui, panelX - 6, 42, panelW + 12, height - 82);
+    }
+
+    private void renderPackPanelContent(GuiGraphics gui, int mouseX, int mouseY, float partialTick) {
+        int panelX = permissionPanelX(), panelW = permissionPanelWidth();
+        int top = packViewportTop(), bottom = packViewportBottom();
+        gui.enableScissor(panelX - 4, top, panelX + panelW + 5, bottom);
+        int offset = (int) Math.round(packScrollPx);
+        if (selectedPackInfo == null) {
+            gui.drawCenteredString(font, "Select a mod", panelX + panelW / 2, top + 10,
+                    BlockifiedScreenStyle.TEXT_MUTED);
+        } else {
+            int iconSize = packIconSize(), iconTop = top + 8 - offset;
+            if (selectedPackInfo.icon() != null) {
+                IconLibrary.drawFile(gui, selectedPackInfo.icon().toString(), 0,
+                        panelX + panelW / 2f, iconTop + iconSize / 2f, iconSize, false);
+            } else {
+                gui.fill(panelX + panelW / 2 - iconSize / 2, iconTop,
+                        panelX + panelW / 2 + iconSize / 2, iconTop + iconSize, 0x55333333);
+                gui.drawCenteredString(font, "No icon", panelX + panelW / 2,
+                        iconTop + iconSize / 2 - 4, BlockifiedScreenStyle.TEXT_MUTED);
+            }
+            String name = shortenPath(selectedPackInfo.name(), panelW - 8);
+            gui.drawCenteredString(font, name, panelX + panelW / 2, packNameY() - offset,
+                    BlockifiedScreenStyle.ACCENT);
+            int descriptionY = packDescriptionY() - offset;
+            for (var line : packDescriptionLines()) {
+                gui.drawCenteredString(font, line, panelX + panelW / 2, descriptionY,
+                        BlockifiedScreenStyle.TEXT_SECTION);
+                descriptionY += font.lineHeight + 1;
+            }
+            String path = shortenPath(displayPath(selectedPackInfo.root()), panelW - 8);
+            gui.drawCenteredString(font, path, panelX + panelW / 2, packPathY() - offset,
+                    BlockifiedScreenStyle.TEXT_MUTED);
+            int metadataY = packMetadataY() - offset;
+            for (var line : packMetadataLines()) {
+                gui.drawCenteredString(font, line, panelX + panelW / 2, metadataY,
+                        BlockifiedScreenStyle.TEXT_SECTION);
+                metadataY += font.lineHeight + 1;
+            }
+            gui.drawCenteredString(font, "Permissions", panelX + panelW / 2,
+                    packPermissionsTitleY() - offset, BlockifiedScreenStyle.TEXT);
+        }
+        for (PermissionWidget permission : permissionWidgets) {
+            Button button = permission.button();
+            int y = permission.baseY() - offset;
+            button.setY(y);
+            button.visible = y + button.getHeight() > top && y < bottom;
+            if (button.visible) button.render(gui, mouseX, mouseY, partialTick);
+        }
+        gui.flush();
+        gui.disableScissor();
+        if (packMaxScrollPx() > 0) {
+            int height = bottom - top;
+            int thumb = Math.max(14, (int) (height * height / (double) Math.max(height, packContentHeight)));
+            int thumbY = top + (int) ((height - thumb) * (packScrollPx / packMaxScrollPx()));
+            int x = panelX + panelW + 1;
+            gui.fill(x, top, x + 4, bottom, 0x55000000);
+            gui.fill(x, thumbY, x + 4, thumbY + thumb, BlockifiedScreenStyle.ACCENT);
+        }
+    }
+
+    @Override
+    public void renderBackground(GuiGraphics gui, int mouseX, int mouseY, float partialTick) {
+        // render() owns the full background so widgets stay crisp and unblurred.
     }
 
     private void renderFolderRows(GuiGraphics gui, int mouseX, int mouseY, float partialTick) {
@@ -1216,6 +1429,19 @@ public class FnfSettingsScreen extends Screen {
         gui.disableScissor();
     }
 
+    private void renderPageRows(GuiGraphics gui, int mouseX, int mouseY, float partialTick) {
+        int top = pageViewportTop(), bottom = pageViewportBottom();
+        gui.enableScissor(0, top, width, bottom);
+        for (var entry : pageWidgetBaseY.entrySet()) {
+            AbstractWidget widget = entry.getKey();
+            int y = widget.getY();
+            boolean visible = y + widget.getHeight() > top && y < bottom;
+            widget.visible = visible;
+            if (visible) widget.render(gui, mouseX, mouseY, partialTick);
+        }
+        gui.disableScissor();
+    }
+
     /** Y for a hint line sitting just above the Back button (line 0 = closest). */
     private int hintY(int lineFromBottom) {
         return (height - 32) - 12 - lineFromBottom * 10;
@@ -1224,10 +1450,16 @@ public class FnfSettingsScreen extends Screen {
     @Override
     public void onClose() {
         if (category != null) {
-            switchTo(null);
+            leaveCategory();
         } else {
             minecraft.setScreen(parent);
         }
+    }
+
+    @Override
+    public void removed() {
+        restoreColorPreview();
+        super.removed();
     }
 
     @Override

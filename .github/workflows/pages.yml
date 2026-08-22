@@ -4,7 +4,7 @@ on:
   push:
     branches:
       - main
-      - 2.3.0bbs
+      - 2.3.4bbs
     paths:
       - "docs/**"
       - ".github/workflows/pages.yml"

@@ -55,17 +55,22 @@ import java.util.stream.Stream;
  */
 public final class CharacterAnimations {
     /** Explicit Settings skin choice for compatible BBS Steve/Alex forms. */
-    public record SkinChoice(String source, Path file, boolean slim) {
+    public record SkinChoice(String source, Path file, boolean slim, String account) {
         public static SkinChoice form() {
-            return new SkinChoice(ClientOptions.SKIN_SOURCE_FORM, null, false);
+            return new SkinChoice(ClientOptions.SKIN_SOURCE_FORM, null, false, "");
         }
 
         public static SkinChoice player() {
-            return new SkinChoice(ClientOptions.SKIN_SOURCE_PLAYER, null, false);
+            return new SkinChoice(ClientOptions.SKIN_SOURCE_PLAYER, null, false, "");
         }
 
         public static SkinChoice file(Path file, boolean slim) {
-            return new SkinChoice(ClientOptions.SKIN_SOURCE_FILE, file, slim);
+            return new SkinChoice(ClientOptions.SKIN_SOURCE_FILE, file, slim, "");
+        }
+
+        public static SkinChoice account(String account) {
+            return new SkinChoice(ClientOptions.SKIN_SOURCE_ACCOUNT, null, false,
+                    account == null ? "" : account.trim());
         }
     }
 
@@ -106,6 +111,10 @@ public final class CharacterAnimations {
         boolean opponentLoopIdle, hasOpponentLoopIdle;
         boolean usePlayerSkin, hasUsePlayerSkin;
         boolean opponentUsePlayerSkin, hasOpponentUsePlayerSkin;
+        String minecraftAccount = "";
+        String opponentMinecraftAccount = "";
+        boolean hasMinecraftAccount;
+        boolean hasOpponentMinecraftAccount;
         boolean allowPlayerSkinSelection = true, hasAllowPlayerSkinSelection;
         boolean opponentAllowPlayerSkinSelection = true, hasOpponentAllowPlayerSkinSelection;
 
@@ -131,6 +140,11 @@ public final class CharacterAnimations {
         boolean usePlayerSkin(String role) {
             return "opponent".equals(role) && hasOpponentUsePlayerSkin
                     ? opponentUsePlayerSkin : usePlayerSkin;
+        }
+
+        String minecraftAccount(String role) {
+            return "opponent".equals(role) && hasOpponentMinecraftAccount
+                    ? opponentMinecraftAccount : minecraftAccount;
         }
 
         boolean allowPlayerSkinSelection(String role) {
@@ -166,6 +180,10 @@ public final class CharacterAnimations {
             copy.opponentLoopIdle = opponentLoopIdle;
             copy.hasOpponentLoopIdle = hasOpponentLoopIdle;
             copy.usePlayerSkin = usePlayerSkin;
+            copy.minecraftAccount = minecraftAccount;
+            copy.opponentMinecraftAccount = opponentMinecraftAccount;
+            copy.hasMinecraftAccount = hasMinecraftAccount;
+            copy.hasOpponentMinecraftAccount = hasOpponentMinecraftAccount;
             copy.hasUsePlayerSkin = hasUsePlayerSkin;
             copy.opponentUsePlayerSkin = opponentUsePlayerSkin;
             copy.hasOpponentUsePlayerSkin = hasOpponentUsePlayerSkin;
@@ -192,6 +210,14 @@ public final class CharacterAnimations {
             if (higherPriority.hasUsePlayerSkin) {
                 usePlayerSkin = higherPriority.usePlayerSkin;
                 hasUsePlayerSkin = true;
+            }
+            if (higherPriority.hasMinecraftAccount) {
+                minecraftAccount = higherPriority.minecraftAccount;
+                hasMinecraftAccount = true;
+            }
+            if (higherPriority.hasOpponentMinecraftAccount) {
+                opponentMinecraftAccount = higherPriority.opponentMinecraftAccount;
+                hasOpponentMinecraftAccount = true;
             }
             if (higherPriority.hasOpponentUsePlayerSkin) {
                 opponentUsePlayerSkin = higherPriority.opponentUsePlayerSkin;
@@ -321,11 +347,18 @@ public final class CharacterAnimations {
     public static synchronized boolean preview(Player player, String form,
                                                Path definitionFile, String state,
                                                boolean usePlayerSkin) {
+        return preview(player, form, definitionFile, state,
+                usePlayerSkin ? SkinChoice.player() : SkinChoice.form());
+    }
+
+    public static synchronized boolean preview(Player player, String form,
+                                               Path definitionFile, String state,
+                                               SkinChoice skinChoice) {
         if (!available) return false;
         Path bundled = bundledFormFor(definitionFile);
         if (bundled != null) BbsFsAnimationBridge.registerAssetPack(bundled.getParent());
         return BbsFsAnimationBridge.play(player, form, bundled, state,
-                usePlayerSkin ? player : null);
+                directSkinSource(player, skinChoice));
     }
 
     /** Loads/applies an editor character's bundled form before a state is previewed. */
@@ -335,11 +368,43 @@ public final class CharacterAnimations {
 
     public static synchronized boolean preparePreview(Player player, String form, Path definitionFile,
                                                        boolean usePlayerSkin) {
+        return preparePreview(player, form, definitionFile,
+                usePlayerSkin ? SkinChoice.player() : SkinChoice.form());
+    }
+
+    public static synchronized boolean preparePreview(Player player, String form, Path definitionFile,
+                                                       SkinChoice skinChoice) {
         if (!available) return false;
         Path bundled = bundledFormFor(definitionFile);
         if (bundled != null) BbsFsAnimationBridge.registerAssetPack(bundled.getParent());
         return BbsFsAnimationBridge.prepare(player, form, bundled,
-                usePlayerSkin ? player : null);
+                directSkinSource(player, skinChoice));
+    }
+
+    /** Imports a definition's bundled form into BBS's Recent form category. */
+    public static synchronized Path importBundledFormToRecent(Path definitionFile) {
+        if (!available) return null;
+        Path bundled = bundledFormFor(definitionFile);
+        if (bundled == null) return null;
+        BbsFsAnimationBridge.registerAssetPack(bundled.getParent());
+        Path sharedAssets = sharedAssetFolder(definitionFile);
+        if (sharedAssets != null) BbsFsAnimationBridge.registerAssetPack(sharedAssets);
+        return BbsFsAnimationBridge.importBundledFormToRecent(bundled) ? bundled : null;
+    }
+
+    private static BbsFsAnimationBridge.SkinSource directSkinSource(Player player, SkinChoice choice) {
+        if (choice == null) return null;
+        if (ClientOptions.SKIN_SOURCE_PLAYER.equals(choice.source())) {
+            return BbsFsAnimationBridge.SkinSource.player(player);
+        }
+        if (ClientOptions.SKIN_SOURCE_FILE.equals(choice.source()) && choice.file() != null) {
+            return BbsFsAnimationBridge.SkinSource.file(choice.file(), choice.slim());
+        }
+        if (ClientOptions.SKIN_SOURCE_ACCOUNT.equals(choice.source())
+                && choice.account() != null && !choice.account().isBlank()) {
+            return BbsFsAnimationBridge.SkinSource.account(choice.account());
+        }
+        return null;
     }
 
     /** Whether a selected form is one of BBS's compatible Steve/Alex player models. */
@@ -684,6 +749,23 @@ public final class CharacterAnimations {
             }
         }
 
+        JsonElement accountElement = first(json, "minecraftAccount", "skinAccount", "playerName");
+        if (accountElement != null) {
+            String account;
+            try {
+                account = accountElement.getAsString().trim();
+            } catch (Exception ignored) {
+                account = "";
+            }
+            if (opponent) {
+                set.opponentMinecraftAccount = account;
+                set.hasOpponentMinecraftAccount = true;
+            } else {
+                set.minecraftAccount = account;
+                set.hasMinecraftAccount = true;
+            }
+        }
+
         JsonElement skinSelection = first(json, "allowPlayerSkinSelection", "allowPlayerSkinChange",
                 "allowSkinSelection", "allowSkinOverride");
         if (skinSelection != null && skinSelection.isJsonPrimitive()) {
@@ -919,6 +1001,8 @@ public final class CharacterAnimations {
                                                                       Player performer,
                                                                       SkinChoice choice) {
         if (choice == null) {
+            String account = set.minecraftAccount(role);
+            if (!account.isBlank()) return BbsFsAnimationBridge.SkinSource.account(account);
             return set.usePlayerSkin(role) ? BbsFsAnimationBridge.SkinSource.player(performer) : null;
         }
         if (!set.allowPlayerSkinSelection(role)) return null;
@@ -929,6 +1013,10 @@ public final class CharacterAnimations {
         if (ClientOptions.SKIN_SOURCE_FILE.equals(choice.source()) && choice.file() != null) {
             return BbsFsAnimationBridge.SkinSource.file(choice.file(), choice.slim());
         }
+        if (ClientOptions.SKIN_SOURCE_ACCOUNT.equals(choice.source())
+                && choice.account() != null && !choice.account().isBlank()) {
+            return BbsFsAnimationBridge.SkinSource.account(choice.account());
+        }
         return null;
     }
 
@@ -937,6 +1025,7 @@ public final class CharacterAnimations {
         ClientOptions options = ClientOptions.get();
         String source = opponent ? options.botSkinSource : options.playerSkinSource;
         String file = opponent ? options.botSkinFile : options.playerSkinFile;
+        String account = opponent ? options.botSkinAccount : options.playerSkinAccount;
         boolean slim = opponent ? options.botSkinSlim : options.playerSkinSlim;
         if (ClientOptions.SKIN_SOURCE_PLAYER.equals(source)) return SkinChoice.player();
         if (ClientOptions.SKIN_SOURCE_FILE.equals(source) && file != null && !file.isBlank()) {
@@ -946,7 +1035,20 @@ public final class CharacterAnimations {
                 return SkinChoice.form();
             }
         }
+        if (ClientOptions.SKIN_SOURCE_ACCOUNT.equals(source) && account != null && !account.isBlank()) {
+            return SkinChoice.account(account);
+        }
         return SkinChoice.form();
+    }
+
+    /** Starts or polls the official Minecraft-account skin lookup. */
+    public static String accountSkinStatus(String account) {
+        return BbsFsAnimationBridge.accountSkinStatus(account);
+    }
+
+    /** Recovers a BBS form persisted by an interrupted song/editor preview. */
+    public static boolean recoverTemporaryForm(Player player) {
+        return BbsFsAnimationBridge.recoverTemporaryForm(player);
     }
 
     public static void stop(Player player) {

@@ -145,10 +145,9 @@ public class IconPickerScreen extends Screen implements TextInputAwareScreen {
 
     @Override
     public void render(GuiGraphics gui, int mouseX, int mouseY, float partialTick) {
-        gui.fill(0, 0, width, height, 0xF20A0A10);
+        BlockifiedScreenStyle.backdrop(gui, width, height);
         int x0 = panelX(), y0 = panelY(), boxW = panelWidth(), boxH = panelHeight();
-        gui.fill(x0, y0, x0 + boxW, y0 + boxH, 0xFF101018);
-        gui.renderOutline(x0, y0, boxW, boxH, 0xFF6A70FF);
+        BlockifiedScreenStyle.panel(gui, x0, y0, boxW, boxH);
         gui.drawCenteredString(font, title, x0 + boxW / 2, y0 + 9, 0xFFFFFFFF);
 
         if (visible.isEmpty()) selectedIndex = 0;
@@ -167,7 +166,8 @@ public class IconPickerScreen extends Screen implements TextInputAwareScreen {
             boolean hovered = mouseX >= x0 + 12 && mouseX < x0 + boxW - 12
                     && mouseY >= Math.max(top, rowY) && mouseY < Math.min(top + height, rowY + ROW - 1);
             gui.fill(x0 + 12, rowY, x0 + boxW - 12, rowY + ROW - 1,
-                    selected ? 0xFF4B5070 : hovered ? 0xFF303442 : 0xFF20202A);
+                    selected ? BlockifiedScreenStyle.ACCENT_DARK
+                            : hovered ? BlockifiedScreenStyle.ACCENT_DEEP : 0xFF20202A);
             if (name.equals(ClientOptions.SONG_ICON)) {
                 gui.drawString(font, "Default (current song)", x0 + 18, rowY + 8, 0xFFFFFFFF, false);
             } else if (name.isEmpty()) {
@@ -185,7 +185,8 @@ public class IconPickerScreen extends Screen implements TextInputAwareScreen {
             int thumbHeight = Math.max(12, (int) Math.round(height * (height / (visible.size() * (double) ROW))));
             int thumbY = top + (int) Math.round((height - thumbHeight) * (scrollPx / max));
             gui.fill(trackX, top, trackX + 2, top + height, 0xFF252733);
-            gui.fill(trackX, thumbY, trackX + 2, thumbY + thumbHeight, 0xFF8A90C0);
+            gui.fill(trackX, thumbY, trackX + 2, thumbY + thumbHeight,
+                    BlockifiedScreenStyle.ACCENT);
         }
 
         int buttonY = y0 + boxH - 27;

@@ -7,6 +7,7 @@ import com.fnfmod.client.anim.CharacterAnimations;
 import com.fnfmod.client.math.Easing;
 import com.fnfmod.character.CharacterDefinitionPaths;
 import com.fnfmod.song.SongLibrary;
+import com.fnfmod.world.ModContentScope;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.EditBox;
@@ -27,7 +28,6 @@ import java.util.Locale;
 
 /** Visual editor for named Blockified character JSON definitions and BBS states. */
 public final class CharacterEditorScreen extends Screen implements TextInputAwareScreen {
-    private static final int PANEL = 0xE0181820;
     private static final int FIELD_H = 18;
     private static final int DIALOG_ROW_HEIGHT = 18;
     private static final long DIALOG_SCROLL_TWEEN_NANOS = 200_000_000L;
@@ -83,6 +83,8 @@ public final class CharacterEditorScreen extends Screen implements TextInputAwar
     private Button actionButton;
     private Button loopIdleButton;
     private Button playerSkinButton;
+    private boolean skinOptionsOpen;
+    private EditBox skinAccountField;
     private Button colorButton;
     private boolean colorPickerOpen;
     private int colorPickerOriginal;
@@ -171,7 +173,7 @@ public final class CharacterEditorScreen extends Screen implements TextInputAwar
                 value -> { if (!loadingFields) current().cameraX = number(value); markDirty(); });
         cameraY = edit(x + half + 4, 150, panelWidth - half - 4,
                 value -> { if (!loadingFields) current().cameraY = number(value); markDirty(); });
-        playerSkinButton = addRenderableWidget(Button.builder(playerSkinLabel(), button -> togglePlayerSkin())
+        playerSkinButton = addRenderableWidget(Button.builder(playerSkinLabel(), button -> openSkinOptions())
                 .bounds(x, 174, panelWidth, 20).build());
         updatePlayerSkinButton();
         addRenderableWidget(Button.builder(Component.literal("Preview State"), button -> preview())
@@ -229,7 +231,7 @@ public final class CharacterEditorScreen extends Screen implements TextInputAwar
         String selected = sets.isEmpty() ? "default" : sets.get(Mth.clamp(setIndex, 0, sets.size() - 1));
         sets.clear();
         sets.add("default");
-        for (String name : CharacterDefinitionPaths.selectableGlobalNames()) {
+        for (String name : CharacterDefinitionPaths.selectableNames(editorAnimationsDir())) {
             if (indexOfIgnoreCase(sets, name) < 0) sets.add(name);
         }
         setIndex = Math.max(0, indexOfIgnoreCase(sets, selected));
@@ -262,7 +264,14 @@ public final class CharacterEditorScreen extends Screen implements TextInputAwar
         addFormChoice(loadedOpponentForm);
         rebuildActions("idle");
         playerDirty = opponentDirty = false;
-        status = "Editing " + playerFile.getFileName();
+        java.util.LinkedHashSet<Path> importedForms = new java.util.LinkedHashSet<>();
+        Path importedPlayer = CharacterAnimations.importBundledFormToRecent(playerFile);
+        Path importedOpponent = CharacterAnimations.importBundledFormToRecent(opponentFile);
+        if (importedPlayer != null) importedForms.add(importedPlayer.toAbsolutePath().normalize());
+        if (importedOpponent != null) importedForms.add(importedOpponent.toAbsolutePath().normalize());
+        status = "Editing " + playerFile.getFileName()
+                + (importedForms.isEmpty() ? "" : " · imported " + importedForms.size()
+                + " form" + (importedForms.size() == 1 ? "" : "s") + " to BBS Recent");
         fillFields();
         prepareLoadedForm();
     }
@@ -272,14 +281,15 @@ public final class CharacterEditorScreen extends Screen implements TextInputAwar
         if (CharacterAnimations.DEFAULT_SET.equalsIgnoreCase(name)) {
             Path canonical = canonicalFile(name, opponent);
             if (Files.isRegularFile(canonical)) return canonical;
-            Path legacy = SongLibrary.animationsDir().resolve(CharacterAnimations.DEFAULT_SET)
+            Path legacy = editorAnimationsDir().resolve(CharacterAnimations.DEFAULT_SET)
                     .resolve(opponent ? "character-opp.json" : "character.json");
             return Files.isRegularFile(legacy) ? legacy : canonical;
         }
-        Path existing = CharacterDefinitionPaths.globalCharacterJsonExact(name, opponent);
+        Path existing = CharacterDefinitionPaths.characterJsonExact(
+                editorAnimationsDir(), name, opponent);
         if (existing != null) return existing;
         String suffix = opponent ? "-opp" : "";
-        return SongLibrary.animationsDir().resolve(name + suffix + ".json").normalize();
+        return editorAnimationsDir().resolve(name + suffix + ".json").normalize();
     }
 
     private void newSet() {
@@ -434,7 +444,7 @@ public final class CharacterEditorScreen extends Screen implements TextInputAwar
         }
         if (stateName.isBlank()) stateName = selectedAction;
         boolean played = CharacterAnimations.preview(minecraft.player, form,
-                bundledDefinitionForCurrentRole(), stateName, definition.usePlayerSkin);
+                bundledDefinitionForCurrentRole(), stateName, definitionSkinChoice(definition));
         if (updateStatus) {
             status = played ? "Previewing " + stateName : "State not found on the selected BBS form";
         }
@@ -453,7 +463,7 @@ public final class CharacterEditorScreen extends Screen implements TextInputAwar
         if (form.isBlank() && opponent) form = playerDefinition.form;
         if (form.isBlank()) return;
         loadedFormPrepared = CharacterAnimations.preparePreview(
-                minecraft.player, form, bundledDefinitionForCurrentRole(), current().usePlayerSkin);
+                minecraft.player, form, bundledDefinitionForCurrentRole(), definitionSkinChoice(current()));
     }
 
     private void save() {
@@ -470,7 +480,7 @@ public final class CharacterEditorScreen extends Screen implements TextInputAwar
             boolean hasOpponent = opponentIsUsed();
 
             if (custom) {
-                Path folder = SongLibrary.animationsDir().resolve(name).normalize();
+                Path folder = editorAnimationsDir().resolve(name).normalize();
                 Files.createDirectories(folder);
                 playerDefinition.saveAs(folder, false);
                 if (hasOpponent) opponentDefinition.saveAs(folder, true);
@@ -527,6 +537,7 @@ public final class CharacterEditorScreen extends Screen implements TextInputAwar
         if (!opponentDefinition.form.isBlank() || !opponentDefinition.icon.isBlank()
                 || !opponentDefinition.vocalsFile.isBlank() || opponentDefinition.healthColor >= 0
                 || opponentDefinition.loopIdle || opponentDefinition.usePlayerSkin
+                || !opponentDefinition.minecraftAccount.isBlank()
                 || !opponentDefinition.allowPlayerSkinSelection
                 || nonZero(opponentDefinition.rotation)
                 || nonZero(opponentDefinition.cameraX) || nonZero(opponentDefinition.cameraY)) {
@@ -563,21 +574,64 @@ public final class CharacterEditorScreen extends Screen implements TextInputAwar
     }
 
     private Component playerSkinLabel() {
-        boolean allowed = current() != null && current().allowPlayerSkinSelection;
-        return Component.literal("Player Skin Choice: " + (allowed ? "Allowed" : "Locked"));
+        return Component.literal("Skin / Model Rules...");
     }
 
-    private void togglePlayerSkin() {
-        if (current() == null) return;
-        current().allowPlayerSkinSelection = !current().allowPlayerSkinSelection;
-        markDirty();
-        updatePlayerSkinButton();
+    private void openSkinOptions() {
+        CharacterDefinitionFile definition = current();
+        if (definition == null) return;
+        skinAccountField = new EditBox(font, 0, 0, 100, 18,
+                Component.literal("Minecraft account"));
+        skinAccountField.setMaxLength(16);
+        skinAccountField.setFilter(value -> value.matches("[A-Za-z0-9_]{0,16}"));
+        skinAccountField.setValue(definition.minecraftAccount);
+        skinAccountField.setResponder(value -> {
+            definition.minecraftAccount = value.trim();
+            markDirty();
+        });
+        skinOptionsOpen = true;
     }
 
     private void updatePlayerSkinButton() {
         if (playerSkinButton == null) return;
         playerSkinButton.active = current() != null;
         playerSkinButton.setMessage(playerSkinLabel());
+    }
+
+    private CharacterAnimations.SkinChoice definitionSkinChoice(CharacterDefinitionFile definition) {
+        if (definition != null && !definition.minecraftAccount.isBlank()) {
+            return CharacterAnimations.SkinChoice.account(definition.minecraftAccount);
+        }
+        return definition != null && definition.usePlayerSkin
+                ? CharacterAnimations.SkinChoice.player() : CharacterAnimations.SkinChoice.form();
+    }
+
+    private String authoredSkinLabel() {
+        CharacterDefinitionFile definition = current();
+        if (definition == null) return "Authored Skin: Form";
+        if (!definition.minecraftAccount.isBlank()) return "Authored Skin: Account";
+        return "Authored Skin: " + (definition.usePlayerSkin ? "Performer" : "Form");
+    }
+
+    private void cycleAuthoredSkin() {
+        CharacterDefinitionFile definition = current();
+        if (definition == null) return;
+        if (!definition.usePlayerSkin && definition.minecraftAccount.isBlank()) {
+            definition.usePlayerSkin = true;
+        } else if (definition.usePlayerSkin) {
+            definition.usePlayerSkin = false;
+            definition.minecraftAccount = skinAccountField == null ? "" : skinAccountField.getValue().trim();
+            if (definition.minecraftAccount.isBlank() && minecraft != null) {
+                definition.minecraftAccount = minecraft.getUser().getName();
+                skinAccountField.setValue(definition.minecraftAccount);
+            }
+        } else {
+            definition.minecraftAccount = "";
+            if (skinAccountField != null) skinAccountField.setValue("");
+        }
+        loadedFormPrepared = false;
+        markDirty();
+        prepareLoadedForm();
     }
 
     private boolean currentFormSupportsPlayerSkin() {
@@ -985,6 +1039,13 @@ public final class CharacterEditorScreen extends Screen implements TextInputAwar
 
     @Override
     public void render(GuiGraphics gui, int mouseX, int mouseY, float partialTick) {
+        if (skinOptionsOpen) {
+            gui.pose().pushPose();
+            gui.pose().translate(0, 0, 1000);
+            renderSkinOptions(gui, mouseX, mouseY);
+            gui.pose().popPose();
+            return;
+        }
         if (loadDialogOpen) {
             gui.pose().pushPose();
             gui.pose().translate(0, 0, 1000);
@@ -999,10 +1060,15 @@ public final class CharacterEditorScreen extends Screen implements TextInputAwar
             gui.pose().popPose();
             return;
         }
-        gui.fill(0, 0, width, height, 0xFF101014);
+        BlockifiedScreenStyle.backdrop(gui, width, height);
+        BlockifiedScreenStyle.panel(gui, 4, 4, width - 8, height - 8);
         int rightPanelX = optionsX() - 4;
-        gui.fill(rightPanelX, 24, width - 4, height - 32, PANEL);
-        gui.drawCenteredString(font, title, width / 2, 10, 0xFFFFFFFF);
+        BlockifiedScreenStyle.inner(gui, rightPanelX, 24,
+                width - rightPanelX - 8, height - 56);
+        gui.drawString(font, "FUNKIN' DESIGNER", 14, 10,
+                BlockifiedScreenStyle.ACCENT, false);
+        gui.drawCenteredString(font, "Character Editor", width / 2, 10,
+                BlockifiedScreenStyle.TEXT);
 
         int x = optionsX();
         int panelWidth = optionsWidth();
@@ -1029,18 +1095,48 @@ public final class CharacterEditorScreen extends Screen implements TextInputAwar
 
         renderPreview(gui);
         gui.drawString(font, trim(status, Math.max(16, previewRight() / 6)), 12,
-                height - 18, 0xFFCCCCCC, false);
+                height - 18, BlockifiedScreenStyle.TEXT_MUTED, false);
         super.render(gui, mouseX, mouseY, partialTick);
     }
 
+    private void renderSkinOptions(GuiGraphics gui, int mouseX, int mouseY) {
+        BlockifiedScreenStyle.backdrop(gui, width, height);
+        int boxW = Math.min(310, width - 32);
+        int boxH = 142;
+        int x = (width - boxW) / 2;
+        int y = (height - boxH) / 2;
+        BlockifiedScreenStyle.panel(gui, x, y, boxW, boxH);
+        gui.drawCenteredString(font, "Skin and Model Rules", x + boxW / 2, y + 10,
+                BlockifiedScreenStyle.TEXT);
+        CharacterDefinitionFile definition = current();
+        renderColorButton(gui, x + 12, y + 30, boxW - 24,
+                "Player changes: " + (definition != null && definition.allowPlayerSkinSelection
+                        ? "Allowed" : "Locked"), mouseX, mouseY);
+        renderColorButton(gui, x + 12, y + 54, boxW - 24,
+                authoredSkinLabel(), mouseX, mouseY);
+        if (skinAccountField != null) {
+            skinAccountField.visible = definition != null && !definition.minecraftAccount.isBlank();
+            if (skinAccountField.visible) {
+                gui.drawString(font, "Minecraft account", x + 12, y + 80,
+                        BlockifiedScreenStyle.TEXT_MUTED, false);
+                skinAccountField.setX(x + 112);
+                skinAccountField.setY(y + 76);
+                skinAccountField.setWidth(boxW - 124);
+                skinAccountField.render(gui, mouseX, mouseY, 0);
+            }
+        }
+        renderColorButton(gui, x + 12, y + boxH - 27, boxW - 24,
+                "Done", mouseX, mouseY);
+    }
+
     private void renderLoadDialog(GuiGraphics gui, int mouseX, int mouseY) {
-        gui.fill(0, 0, width, height, 0xF20A0A10);
+        BlockifiedScreenStyle.backdrop(gui, width, height);
         int boxW = loadDialogWidth(), boxH = loadDialogHeight();
         int x0 = loadDialogX(), y0 = loadDialogY();
         int listRight = loadDialogListRight(x0, boxW);
-        gui.fill(x0, y0, x0 + boxW, y0 + boxH, 0xFF101018);
-        gui.renderOutline(x0, y0, boxW, boxH, 0xFF6A70FF);
-        gui.drawCenteredString(font, dialogTitle(), x0 + boxW / 2, y0 + 9, 0xFFFFFFFF);
+        BlockifiedScreenStyle.panel(gui, x0, y0, boxW, boxH);
+        gui.drawCenteredString(font, dialogTitle(), x0 + boxW / 2, y0 + 9,
+                BlockifiedScreenStyle.TEXT);
 
         if (loadSearchField != null) {
             loadSearchField.setX(x0 + 12);
@@ -1067,7 +1163,8 @@ public final class CharacterEditorScreen extends Screen implements TextInputAwar
                     && mouseY >= Math.max(rowY, listTop)
                     && mouseY < Math.min(rowY + DIALOG_ROW_HEIGHT - 1, listTop + listHeight);
             gui.fill(x0 + 12, rowY, listRight, rowY + DIALOG_ROW_HEIGHT - 1,
-                    selected ? 0xFF4B5070 : hovered ? 0xFF303442 : 0xFF20202A);
+                    selected ? BlockifiedScreenStyle.ACCENT_DARK
+                            : hovered ? BlockifiedScreenStyle.ACCENT_DEEP : 0xFF20202A);
             gui.drawString(font, filtered.get(index), x0 + 17, rowY + 4,
                     selected ? 0xFFFFFFFF : 0xFFCCCCCC, false);
         }
@@ -1085,7 +1182,8 @@ public final class CharacterEditorScreen extends Screen implements TextInputAwar
             int thumbY = listTop + (int) Math.round((listHeight - thumbHeight)
                     * (loadDialogScrollPx / maxScroll));
             gui.fill(trackX, listTop, trackX + 2, listTop + listHeight, 0xFF252733);
-            gui.fill(trackX, thumbY, trackX + 2, thumbY + thumbHeight, 0xFF8A90C0);
+            gui.fill(trackX, thumbY, trackX + 2, thumbY + thumbHeight,
+                    BlockifiedScreenStyle.ACCENT);
         }
         if (loadDialogKind == SelectionKind.ANIMATION) {
             updateDialogAnimationPreview();
@@ -1102,8 +1200,7 @@ public final class CharacterEditorScreen extends Screen implements TextInputAwar
 
     private void renderAnimationDialogPreview(GuiGraphics gui, int left, int top, int right, int bottom) {
         if (right - left < 70 || bottom - top < 80) return;
-        gui.fill(left, top, right, bottom, 0xFF161720);
-        gui.renderOutline(left, top, right - left, bottom - top, 0xFF454A68);
+        BlockifiedScreenStyle.inner(gui, left, top, right - left, bottom - top);
         String animation = dialogPreviewAnimation.isBlank()
                 ? dialogSelectedAnimation : dialogPreviewAnimation;
         gui.drawCenteredString(font, trim(animation, Math.max(8, (right - left) / 7)),
@@ -1140,11 +1237,10 @@ public final class CharacterEditorScreen extends Screen implements TextInputAwar
     }
 
     private void renderColorPicker(GuiGraphics gui, int mouseX, int mouseY) {
-        gui.fill(0, 0, width, height, 0xF20A0A10);
+        BlockifiedScreenStyle.backdrop(gui, width, height);
         int boxW = colorPickerWidth(), boxH = colorPickerHeight();
         int x0 = colorPickerX(), y0 = colorPickerY();
-        gui.fill(x0, y0, x0 + boxW, y0 + boxH, 0xFF101018);
-        gui.renderOutline(x0, y0, boxW, boxH, 0xFF6A70FF);
+        BlockifiedScreenStyle.panel(gui, x0, y0, boxW, boxH);
         gui.drawCenteredString(font, "Character waveform / health color",
                 x0 + boxW / 2, y0 + 9, 0xFFFFFFFF);
 
@@ -1200,6 +1296,16 @@ public final class CharacterEditorScreen extends Screen implements TextInputAwar
 
     @Override
     public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
+        if (skinOptionsOpen) {
+            if (keyCode == GLFW.GLFW_KEY_ESCAPE
+                    || keyCode == GLFW.GLFW_KEY_ENTER || keyCode == GLFW.GLFW_KEY_KP_ENTER) {
+                skinOptionsOpen = false;
+                skinAccountField = null;
+            } else if (skinAccountField != null && skinAccountField.isFocused()) {
+                skinAccountField.keyPressed(keyCode, scanCode, modifiers);
+            }
+            return true;
+        }
         if (loadDialogOpen) {
             boolean typingSearch = loadSearchField != null && loadSearchField.isFocused();
             int previewLane = loadDialogKind == SelectionKind.ANIMATION && !typingSearch
@@ -1233,6 +1339,12 @@ public final class CharacterEditorScreen extends Screen implements TextInputAwar
 
     @Override
     public boolean charTyped(char codePoint, int modifiers) {
+        if (skinOptionsOpen) {
+            if (skinAccountField != null && skinAccountField.isFocused()) {
+                skinAccountField.charTyped(codePoint, modifiers);
+            }
+            return true;
+        }
         if (loadDialogOpen) {
             if (loadSearchField != null && loadSearchField.isFocused()) {
                 loadSearchField.charTyped(codePoint, modifiers);
@@ -1248,6 +1360,25 @@ public final class CharacterEditorScreen extends Screen implements TextInputAwar
 
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
+        if (skinOptionsOpen) {
+            if (skinAccountField != null && skinAccountField.visible
+                    && skinAccountField.mouseClicked(mouseX, mouseY, button)) return true;
+            if (button != GLFW.GLFW_MOUSE_BUTTON_LEFT) return true;
+            int boxW = Math.min(310, width - 32), boxH = 142;
+            int x = (width - boxW) / 2, y = (height - boxH) / 2;
+            if (mouseX >= x + 12 && mouseX < x + boxW - 12) {
+                if (mouseY >= y + 30 && mouseY < y + 48) {
+                    current().allowPlayerSkinSelection = !current().allowPlayerSkinSelection;
+                    markDirty();
+                } else if (mouseY >= y + 54 && mouseY < y + 72) {
+                    cycleAuthoredSkin();
+                } else if (mouseY >= y + boxH - 27 && mouseY < y + boxH - 9) {
+                    skinOptionsOpen = false;
+                    skinAccountField = null;
+                }
+            }
+            return true;
+        }
         if (loadDialogOpen) {
             if (loadSearchField != null && loadSearchField.mouseClicked(mouseX, mouseY, button)) {
                 setFocused(loadSearchField);
@@ -1332,6 +1463,7 @@ public final class CharacterEditorScreen extends Screen implements TextInputAwar
 
     @Override
     public boolean mouseDragged(double mouseX, double mouseY, int button, double dragX, double dragY) {
+        if (skinOptionsOpen) return true;
         if (loadDialogOpen) return true;
         if (colorPickerOpen) {
             if (colorDrag != 0) updateColorPicker(mouseX, mouseY);
@@ -1342,6 +1474,7 @@ public final class CharacterEditorScreen extends Screen implements TextInputAwar
 
     @Override
     public boolean mouseReleased(double mouseX, double mouseY, int button) {
+        if (skinOptionsOpen) return true;
         if (loadDialogOpen) return true;
         if (colorPickerOpen) {
             colorDrag = 0;
@@ -1352,6 +1485,7 @@ public final class CharacterEditorScreen extends Screen implements TextInputAwar
 
     @Override
     public boolean mouseScrolled(double mouseX, double mouseY, double scrollX, double scrollY) {
+        if (skinOptionsOpen) return true;
         if (loadDialogOpen) {
             if (scrollY != 0) {
                 loadDialogSelected += scrollY > 0 ? -1 : 1;
@@ -1388,8 +1522,10 @@ public final class CharacterEditorScreen extends Screen implements TextInputAwar
         int top = 26;
         int bottom = height - 32;
         if (right - left < 80 || bottom - top < 100) return;
-        gui.fill(left, top, right, bottom, PANEL);
-        gui.drawCenteredString(font, "BBS Form Preview", (left + right) / 2, top + 7, 0xFFFFFFFF);
+        BlockifiedScreenStyle.inner(gui, left, top, right - left, bottom - top);
+        gui.fill(left, top, right, top + 3, BlockifiedScreenStyle.ACCENT);
+        gui.drawCenteredString(font, "BBS FORM PREVIEW", (left + right) / 2, top + 7,
+                BlockifiedScreenStyle.TEXT_SECTION);
 
         // Keep numeric previews live while an edit box has focus.
         captureFields(false);
@@ -1489,7 +1625,7 @@ public final class CharacterEditorScreen extends Screen implements TextInputAwar
 
     @Override
     public boolean isTextInputActive() {
-        return loadDialogOpen || colorPickerOpen
+        return loadDialogOpen || colorPickerOpen || skinOptionsOpen
                 || (getFocused() instanceof EditBox edit && edit.isFocused());
     }
 
@@ -1497,16 +1633,23 @@ public final class CharacterEditorScreen extends Screen implements TextInputAwar
         String name = base;
         int suffix = 2;
         while (Files.exists(canonicalFile(name, false))
-                || Files.isDirectory(SongLibrary.animationsDir().resolve(name))) {
+                || Files.isDirectory(editorAnimationsDir().resolve(name))) {
             name = base + "-" + suffix++;
         }
         return name;
     }
 
-    private static Path canonicalFile(String rawName, boolean opponent) {
+    private Path canonicalFile(String rawName, boolean opponent) {
         String name = safeName(rawName);
-        return SongLibrary.animationsDir().resolve(name + (opponent ? "-opp" : "") + ".json")
+        return editorAnimationsDir().resolve(name + (opponent ? "-opp" : "") + ".json")
                 .normalize();
+    }
+
+    private Path editorAnimationsDir() {
+        return ModContentScope.activeMod()
+                .filter(ignored -> ModContentScope.isModWorld())
+                .map(active -> active.root().resolve("animations").toAbsolutePath().normalize())
+                .orElseGet(() -> SongLibrary.animationsDir().toAbsolutePath().normalize());
     }
 
     private static String safeName(String raw) {

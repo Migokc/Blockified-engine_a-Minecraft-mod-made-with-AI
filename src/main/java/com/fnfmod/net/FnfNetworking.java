@@ -63,6 +63,10 @@ public final class FnfNetworking {
                 (payload, ctx) -> ctx.enqueueWork(() -> {
                     if (ctx.player() instanceof ServerPlayer sp) SessionManager.onRestartSong(sp, payload);
                 }));
+        registrar.playToServer(FnfPayloads.EditorPlaytestC2S.TYPE, FnfPayloads.EditorPlaytestC2S.CODEC,
+                (payload, ctx) -> ctx.enqueueWork(() -> {
+                    if (ctx.player() instanceof ServerPlayer sp) SessionManager.onEditorPlaytest(sp, payload);
+                }));
         registrar.playToServer(FnfPayloads.NoteEventC2S.TYPE, FnfPayloads.NoteEventC2S.CODEC,
                 (payload, ctx) -> ctx.enqueueWork(() -> {
                     if (ctx.player() instanceof ServerPlayer sp) SessionManager.onNoteEvent(sp, payload);

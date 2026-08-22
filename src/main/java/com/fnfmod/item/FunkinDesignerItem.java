@@ -1,8 +1,14 @@
 package com.fnfmod.item;
 
+import com.fnfmod.FnfMod;
 import com.fnfmod.block.FunkinMachineBlock;
+import com.fnfmod.entity.MachineHitboxEntity;
 import com.fnfmod.machine.MachineEditorService;
 import com.fnfmod.machine.MachineHitboxService;
+import net.neoforged.bus.api.SubscribeEvent;
+import net.neoforged.fml.common.EventBusSubscriber;
+import net.neoforged.neoforge.common.util.TriState;
+import net.neoforged.neoforge.event.entity.player.PlayerInteractEvent;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
@@ -14,6 +20,7 @@ import net.minecraft.world.item.context.UseOnContext;
 import net.minecraft.world.level.Level;
 
 /** Tool for editing, copying, and applying Funkin' Machine profiles. */
+@EventBusSubscriber(modid = FnfMod.MODID)
 public final class FunkinDesignerItem extends Item {
 
     public FunkinDesignerItem(Properties properties) {
@@ -35,8 +42,7 @@ public final class FunkinDesignerItem extends Item {
             } else if (MachineHitboxService.hasDraft(player)) {
                 MachineHitboxService.selectPoint(player, context);
             } else {
-                player.displayClientMessage(net.minecraft.network.chat.Component.literal(
-                        "Right-click air with Funkin' Designer to start a hitbox selection."), true);
+                MachineHitboxService.openBuilder(player);
             }
         }
         return InteractionResult.sidedSuccess(level.isClientSide);
@@ -53,5 +59,28 @@ public final class FunkinDesignerItem extends Item {
             MachineHitboxService.openBuilder(serverPlayer);
         }
         return InteractionResultHolder.success(player.getItemInHand(hand));
+    }
+
+    /**
+     * Make the Designer win over containers and other block interactions. The
+     * item useOn method still performs all specialized machine/point/draft work.
+     */
+    @SubscribeEvent
+    public static void onRightClickBlock(PlayerInteractEvent.RightClickBlock event) {
+        if (!event.getItemStack().is(FnfMod.FUNKIN_DESIGNER.get())) return;
+        event.setUseBlock(TriState.FALSE);
+        event.setUseItem(TriState.TRUE);
+    }
+
+    /** Any ordinary entity opens the Designer; virtual hitboxes retain their own editor. */
+    @SubscribeEvent
+    public static void onEntityInteract(PlayerInteractEvent.EntityInteractSpecific event) {
+        if (!event.getItemStack().is(FnfMod.FUNKIN_DESIGNER.get())
+                || event.getTarget() instanceof MachineHitboxEntity) return;
+        event.setCanceled(true);
+        event.setCancellationResult(InteractionResult.SUCCESS);
+        if (!event.getLevel().isClientSide && event.getEntity() instanceof ServerPlayer player) {
+            MachineHitboxService.openBuilder(player);
+        }
     }
 }

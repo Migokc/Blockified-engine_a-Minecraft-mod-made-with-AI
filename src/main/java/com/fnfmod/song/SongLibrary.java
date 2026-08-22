@@ -5,6 +5,7 @@ import com.fnfmod.chart.CodenameChartParser;
 import com.fnfmod.chart.LegacyChartParser;
 import com.fnfmod.chart.SongChart;
 import com.fnfmod.chart.VSliceChartParser;
+import com.fnfmod.character.CharacterDefinitionPaths;
 import com.fnfmod.world.ModContentScope;
 import com.fnfmod.world.ModWorldOptions;
 import com.google.gson.JsonElement;
@@ -78,7 +79,7 @@ public class SongLibrary {
             "animations", "scripts", "fonts", "images", "songs", "data", "characters",
             "stages", "weeks", "sounds", "music", "videos", "machines", "worlds",
             "custom_events", "custom_notetypes", "notetypes", "events", "shaders",
-            "achievements", "credits", "source", "shared", "assets");
+            "achievements", "credits", "source", "shared", "assets", "_merge");
 
     /** Global Psych Lua scripts that run for every song. */
     public static Path scriptsDir() {
@@ -149,6 +150,7 @@ public class SongLibrary {
             Files.createDirectories(animationsDir());
             Files.createDirectories(hitsoundsDir());
             Files.createDirectories(splashesDir());
+            Files.createDirectories(splashesDir().resolve("holdSplashes"));
             Files.createDirectories(iconsDir());
         } catch (IOException e) {
             FnfMod.LOGGER.error("Could not create fnfmod config folders", e);
@@ -332,14 +334,30 @@ public class SongLibrary {
         String iconName = charId;
         if (characterRoot != null) {
             // the character json names the actual health icon (V-Slice healthIcon.id / Psych healthicon)
+            boolean characterDefinitionFound = false;
             if (e.allows(ExternalContent.CHARACTERS)) {
                 for (String sub : new String[]{"data/characters", "characters"}) {
                     Path cj = characterRoot.resolve(sub).resolve(charId + ".json");
                     if (Files.isRegularFile(cj)) {
+                        characterDefinitionFound = true;
                         String hi = readHealthIconName(cj);
                         if (hi != null && !hi.isEmpty()) iconName = hi;
                         break;
                     }
+                }
+
+                // Blockified-only characters may exist solely as BBS animation
+                // definitions. Use their authored icon when no Psych/V-Slice
+                // character JSON exists; a real character definition always wins
+                // when both use the same name.
+                if (!characterDefinitionFound) {
+                    Path animationJson = CharacterDefinitionPaths.modCharacterJson(
+                            e.animationRoot(), charId, true);
+                    if (animationJson == null) {
+                        animationJson = CharacterDefinitionPaths.globalCharacterJson(charId, true);
+                    }
+                    String animationIcon = readBlockifiedAnimationIcon(animationJson);
+                    if (animationIcon != null && !animationIcon.isEmpty()) iconName = animationIcon;
                 }
             }
             // find the icon png inside this mod
@@ -364,6 +382,16 @@ public class SongLibrary {
         }
         // no file in this mod: keep the name for the client's global icon lookup
         e.opponentIcon = iconName;
+    }
+
+    private static String readBlockifiedAnimationIcon(Path animationJson) {
+        if (animationJson == null || !Files.isRegularFile(animationJson)) return null;
+        try {
+            JsonObject object = JsonParser.parseString(Files.readString(animationJson)).getAsJsonObject();
+            return LegacyChartParser.optString(object, "icon", null);
+        } catch (Exception ignored) {
+            return null;
+        }
     }
 
     private static String readHealthIconName(Path characterJson) {
@@ -489,7 +517,9 @@ public class SongLibrary {
     private static boolean isDirectModSelection(Path source) {
         if (source.toAbsolutePath().normalize().equals(modsDir().toAbsolutePath().normalize())) return false;
         if (Files.isRegularFile(source.resolve("pack.json"))
-                || Files.isRegularFile(source.resolve("pack.png"))) return true;
+                || Files.isRegularFile(source.resolve("pack.png"))
+                || Files.isRegularFile(source.resolve("_polymod_meta.json"))
+                || Files.isRegularFile(source.resolve("_polymod_icon.png"))) return true;
         Path name = source.getFileName();
         if (!isModFolder(source)) return false;
         if (name == null || !name.toString().equalsIgnoreCase("mods")) return true;
@@ -1110,11 +1140,17 @@ public class SongLibrary {
             if (override.voicesPlayerFile != null) original.voicesPlayerFile = override.voicesPlayerFile;
             if (override.voicesOpponentFile != null) original.voicesOpponentFile = override.voicesOpponentFile;
             for (var local : override.legacyChartFiles.entrySet()) {
-                String difficulty = original.difficulties.stream()
-                        .filter(d -> normalizedDifficultyKey(d).equals(normalizedDifficultyKey(local.getKey())))
-                        .findFirst().orElse(local.getKey());
-                original.chartOverrides.put(difficulty, local.getValue());
-                if (!original.difficulties.contains(difficulty)) original.difficulties.add(difficulty);
+                String difficulty = resolveOverrideDifficulty(original, local.getKey());
+                Path previous = original.chartOverrides.get(difficulty);
+                // Old editor builds could create hard-2/easy-2/etc. Treat those
+                // as revisions of the matching V-Slice difficulty and keep the
+                // newest file instead of exposing each revision as a new difficulty.
+                if (previous == null || modifiedAt(local.getValue()) >= modifiedAt(previous)) {
+                    original.chartOverrides.put(difficulty, local.getValue());
+                }
+                if (original.difficulties.stream().noneMatch(value -> value.equalsIgnoreCase(difficulty))) {
+                    original.difficulties.add(difficulty);
+                }
             }
             FnfMod.LOGGER.info("Edited chart {} inherits complete runtime assets from {}",
                     override.id, source);
@@ -1126,7 +1162,34 @@ public class SongLibrary {
     }
 
     private static String normalizedDifficultyKey(String value) {
-        return value.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9_-]", "-");
+        return value == null ? "" : value.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9_-]", "-");
+    }
+
+    private static String resolveOverrideDifficulty(SongEntry original, String localDifficulty) {
+        String candidate = localDifficulty == null || localDifficulty.isBlank() ? "normal" : localDifficulty;
+        String match = findDifficulty(original.difficulties, candidate);
+        if (match != null) return match;
+
+        // Recover files produced after a duplicate had already entered the list
+        // (hard-2, hard-3, normal-2...). Exact real difficulty names still win.
+        String withoutRevision = candidate;
+        while (withoutRevision.matches("(?i).+-[0-9]+")) {
+            withoutRevision = withoutRevision.replaceFirst("-[0-9]+$", "");
+            match = findDifficulty(original.difficulties, withoutRevision);
+            if (match != null) return match;
+        }
+        return candidate;
+    }
+
+    private static String findDifficulty(List<String> values, String wanted) {
+        String normalized = normalizedDifficultyKey(wanted);
+        return values.stream().filter(value -> normalizedDifficultyKey(value).equals(normalized))
+                .findFirst().orElse(null);
+    }
+
+    private static long modifiedAt(Path file) {
+        try { return file == null ? Long.MIN_VALUE : Files.getLastModifiedTime(file).toMillis(); }
+        catch (Exception ignored) { return Long.MIN_VALUE; }
     }
 
     private static boolean inside(Path path, Path root) {

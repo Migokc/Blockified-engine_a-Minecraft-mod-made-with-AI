@@ -49,6 +49,8 @@ public final class CharacterDefinitionFile {
     public float cameraY;
     /** Use the performer's live Minecraft skin on compatible built-in BBS player forms. */
     public boolean usePlayerSkin;
+    /** Optional Minecraft account whose skin and slim/wide model override the authored form. */
+    public String minecraftAccount = "";
     /** Whether players may override the authored BBS skin/model in Settings. */
     public boolean allowPlayerSkinSelection = true;
     public boolean loopIdle;
@@ -167,6 +169,7 @@ public final class CharacterDefinitionFile {
         } else source.remove("healthbar_colors");
         source.addProperty("rotation", rotation);
         source.addProperty("usePlayerSkin", usePlayerSkin);
+        putString("minecraftAccount", minecraftAccount);
         source.addProperty("allowPlayerSkinSelection", allowPlayerSkinSelection);
         source.addProperty("loopIdle", loopIdle);
         source.add("cameraOffset", vec2(cameraX, cameraY));
@@ -224,6 +227,7 @@ public final class CharacterDefinitionFile {
         healthColor = color(source);
         rotation = number(source.get("rotation"));
         usePlayerSkin = bool(source, "usePlayerSkin");
+        minecraftAccount = firstString(source, "minecraftAccount", "skinAccount", "playerName");
         allowPlayerSkinSelection = firstBool(source, true,
                 "allowPlayerSkinSelection", "allowPlayerSkinChange",
                 "allowSkinSelection", "allowSkinOverride");

@@ -155,13 +155,13 @@ public class SongDetailScreen extends Screen {
     private void renderDiffList(GuiGraphics gui, int mouseX, int mouseY) {
         int x = dropX(), y = dropY(), w = dropW();
         gui.fill(x - 1, y - 1, x + w + 1, y + dropH() + 1, 0xFF000000);
-        gui.fill(x, y, x + w, y + dropH(), 0xE0181820);
+        gui.fill(x, y, x + w, y + dropH(), 0xF0181820);
         var diffs = song.difficulties();
         for (int i = 0; i < diffs.size(); i++) {
             int ry = y + 1 + i * ROW_H;
             boolean hover = mouseX >= x && mouseX < x + w && mouseY >= ry && mouseY < ry + ROW_H;
             boolean sel = i == difficultyIndex;
-            if (sel) gui.fill(x, ry, x + w, ry + ROW_H, 0x66FF44AA);
+            if (sel) gui.fill(x, ry, x + w, ry + ROW_H, BlockifiedScreenStyle.ACCENT_MEDIUM);
             else if (hover) gui.fill(x, ry, x + w, ry + ROW_H, 0x33FFFFFF);
             gui.drawString(font, diffs.get(i), x + 5, ry + 3, sel ? 0xFFFFFFFF : 0xFFCCCCCC, false);
         }

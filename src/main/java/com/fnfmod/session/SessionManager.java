@@ -110,6 +110,8 @@ public final class SessionManager {
     }
 
     private static final Map<Key, Session> SESSIONS = new HashMap<>();
+    /** One isolated, local-only transaction per chart-editor playtester. */
+    private static final Map<UUID, Session> EDITOR_PLAYTESTS = new HashMap<>();
 
     private record WorldBlockKey(ResourceKey<Level> dimension, BlockPos pos) {}
     private record BlockSnapshot(BlockState state, CompoundTag blockEntity) {}
@@ -183,6 +185,11 @@ public final class SessionManager {
                 if (s.host == sp || s.guest == sp) toCancel.add(e.getKey());
             }
             for (Key k : toCancel) cancel(SESSIONS.get(k), sp, "Partner disconnected");
+            Session editor = EDITOR_PLAYTESTS.remove(sp.getUUID());
+            if (editor != null) {
+                clearSessionActors(editor);
+                restoreWorld(editor);
+            }
             com.fnfmod.machine.MachineHitboxService.clearPlayer(sp);
             restorePosition(sp); // covers finishing the song and logging out from the results screen
         }
@@ -457,6 +464,41 @@ public final class SessionManager {
                 new FnfPayloads.RestartSongS2C(payload.pos(), botEntityId, 2000));
     }
 
+    /**
+     * Opens/restores the rollback journal used by a standalone editor playtest.
+     * Editor playtests exist only on an integrated server (singleplayer or LAN),
+     * never on a dedicated server.
+     */
+    public static void onEditorPlaytest(ServerPlayer player, FnfPayloads.EditorPlaytestC2S payload) {
+        if (player.getServer() == null || player.getServer().isDedicatedServer()) return;
+        Session previous = EDITOR_PLAYTESTS.remove(player.getUUID());
+        if (previous != null) {
+            clearSessionActors(previous);
+            restoreWorld(previous);
+            restorePosition(player);
+        }
+
+        if (payload.action() == FnfPayloads.EditorPlaytestC2S.END) {
+            PacketDistributor.sendToPlayer(player, new FnfPayloads.RollbackCompleteS2C(payload.pos()));
+            return;
+        }
+        if (payload.action() != FnfPayloads.EditorPlaytestC2S.BEGIN
+                && payload.action() != FnfPayloads.EditorPlaytestC2S.RESET) return;
+
+        Session session = new Session();
+        session.key = keyOf(player, payload.pos());
+        session.host = player;
+        session.state = State.PLAYING;
+        session.playSide = 0;
+        capturePlayerState(player);
+        prepareCommandTargets(session, payload.pos());
+        EDITOR_PLAYTESTS.put(player.getUUID(), session);
+        if (payload.action() == FnfPayloads.EditorPlaytestC2S.RESET) {
+            PacketDistributor.sendToPlayer(player,
+                    new FnfPayloads.RestartSongS2C(payload.pos(), -1, 0));
+        }
+    }
+
     private static CharacterTransform transformFrom(FnfPayloads.ReadyC2S payload) {
         Vec3 offset = new Vec3(payload.offsetX(), payload.offsetY(), payload.offsetZ());
         if (!Double.isFinite(offset.x) || !Double.isFinite(offset.y) || !Double.isFinite(offset.z)
@@ -473,9 +515,7 @@ public final class SessionManager {
      */
     private static void placeOnStage(ServerPlayer player, BlockPos machinePos, byte playSide,
                                      CharacterTransform transform) {
-        PLAYER_STATE_BEFORE.putIfAbsent(player.getUUID(), player.saveWithoutId(new CompoundTag()));
-        RETURN_POINTS.putIfAbsent(player.getUUID(), new ReturnPoint(
-                player.getX(), player.getY(), player.getZ(), player.getYRot(), player.getXRot()));
+        capturePlayerState(player);
 
         Direction facing = Direction.NORTH;
         BlockState state = player.serverLevel().getBlockState(machinePos);
@@ -501,6 +541,13 @@ public final class SessionManager {
         // non-interactive while playing (no incoming damage); restored on session end
         INVULN_BEFORE.putIfAbsent(player.getUUID(), player.isInvulnerable());
         player.setInvulnerable(true);
+    }
+
+    private static void capturePlayerState(ServerPlayer player) {
+        PLAYER_STATE_BEFORE.putIfAbsent(player.getUUID(), player.saveWithoutId(new CompoundTag()));
+        RETURN_POINTS.putIfAbsent(player.getUUID(), new ReturnPoint(
+                player.getX(), player.getY(), player.getZ(), player.getYRot(), player.getXRot()));
+        INVULN_BEFORE.putIfAbsent(player.getUUID(), player.isInvulnerable());
     }
 
     /** Spawns the decorative bot armor stand on the opposite stage spot from the player. */
@@ -641,6 +688,11 @@ public final class SessionManager {
 
     public static void onLuaCommand(ServerPlayer player, FnfPayloads.LuaCommandC2S payload) {
         Session session = SESSIONS.get(keyOf(player, payload.pos()));
+        boolean editorPlaytest = false;
+        if (session == null) {
+            session = EDITOR_PLAYTESTS.get(player.getUUID());
+            editorPlaytest = session != null;
+        }
         // Host-only prevents duet clients from executing same script command twice.
         if (session == null || session.state != State.PLAYING || session.host != player) return;
         var server = player.getServer();
@@ -654,12 +706,17 @@ public final class SessionManager {
                     "Blockified Lua: server commands require operator permission"));
             return;
         }
-        long now = System.nanoTime();
-        if (now - session.luaCommandWindowNanos >= 1_000_000_000L) {
-            session.luaCommandWindowNanos = now;
-            session.luaCommandsInWindow = 0;
+        // Keep the network safety limit for ordinary sessions. An editor
+        // playtest is local-only and may replay many legitimate command events
+        // in one render frame while catching up from time zero.
+        if (!editorPlaytest) {
+            long now = System.nanoTime();
+            if (now - session.luaCommandWindowNanos >= 1_000_000_000L) {
+                session.luaCommandWindowNanos = now;
+                session.luaCommandsInWindow = 0;
+            }
+            if (++session.luaCommandsInWindow > 100) return;
         }
-        if (++session.luaCommandsInWindow > 100) return;
 
         try {
             BlockState machineState = player.serverLevel().getBlockState(payload.pos());
@@ -667,7 +724,8 @@ public final class SessionManager {
                     ? machineState.getValue(FunkinMachineBlock.FACING) : Direction.NORTH;
             String command = CommandEventPlaceholders.expand(
                     payload.command(), payload.pos(), machineFacing,
-                    false, playerRoleIsHuman(session), opponentRoleIsHuman(session)).trim();
+                    editorPlaytest, editorPlaytest || playerRoleIsHuman(session),
+                    editorPlaytest || opponentRoleIsHuman(session)).trim();
             while (command.startsWith("/")) command = command.substring(1).trim();
             if (command.isEmpty()) return;
             String trackedCommand = command;
@@ -895,6 +953,7 @@ public final class SessionManager {
     public static boolean captureLuaPointMutation(ServerPlayer player, BlockPos machinePos,
                                                   ServerLevel level, BlockPos pointPos) {
         Session session = findParticipantSession(player, machinePos);
+        if (session == null) session = EDITOR_PLAYTESTS.get(player.getUUID());
         if (session == null || session.state != State.PLAYING
                 || (session.host != player && session.guest != player)
                 || level != player.serverLevel()) return false;

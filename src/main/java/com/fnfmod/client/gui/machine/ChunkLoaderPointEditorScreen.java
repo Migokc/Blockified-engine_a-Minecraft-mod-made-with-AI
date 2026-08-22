@@ -1,5 +1,6 @@
 package com.fnfmod.client.gui.machine;
 
+import com.fnfmod.client.gui.BlockifiedScreenStyle;
 import com.fnfmod.net.FnfPayloads;
 import com.fnfmod.world.ChunkLoaderPointService;
 import net.minecraft.client.gui.GuiGraphics;
@@ -23,6 +24,12 @@ public final class ChunkLoaderPointEditorScreen extends Screen {
     private Button enabledButton;
     private String status = "";
     private boolean statusError;
+    private int panelX;
+    private int panelY;
+    private int panelWidth;
+    private int panelHeight;
+    private int contentX;
+    private int contentWidth;
 
     public ChunkLoaderPointEditorScreen(BlockPos pos, String tag, int radius, boolean enabled) {
         super(Component.literal("Chunk Loader Point"));
@@ -35,25 +42,33 @@ public final class ChunkLoaderPointEditorScreen extends Screen {
     @Override
     protected void init() {
         clearWidgets();
-        int panelX = width / 2 - 120;
-        int top = Math.max(32, height / 2 - 82);
+        panelWidth = Math.max(280, Math.min(420, width - 24));
+        panelHeight = Math.max(246, Math.min(286, height - 24));
+        panelX = (width - panelWidth) / 2;
+        panelY = (height - panelHeight) / 2;
+        contentX = panelX + 22;
+        contentWidth = panelWidth - 44;
+        int top = panelY + 82;
 
-        tagBox = new EditBox(font, panelX, top + 24, 240, 20, Component.literal("Point tag"));
+        tagBox = new EditBox(font, contentX, top + 16, contentWidth, 20, Component.literal("Point tag"));
         tagBox.setMaxLength(64);
         tagBox.setFilter(value -> value.matches("[a-zA-Z0-9_-]*"));
         tagBox.setValue(pointTag);
         addRenderableWidget(tagBox);
 
-        radiusSlider = addRenderableWidget(new RadiusSlider(panelX, top + 58, 240, 20, radius));
+        radiusSlider = addRenderableWidget(new RadiusSlider(contentX, top + 48, contentWidth, 20, radius));
         enabledButton = addRenderableWidget(Button.builder(enabledLabel(), button -> {
             enabled = !enabled;
             button.setMessage(enabledLabel());
-        }).bounds(panelX, top + 88, 240, 20).build());
+        }).bounds(contentX, top + 76, contentWidth, 20).build());
 
+        int footerY = panelY + panelHeight - 34;
+        int buttonWidth = (contentWidth - 8) / 2;
         addRenderableWidget(Button.builder(Component.literal("Save"), button -> save())
-                .bounds(panelX + 38, top + 126, 78, 20).build());
+                .bounds(contentX, footerY, buttonWidth, 20).build());
         addRenderableWidget(Button.builder(Component.literal("Cancel"), button -> onClose())
-                .bounds(panelX + 124, top + 126, 78, 20).build());
+                .bounds(contentX + buttonWidth + 8, footerY,
+                        contentWidth - buttonWidth - 8, 20).build());
         setInitialFocus(tagBox);
     }
 
@@ -88,19 +103,31 @@ public final class ChunkLoaderPointEditorScreen extends Screen {
 
     @Override
     public void render(GuiGraphics gui, int mouseX, int mouseY, float partialTick) {
+        BlockifiedScreenStyle.backdrop(gui, width, height);
+        BlockifiedScreenStyle.panel(gui, panelX, panelY, panelWidth, panelHeight);
+        BlockifiedScreenStyle.header(gui, font, panelX + 16, panelY + 13,
+                "FUNKIN' DESIGNER", "Chunk loader point",
+                "Keep a configurable radius ticking for cameras and staged gameplay.");
+        BlockifiedScreenStyle.inner(gui, panelX + 14, panelY + 70,
+                panelWidth - 28, panelHeight - 114);
+        BlockifiedScreenStyle.section(gui, font, "POINT SETTINGS", contentX, panelY + 62);
         super.render(gui, mouseX, mouseY, partialTick);
-        int panelX = width / 2 - 120;
-        int top = Math.max(32, height / 2 - 82);
-        gui.drawCenteredString(font, title, width / 2, top - 18, 0xFFFFFFFF);
-        gui.drawString(font, "ID / Lua tag", panelX, top + 12, 0xFFBBBBBB, false);
+        int top = panelY + 82;
+        gui.drawString(font, "ID / Lua tag", contentX, top + 5,
+                BlockifiedScreenStyle.TEXT_SECTION, false);
         int count = (radius * 2 + 1) * (radius * 2 + 1);
         gui.drawCenteredString(font, count + " ticking chunks while enabled",
-                width / 2, top + 112, radius >= 8 ? 0xFFFFAA55 : 0xFFAAAAAA);
-        gui.drawCenteredString(font,
-                "Lua: chunkLoadPoints." + (pointTag.isBlank() ? "<tag>" : pointTag) + ".enabled",
-                width / 2, top + 154, 0xFF888888);
-        if (!status.isBlank()) gui.drawCenteredString(font, status, width / 2, top + 170,
-                statusError ? 0xFFFF7777 : 0xFF77DD88);
+                width / 2, top + 103, radius >= 8 ? 0xFFFFAA55 : BlockifiedScreenStyle.TEXT_MUTED);
+        String footerHint = status.isBlank()
+                ? "Lua: chunkLoadPoints." + (pointTag.isBlank() ? "<tag>" : pointTag) + ".enabled"
+                : status;
+        gui.drawCenteredString(font, footerHint, width / 2, panelY + panelHeight - 48,
+                status.isBlank() ? 0xFF888888 : statusError ? 0xFFFF7777 : 0xFF77DD88);
+    }
+
+    @Override
+    public void renderBackground(GuiGraphics gui, int mouseX, int mouseY, float partialTick) {
+        // render() owns the complete editor backdrop.
     }
 
     @Override public boolean isPauseScreen() { return false; }

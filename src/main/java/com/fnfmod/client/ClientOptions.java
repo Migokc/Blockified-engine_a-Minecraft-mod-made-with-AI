@@ -23,6 +23,7 @@ public class ClientOptions {
     public static final String SKIN_SOURCE_FORM = "form";
     public static final String SKIN_SOURCE_PLAYER = "player";
     public static final String SKIN_SOURCE_FILE = "file";
+    public static final String SKIN_SOURCE_ACCOUNT = "account";
     public boolean downscroll = false;
     /** Your strumline centered, opponent notes split to the screen edges. */
     public boolean middlescroll = false;
@@ -50,6 +51,9 @@ public class ClientOptions {
     /** Absolute PNG selected in the native file picker. Empty unless the file source is used. */
     public String playerSkinFile = "";
     public String botSkinFile = "";
+    /** Minecraft account name used by the account skin source. */
+    public String playerSkinAccount = "";
+    public String botSkinAccount = "";
     /** Minecraft model geometry for a selected file (false = wide/Steve, true = slim/Alex). */
     public boolean playerSkinSlim = false;
     public boolean botSkinSlim = false;
@@ -64,6 +68,8 @@ public class ClientOptions {
     public String hudStyle = "default";
     /** Splash pair name in config/fnfmod/splashes/ ("" = off). Ignored when the note skin ships its own. */
     public String splashSkin = "";
+    /** default = chart/Psych hold cover; none = off; otherwise a pack in splashes/holdSplashes/. */
+    public String holdSplashSkin = NOTE_SKIN_DEFAULT;
     /** Hitsound file name in config/fnfmod/hitsounds/ ("" = off). */
     public String hitsound = "";
     public double hitsoundVolume = 1.0;
@@ -83,6 +89,8 @@ public class ClientOptions {
 
     /** Show the world XYZ axis gizmo (bottom-right) while playtesting from the editor. */
     public boolean editorShowAxisGizmo = false;
+    /** Show seek, pause, and timeline controls during chart-editor playtests. */
+    public boolean editorPlaytestPlaybackControls = false;
 
     /**
      * Route note input through the frame-rate-independent sampler. Off keeps the
@@ -113,9 +121,9 @@ public class ClientOptions {
         return mode.equals("on") || mode.equals("song");
     }
 
-    /** Psych-style RGB note colors (applies to skins authored with the red/green/blue template). */
-    public boolean noteColorsEnabled = true;
     public int[] noteColorBase = defaultBase();
+    /** Psych RGB template green channel; white by default. */
+    public int[] noteColorHighlight = defaultHighlight();
     public int[] noteColorOutline = defaultOutline();
 
     public static int[] defaultBase() {
@@ -124,6 +132,10 @@ public class ClientOptions {
 
     public static int[] defaultOutline() {
         return new int[]{0x3C1F56, 0x1542B7, 0x0A4447, 0x651038};
+    }
+
+    public static int[] defaultHighlight() {
+        return new int[]{0xFFFFFF, 0xFFFFFF, 0xFFFFFF, 0xFFFFFF};
     }
 
     private static ClientOptions instance;
@@ -178,8 +190,14 @@ public class ClientOptions {
         o.botUsePlayerSkin = SKIN_SOURCE_PLAYER.equals(o.botSkinSource);
         if (o.playerSkinFile == null) o.playerSkinFile = "";
         if (o.botSkinFile == null) o.botSkinFile = "";
+        if (o.playerSkinAccount == null) o.playerSkinAccount = "";
+        if (o.botSkinAccount == null) o.botSkinAccount = "";
         if (o.noteSkin == null || o.noteSkin.isBlank()) o.noteSkin = NOTE_SKIN_DEFAULT;
+        if (o.holdSplashSkin == null || o.holdSplashSkin.isBlank()) o.holdSplashSkin = NOTE_SKIN_DEFAULT;
         if (o.noteColorBase == null || o.noteColorBase.length != 4) o.noteColorBase = defaultBase();
+        if (o.noteColorHighlight == null || o.noteColorHighlight.length != 4) {
+            o.noteColorHighlight = defaultHighlight();
+        }
         if (o.noteColorOutline == null || o.noteColorOutline.length != 4) o.noteColorOutline = defaultOutline();
     }
 
@@ -189,7 +207,7 @@ public class ClientOptions {
         }
         String normalized = source.trim().toLowerCase(java.util.Locale.ROOT);
         return switch (normalized) {
-            case SKIN_SOURCE_PLAYER, SKIN_SOURCE_FILE -> normalized;
+            case SKIN_SOURCE_PLAYER, SKIN_SOURCE_FILE, SKIN_SOURCE_ACCOUNT -> normalized;
             default -> SKIN_SOURCE_FORM;
         };
     }
