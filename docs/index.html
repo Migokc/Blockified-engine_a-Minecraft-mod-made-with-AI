@@ -225,9 +225,9 @@
     .bubble-slot:nth-child(1) .bubble { view-transition-name: guide-bubble; }
     .bubble-slot:nth-child(2) .bubble { view-transition-name: wiki-bubble; }
     .bubble-slot:nth-child(3) .bubble { view-transition-name: documentation-bubble; }
-    .bubble-slot:nth-child(4) .bubble { view-transition-name: report-bubble; }
+    .bubble-slot:nth-child(4) .bubble { view-transition-name: download-bubble; }
     .bubble-slot:nth-child(5) .bubble { view-transition-name: github-bubble; }
-    .bubble-slot:nth-child(6) .bubble { view-transition-name: download-bubble; }
+    .bubble-slot:nth-child(6) .bubble { view-transition-name: report-bubble; }
 
     .bubble-slot:has(.bubble:hover),
     .bubble-slot:focus-within {
@@ -617,13 +617,11 @@
         </div>
 
         <div class="bubble-slot" style="--float-range: 7px; --float-duration: 4.1s; --float-delay: -2.8s;">
-          <a class="bubble" href="https://github.com/Migokc/Blockified-engine_a-Minecraft-mod-made-with-AI/issues"
-             target="_blank" rel="noreferrer" aria-label="Report Bug"
-             data-title="Report Bug" data-description="Report issues and help improve Blockified.">
+          <a class="bubble" href="https://github.com/Migokc/Blockified-engine_a-Minecraft-mod-made-with-AI/releases/latest"
+             target="_blank" rel="noreferrer" aria-label="Download Blockified"
+             data-title="Download Blockified" data-description="Get the newest release JAR and its release notes.">
             <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M9 9h6M10 5l1-2h2l1 2M8 7 5 5M16 7l3-2M7 12H4M17 12h3M7 16l-3 2M17 16l3 2"/>
-              <rect x="7" y="5" width="10" height="16" rx="5"/>
-              <path d="M12 9v12"/>
+              <path d="M12 3v12M7 10l5 5 5-5M5 20h14"/>
             </svg>
           </a>
         </div>
@@ -639,11 +637,13 @@
         </div>
 
         <div class="bubble-slot" style="--float-range: 7px; --float-duration: 4.2s; --float-delay: -2.4s;">
-          <a class="bubble" href="https://github.com/Migokc/Blockified-engine_a-Minecraft-mod-made-with-AI/releases/latest"
-             target="_blank" rel="noreferrer" aria-label="Download Blockified"
-             data-title="Download Blockified" data-description="Get the newest release JAR and its release notes.">
+          <a class="bubble" href="https://github.com/Migokc/Blockified-engine_a-Minecraft-mod-made-with-AI/issues"
+             target="_blank" rel="noreferrer" aria-label="Report Bug"
+             data-title="Report Bug" data-description="Report issues and help improve Blockified.">
             <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M12 3v12M7 10l5 5 5-5M5 20h14"/>
+              <path d="M9 9h6M10 5l1-2h2l1 2M8 7 5 5M16 7l3-2M7 12H4M17 12h3M7 16l-3 2M17 16l3 2"/>
+              <rect x="7" y="5" width="10" height="16" rx="5"/>
+              <path d="M12 9v12"/>
             </svg>
           </a>
         </div>

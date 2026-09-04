@@ -128,9 +128,9 @@ body::after {
 .site-nav a:nth-child(1) { view-transition-name: guide-bubble; }
 .site-nav a:nth-child(2) { view-transition-name: wiki-bubble; }
 .site-nav a:nth-child(3) { view-transition-name: documentation-bubble; }
-.site-nav a:nth-child(4) { view-transition-name: report-bubble; }
+.site-nav a:nth-child(4) { view-transition-name: download-bubble; }
 .site-nav a:nth-child(5) { view-transition-name: github-bubble; }
-.site-nav a:nth-child(6) { view-transition-name: download-bubble; }
+.site-nav a:nth-child(6) { view-transition-name: report-bubble; }
 
 .site-nav svg {
   width: 1.35rem;
