@@ -47,6 +47,17 @@ public abstract class CameraMixin {
     @Inject(method = "setup", at = @At("TAIL"))
     private void fnfmod$applyGameplayPan(BlockGetter level, Entity entity, boolean detached,
                                          boolean thirdPersonReverse, float partialTick, CallbackInfo ci) {
+        if (com.fnfmod.client.camera.MenuCameraController.hasEngagedCamera()) {
+            var pose = com.fnfmod.client.camera.MenuCameraController.sample((Camera) (Object) this);
+            if (pose != null) {
+                if (pose.rotationControlled()) setRotation(pose.yaw(), pose.pitch(), pose.roll());
+                if (pose.positionControlled()) {
+                    Vec3 p = pose.position();
+                    setPosition(p.x, p.y, p.z);
+                }
+            }
+            return;
+        }
         Vec3 rotation = GameplayCamera.rotationOffset();
         // Snapshot the stage-facing basis before Camera Rotation 3D tilts it, so
         // Camera Follow Pos can keep its offsets aligned to the machine facing.

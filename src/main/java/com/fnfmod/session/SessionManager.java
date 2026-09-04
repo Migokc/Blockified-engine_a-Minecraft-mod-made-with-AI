@@ -54,6 +54,10 @@ import java.util.UUID;
 public final class SessionManager {
 
     private static final int CHUNK_SIZE = 400 * 1024;
+    /** Dedicated-server song payload cap; LAN/integrated sessions remain unrestricted. */
+    private static final long DEDICATED_MAX_SONG_BYTES = 100L * 1024L * 1024L;
+    /** Prevent a file-transfer worker from flooding Netty ahead of keepalive traffic. */
+    private static final long CHUNK_PACING_NANOS = 10_000_000L;
 
     /**
      * File transfers stream off the server tick thread. Reading and slicing a
@@ -95,12 +99,17 @@ public final class SessionManager {
         ArmorStand speakersMarker;
         /** Set when the session ends so an in-flight background transfer stops. */
         volatile boolean transferCancelled;
+        /** Originating Lua chooser, distinct from the tagged stage used for gameplay. */
+        Key menuOrigin;
+        ServerLevel menuStageTicketLevel;
         /** Prevents duet clients or duplicate packets from running a server event twice. */
         final Set<Integer> executedServerEvents = new HashSet<>();
         long luaCommandWindowNanos;
         int luaCommandsInWindow;
         /** First state seen for each block changed by a song command. */
         final Map<WorldBlockKey, BlockSnapshot> changedBlocks = new HashMap<>();
+        /** First weather state per dimension changed synchronously by a song command. */
+        final Map<ResourceKey<Level>, WeatherRollback.Snapshot> changedWeather = new HashMap<>();
         /** World time captured at song start, so a song's /time change is undone on exit. */
         Long startGameTime;
         long startDayTime;
@@ -110,6 +119,12 @@ public final class SessionManager {
     }
 
     private static final Map<Key, Session> SESSIONS = new HashMap<>();
+    private record MenuReturnRoute(Key menu, Key stage) {}
+    // Survives onSongEnd, which removes the session before the results screen closes.
+    private static final Map<UUID, MenuReturnRoute> MENU_RETURN_ROUTES = new HashMap<>();
+    private static final net.minecraft.server.level.TicketType<BlockPos> MENU_STAGE_TICKET =
+            net.minecraft.server.level.TicketType.create("fnfmod_menu_stage",
+                    java.util.Comparator.comparingLong(BlockPos::asLong));
     /** One isolated, local-only transaction per chart-editor playtester. */
     private static final Map<UUID, Session> EDITOR_PLAYTESTS = new HashMap<>();
 
@@ -157,6 +172,7 @@ public final class SessionManager {
 
     @SubscribeEvent
     public static void onServerStopped(ServerStoppedEvent event) {
+        MENU_RETURN_ROUTES.clear();
         ModWorldOptions.clear();
         ModContentScope.clear();
         MachineLibrary.rescan();
@@ -191,6 +207,8 @@ public final class SessionManager {
                 restoreWorld(editor);
             }
             com.fnfmod.machine.MachineHitboxService.clearPlayer(sp);
+            com.fnfmod.machine.MachineMenuService.clearPlayer(sp);
+            MENU_RETURN_ROUTES.remove(sp.getUUID());
             restorePosition(sp); // covers finishing the song and logging out from the results screen
         }
     }
@@ -205,7 +223,11 @@ public final class SessionManager {
             modId = ModContentScope.activeMod().map(ModContentScope.ActiveMod::id).orElse("");
             packVersion = MachineLibrary.packVersion();
         }
-        PacketDistributor.sendToPlayer(player, new FnfPayloads.ModScopeS2C(modId, packVersion));
+        PacketDistributor.sendToPlayer(player, new FnfPayloads.ModScopeS2C(
+                modId, packVersion, !modId.isBlank() && ModWorldOptions.autoOpenMenu()));
+        if (!modId.isBlank() && ModWorldOptions.autoOpenMenu()) {
+            MachineMenuService.openAutomatic(player);
+        }
     }
 
     private static Key keyOf(ServerPlayer player, BlockPos pos) {
@@ -272,6 +294,51 @@ public final class SessionManager {
                 && (session.state == State.CHOOSING || session.state == State.WAITING_GUEST);
     }
 
+    public static boolean ownsIdleMenu(ServerPlayer player, BlockPos pos) {
+        Session session = SESSIONS.get(keyOf(player, pos));
+        return session != null && session.host == player && session.guest == null
+                && session.state == State.CHOOSING;
+    }
+
+    /** Atomically moves an owned Lua chooser to a named stage; never steals another session. */
+    public static boolean onTaggedSelectSong(ServerPlayer player, BlockPos menuPos,
+                                             FnfPayloads.MachineDirectPlayC2S payload) {
+        if (!ownsIdleMenu(player, menuPos)) return false;
+        Key origin = keyOf(player, menuPos);
+        Key targetKey = keyOf(player, payload.pos());
+        Session source = SESSIONS.get(origin);
+        if (!origin.equals(targetKey) && SESSIONS.containsKey(targetKey)) return false;
+        Session target = origin.equals(targetKey) ? source : new Session();
+        target.key = targetKey;
+        target.host = player;
+        target.menuOrigin = origin;
+        target.menuStageTicketLevel = player.serverLevel();
+        target.menuStageTicketLevel.getChunkSource().addRegionTicket(MENU_STAGE_TICKET,
+                new net.minecraft.world.level.ChunkPos(payload.pos()), 2, payload.pos());
+        SESSIONS.put(targetKey, target);
+        try {
+            onSelectSong(player, new FnfPayloads.SelectSongC2S(payload.pos(), payload.songId(),
+                    payload.difficulty(), payload.duet(), payload.playSide(), payload.playbackMode()));
+            if (target.state == State.CHOOSING) return false;
+            if (!origin.equals(targetKey)) SESSIONS.remove(origin, source);
+            MENU_RETURN_ROUTES.put(player.getUUID(), new MenuReturnRoute(origin, targetKey));
+            return true;
+        } finally {
+            if (target.state == State.CHOOSING) {
+                releaseMenuStageTicket(target);
+                target.menuOrigin = null;
+                if (!origin.equals(targetKey)) SESSIONS.remove(targetKey, target);
+            }
+        }
+    }
+
+    private static void releaseMenuStageTicket(Session session) {
+        if (session.menuStageTicketLevel == null) return;
+        session.menuStageTicketLevel.getChunkSource().removeRegionTicket(MENU_STAGE_TICKET,
+                new net.minecraft.world.level.ChunkPos(session.key.pos()), 2, session.key.pos());
+        session.menuStageTicketLevel = null;
+    }
+
     /** Creates/reuses a host session without opening the built-in selector. */
     public static boolean onDirectSelectSong(ServerPlayer player, FnfPayloads.MachineDirectPlayC2S payload) {
         Key key = keyOf(player, payload.pos());
@@ -318,7 +385,19 @@ public final class SessionManager {
                     "Song has too many files to transfer."));
             return;
         }
+        if (player.getServer().isDedicatedServer()) {
+            long transferBytes = 0;
+            for (FnfPayloads.FileMeta file : selectedManifest) {
+                if (file.size() > DEDICATED_MAX_SONG_BYTES - transferBytes) {
+                    player.sendSystemMessage(Component.literal(
+                            "Song exceeds the dedicated-server transfer limit of 100 MB."));
+                    return;
+                }
+                transferBytes += file.size();
+            }
+        }
 
+        MENU_RETURN_ROUTES.remove(player.getUUID());
         session.songId = payload.songId();
         session.difficulty = payload.difficulty();
         session.duet = payload.duet();
@@ -327,6 +406,15 @@ public final class SessionManager {
         session.hostReady = false;
         session.guestReady = false;
         session.executedServerEvents.clear();
+
+        if (session.menuOrigin != null) {
+            BlockState stage = player.serverLevel().getBlockState(payload.pos());
+            Direction facing = stage.hasProperty(FunkinMachineBlock.FACING)
+                    ? stage.getValue(FunkinMachineBlock.FACING) : Direction.NORTH;
+            // Must precede the manifest: ready/preload may run before distant client chunks arrive.
+            PacketDistributor.sendToPlayer(player, new FnfPayloads.MachineTaggedPlayResultS2C(
+                    session.menuOrigin.pos(), payload.pos(), (byte) facing.get3DDataValue(), ""));
+        }
 
         if (payload.duet()) {
             session.state = State.WAITING_GUEST;
@@ -352,6 +440,12 @@ public final class SessionManager {
         java.util.Set<String> requested = new java.util.HashSet<>(payload.fileNames());
         List<Path> candidates = entry.transferFiles(session.difficulty, session.playbackPolicy).stream()
                 .filter(file -> requested.contains(entry.transferName(file))).toList();
+        java.util.Set<String> available = new java.util.HashSet<>();
+        for (Path candidate : candidates) available.add(entry.transferName(candidate));
+        if (!available.containsAll(requested)) {
+            cancel(session, player, "Server could not find all requested song files");
+            return;
+        }
 
         // Stream the files off the tick thread so the world keeps running, and
         // stop between chunks if the session is cancelled or the player leaves.
@@ -370,7 +464,9 @@ public final class SessionManager {
                 size = Files.size(f);
             } catch (IOException e) {
                 FnfMod.LOGGER.error("Failed to stat song file {}", f, e);
-                continue;
+                scheduleTransferFailure(session, player,
+                        "Could not read song file " + f.getFileName());
+                return;
             }
             int chunks = (int) Math.max(1, (size + CHUNK_SIZE - 1) / CHUNK_SIZE);
             try (java.io.InputStream in = new java.io.BufferedInputStream(Files.newInputStream(f))) {
@@ -386,11 +482,28 @@ public final class SessionManager {
                             : java.util.Arrays.copyOf(buffer, filled);
                     PacketDistributor.sendToPlayer(player, new FnfPayloads.FileChunkS2C(
                             songId, name, i, chunks, slice));
+                    // Keep the connection responsive while a large OGG or asset atlas is
+                    // transferred. Two clients may download concurrently, so an unpaced
+                    // loop can otherwise bury keepalives behind hundreds of custom payloads.
+                    if (i + 1 < chunks) java.util.concurrent.locks.LockSupport.parkNanos(
+                            CHUNK_PACING_NANOS);
                 }
             } catch (IOException e) {
                 FnfMod.LOGGER.error("Failed to send song file {}", f, e);
+                scheduleTransferFailure(session, player,
+                        "Could not transfer song file " + f.getFileName());
+                return;
             }
         }
+    }
+
+    /** Returns worker-thread transfer failures to the authoritative server thread. */
+    private static void scheduleTransferFailure(Session session, ServerPlayer player, String reason) {
+        var server = player.getServer();
+        if (server == null) return;
+        server.execute(() -> {
+            if (SESSIONS.get(session.key) == session) cancel(session, player, reason);
+        });
     }
 
     public static void onReady(ServerPlayer player, FnfPayloads.ReadyC2S payload) {
@@ -491,11 +604,19 @@ public final class SessionManager {
         session.state = State.PLAYING;
         session.playSide = 0;
         capturePlayerState(player);
+        // Give the playtest the same solo opponent a real song gets. Spawned before the
+        // command targets so it also receives the <opponent> tag, and its entity id is sent
+        // to the client, which otherwise has no stand to place the opponent character on.
+        spawnBotStand(session, payload.pos());
         prepareCommandTargets(session, payload.pos());
         EDITOR_PLAYTESTS.put(player.getUUID(), session);
+        int botEntityId = session.botStand == null ? -1 : session.botStand.getId();
         if (payload.action() == FnfPayloads.EditorPlaytestC2S.RESET) {
             PacketDistributor.sendToPlayer(player,
-                    new FnfPayloads.RestartSongS2C(payload.pos(), -1, 0));
+                    new FnfPayloads.RestartSongS2C(payload.pos(), botEntityId, 0));
+        } else {
+            PacketDistributor.sendToPlayer(player,
+                    new FnfPayloads.EditorBotS2C(payload.pos(), botEntityId));
         }
     }
 
@@ -722,10 +843,13 @@ public final class SessionManager {
             BlockState machineState = player.serverLevel().getBlockState(payload.pos());
             Direction machineFacing = machineState.hasProperty(FunkinMachineBlock.FACING)
                     ? machineState.getValue(FunkinMachineBlock.FACING) : Direction.NORTH;
+            // A playtest now spawns and tags the same performers a real song does, so its
+            // selectors resolve exactly like gameplay. Collapsing them to @s (which this used
+            // to do, back when a playtest had no tagged entities) sent every <opponent> and
+            // <speakers> command at the person testing instead.
             String command = CommandEventPlaceholders.expand(
                     payload.command(), payload.pos(), machineFacing,
-                    editorPlaytest, editorPlaytest || playerRoleIsHuman(session),
-                    editorPlaytest || opponentRoleIsHuman(session)).trim();
+                    false, playerRoleIsHuman(session), opponentRoleIsHuman(session)).trim();
             while (command.startsWith("/")) command = command.substring(1).trim();
             if (command.isEmpty()) return;
             String trackedCommand = command;
@@ -767,6 +891,7 @@ public final class SessionManager {
         if (allEnded) {
             clearSessionActors(session);
             restoreWorld(session);
+            releaseMenuStageTicket(session);
             SESSIONS.remove(session.key);
         }
     }
@@ -802,6 +927,9 @@ public final class SessionManager {
     }
 
     public static void onLeave(ServerPlayer player, BlockPos pos, boolean finishedOnly, byte requestedReturnTarget) {
+        MenuReturnRoute route = MENU_RETURN_ROUTES.get(player.getUUID());
+        if (route != null && route.stage().pos().equals(pos)) MENU_RETURN_ROUTES.remove(player.getUUID());
+        else route = null;
         boolean chartEditorTransition = requestedReturnTarget == FnfPayloads.LeaveC2S.RETURN_CHART_EDITOR;
         if (finishedOnly) {
             restorePosition(player);
@@ -823,10 +951,12 @@ public final class SessionManager {
         // Custom-menu routing revalidates machine reach, profile, world scope,
         // and LAN policy before sending any executable menu content.
         byte returnTarget = FnfPayloads.LeaveC2S.normalizeReturnTarget(requestedReturnTarget);
+        BlockPos menuPos = route != null && player.level().dimension().equals(route.menu().dim())
+                ? route.menu().pos() : pos;
         if (returnTarget == FnfPayloads.LeaveC2S.RETURN_SELECTOR) {
-            onInteract(player, pos);
+            onInteract(player, menuPos);
         } else if (returnTarget == FnfPayloads.LeaveC2S.RETURN_MACHINE_MENU) {
-            MachineMenuService.onInteract(player, pos);
+            MachineMenuService.onInteract(player, menuPos);
         }
     }
 
@@ -922,6 +1052,7 @@ public final class SessionManager {
         session.transferCancelled = true; // stop any background file transfer at once
         clearSessionActors(session);
         restoreWorld(session);
+        releaseMenuStageTicket(session);
         SESSIONS.remove(session.key);
         for (ServerPlayer p : new ServerPlayer[]{session.host, session.guest}) {
             if (p == null) continue;
@@ -947,6 +1078,13 @@ public final class SessionManager {
         Session session = activeMutationSession;
         if (session == null || restoringWorld || level.isClientSide()) return;
         captureBlock(session, level, pos);
+    }
+
+    /** Called by WeatherMutationMixin before /weather changes a server dimension. */
+    public static void captureWeatherBeforeMutation(ServerLevel level) {
+        Session session = activeMutationSession;
+        if (session == null || restoringWorld || level == null) return;
+        session.changedWeather.computeIfAbsent(level.dimension(), ignored -> WeatherRollback.capture(level));
     }
 
     /** Authorizes and snapshots a chunk-loader property changed by gameplay Lua. */
@@ -1032,6 +1170,15 @@ public final class SessionManager {
                 }
             }
             session.startGameModes.clear();
+        }
+        // Weather is lazy-snapshotted by the setWeatherParameters mixin, so a song
+        // that never calls /weather cannot rewind natural rain/thunder progression.
+        if (!session.changedWeather.isEmpty() && session.host != null && session.host.getServer() != null) {
+            for (var entry : session.changedWeather.entrySet()) {
+                ServerLevel level = session.host.getServer().getLevel(entry.getKey());
+                if (level != null) WeatherRollback.restore(level, entry.getValue());
+            }
+            session.changedWeather.clear();
         }
         if (session.changedBlocks.isEmpty() || session.host.getServer() == null) return;
         restoringWorld = true;

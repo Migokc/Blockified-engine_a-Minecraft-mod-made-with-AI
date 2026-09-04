@@ -43,6 +43,13 @@ public final class MachineAnchorBlock extends BaseEntityBlock {
     @Override public BlockEntity newBlockEntity(BlockPos pos, BlockState state) { return new MachineAnchorBlockEntity(pos, state); }
 
     @Override
+    protected void onRemove(BlockState state, Level level, BlockPos pos, BlockState next, boolean moving) {
+        if (!state.is(next.getBlock()) && level instanceof net.minecraft.server.level.ServerLevel serverLevel)
+            com.fnfmod.machine.VirtualMachineData.get(serverLevel).remove(pos);
+        super.onRemove(state, level, pos, next, moving);
+    }
+
+    @Override
     protected VoxelShape getShape(BlockState state, BlockGetter level, BlockPos pos, CollisionContext context) {
         return context.isHoldingItem(FnfMod.FUNKIN_DESIGNER.get()) ? Shapes.block() : Shapes.empty();
     }

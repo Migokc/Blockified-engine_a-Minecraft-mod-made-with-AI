@@ -5,6 +5,34 @@ import net.minecraft.resources.ResourceLocation;
 
 /** Immutable render snapshots shared by Lua world-object renderers. */
 public sealed interface LuaWorldObject permits LuaWorldObject.Sprite, LuaWorldObject.Text {
+    /**
+     * Material path used for a world object.  Keeping flat and emissive separate is
+     * important under Iris: shader packs commonly reinterpret Minecraft's emissive
+     * entity pass, so it is not a reliable implementation of "unlit".
+     */
+    enum RenderMode {
+        LIT("lit"), FLAT("flat"), EMISSIVE("emissive");
+
+        private final String luaName;
+
+        RenderMode(String luaName) { this.luaName = luaName; }
+
+        public String luaName() { return luaName; }
+        public boolean usesWorldLight() { return this == LIT; }
+
+        public static RenderMode resolve(String value, boolean lighting) {
+            if (value != null) {
+                return switch (value.trim().toLowerCase(java.util.Locale.ROOT)) {
+                    case "lit", "world", "entity", "shaded" -> LIT;
+                    case "emissive", "glow", "glowing" -> EMISSIVE;
+                    case "flat", "unlit", "fullbright", "full-bright" -> FLAT;
+                    default -> lighting ? LIT : FLAT;
+                };
+            }
+            return lighting ? LIT : FLAT;
+        }
+    }
+
     double x();
     double y();
     double z();
@@ -17,6 +45,7 @@ public sealed interface LuaWorldObject permits LuaWorldObject.Sprite, LuaWorldOb
     int color();
     boolean billboard();
     boolean lighting();
+    RenderMode renderMode();
     boolean seeThrough();
 
     /** Immutable atlas data for the currently displayed animation frame. */
@@ -46,6 +75,7 @@ public sealed interface LuaWorldObject permits LuaWorldObject.Sprite, LuaWorldOb
             int color,
             boolean billboard,
             boolean lighting,
+            RenderMode renderMode,
             boolean seeThrough
     ) implements LuaWorldObject {}
 
@@ -66,11 +96,17 @@ public sealed interface LuaWorldObject permits LuaWorldObject.Sprite, LuaWorldOb
             int color,
             boolean billboard,
             boolean lighting,
+            RenderMode renderMode,
             boolean seeThrough,
             double borderSize,
             int borderColor,
             String borderStyle,
             String alignment,
-            boolean italic
+            boolean italic,
+            double lineSpacing,
+            double letterSpacing,
+            boolean surfaceAttached,
+            /** Uses the same front-face basis as a sprite/button plane. */
+            boolean spritePlaneOrientation
     ) implements LuaWorldObject {}
 }

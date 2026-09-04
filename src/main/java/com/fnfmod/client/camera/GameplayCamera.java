@@ -343,9 +343,26 @@ public final class GameplayCamera {
         if (freeCamEngaged) freeRoll += dRoll;
     }
 
+    /** Sets one Camera Rotation 3D component: X = pitch, Y = yaw, Z = roll. */
+    public static void setFreeCamRotation(int axis, double value) {
+        if (!freeCamEngaged || !Double.isFinite(value)) return;
+        switch (Math.max(0, Math.min(2, axis))) {
+            case 0 -> freePitch = Math.max(-89.9, Math.min(89.9, value));
+            case 1 -> freeYaw = value;
+            default -> freeRoll = value;
+        }
+    }
+
     /** Adds to the free-camera zoom, clamped to the Camera Zoom event's range. */
     public static void zoomFreeCam(double dZoom) {
         if (freeCamEngaged) freeZoom = Math.max(-1.0, Math.min(0.9, freeZoom + dZoom));
+    }
+
+    /** Sets the Camera Zoom event amount directly. */
+    public static void setFreeCamZoom(double value) {
+        if (freeCamEngaged && Double.isFinite(value)) {
+            freeZoom = Math.max(-1.0, Math.min(0.9, value));
+        }
     }
 
     /** R key: roll back to level and zoom back to Blockified's default (0). */

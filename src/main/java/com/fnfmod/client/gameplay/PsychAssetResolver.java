@@ -84,6 +84,58 @@ public final class PsychAssetResolver {
         return List.copyOf(roots);
     }
 
+    /**
+     * Roots used only for the built-in Hurt Note replacement atlas.
+     *
+     * <p>The chart editor always previews with Legacy asset rules, while Minecraft
+     * presentation can deliberately disable a song's arbitrary images. Hurt Note is
+     * gameplay data rather than optional stage artwork, so it still needs its exact
+     * atlas. Keep the owning song/mod first when its images are allowed, then search
+     * enabled image sources from Mods settings. The caller confines this list to the
+     * texture requested by a Hurt Note; it does not re-enable general song images.</p>
+     */
+    public List<Path> hurtNoteRoots() {
+        return requiredNoteAssetRoots();
+    }
+
+    /**
+     * Roots available only to note/splash names explicitly assigned by a
+     * {@code custom_notetypes} Lua/config script. The renderer keeps an exact-name
+     * allowlist, so exposing these roots does not reopen arbitrary stage imagery.
+     */
+    public List<Path> scriptedNoteRoots() {
+        return requiredNoteAssetRoots();
+    }
+
+    private List<Path> requiredNoteAssetRoots() {
+        List<Path> roots = new ArrayList<>();
+        // Hurt Note's atlas is required note-type gameplay art, not optional stage
+        // imagery. Minecraft presentation normally blocks rich images from an
+        // external path, but applying that broad gate here made the editor find
+        // HURTNOTE_assets while gameplay could not. Preserve the source/pack's
+        // explicit Images permission, then expose only these roots to the dedicated
+        // Hurt cache (the cache is never used for arbitrary sprites or characters).
+        boolean sourceAllowsImages = entry == null
+                || entry.allows(SongLibrary.ExternalContent.IMAGES);
+        if (sourceAllowsImages) {
+            addSongRoot(roots, songFolder, SongLibrary.ExternalContent.IMAGES);
+            if (entry != null) {
+                addSongRoot(roots, entry.modRoot, SongLibrary.ExternalContent.IMAGES);
+                addSongRoot(roots, entry.folder, SongLibrary.ExternalContent.IMAGES);
+            }
+            add(roots, sourceEngineAssets());
+        }
+
+        // These roots already respect source/pack image permissions and their order
+        // in Mods settings. Also infer an engine's sibling assets directory when the
+        // selected source is its mods folder or one mod inside that folder.
+        for (Path root : SongLibrary.orderedContentRoots(SongLibrary.ExternalContent.IMAGES)) {
+            add(roots, root);
+            add(roots, siblingEngineAssets(root));
+        }
+        return List.copyOf(roots);
+    }
+
     public Path image(String raw) {
         if (raw == null || raw.isBlank()) return null;
         String file = withExtension(raw, ".png");
@@ -238,6 +290,20 @@ public final class PsychAssetResolver {
         if (entry == null || entry.modRoot == null) return null;
         Path mod = normalize(entry.modRoot);
         Path mods = mod == null ? null : mod.getParent();
+        if (mods == null || mods.getFileName() == null
+                || !mods.getFileName().toString().equalsIgnoreCase("mods")) return null;
+        Path engine = mods.getParent();
+        if (engine == null) return null;
+        Path assets = engine.resolve("assets").normalize();
+        return Files.isDirectory(assets) ? assets : null;
+    }
+
+    private static Path siblingEngineAssets(Path selected) {
+        Path root = normalize(selected);
+        if (root == null || root.getFileName() == null) return null;
+        if (root.getFileName().toString().equalsIgnoreCase("assets")) return root;
+        Path mods = root.getFileName().toString().equalsIgnoreCase("mods")
+                ? root : root.getParent();
         if (mods == null || mods.getFileName() == null
                 || !mods.getFileName().toString().equalsIgnoreCase("mods")) return null;
         Path engine = mods.getParent();

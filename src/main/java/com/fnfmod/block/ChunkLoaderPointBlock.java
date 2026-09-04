@@ -37,16 +37,12 @@ public final class ChunkLoaderPointBlock extends BaseEntityBlock {
 
     private static boolean holdingTool(Player player) {
         return player.getMainHandItem().is(FnfMod.FUNKIN_DESIGNER.get())
-                || player.getOffhandItem().is(FnfMod.FUNKIN_DESIGNER.get())
-                || player.getMainHandItem().is(FnfMod.CHUNK_LOADER_POINT_ITEM.get())
-                || player.getOffhandItem().is(FnfMod.CHUNK_LOADER_POINT_ITEM.get());
+                || player.getOffhandItem().is(FnfMod.FUNKIN_DESIGNER.get());
     }
 
     @Override
     protected VoxelShape getShape(BlockState state, BlockGetter level, BlockPos pos, CollisionContext context) {
-        return context.isHoldingItem(FnfMod.FUNKIN_DESIGNER.get())
-                || context.isHoldingItem(FnfMod.CHUNK_LOADER_POINT_ITEM.get())
-                ? Shapes.block() : Shapes.empty();
+        return context.isHoldingItem(FnfMod.FUNKIN_DESIGNER.get()) ? Shapes.block() : Shapes.empty();
     }
 
     @Override protected VoxelShape getCollisionShape(BlockState state, BlockGetter level, BlockPos pos,
@@ -67,12 +63,7 @@ public final class ChunkLoaderPointBlock extends BaseEntityBlock {
     protected ItemInteractionResult useItemOn(ItemStack stack, BlockState state, Level level, BlockPos pos,
                                                Player player, net.minecraft.world.InteractionHand hand,
                                                BlockHitResult hit) {
-        if (!stack.is(FnfMod.FUNKIN_DESIGNER.get())
-                && !stack.is(FnfMod.CHUNK_LOADER_POINT_ITEM.get())) {
-            return ItemInteractionResult.PASS_TO_DEFAULT_BLOCK_INTERACTION;
-        }
-        // Sneak with another point block to place it adjacent; normal use edits this point.
-        if (stack.is(FnfMod.CHUNK_LOADER_POINT_ITEM.get()) && player.isShiftKeyDown()) {
+        if (!stack.is(FnfMod.FUNKIN_DESIGNER.get())) {
             return ItemInteractionResult.PASS_TO_DEFAULT_BLOCK_INTERACTION;
         }
         if (!level.isClientSide && player instanceof ServerPlayer serverPlayer) {

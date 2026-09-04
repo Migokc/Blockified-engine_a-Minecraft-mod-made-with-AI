@@ -17,6 +17,7 @@ import java.util.List;
 /** Chooses virtual-machine profile and full-block vs precise hitbox selection. */
 public final class HitboxBuilderScreen extends Screen {
 
+    private final Screen parent;
     private String selectedProfile;
     private byte mode = MachineHitboxService.FULL_BLOCKS;
     private int scroll;
@@ -33,7 +34,12 @@ public final class HitboxBuilderScreen extends Screen {
     private int visibleProfiles;
 
     public HitboxBuilderScreen(String suggestedProfile) {
+        this(suggestedProfile, null);
+    }
+
+    public HitboxBuilderScreen(String suggestedProfile, Screen parent) {
         super(Component.literal("Machine Hitbox Builder"));
+        this.parent = parent;
         selectedProfile = MachineLibrary.find(suggestedProfile).map(MachineDefinition::id)
                 .orElse(MachineDefinition.DEFAULT_ID);
     }
@@ -111,6 +117,7 @@ public final class HitboxBuilderScreen extends Screen {
 
     @Override
     public void render(GuiGraphics gui, int mouseX, int mouseY, float partialTick) {
+        super.renderBackground(gui, mouseX, mouseY, partialTick);
         BlockifiedScreenStyle.backdrop(gui, width, height);
         BlockifiedScreenStyle.panel(gui, panelX, panelY, panelWidth, panelHeight);
         BlockifiedScreenStyle.inner(gui, panelX + 14, contentTop - 4,
@@ -162,6 +169,17 @@ public final class HitboxBuilderScreen extends Screen {
             return true;
         }
         return super.mouseScrolled(mouseX, mouseY, scrollX, scrollY);
+    }
+
+    @Override
+    public void renderBackground(GuiGraphics gui, int mouseX, int mouseY, float partialTick) {
+        // The world is blurred before render(); the Designer UI itself must remain crisp.
+    }
+
+    @Override
+    public void onClose() {
+        if (minecraft != null && parent != null) minecraft.setScreen(parent);
+        else super.onClose();
     }
 
     @Override public boolean isPauseScreen() { return false; }

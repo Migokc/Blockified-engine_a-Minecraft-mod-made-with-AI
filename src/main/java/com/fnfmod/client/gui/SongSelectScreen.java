@@ -1,6 +1,7 @@
 package com.fnfmod.client.gui;
 
 import com.fnfmod.client.ClientOptions;
+import com.fnfmod.client.AutoWorldMenuClient;
 import com.fnfmod.client.ClientSession;
 import com.fnfmod.client.ClientStorySession;
 import com.fnfmod.client.ScoreStore;
@@ -19,6 +20,7 @@ import net.minecraft.client.gui.screens.options.controls.KeyBindsScreen;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
 import net.minecraft.util.Mth;
+import net.neoforged.neoforge.network.PacketDistributor;
 import org.lwjgl.glfw.GLFW;
 
 import java.util.List;
@@ -620,6 +622,14 @@ public class SongSelectScreen extends Screen {
         }
         return super.keyPressed(keyCode, scanCode, modifiers);
     }
-    @Override public void onClose() { ClientStorySession.clear(); ClientSession.leave(); super.onClose(); }
+    @Override public void onClose() {
+        if (ClientSession.lockedWorldMenu) {
+            AutoWorldMenuClient.openPauseMenu(this, ClientStorySession::clear);
+            return;
+        }
+        ClientStorySession.clear();
+        ClientSession.leave();
+        super.onClose();
+    }
     @Override public boolean isPauseScreen() { return false; }
 }

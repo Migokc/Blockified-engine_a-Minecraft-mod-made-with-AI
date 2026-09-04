@@ -10,7 +10,8 @@
     "ModWorldMinecraftServerMixin",
     "ModWorldPlayerListMixin",
     "ModWorldPrimaryLevelDataMixin",
-    "ModWorldServerChunkCacheMixin"
+    "ModWorldServerChunkCacheMixin",
+    "WeatherMutationMixin"
   ],
   "client": [
     "AmbientOcclusionMixin",
@@ -21,17 +22,25 @@
     "DirectionalBlockShadingMixin",
     "EntityShadowMixin",
     "EntityObjectBorderMixin",
+    "GameRendererPsychCanvasMixin",
+    "GlStateManagerPsychCanvasMixin",
+    "GuiGraphicsPsychCanvasMixin",
     "LevelRendererObjectBorderMixin",
     "MinecraftObjectBorderMixin",
+    "MinecraftPsychCanvasMixin",
     "MinecraftSetScreenMixin",
     "MouseHandlerCutsceneMixin",
+    "MouseHandlerPsychCanvasAccessor",
+    "MouseHandlerPsychCanvasMixin",
     "OutlineBufferSourceObjectBorderMixin",
     "accessor.CompositeRenderTypeAccessor",
     "accessor.CompositeStateAccessor",
     "accessor.EmptyTextureStateShardAccessor",
     "PlayerRendererMixin",
     "RenderChunkRegionShadingMixin",
-    "ShaderDirectionalShadingMixin"
+    "ShaderDirectionalShadingMixin",
+    "WindowPsychCanvasAccessor",
+    "WindowPsychCanvasMixin"
   ],
   "injectors": {
     "defaultRequire": 1

@@ -17,15 +17,17 @@ public final class ModWorldOptions {
     public static final String BUNDLED_ASSETS_DIR = "bbs-assets";
 
     private record State(boolean active, Boolean allowCheats, boolean saveOnExit,
-                         boolean hideSettingsButton, boolean allowExternalContent) {}
+                         boolean hideSettingsButton, boolean allowExternalContent,
+                         boolean autoOpenMenu, String autoMenuProfile,
+                         boolean forcePsychResolution) {}
 
-    private static volatile State state = new State(false, null, true, false, false);
+    private static volatile State state = defaults();
 
     private ModWorldOptions() {}
 
     /** Reads special world controls after ModContentScope has verified the world owner. */
     public static synchronized void loadActiveWorld() {
-        state = new State(false, null, true, false, false);
+        state = defaults();
         Path worldRoot = activeWorldRoot();
         if (worldRoot == null) return;
 
@@ -33,6 +35,9 @@ public final class ModWorldOptions {
         boolean saveOnExit = true;
         boolean hideButton = false;
         boolean allowExternal = false;
+        boolean autoOpenMenu = false;
+        String autoMenuProfile = "";
+        boolean forcePsychResolution = false;
         Path file = worldRoot.resolve(FILE_NAME);
         if (Files.isRegularFile(file)) {
             try {
@@ -44,13 +49,21 @@ public final class ModWorldOptions {
                         "hideSettingsButton", file, false));
                 allowExternal = Boolean.TRUE.equals(booleanValue(json.get("allowExternalContent"),
                         "allowExternalContent", file, false));
+                autoOpenMenu = Boolean.TRUE.equals(booleanValue(json.get("autoOpenMenu"),
+                        "autoOpenMenu", file, false));
+                autoMenuProfile = stringValue(json.get("autoMenuProfile"));
+                forcePsychResolution = Boolean.TRUE.equals(booleanValue(json.get("forcePsychResolution"),
+                        "forcePsychResolution", file, false));
             } catch (Exception error) {
                 FnfMod.LOGGER.warn("Bad mod-world controls in {}: {}", file, error.toString());
             }
         }
-        state = new State(true, allowCheats, saveOnExit, hideButton, allowExternal);
-        FnfMod.LOGGER.info("Mod world controls: allowCheats={}, saveOnExit={}, hideButton={}, allowExternal={}",
-                allowCheats == null ? "level.dat" : allowCheats, saveOnExit, hideButton, allowExternal);
+        state = new State(true, allowCheats, saveOnExit, hideButton, allowExternal,
+                autoOpenMenu, autoMenuProfile, forcePsychResolution);
+        FnfMod.LOGGER.info("Mod world controls: allowCheats={}, saveOnExit={}, hideButton={}, "
+                        + "allowExternal={}, autoMenu={}, profile={}, psychResolution={}",
+                allowCheats == null ? "level.dat" : allowCheats, saveOnExit, hideButton,
+                allowExternal, autoOpenMenu, autoMenuProfile, forcePsychResolution);
     }
 
     /** The active bundled mod world's folder, or null when not in a verified mod world. */
@@ -72,6 +85,16 @@ public final class ModWorldOptions {
         if (value.isJsonPrimitive() && value.getAsJsonPrimitive().isBoolean()) return value.getAsBoolean();
         FnfMod.LOGGER.warn("Ignoring non-boolean {} in {}", key, file);
         return fallback;
+    }
+
+    private static String stringValue(JsonElement value) {
+        if (value == null || !value.isJsonPrimitive() || !value.getAsJsonPrimitive().isString()) return "";
+        String text = value.getAsString().trim().toLowerCase(java.util.Locale.ROOT);
+        return text.length() > 128 ? text.substring(0, 128) : text;
+    }
+
+    private static State defaults() {
+        return new State(false, null, true, false, false, false, "", false);
     }
 
     public static boolean hasCheatOverride() {
@@ -104,7 +127,23 @@ public final class ModWorldOptions {
         return current.active() && current.allowExternalContent();
     }
 
+    /** Opens the configured pack menu as soon as a player enters this bundled world. */
+    public static boolean autoOpenMenu() {
+        State current = state;
+        return current.active() && current.autoOpenMenu() && !current.autoMenuProfile().isBlank();
+    }
+
+    public static String autoMenuProfile() {
+        return state.autoMenuProfile();
+    }
+
+    /** World-scoped override for Blockified's fixed 1280x720 logical canvas. */
+    public static boolean forcePsychResolution() {
+        State current = state;
+        return current.active() && current.forcePsychResolution();
+    }
+
     public static synchronized void clear() {
-        state = new State(false, null, true, false, false);
+        state = defaults();
     }
 }

@@ -26,6 +26,12 @@ public final class LuaWorldObjectRenderer {
      */
     public static void render(PoseStack poseStack, Camera camera, BlockPos speakers,
                               Direction facing, List<LuaWorldObject> objects) {
+        render(poseStack, camera, speakers, facing, objects, 0);
+    }
+
+    /** Same renderer with an external order base for callers that mix orientation bases. */
+    public static void render(PoseStack poseStack, Camera camera, BlockPos speakers,
+                              Direction facing, List<LuaWorldObject> objects, int orderBase) {
         if (objects.isEmpty()) return;
         Minecraft minecraft = Minecraft.getInstance();
         if (minecraft.level == null) return;
@@ -42,7 +48,7 @@ public final class LuaWorldObjectRenderer {
 
             // A tiny order offset prevents equal-depth objects from z-fighting
             // while preserving explicit Z movement and tweening.
-            double depth = object.z() * PIXEL_SCALE + i * 0.0001;
+            double depth = object.z() * PIXEL_SCALE + (orderBase + i) * 0.0001;
             Vec3 position = origin.add(
                     stageRight.getStepX() * object.x() * PIXEL_SCALE + stageFacing.getStepX() * depth,
                     -object.y() * PIXEL_SCALE,
@@ -54,7 +60,8 @@ public final class LuaWorldObjectRenderer {
             // a world-lit sample here is often 0 (the object sits at the machine block's
             // centre, inside solid geometry) which multiplied by the lightmap made
             // see-through text render as invisible black glyphs.
-            int light = object.lighting() && !object.seeThrough()
+            int light = object.renderMode() != null && object.renderMode().usesWorldLight()
+                    && !object.seeThrough()
                     ? LevelRenderer.getLightColor(minecraft.level, BlockPos.containing(position))
                     : LightTexture.FULL_BRIGHT;
 
@@ -65,10 +72,15 @@ public final class LuaWorldObjectRenderer {
                         (float) -sprite.scaleY() * PIXEL_SCALE, PIXEL_SCALE);
                 LuaWorldSpriteRenderer.render(poseStack, buffers, sprite, light);
             } else if (object instanceof LuaWorldObject.Text text) {
-                orientText(poseStack, camera, stageFacing, text.billboard());
+                if (text.spritePlaneOrientation()) {
+                    orientSprite(poseStack, camera, stageFacing, text.billboard());
+                } else {
+                    orientText(poseStack, camera, stageFacing, text.billboard());
+                }
                 applyLocalRotation(poseStack, text);
                 float textScale = Math.max(0.25f, text.textSize() / 9f);
-                poseStack.scale((float) -text.scaleX() * PIXEL_SCALE * textScale,
+                float handedness = text.spritePlaneOrientation() ? 1f : -1f;
+                poseStack.scale(handedness * (float) text.scaleX() * PIXEL_SCALE * textScale,
                         (float) -text.scaleY() * PIXEL_SCALE * textScale, PIXEL_SCALE);
                 LuaWorldTextRenderer.render(poseStack, buffers, text, textScale, light);
             }
@@ -90,7 +102,8 @@ public final class LuaWorldObjectRenderer {
         applyLocalRotation(poseStack, sprite);
         poseStack.scale((float) sprite.scaleX() * PIXEL_SCALE,
                 (float) -sprite.scaleY() * PIXEL_SCALE, PIXEL_SCALE);
-        int light = sprite.lighting() ? packedLight : LightTexture.FULL_BRIGHT;
+        int light = sprite.renderMode() != null && sprite.renderMode().usesWorldLight()
+                ? packedLight : LightTexture.FULL_BRIGHT;
         LuaWorldSpriteRenderer.renderBatched(poseStack, buffers, sprite, light);
         poseStack.popPose();
     }
@@ -130,4 +143,5 @@ public final class LuaWorldObjectRenderer {
             poseStack.mulPose(Axis.ZP.rotationDegrees((float) object.angle()));
         }
     }
+
 }

@@ -68,9 +68,6 @@ public class FnfMod {
     public static final DeferredItem<MachineAnchorItem> MACHINE_ANCHOR_ITEM =
             ITEMS.register("machine_anchor", () -> new MachineAnchorItem(new Item.Properties().stacksTo(1)));
 
-    public static final DeferredItem<BlockItem> CHUNK_LOADER_POINT_ITEM =
-            ITEMS.registerSimpleBlockItem("chunk_loader_point", CHUNK_LOADER_POINT);
-
     public static final DeferredHolder<BlockEntityType<?>, BlockEntityType<com.fnfmod.block.FunkinMachineBlockEntity>>
             FUNKIN_MACHINE_BLOCK_ENTITY = BLOCK_ENTITIES.register("funkin_machine", () ->
                     BlockEntityType.Builder.of(com.fnfmod.block.FunkinMachineBlockEntity::new,
@@ -110,7 +107,6 @@ public class FnfMod {
         if (event.getTabKey() == CreativeModeTabs.FUNCTIONAL_BLOCKS) {
             event.accept(FUNKIN_MACHINE_ITEM.get());
             event.accept(FUNKIN_DESIGNER.get());
-            event.accept(CHUNK_LOADER_POINT_ITEM.get());
         }
     }
 

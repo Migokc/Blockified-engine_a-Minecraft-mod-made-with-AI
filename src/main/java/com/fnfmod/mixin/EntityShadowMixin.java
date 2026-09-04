@@ -34,7 +34,12 @@ public abstract class EntityShadowMixin {
     private static void fnfmod$skipPerformerShadow(PoseStack poseStack, MultiBufferSource buffer,
                                                    Entity entity, float strength, float partialTick,
                                                    LevelReader level, float radius, CallbackInfo ci) {
-        if (com.fnfmod.client.world.WorldImportCutscene.hideShadows()
+        net.minecraft.client.Minecraft minecraft = net.minecraft.client.Minecraft.getInstance();
+        boolean hiddenMenuPlayer = entity != null && entity == minecraft.player
+                && (minecraft.screen instanceof com.fnfmod.client.gui.machine.MachineMenuEditorScreen
+                || minecraft.screen instanceof com.fnfmod.client.gui.machine.MachineMenuScreen menu
+                && menu.usesCustomCamera());
+        if (hiddenMenuPlayer || com.fnfmod.client.world.WorldImportCutscene.hideShadows()
                 || (entity != null && PerformerShadows.hidden(entity.getId()))) {
             ci.cancel();
         }

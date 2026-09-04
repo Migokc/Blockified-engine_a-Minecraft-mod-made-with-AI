@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0b0810">
+  <meta name="description" content="Blockified Engine guide.">
+  <title>Guide · Blockified Engine</title>
+  <link rel="icon" type="image/png" href="./assets/blockified-note-icon.png">
+  <link rel="apple-touch-icon" href="./assets/blockified-note-icon.png">
+  <script src="./site-zoom.js"></script>
+  <link rel="stylesheet" href="./section.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="transition-bar" aria-hidden="true"></div>
+    <a class="home-link" href="./index.html" aria-label="Blockified Engine home">
+      <img src="./assets/blockified-engine-logo.png" alt="Blockified Engine" width="2048" height="569">
+    </a>
+    <form class="header-search" action="./documentation.html" method="get" role="search">
+      <input type="search" name="q" placeholder="Search Blockified…" aria-label="Search Blockified">
+    </form>
+    <nav class="site-nav" aria-label="Website sections">
+      <a href="./guide.html" aria-current="page" aria-label="Guide" title="Guide">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H11v16H6.5A2.5 2.5 0 0 0 4 21.5z"/>
+          <path d="M20 5.5A2.5 2.5 0 0 0 17.5 3H13v16h4.5a2.5 2.5 0 0 1 2.5 2.5z"/>
+        </svg>
+      </a>
+      <a href="./wiki.html" aria-label="Wiki" title="Wiki">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M5 4h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3z"/>
+          <path d="M8 16h11M8 8h7M8 11h7"/>
+        </svg>
+      </a>
+      <a href="./documentation.html" aria-label="Documentation" title="Documentation">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M7 3h7l4 4v14H7z"/>
+          <path d="M14 3v5h5M10 12h5M10 16h5"/>
+        </svg>
+      </a>
+      <a href="https://github.com/Migokc/Blockified-engine_a-Minecraft-mod-made-with-AI/issues"
+         target="_blank" rel="noreferrer" aria-label="Report Bug" title="Report Bug">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M9 9h6M10 5l1-2h2l1 2M8 7 5 5M16 7l3-2M7 12H4M17 12h3M7 16l-3 2M17 16l3 2"/>
+          <rect x="7" y="5" width="10" height="16" rx="5"/>
+          <path d="M12 9v12"/>
+        </svg>
+      </a>
+      <a href="https://github.com/Migokc/Blockified-engine_a-Minecraft-mod-made-with-AI"
+         target="_blank" rel="noreferrer" aria-label="GitHub" title="GitHub">
+        <svg class="github-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M12 .7a11.5 11.5 0 0 0-3.64 22.41c.58.11.79-.25.79-.56v-2.23c-3.22.7-3.9-1.37-3.9-1.37-.53-1.34-1.29-1.7-1.29-1.7-1.05-.72.08-.71.08-.71 1.16.08 1.78 1.2 1.78 1.2 1.04 1.77 2.72 1.26 3.38.96.1-.75.4-1.26.74-1.55-2.57-.29-5.27-1.28-5.27-5.69 0-1.26.45-2.28 1.19-3.09-.12-.29-.52-1.47.11-3.05 0 0 .97-.31 3.16 1.18a10.9 10.9 0 0 1 5.76 0c2.19-1.49 3.15-1.18 3.15-1.18.63 1.58.23 2.76.11 3.05.74.81 1.19 1.83 1.19 3.09 0 4.42-2.71 5.39-5.29 5.68.42.36.79 1.06.79 2.14v3.18c0 .31.21.68.8.56A11.5 11.5 0 0 0 12 .7z"/>
+        </svg>
+      </a>
+      <a href="https://github.com/Migokc/Blockified-engine_a-Minecraft-mod-made-with-AI/releases/latest"
+         target="_blank" rel="noreferrer" aria-label="Download Blockified" title="Download Blockified">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M12 3v12M7 10l5 5 5-5M5 20h14"/>
+        </svg>
+      </a>
+    </nav>
+  </header>
+  <main class="placeholder-page">
+    <section class="section-shell">
+      <header class="section-intro">
+        <p class="eyebrow">Guide</p>
+        <h1>Make something playable.</h1>
+        <p>Follow a complete path from installation to a charted song, then move into packs, characters, stages, machines, and Lua.</p>
+      </header>
+
+      <div class="guide-layout">
+        <aside class="section-index" aria-label="Guide chapters">
+          <p class="index-label">In this guide</p>
+          <a class="active" href="#install"><span>01</span> Install Blockified</a>
+          <a href="#content-type"><span>02</span> Choose a content type</a>
+          <a href="#first-song"><span>03</span> Create a song</a>
+          <a href="#charting"><span>04</span> Chart &amp; playtest</a>
+          <a href="#complete-pack"><span>05</span> Build a complete pack</a>
+          <a href="#next"><span>06</span> Choose what comes next</a>
+        </aside>
+
+        <article class="content-panel guide-article">
+          <div class="article-meta"><span>Creator quick start</span><span>Blockified 2.5.0bbs</span></div>
+
+          <section class="article-section" id="install">
+            <p class="section-number">01</p>
+            <h2>Install Blockified</h2>
+            <p class="lead">Blockified runs on Minecraft 1.21.1 with NeoForge 21.1.0+. It uses BBS FS for forms and animation, with Sinytra Connector and Forgified Fabric API providing the compatibility layer.</p>
+            <div class="requirement-grid required-mod-links" aria-label="Required mods">
+              <a href="https://modrinth.com/mod/bbs-fs" target="_blank" rel="noreferrer">
+                <span class="requirement-kind">Required mod</span>
+                <strong>BBS FS</strong>
+                <span>Forms and animation runtime</span>
+                <span class="requirement-action">Open mod page <span aria-hidden="true">↗</span></span>
+              </a>
+              <a href="https://modrinth.com/mod/connector" target="_blank" rel="noreferrer">
+                <span class="requirement-kind">Required mod</span>
+                <strong>Sinytra Connector</strong>
+                <span>Fabric compatibility layer</span>
+                <span class="requirement-action">Open mod page <span aria-hidden="true">↗</span></span>
+              </a>
+              <a href="https://modrinth.com/mod/forgified-fabric-api" target="_blank" rel="noreferrer">
+                <span class="requirement-kind">Required mod</span>
+                <strong>Forgified Fabric API</strong>
+                <span>NeoForge-compatible Fabric API</span>
+                <span class="requirement-action">Open mod page <span aria-hidden="true">↗</span></span>
+              </a>
+            </div>
+            <ol class="guide-steps">
+              <li><span class="step-number">1</span><div><h3>Install the required mods</h3><p>Put Blockified, BBS FS, Sinytra Connector, and Forgified Fabric API into the same NeoForge 1.21.1 instance.</p></div></li>
+              <li><span class="step-number">2</span><div><h3>Open a world</h3><p>Blockified creates its folders below <code>config/fnfmod</code>. The Functional Blocks creative tab contains the Funkin’ Machine and Funkin’ Designer. Chunk Loader Points and hitbox-less virtual machines are placed through the Designer’s <strong>Blocks</strong> tab.</p></div></li>
+              <li><span class="step-number">3</span><div><h3>Place a Funkin’ Machine</h3><p>Right-click the machine to open the Song Menu. Freeplay, Story Mode, and Settings are available from this screen.</p></div></li>
+            </ol>
+          </section>
+
+          <section class="article-section" id="content-type">
+            <p class="section-number">02</p>
+            <h2>Choose a content type</h2>
+            <p>Use a lightweight song for the smallest chart-and-audio layout. Use a complete pack when the song owns images, stages, custom events, characters, machines, or bundled worlds.</p>
+            <div class="choice-grid">
+              <div><span class="choice-label">Fastest start</span><h3>Lightweight song</h3><p>Lives in <code>config/fnfmod/songs/&lt;song&gt;</code>. Accepts chart JSON, <code>events.json</code>, OGG audio, V-Slice metadata JSON, and song-local Lua.</p></div>
+              <div><span class="choice-label">Full creation</span><h3>Complete mod pack</h3><p>Lives in <code>config/fnfmod/mods/&lt;mod&gt;</code>. Keeps Psych, V-Slice, Codename, or Blockified-style assets together.</p></div>
+            </div>
+            <aside class="callout"><strong>Important boundary</strong><span>A lightweight song may run its own Lua and the naked global <code>mods/scripts</code> scripts, but it does not gain a complete pack’s rich asset namespace. Move the project into a complete pack when it owns images, characters, fonts, stages, or machines.</span></aside>
+          </section>
+
+          <section class="article-section" id="first-song">
+            <p class="section-number">03</p>
+            <h2>Create a song</h2>
+            <p>Make a folder named after the song. The instrumental is required; vocals may be combined or split by performer.</p>
+            <pre><code>config/fnfmod/songs/my-song/
+├─ my-song.json
+├─ my-song-hard.json        optional difficulty
+├─ Inst.ogg                 required
+├─ Voices.ogg               combined vocals, or
+├─ Voices-Player.ogg        split player vocals
+└─ Voices-Opponent.ogg      split opponent vocals</code></pre>
+            <p>For V-Slice, use <code>my-song-chart.json</code> and <code>my-song-metadata.json</code>. Every difficulty inside the chart becomes selectable. Blockified also recognizes lowercase audio names and performer-specific vocal prefixes.</p>
+            <aside class="callout"><strong>Importing audio</strong><span>Choose Song Audio can select several files. Recognized names become the correct stems; other audio formats are converted to OGG through FFmpeg without changing the source files.</span></aside>
+          </section>
+
+          <section class="article-section" id="charting">
+            <p class="section-number">04</p>
+            <h2>Chart and playtest</h2>
+            <p>From a Funkin’ Machine’s Song Menu, press <kbd>8</kbd> and choose <strong>Chart Editor</strong>. You can also run <code>/fnf editor [song]</code>, although commands require cheats in singleplayer or operator permission on a server.</p>
+            <div class="shortcut-grid">
+              <div><kbd>Click</kbd><span>Place or remove a note</span></div>
+              <div><kbd>Shift + Click</kbd><span>Select notes</span></div>
+              <div><kbd>E / Q</kbd><span>Lengthen or shorten sustain</span></div>
+              <div><kbd>Delete</kbd><span>Delete selection</span></div>
+              <div><kbd>A / D</kbd><span>Previous or next section</span></div>
+              <div><kbd>Space</kbd><span>Play or pause audio</span></div>
+              <div><kbd>Ctrl + S</kbd><span>Save to assigned or normal song folder</span></div>
+              <div><kbd>Shift + Enter</kbd><span>Playtest from the chosen point</span></div>
+              <div><kbd>Ctrl + Shift + Space</kbd><span>Toggle Free Cam during a machine-based playtest</span></div>
+            </div>
+            <p>The editor supports beat snap, independent grid zoom, BPM and time-signature changes, stacked events, custom note types, waveforms, onset markers, metronome, loop playback, bookmarks, stem mute/solo, charting offset, and readable Psych-format saves.</p>
+            <aside class="callout"><strong>Two offsets</strong><span>Song offset affects saved charts and gameplay. Charting offset is editor-only and changes playback, waveforms, metronome, and grid alignment without changing gameplay timing.</span></aside>
+          </section>
+
+          <section class="article-section" id="complete-pack">
+            <p class="section-number">05</p>
+            <h2>Build a complete pack</h2>
+            <p>Install the pack as one folder. Existing Psych-family layouts can stay largely unchanged; Blockified-specific folders extend them.</p>
+            <pre><code>config/fnfmod/mods/My-Mod/
+├─ pack.json                Psych pack metadata
+├─ data/&lt;song&gt;/             charts and song Lua
+├─ songs/&lt;song&gt;/            audio
+├─ scripts/                 global Lua
+├─ stages/                  stage JSON and Lua
+├─ custom_events/
+├─ custom_notetypes/
+├─ animations/              BBS form/state mappings
+├─ characters/
+├─ images/  sounds/  fonts/
+├─ machines/                machine profiles and menus
+├─ weeks/                   Psych Story Mode weeks
+└─ worlds/&lt;world&gt;/          bundled Minecraft worlds</code></pre>
+            <p><code>pack.json</code> and <code>pack.png</code> supply Psych-style identity. V-Slice packs may instead use <code>_polymod_meta.json</code> and <code>_polymod_icon.png</code>. Mods settings can also point directly at a pack or at a container holding several packs.</p>
+            <aside class="callout"><strong>Bundled-world scope</strong><span>Inside a world stored under a pack’s <code>worlds</code> folder, only the owning pack is exposed by default. Ordinary singleplayer and LAN worlds can use all installed packs, lightweight songs, and configured Mods directories.</span></aside>
+          </section>
+
+          <section class="article-section" id="next">
+            <p class="section-number">06</p>
+            <h2>Choose what comes next</h2>
+            <div class="next-grid">
+              <a href="./wiki.html#characters"><strong>Characters &amp; animations</strong><span>Map FNF actions to BBS forms and states.</span></a>
+              <a href="./wiki.html#machines"><strong>Machines &amp; worlds</strong><span>Build custom machines, hitboxes, and bundled stages.</span></a>
+              <a href="./documentation.html#events"><strong>Chart events</strong><span>Use built-in camera, character, command, and Psych events.</span></a>
+              <a href="./documentation.html#gameplay-lua"><strong>Gameplay Lua</strong><span>Work with callbacks, sprites, text, audio, and world objects.</span></a>
+            </div>
+          </section>
+        </article>
+      </div>
+    </section>
+  </main>
+  <script src="./section.js"></script>
+</body>
+</html>

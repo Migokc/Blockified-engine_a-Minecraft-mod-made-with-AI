@@ -1,0 +1,348 @@
+{
+  "vertex": "fnfmod:lua_layer_effect",
+  "fragment": "fnfmod:lua_layer_effect",
+  "attributes": [
+    "Position"
+  ],
+  "samplers": [
+    {
+      "name": "Source"
+    },
+    {
+      "name": "Mask"
+    }
+  ],
+  "uniforms": [
+    {
+      "name": "HasMask",
+      "type": "int",
+      "count": 1,
+      "values": [
+        0
+      ]
+    },
+    {
+      "name": "MaskLuma",
+      "type": "int",
+      "count": 1,
+      "values": [
+        0
+      ]
+    },
+    {
+      "name": "MaskInvert",
+      "type": "int",
+      "count": 1,
+      "values": [
+        0
+      ]
+    },
+    {
+      "name": "GradientType",
+      "type": "int",
+      "count": 1,
+      "values": [
+        0
+      ]
+    },
+    {
+      "name": "StopCount",
+      "type": "int",
+      "count": 1,
+      "values": [
+        0
+      ]
+    },
+    {
+      "name": "ClipType",
+      "type": "int",
+      "count": 1,
+      "values": [
+        0
+      ]
+    },
+    {
+      "name": "MaskTransform",
+      "type": "float",
+      "count": 4,
+      "values": [
+        0,
+        0,
+        1,
+        1
+      ]
+    },
+    {
+      "name": "MaskStyle",
+      "type": "float",
+      "count": 4,
+      "values": [
+        0,
+        0,
+        1,
+        1
+      ]
+    },
+    {
+      "name": "GradientGeometry",
+      "type": "float",
+      "count": 4,
+      "values": [
+        0,
+        0,
+        1,
+        1
+      ]
+    },
+    {
+      "name": "ClipBounds",
+      "type": "float",
+      "count": 4,
+      "values": [
+        0,
+        0,
+        1,
+        1
+      ]
+    },
+    {
+      "name": "ClipStyle",
+      "type": "float",
+      "count": 4,
+      "values": [
+        0,
+        0,
+        1,
+        1
+      ]
+    },
+    {
+      "name": "GradientStrength",
+      "type": "float",
+      "count": 1,
+      "values": [
+        1
+      ]
+    },
+    {
+      "name": "Stop0",
+      "type": "float",
+      "count": 4,
+      "values": [
+        1,
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "name": "Stop1",
+      "type": "float",
+      "count": 4,
+      "values": [
+        1,
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "name": "Stop2",
+      "type": "float",
+      "count": 4,
+      "values": [
+        1,
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "name": "Stop3",
+      "type": "float",
+      "count": 4,
+      "values": [
+        1,
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "name": "Stop4",
+      "type": "float",
+      "count": 4,
+      "values": [
+        1,
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "name": "Stop5",
+      "type": "float",
+      "count": 4,
+      "values": [
+        1,
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "name": "Stop6",
+      "type": "float",
+      "count": 4,
+      "values": [
+        1,
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "name": "Stop7",
+      "type": "float",
+      "count": 4,
+      "values": [
+        1,
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "name": "Stop8",
+      "type": "float",
+      "count": 4,
+      "values": [
+        1,
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "name": "Stop9",
+      "type": "float",
+      "count": 4,
+      "values": [
+        1,
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "name": "Stop10",
+      "type": "float",
+      "count": 4,
+      "values": [
+        1,
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "name": "Stop11",
+      "type": "float",
+      "count": 4,
+      "values": [
+        1,
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "name": "Stop12",
+      "type": "float",
+      "count": 4,
+      "values": [
+        1,
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "name": "Stop13",
+      "type": "float",
+      "count": 4,
+      "values": [
+        1,
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "name": "Stop14",
+      "type": "float",
+      "count": 4,
+      "values": [
+        1,
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "name": "Stop15",
+      "type": "float",
+      "count": 4,
+      "values": [
+        1,
+        1,
+        1,
+        1
+      ]
+    },
+    {
+      "name": "Positions0",
+      "type": "float",
+      "count": 4,
+      "values": [
+        0,
+        0,
+        1,
+        1
+      ]
+    },
+    {
+      "name": "Positions1",
+      "type": "float",
+      "count": 4,
+      "values": [
+        0,
+        0,
+        1,
+        1
+      ]
+    },
+    {
+      "name": "Positions2",
+      "type": "float",
+      "count": 4,
+      "values": [
+        0,
+        0,
+        1,
+        1
+      ]
+    },
+    {
+      "name": "Positions3",
+      "type": "float",
+      "count": 4,
+      "values": [
+        0,
+        0,
+        1,
+        1
+      ]
+    }
+  ]
+}

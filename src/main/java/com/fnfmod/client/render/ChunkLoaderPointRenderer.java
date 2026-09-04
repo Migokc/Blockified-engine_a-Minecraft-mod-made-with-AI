@@ -10,7 +10,7 @@ import net.minecraft.client.renderer.MultiBufferSource;
 import net.minecraft.client.renderer.blockentity.BlockEntityRenderer;
 import net.minecraft.client.renderer.blockentity.BlockEntityRendererProvider;
 
-/** Designer/point-item-only marker and chunk-radius boundary. */
+/** Designer-only marker and chunk-radius boundary. */
 public final class ChunkLoaderPointRenderer implements BlockEntityRenderer<ChunkLoaderPointBlockEntity> {
 
     public ChunkLoaderPointRenderer(BlockEntityRendererProvider.Context context) {}
@@ -53,9 +53,7 @@ public final class ChunkLoaderPointRenderer implements BlockEntityRenderer<Chunk
     public static boolean holdingPointTool() {
         var player = Minecraft.getInstance().player;
         return player != null && (player.getMainHandItem().is(FnfMod.FUNKIN_DESIGNER.get())
-                || player.getOffhandItem().is(FnfMod.FUNKIN_DESIGNER.get())
-                || player.getMainHandItem().is(FnfMod.CHUNK_LOADER_POINT_ITEM.get())
-                || player.getOffhandItem().is(FnfMod.CHUNK_LOADER_POINT_ITEM.get()));
+                || player.getOffhandItem().is(FnfMod.FUNKIN_DESIGNER.get()));
     }
 
     @Override public boolean shouldRenderOffScreen(ChunkLoaderPointBlockEntity point) { return true; }

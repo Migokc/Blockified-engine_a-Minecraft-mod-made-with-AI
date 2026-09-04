@@ -18,7 +18,8 @@ import java.util.Set;
 /** Client cache for active-pack machine textures. */
 public final class MachineTextureCache {
 
-    private record Loaded(ResourceLocation id, DynamicTexture texture) {}
+    private record Loaded(ResourceLocation id, DynamicTexture texture, int width, int height) {}
+    public record Size(int width, int height) {}
 
     private static final Map<Path, Loaded> loaded = new HashMap<>();
     // Background-decoded images awaiting a (cheap) main-thread GL upload, so heavy
@@ -78,15 +79,24 @@ public final class MachineTextureCache {
                     image = NativeImage.read(input);
                 }
             }
+            int width = image.getWidth();
+            int height = image.getHeight();
             DynamicTexture texture = new DynamicTexture(image);
             ResourceLocation id = FnfMod.id("machine_texture/" + Integer.toUnsignedString(key.hashCode(), 36));
             Minecraft.getInstance().getTextureManager().register(id, texture);
-            loaded.put(key, new Loaded(id, texture));
+            loaded.put(key, new Loaded(id, texture, width, height));
             return id;
         } catch (Exception e) {
             FnfMod.LOGGER.warn("Could not load machine texture {}: {}", key, e.toString());
             return null;
         }
+    }
+
+    public static synchronized Size size(Path file) {
+        if (file == null) return new Size(1, 1);
+        get(file);
+        Loaded value = loaded.get(file.toAbsolutePath().normalize());
+        return value == null ? new Size(1, 1) : new Size(value.width(), value.height());
     }
 
     public static synchronized void setAntialiasing(Path file, boolean enabled) {

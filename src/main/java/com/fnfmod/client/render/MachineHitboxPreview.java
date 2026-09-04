@@ -22,6 +22,7 @@ public final class MachineHitboxPreview {
     private static Vec3 first;
     private static BlockPos firstCell;
     private static AABB readyBounds;
+    private static byte designerPlacement;
 
     private MachineHitboxPreview() {}
 
@@ -42,9 +43,14 @@ public final class MachineHitboxPreview {
 
     public static void clear() {
         stage = 0;
+        designerPlacement = 0;
         first = null;
         firstCell = null;
         readyBounds = null;
+    }
+
+    public static void setDesignerPlacement(byte mode) {
+        designerPlacement = mode >= 1 && mode <= 2 ? mode : 0;
     }
 
     public static void render(PoseStack poseStack, Camera camera) {
@@ -81,8 +87,16 @@ public final class MachineHitboxPreview {
     /** Yellow outline around the vanilla crosshair while choosing precise corner one. */
     public static void renderHud(GuiGraphics gui) {
         Minecraft minecraft = Minecraft.getInstance();
-        if (stage != 1 || mode != MachineHitboxService.PRECISE
-                || minecraft.screen != null || !holdingDesigner(minecraft)) return;
+        if (minecraft.screen != null || !holdingDesigner(minecraft)) return;
+        if (designerPlacement != 0) {
+            drawCrosshairOutline(gui, designerPlacement == 1 ? 0xFF3D9BFF : 0xFFFF8A24);
+            return;
+        }
+        if (stage != 1 || mode != MachineHitboxService.PRECISE) return;
+        drawCrosshairOutline(gui, 0xFFFFD83D);
+    }
+
+    private static void drawCrosshairOutline(GuiGraphics gui, int color) {
         int cx = gui.guiWidth() / 2;
         int cy = gui.guiHeight() / 2;
         // The vanilla sprite is 15x15, but its only opaque pixels are a 9-pixel
@@ -90,7 +104,6 @@ public final class MachineHitboxPreview {
         // outlining the full transparent image rectangle.
         int spriteLeft = cx - 7;
         int spriteTop = cy - 7;
-        int yellow = 0xFFFFD83D;
         for (int y = 0; y < 15; y++) {
             for (int x = 0; x < 15; x++) {
                 if (crosshairPixel(x, y)) continue;
@@ -104,7 +117,7 @@ public final class MachineHitboxPreview {
                     }
                 }
                 if (touches) gui.fill(spriteLeft + x, spriteTop + y,
-                        spriteLeft + x + 1, spriteTop + y + 1, yellow);
+                        spriteLeft + x + 1, spriteTop + y + 1, color);
             }
         }
     }

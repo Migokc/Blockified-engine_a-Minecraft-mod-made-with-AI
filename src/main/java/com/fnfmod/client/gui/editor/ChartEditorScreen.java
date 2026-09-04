@@ -75,6 +75,12 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
     /** Psych's built-in note types. An empty value is the normal/default note. */
     private static final List<String> BUILTIN_NOTE_TYPES = List.of(
             "", "Alt Animation", "Hey!", "Hurt Note", "GF Sing", "No Animation");
+    /** Folder names which identify a mod root when present directly below it. */
+    private static final Set<String> MOD_CONTENT_FOLDERS = Set.of(
+            "data", "songs", "images", "assets", "scripts", "stages", "weeks",
+            "characters", "animations", "machines", "custom_events", "custom_notetypes");
+    private static final List<String> MOD_IDENTITY_FILES = List.of(
+            "pack.json", "pack.png", "_polymod_meta.json", "_polymod_icon.png");
     private static final String[] HELP_LINES = {
             "W/S/Mouse Wheel - Move Conductor's Time",
             "A/D - Change Sections",
@@ -111,6 +117,8 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
     private record UiLabel(String text, int x, int y, int color, boolean centered) {}
 
     private final String requestedSongId;
+    /** Chart-tab options for the song being edited; stored per song, not in the user options. */
+    private ChartEditorPrefs prefs = new ChartEditorPrefs();
     private final String requestedDifficulty;
     private final SongChart suppliedChart;
     private final Path suppliedSongFolder;
@@ -131,7 +139,8 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
     private Path missingSavingFolderWarning;
     private final Set<SongChart.Note> selectedNotes = new LinkedHashSet<>();
     private final Set<SongChart.Event> selectedEvents = new LinkedHashSet<>();
-    private record EditorState(List<SongChart.Note> notes, List<SongChart.Event> events) {}
+    private record EditorState(List<SongChart.Note> notes, List<SongChart.Event> events,
+                              List<SongChart.Bookmark> bookmarks, ChartEditorPrefs prefs) {}
     private record MeterSegment(double startBeat, SongChart.TimeSignature signature) {}
     private final Deque<EditorState> undoHistory = new ArrayDeque<>();
     private final Deque<EditorState> redoHistory = new ArrayDeque<>();
@@ -444,6 +453,17 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
             chart.bpmChanges.add(new SongChart.BpmChange(0, chart.startBpm));
             songId = null;
         }
+        // The song is known now, so pick up its own Chart-tab options.
+        prefs = ChartEditorPrefs.load(prefsSongId());
+        snapIndex = Mth.clamp(prefs.snapIndex, 0, SNAPS.length - 1);
+        vortex = prefs.vortex;
+        loopEnabled = prefs.loopEnabled;
+        loopStartMs = prefs.loopStartMs;
+        loopEndMs = prefs.loopEndMs;
+        preRollBeats = Math.floorMod(prefs.preRollBeats, 9);
+        instMix = Math.floorMod(prefs.instMix, 3);
+        playerMix = Math.floorMod(prefs.playerMix, 3);
+        opponentMix = Math.floorMod(prefs.opponentMix, 3);
         chart.ensureSectionsCoverNotes();
         ensureSection(chart.sections.size() + 7);
         chart.rebuildBpmMap();
@@ -806,7 +826,7 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
         ClientOptions options = ClientOptions.get();
         int half = (w - 4) / 2;
         chartingOffsetField = numberBox("Charting Offset (ms)", x, y, half,
-                trim(options.editorChartingOffsetMs), "+later -earlier");
+                trim(prefs.chartingOffsetMs), "+later -earlier");
         chartingOffsetField.setTooltip(Tooltip.create(Component.literal(
                 "Editor only. Added to Song Offset (" + trim(chart.offsetMs)
                         + " ms). Effective editor offset: "
@@ -817,58 +837,67 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
         Button vortexButton = button(x, y, w, "Vortex Editor: " + onOff(vortex), b -> {
             vortex = !vortex;
             if (vortex && !isPlaying()) snapPlayheadToGrid();
+            savePrefs();
             b.setMessage(Component.literal("Vortex Editor: " + onOff(vortex)));
         });
         vortexButton.setTooltip(Tooltip.create(Component.literal("Keys 1-8 toggle notes at the fixed playhead")));
         y += 24;
 
-        button(x, y, half, "Hitsound P: " + onOff(options.editorHitsoundPlayer), b -> {
-            options.editorHitsoundPlayer = !options.editorHitsoundPlayer;
-            ClientOptions.save();
-            b.setMessage(Component.literal("Hitsound P: " + onOff(options.editorHitsoundPlayer)));
+        button(x, y, half, "Hitsound P: " + onOff(prefs.hitsoundPlayer), b -> {
+            prefs.hitsoundPlayer = !prefs.hitsoundPlayer;
+            savePrefs();
+            b.setMessage(Component.literal("Hitsound P: " + onOff(prefs.hitsoundPlayer)));
         });
-        button(x + half + 4, y, half, "Hitsound O: " + onOff(options.editorHitsoundOpponent), b -> {
-            options.editorHitsoundOpponent = !options.editorHitsoundOpponent;
-            ClientOptions.save();
-            b.setMessage(Component.literal("Hitsound O: " + onOff(options.editorHitsoundOpponent)));
+        button(x + half + 4, y, half, "Hitsound O: " + onOff(prefs.hitsoundOpponent), b -> {
+            prefs.hitsoundOpponent = !prefs.hitsoundOpponent;
+            savePrefs();
+            b.setMessage(Component.literal("Hitsound O: " + onOff(prefs.hitsoundOpponent)));
         });
         y += 22;
-        button(x, y, w, "Metronome: " + onOff(options.editorMetronome), b -> {
-            setMetronomeEnabled(!options.editorMetronome);
-            b.setMessage(Component.literal("Metronome: " + onOff(options.editorMetronome)));
+        button(x, y, w, "Metronome: " + onOff(prefs.metronome), b -> {
+            setMetronomeEnabled(!prefs.metronome);
+            b.setMessage(Component.literal("Metronome: " + onOff(prefs.metronome)));
         }).setTooltip(Tooltip.create(Component.literal(
                 "Editor only: accented bar click plus regular meter-beat clicks.")));
         y += 18;
         addRenderableWidget(new net.minecraft.client.gui.components.AbstractSliderButton(
-                x, y, w, 14, Component.empty(), options.editorMetronomeVolume) {
+                x, y, w, 14, Component.empty(), prefs.metronomeVolume) {
             @Override protected void updateMessage() {
                 setMessage(Component.literal("Metronome Volume: "
-                        + Math.round(options.editorMetronomeVolume * 100) + "%"));
+                        + Math.round(prefs.metronomeVolume * 100) + "%"));
             }
             @Override protected void applyValue() {
-                options.editorMetronomeVolume = Mth.clamp(value, 0.0, 1.0);
-                ClientOptions.save();
+                prefs.metronomeVolume = Mth.clamp(value, 0.0, 1.0);
+                savePrefs();
                 updateMessage();
             }
         });
         y += 22;
         button(x, y, half, "Loop In: " + timeLabel(loopStartMs), b -> {
+            recordOptionChange();
             loopStartMs = viewPositionMs;
             if (loopEndMs >= 0 && loopEndMs <= loopStartMs) loopEndMs = -1;
+            savePrefs();
             rebuildUi();
         });
         button(x + half + 4, y, half, "Loop Out: " + timeLabel(loopEndMs), b -> {
+            recordOptionChange();
             loopEndMs = viewPositionMs;
             if (loopStartMs >= 0 && loopEndMs <= loopStartMs) loopStartMs = -1;
+            savePrefs();
             rebuildUi();
         });
         y += 18;
         button(x, y, half, "Loop: " + onOff(loopEnabled), b -> {
+            recordOptionChange();
             loopEnabled = !loopEnabled;
+            savePrefs();
             rebuildUi();
         });
         button(x + half + 4, y, half, "Pre-roll: " + preRollBeats + " beat(s)", b -> {
+            recordOptionChange();
             preRollBeats = Math.floorMod(preRollBeats + (hasShiftDown() ? -1 : 1), 9);
+            savePrefs();
             rebuildUi();
         });
         y += 20;
@@ -880,9 +909,9 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
         button(x + half + 4, y, half, "Apply BPM", b -> applySuggestedBpm());
         y += 20;
         int third = (w - 8) / 3;
-        button(x, y, third, "Inst " + mixLabel(instMix), b -> { instMix = (instMix + 1) % 3; applyStemMix(); rebuildUi(); });
-        button(x + third + 4, y, third, "Player " + mixLabel(playerMix), b -> { playerMix = (playerMix + 1) % 3; applyStemMix(); rebuildUi(); });
-        button(x + (third + 4) * 2, y, third, "Opp " + mixLabel(opponentMix), b -> { opponentMix = (opponentMix + 1) % 3; applyStemMix(); rebuildUi(); });
+        button(x, y, third, "Inst " + mixLabel(instMix), b -> { recordOptionChange(); instMix = (instMix + 1) % 3; applyStemMix(); savePrefs(); rebuildUi(); });
+        button(x + third + 4, y, third, "Player " + mixLabel(playerMix), b -> { recordOptionChange(); playerMix = (playerMix + 1) % 3; applyStemMix(); savePrefs(); rebuildUi(); });
+        button(x + (third + 4) * 2, y, third, "Opp " + mixLabel(opponentMix), b -> { recordOptionChange(); opponentMix = (opponentMix + 1) % 3; applyStemMix(); savePrefs(); rebuildUi(); });
         y += 20;
         button(x, y, third, "+ Bookmark", b -> addBookmark());
         button(x + third + 4, y, third, "Previous", b -> seekBookmark(-1));
@@ -1085,6 +1114,12 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
                         eventValue2Draft, ChartEventTypes.value2Hint(eventTypeDraft));
                 buildEasingControl(x, y + 126, w, 3, false, true);
                 actionsY = y + 153;
+            } else if (ChartEventTypes.isMinecraftCommand(eventTypeDraft)) {
+                label("Value 2", x, y + 99, 0xFFDDDDDD, false);
+                button(x, y + 109, w,
+                        commandRunsAsServer(eventValue2Draft) ? "Run as: Server" : "Run as: Player",
+                        b -> cycleCommandRunner());
+                actionsY = y + 126;
             } else {
                 eventValue2Field = eventValueBox("Value 2", x, y + 99, w,
                         eventValue2Draft, ChartEventTypes.value2Hint(eventTypeDraft));
@@ -1261,10 +1296,10 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
             redo.active = !redoHistory.isEmpty(); y += 16;
             Path savingFolder = configuredSavingFolder();
             Button chooseSavingFolder = button(x + 4, y, w - 8,
-                    savingFolder == null ? "Choose Saving Folder..." : "Change Saving Folder...",
+                    savingFolder == null ? "Choose Saving Folder / Mod..." : "Change Saving Folder / Mod...",
                     b -> chooseSavingFolder());
             chooseSavingFolder.setTooltip(Tooltip.create(Component.literal(savingFolder == null
-                    ? "No folder assigned. Ctrl+S saves to the default song folder."
+                    ? "Choose an exact chart folder or a mod root. Mod roots save under data/<song>."
                     : "Current: " + savingFolder))); y += 16;
             Button clearSavingFolder = button(x + 4, y, w - 8, "Clear Saving Folder",
                     b -> clearSavingFolder());
@@ -1410,12 +1445,12 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
         chart.speed = parsePositive(songSpeedField, chart.speed);
         chart.offsetMs = parseNumber(songOffsetField, chart.offsetMs);
         if (chartingOffsetField != null) {
-            ClientOptions options = ClientOptions.get();
-            double previous = options.editorChartingOffsetMs;
+            double previous = prefs.chartingOffsetMs;
             double updated = parseNumber(chartingOffsetField, previous);
             if (Double.isFinite(updated) && Double.compare(previous, updated) != 0) {
-                options.editorChartingOffsetMs = updated;
-                ClientOptions.save();
+                recordOptionChange();
+                prefs.chartingOffsetMs = updated;
+                savePrefs();
                 // Re-index editor-only sounds after the audio-to-grid mapping changes.
                 if (leadInStartNano >= 0) {
                     leadInBaseView = viewPositionMs;
@@ -1629,7 +1664,14 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
         for (SongChart.Note note : chart.notes) notes.add(note.copy());
         List<SongChart.Event> events = new ArrayList<>(chart.events.size());
         for (SongChart.Event event : chart.events) events.add(event.copy());
-        return new EditorState(notes, events);
+        List<SongChart.Bookmark> bookmarks = new ArrayList<>(chart.bookmarks.size());
+        for (SongChart.Bookmark mark : chart.bookmarks) {
+            bookmarks.add(new SongChart.Bookmark(mark.timeMs, mark.name, mark.comment));
+        }
+        // Live Chart-tab state lives in fields; fold it into the prefs before copying so an
+        // undo restores the options exactly as they were alongside the notes.
+        syncPrefsFromFields();
+        return new EditorState(notes, events, bookmarks, prefs.copy());
     }
 
     /** Records a restore point covering both notes and events before an edit. */
@@ -1646,8 +1688,72 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
         chart.events.clear();
         for (SongChart.Event event : state.events()) chart.events.add(event.copy());
         chart.sortEvents();
+        chart.bookmarks.clear();
+        for (SongChart.Bookmark mark : state.bookmarks()) {
+            chart.bookmarks.add(new SongChart.Bookmark(mark.timeMs, mark.name, mark.comment));
+        }
+        if (state.prefs() != null) applyPrefs(state.prefs());
         clearSelection();
         rebuildUi();
+    }
+
+    /** Copies the live Chart-tab fields into {@link #prefs} without writing the file. */
+    private void syncPrefsFromFields() {
+        prefs.snapIndex = snapIndex;
+        prefs.vortex = vortex;
+        prefs.loopEnabled = loopEnabled;
+        prefs.loopStartMs = loopStartMs;
+        prefs.loopEndMs = loopEndMs;
+        prefs.preRollBeats = preRollBeats;
+        prefs.instMix = instMix;
+        prefs.playerMix = playerMix;
+        prefs.opponentMix = opponentMix;
+    }
+
+    /**
+     * Restores a Chart-tab option set (an undo/redo step) and re-applies everything those
+     * options drive: stem volumes, the metronome/hitsound schedule, and the offset that maps
+     * audio onto the note grid.
+     */
+    private void applyPrefs(ChartEditorPrefs restored) {
+        // Vortex, the hitsound toggles and the metronome are working aids rather than chart
+        // edits, so they stay exactly as the user left them and are never rolled back.
+        boolean keptVortex = vortex;
+        boolean keptHitsoundPlayer = prefs.hitsoundPlayer;
+        boolean keptHitsoundOpponent = prefs.hitsoundOpponent;
+        boolean keptMetronome = prefs.metronome;
+        double keptMetronomeVolume = prefs.metronomeVolume;
+        prefs = restored.copy();
+        prefs.vortex = keptVortex;
+        prefs.hitsoundPlayer = keptHitsoundPlayer;
+        prefs.hitsoundOpponent = keptHitsoundOpponent;
+        prefs.metronome = keptMetronome;
+        prefs.metronomeVolume = keptMetronomeVolume;
+        snapIndex = Mth.clamp(prefs.snapIndex, 0, SNAPS.length - 1);
+        vortex = keptVortex;
+        loopEnabled = prefs.loopEnabled;
+        loopStartMs = prefs.loopStartMs;
+        loopEndMs = prefs.loopEndMs;
+        preRollBeats = Math.floorMod(prefs.preRollBeats, 9);
+        instMix = Math.floorMod(prefs.instMix, 3);
+        playerMix = Math.floorMod(prefs.playerMix, 3);
+        opponentMix = Math.floorMod(prefs.opponentMix, 3);
+        applyStemMix();
+        reindexEditorSounds();
+        prefs.save(prefsSongId());
+    }
+
+    /** Re-aligns editor-only sounds after the audio-to-grid mapping or tick set changes. */
+    private void reindexEditorSounds() {
+        if (leadInStartNano >= 0) {
+            leadInBaseView = viewPositionMs;
+            leadInStartNano = System.nanoTime();
+        } else if (isPlaying() && audio != null) {
+            viewPositionMs = audioToView(audio.positionMs());
+        }
+        snapshotSchedulerNotes();
+        resetHitsoundIndex(viewPositionMs);
+        if (tickScheduler != null) tickScheduler.seek(viewPositionMs);
     }
 
     private void undoNotes() {
@@ -1930,12 +2036,13 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
             boolean useDefaultFolder = false;
             boolean assignmentSaved = true;
             if (forceDialog) {
-                var selected = NativeFilePicker.selectFolder("Save chart for " + chart.title + " in folder");
+                var selected = NativeFilePicker.selectFolder(
+                        "Save chart for " + chart.title + " in folder or mod");
                 if (selected.isEmpty()) {
                     setStatus("Save cancelled");
                     return;
                 }
-                directory = selected.get().toAbsolutePath().normalize();
+                directory = resolveSavingDestination(selected.get(), id);
                 assignmentSaved = ChartSaveFolderStore.set(chart.title, directory);
             } else {
                 Path assigned = configuredSavingFolder();
@@ -2005,15 +2112,63 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
 
     private void chooseSavingFolder() {
         commitVisibleFields();
-        NativeFilePicker.selectFolder("Choose saving folder for " + chart.title).ifPresent(folder -> {
-            if (ChartSaveFolderStore.set(chart.title, folder)) {
-                setStatus("Saving folder: " + folder.toAbsolutePath().normalize());
-            } else {
-                setStatus("Could not save the folder setting");
+        NativeFilePicker.selectFolder("Choose chart folder or mod for " + chart.title).ifPresent(folder -> {
+            String id = sanitizeId(saveId == null || saveId.isBlank() ? chart.title : saveId);
+            if (id.isBlank()) id = "unnamed";
+            Path selected = folder.toAbsolutePath().normalize();
+            Path destination = resolveSavingDestination(selected, id);
+            try {
+                // A selected mod may not have data/<song> yet. Create the resolved
+                // destination now so validation and the next Ctrl+S both see it.
+                Files.createDirectories(destination);
+                if (ChartSaveFolderStore.set(chart.title, destination)) {
+                    setStatus(destination.equals(selected)
+                            ? "Saving folder: " + destination
+                            : "Saving in mod: " + selected + " -> " + destination);
+                } else {
+                    setStatus("Could not save the folder setting");
+                }
+            } catch (Exception error) {
+                setStatus("Could not use saving destination: " + error.getMessage());
             }
             openMenu = TopMenu.NONE;
             rebuildUi();
         });
+    }
+
+    /**
+     * Keeps the old exact-folder behavior, but lets the user select a whole mod.
+     * Psych-compatible charts belong in data/<song>; storing the resolved folder
+     * means the existing per-song mapping, missing-folder warning, Ctrl+S, and
+     * events-only save path require no separate mode flag.
+     */
+    private static Path resolveSavingDestination(Path selected, String songId) {
+        Path normalized = selected.toAbsolutePath().normalize();
+        if (!looksLikeModRoot(normalized)) return normalized;
+        String safeSong = sanitizeId(songId);
+        if (safeSong.isBlank()) safeSong = "unnamed";
+        return normalized.resolve("data").resolve(safeSong).normalize();
+    }
+
+    private static boolean looksLikeModRoot(Path folder) {
+        if (!Files.isDirectory(folder)) return false;
+        Path namePath = folder.getFileName();
+        String name = namePath == null ? "" : namePath.toString().toLowerCase(Locale.ROOT);
+
+        // If the user deliberately selects data, songs, images, etc., that is an
+        // exact output folder rather than the mod root above it.
+        if (MOD_CONTENT_FOLDERS.contains(name)) return false;
+        for (String identity : MOD_IDENTITY_FILES) {
+            if (Files.isRegularFile(folder.resolve(identity))) return true;
+        }
+        for (String content : MOD_CONTENT_FOLDERS) {
+            if (Files.isDirectory(folder.resolve(content))) return true;
+        }
+
+        // Also support a new/empty pack already placed directly inside a standard
+        // mods container; it may not have pack metadata or content folders yet.
+        Path parentName = folder.getParent() == null ? null : folder.getParent().getFileName();
+        return parentName != null && parentName.toString().equalsIgnoreCase("mods");
     }
 
     private void clearSavingFolder() {
@@ -2176,8 +2331,8 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
 
     private void setMetronomeEnabled(boolean enabled) {
         ClientOptions options = ClientOptions.get();
-        options.editorMetronome = enabled;
-        ClientOptions.save();
+        prefs.metronome = enabled;
+        savePrefs();
         snapshotSchedulerNotes();
         tickScheduler().seek(viewPositionMs);
         setStatus("Metronome: " + onOff(enabled));
@@ -2386,6 +2541,7 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
             beginBookmarkText(2, "");
             return;
         }
+        recordOptionChange();
         chart.bookmarks.add(new SongChart.Bookmark(
                 bookmarkDraftTime, bookmarkDraftName, raw.trim()));
         bookmarkTextDialogOpen = false;
@@ -2435,6 +2591,7 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
         SongChart.Bookmark nearest = chart.bookmarks.stream().min(java.util.Comparator.comparingDouble(
                 mark -> Math.abs(mark.timeMs - viewPositionMs))).orElse(null);
         if (nearest == null) { setStatus("No bookmarks"); return; }
+        recordOptionChange();
         chart.bookmarks.remove(nearest);
         setStatus("Deleted bookmark: " + nearest.name);
         rebuildUi();
@@ -2631,8 +2788,26 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
         return viewMs - effectiveEditorOffsetMs();
     }
 
+    /** Name this song's editor preferences are filed under. */
+    private String prefsSongId() {
+        if (entry != null && entry.id != null && !entry.id.isBlank()) return entry.id;
+        if (requestedSongId != null && !requestedSongId.isBlank()) return requestedSongId;
+        return chart == null ? null : chart.title;
+    }
+
+    /** Persists the Chart tab's options for this song only. */
+    private void savePrefs() {
+        syncPrefsFromFields();
+        prefs.save(prefsSongId());
+    }
+
+    /** Records an undo point for a Chart-tab option, then applies the change. */
+    private void recordOptionChange() {
+        recordNoteChange();
+    }
+
     private double effectiveEditorOffsetMs() {
-        return chart.offsetMs + ClientOptions.get().editorChartingOffsetMs;
+        return chart.offsetMs + prefs.chartingOffsetMs;
     }
 
     private void seek(double timeMs) {
@@ -2744,14 +2919,14 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
 
     private void playCrossedHitsounds(double timeMs) {
         ClientOptions options = ClientOptions.get();
-        if (!options.editorHitsoundPlayer && !options.editorHitsoundOpponent) {
+        if (!prefs.hitsoundPlayer && !prefs.hitsoundOpponent) {
             resetHitsoundIndex(timeMs);
             return;
         }
         int played = 0;
         while (hitsoundIndex < chart.notes.size() && chart.notes.get(hitsoundIndex).timeMs <= timeMs) {
             SongChart.Note note = chart.notes.get(hitsoundIndex++);
-            if ((note.playerSide ? options.editorHitsoundPlayer : options.editorHitsoundOpponent) && played++ < 4) playTick();
+            if ((note.playerSide ? prefs.hitsoundPlayer : prefs.hitsoundOpponent) && played++ < 4) playTick();
         }
     }
 
@@ -2785,7 +2960,7 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
                     },
                     playerSide -> {
                         ClientOptions o = ClientOptions.get();
-                        if (playerSide ? o.editorHitsoundPlayer : o.editorHitsoundOpponent) {
+                        if (playerSide ? prefs.hitsoundPlayer : prefs.hitsoundOpponent) {
                             com.fnfmod.client.audio.HitsoundPlayer.play();
                         }
                     });
@@ -2807,7 +2982,7 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
     }
 
     private void snapshotMetronomeTicks() {
-        if (!ClientOptions.get().editorMetronome) {
+        if (!prefs.metronome) {
             tickScheduler().setMetronome(new double[0], new boolean[0], null);
             return;
         }
@@ -2839,9 +3014,9 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
         }
         tickScheduler().setMetronome(tickTimes, tickAccents, accent -> {
             ClientOptions options = ClientOptions.get();
-            if (options.editorMetronome) {
+            if (prefs.metronome) {
                 com.fnfmod.client.audio.HitsoundPlayer.playMetronome(accent,
-                        (float) Mth.clamp(options.editorMetronomeVolume, 0.0, 1.0));
+                        (float) Mth.clamp(prefs.metronomeVolume, 0.0, 1.0));
             }
         });
     }
@@ -2971,7 +3146,7 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
                 case GLFW.GLFW_KEY_ESCAPE, GLFW.GLFW_KEY_ENTER, GLFW.GLFW_KEY_KP_ENTER,
                         GLFW.GLFW_KEY_F12 -> exitPreview();
                 case GLFW.GLFW_KEY_SPACE -> togglePlayback();
-                case GLFW.GLFW_KEY_M -> setMetronomeEnabled(!ClientOptions.get().editorMetronome);
+                case GLFW.GLFW_KEY_M -> setMetronomeEnabled(!prefs.metronome);
                 case GLFW.GLFW_KEY_LEFT_BRACKET ->
                         setPlaybackRate(altDown() ? 1.0f : playbackRate - 0.1f);
                 case GLFW.GLFW_KEY_RIGHT_BRACKET ->
@@ -3043,7 +3218,7 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
             case GLFW.GLFW_KEY_RIGHT -> { changeSnap(1); yield true; }
             case GLFW.GLFW_KEY_SPACE -> { togglePlayback(); yield true; }
             case GLFW.GLFW_KEY_M -> {
-                setMetronomeEnabled(!ClientOptions.get().editorMetronome);
+                setMetronomeEnabled(!prefs.metronome);
                 if (activeTab == EditorTab.CHARTING) rebuildUi();
                 yield true;
             }
@@ -3406,7 +3581,7 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
         }
 
         boolean preciseHitsounds = !ClientOptions.get().hitsound.isEmpty();
-        boolean scheduledTicks = preciseHitsounds || ClientOptions.get().editorMetronome;
+        boolean scheduledTicks = preciseHitsounds || prefs.metronome;
         if (leadInStartNano >= 0) {
             double elapsed = (System.nanoTime() - leadInStartNano) / 1_000_000.0 * playbackRate;
             viewPositionMs = Math.max(0, leadInBaseView + elapsed);
@@ -4227,7 +4402,14 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
     }
 
     private String editorNoteTexture(SongChart.Note note) {
-        return note.texture == null || note.texture.isBlank() ? editorChartNoteTexture() : note.texture;
+        if (note != null && note.texture != null && !note.texture.isBlank()) return note.texture;
+        // A freshly placed Psych Hurt Note contains only its note-type name. Derive
+        // the built-in replacement atlas for previewing instead of serializing that
+        // engine implementation detail into every new chart note.
+        if (note != null && "Hurt Note".equalsIgnoreCase(note.noteType)) {
+            return "HURTNOTE_assets";
+        }
+        return editorChartNoteTexture();
     }
 
     private String editorChartNoteTexture() {
@@ -4564,6 +4746,17 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
         rebuildUi();
     }
 
+    private void cycleCommandRunner() {
+        commitVisibleFields();
+        setEventValue(2, commandRunsAsServer(eventValue2Draft) ? "player" : "server");
+        rebuildUi();
+    }
+
+    /** Unknown/legacy values remain player-run, matching the runtime's safe default. */
+    private static boolean commandRunsAsServer(String raw) {
+        return raw != null && raw.trim().equalsIgnoreCase("server");
+    }
+
     private static boolean cameraBehaviorOffsetsEnabled(String raw) {
         String value = raw == null ? "" : raw.trim();
         return !value.equalsIgnoreCase("false") && !value.equalsIgnoreCase("off")
@@ -4672,8 +4865,10 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
 
     private void cycleSnap(int direction) {
         commitVisibleFields();
+        recordOptionChange();
         snapIndex = Math.floorMod(snapIndex + (direction < 0 ? -1 : 1), SNAPS.length);
         if (vortex && !isPlaying()) snapPlayheadToGrid();
+        savePrefs();
         rebuildUi();
     }
 
@@ -4681,8 +4876,10 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
         commitVisibleFields();
         int changed = Mth.clamp(snapIndex + Integer.signum(direction), 0, SNAPS.length - 1);
         if (changed == snapIndex) return;
+        recordOptionChange();
         snapIndex = changed;
         if (vortex && !isPlaying()) snapPlayheadToGrid();
+        savePrefs();
         setStatus("Beat snap: " + snapText());
         rebuildUi();
     }

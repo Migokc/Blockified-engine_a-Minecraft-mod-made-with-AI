@@ -29,12 +29,29 @@ final class LuaWorldSpriteRenderer {
                                LuaWorldObject.Sprite sprite, int light, boolean flush) {
         if (sprite.width() <= 0 || sprite.height() <= 0) return;
         ResourceLocation texture = sprite.texture() == null ? WHITE_TEXTURE : sprite.texture();
-        RenderType lit = sprite.lighting()
-                ? RenderType.entityTranslucent(texture)
-                : RenderType.entityTranslucentEmissive(texture);
+        boolean layer = LuaLayerRenderer.isSurface(texture);
+        if (layer && !IrlightsShadowCompat.isBaking()) {
+            if (buffers instanceof MultiBufferSource.BufferSource source) source.endBatch();
+            LuaLayerRenderer.drawTexture(poseStack.last().pose(), texture,
+                    (float)-sprite.width()/2, (float)-sprite.height()/2,
+                    (float)sprite.width(), (float)sprite.height(), (float)sprite.alpha(), true, sprite.seeThrough());
+            return;
+        }
+        LuaWorldObject.RenderMode mode = sprite.renderMode() == null
+                ? LuaWorldObject.RenderMode.resolve(null, sprite.lighting()) : sprite.renderMode();
+        RenderType base = switch (mode) {
+            case LIT -> RenderType.entityTranslucent(texture);
+            // The text material is lightmap-aware but has no entity-normal shading.
+            // It therefore stays genuinely flat in vanilla and is substantially less
+            // likely to be treated as a glowing material by Iris shader packs.
+            case FLAT -> FlatWorldRenderTypes.get(texture, false, false);
+            case EMISSIVE -> RenderType.entityTranslucentEmissive(texture);
+        };
         RenderType renderType = sprite.seeThrough()
-                ? SeeThroughSprite.renderType(texture, lit)
-                : lit;
+                ? mode == LuaWorldObject.RenderMode.FLAT
+                    ? FlatWorldRenderTypes.get(texture, true, false)
+                    : SeeThroughSprite.renderType(texture, base)
+                : base;
         VertexConsumer vertices = buffers.getBuffer(renderType);
 
         float left = (float) (-sprite.width() * 0.5);
@@ -42,6 +59,7 @@ final class LuaWorldSpriteRenderer {
         float drawWidth = (float) sprite.width();
         float drawHeight = (float) sprite.height();
         float u0 = 0, v0 = 0, u1 = 1, v1 = 1;
+        if (layer) { v0 = 1; v1 = 0; }
         boolean rotated = false;
         if (sprite.frame() != null) {
             LuaWorldObject.Frame frame = sprite.frame();
@@ -68,26 +86,30 @@ final class LuaWorldSpriteRenderer {
         if (rotated) {
             // Packed frame is clockwise; rotate its UVs back without changing
             // the object's world transform or animation offsets.
-            vertex(vertices, pose, left, bottom, u0, v0, red, green, blue, alpha, light);
-            vertex(vertices, pose, right, bottom, u0, v1, red, green, blue, alpha, light);
-            vertex(vertices, pose, right, top, u1, v1, red, green, blue, alpha, light);
-            vertex(vertices, pose, left, top, u1, v0, red, green, blue, alpha, light);
+            vertex(vertices, pose, left, bottom, u0, v0, red, green, blue, alpha, light, mode);
+            vertex(vertices, pose, right, bottom, u0, v1, red, green, blue, alpha, light, mode);
+            vertex(vertices, pose, right, top, u1, v1, red, green, blue, alpha, light, mode);
+            vertex(vertices, pose, left, top, u1, v0, red, green, blue, alpha, light, mode);
         } else {
-            vertex(vertices, pose, left, bottom, u0, v1, red, green, blue, alpha, light);
-            vertex(vertices, pose, right, bottom, u1, v1, red, green, blue, alpha, light);
-            vertex(vertices, pose, right, top, u1, v0, red, green, blue, alpha, light);
-            vertex(vertices, pose, left, top, u0, v0, red, green, blue, alpha, light);
+            vertex(vertices, pose, left, bottom, u0, v1, red, green, blue, alpha, light, mode);
+            vertex(vertices, pose, right, bottom, u1, v1, red, green, blue, alpha, light, mode);
+            vertex(vertices, pose, right, top, u1, v0, red, green, blue, alpha, light, mode);
+            vertex(vertices, pose, left, top, u0, v0, red, green, blue, alpha, light, mode);
         }
         if (flush && buffers instanceof MultiBufferSource.BufferSource source) source.endBatch(renderType);
     }
 
     private static void vertex(VertexConsumer vertices, PoseStack.Pose pose, float x, float y,
-                               float u, float v, int red, int green, int blue, int alpha, int light) {
-        vertices.addVertex(pose, x, y, 0)
+                               float u, float v, int red, int green, int blue, int alpha, int light,
+                               LuaWorldObject.RenderMode mode) {
+        VertexConsumer value = vertices.addVertex(pose, x, y, 0)
                 .setColor(red, green, blue, alpha)
                 .setUv(u, v)
-                .setOverlay(OverlayTexture.NO_OVERLAY)
-                .setLight(light)
-                .setNormal(pose, 0, 0, 1);
+                .setLight(light);
+        // RenderType.text uses POSITION_COLOR_TEX_LIGHTMAP and has neither of
+        // these NEW_ENTITY attributes.
+        if (mode != LuaWorldObject.RenderMode.FLAT) {
+            value.setOverlay(OverlayTexture.NO_OVERLAY).setNormal(pose, 0, 0, 1);
+        }
     }
 }

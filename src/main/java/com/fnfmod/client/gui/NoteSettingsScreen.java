@@ -4,6 +4,7 @@ import com.fnfmod.FnfMod;
 import com.fnfmod.chart.SongChart;
 import com.fnfmod.client.ClientOptions;
 import com.fnfmod.client.audio.SongPlayer;
+import com.fnfmod.client.gameplay.NativeFilePicker;
 import com.fnfmod.client.gameplay.PsychAssetResolver;
 import com.fnfmod.client.math.Easing;
 import com.fnfmod.client.render.NoteSkinConfig;
@@ -30,7 +31,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 
-/** Gameplay-style note preview and editor for colors, assets, and skin.json transforms. */
+/** Gameplay-style note preview shared by everyday note settings and the note-skin editor. */
 public final class NoteSettingsScreen extends Screen {
     private enum TransformPart {
         NOTE("Note"), RECEPTOR("Receptor"), SUSTAIN("Sustain"), SPLASH("Splash"), HOLD_COVER("Hold Cover");
@@ -47,14 +48,18 @@ public final class NoteSettingsScreen extends Screen {
         ColorPart(String label, String optionKey) { this.label = label; this.optionKey = optionKey; }
     }
 
+    private enum SaveTarget { NOTE_PATH, SELECTED_MOD, BLOCKIFIED }
+
     private record PlacedWidget(AbstractWidget widget, int baseY) {}
     private record SideLabel(String text, int baseY) {}
     private record PreviewNoteHit(int lane, float x, float y, float size) {}
-    private record PreviewCoverEnd(int lane, int visualLane, double startedAtMs) {}
+    private record PreviewCoverEnd(int lane, int visualLane, double startedAtMs, boolean hurt) {}
     private record OptionsSnapshot(String noteSkin, String splashSkin, String holdSplashSkin,
+                                   String noteSkinSource, String splashSkinSource, String holdSplashSkinSource,
                                    double offsetMs, int[] primary, int[] secondary, int[] outline) {}
 
     private final Screen parent;
+    private final boolean editorMode;
     private final List<PlacedWidget> scrollingWidgets = new ArrayList<>();
     private final List<SideLabel> sideLabels = new ArrayList<>();
     private List<SongEntry> installedSongs;
@@ -93,6 +98,10 @@ public final class NoteSettingsScreen extends Screen {
     private NoteSkinConfig workingConfig = NoteSkinConfig.DEFAULT;
     private Path configTarget;
     private boolean configDirty;
+    private SaveTarget saveTarget = SaveTarget.NOTE_PATH;
+    private Path selectedModFolder;
+    private Button saveTargetButton;
+    private boolean saveTargetDropdownOpen;
     private boolean updatingFields;
     private EditBox hexField;
     private EditBox scaleField;
@@ -133,8 +142,13 @@ public final class NoteSettingsScreen extends Screen {
     private OptionsSnapshot optionsSnapshot;
 
     public NoteSettingsScreen(Screen parent) {
-        super(Component.literal("Note Settings"));
+        this(parent, false);
+    }
+
+    public NoteSettingsScreen(Screen parent, boolean editorMode) {
+        super(Component.literal(editorMode ? "NoteSkin Editor" : "Note Settings"));
         this.parent = parent;
+        this.editorMode = editorMode;
     }
 
     @Override
@@ -169,31 +183,27 @@ public final class NoteSettingsScreen extends Screen {
         scrollingWidgets.clear();
         sideLabels.clear();
         transportWidgets.clear();
+        hexField = null;
+        colorPickerBaseY = -1000;
+        for (int i = 0; i < colorPartButtons.length; i++) colorPartButtons[i] = null;
         int x = controlX();
         int w = controlWidth();
         int y = 42;
 
-        addScroll(Button.builder(Component.literal(noteSkinLabel()), button -> {
-            ClientOptions.get().noteSkin = cycle(NoteStyle.listSkins(), ClientOptions.get().noteSkin, false);
-            reloadPreviewAssets(true, true);
-            buildControls();
-        }).bounds(x, shownY(y), w, 20).build(), y);
+        addScroll(Button.builder(Component.literal(noteSkinLabel()), button ->
+                minecraft.setScreen(new NoteAssetPickerScreen(this, NoteAssetPickerScreen.Kind.NOTE_SKIN)))
+                .bounds(x, shownY(y), w, 20).build(), y);
         y += 24;
 
-        Button splash = addScroll(Button.builder(Component.literal(splashLabel()), button -> {
-            ClientOptions.get().splashSkin = cycle(NoteStyle.listSplashes(), ClientOptions.get().splashSkin, true);
-            reloadPreviewAssets(false, true);
-            buildControls();
-        }).bounds(x, shownY(y), w, 20).build(), y);
+        Button splash = addScroll(Button.builder(Component.literal(splashLabel()), button ->
+                minecraft.setScreen(new NoteAssetPickerScreen(this, NoteAssetPickerScreen.Kind.SPLASH)))
+                .bounds(x, shownY(y), w, 20).build(), y);
         splash.active = !NoteStyle.skinHasOwnSplash() && !ClientOptions.isLocked("splashSkin");
         y += 24;
 
-        Button hold = addScroll(Button.builder(Component.literal(holdLabel()), button -> {
-            ClientOptions.get().holdSplashSkin = cycle(NoteStyle.listHoldSplashes(),
-                    ClientOptions.get().holdSplashSkin, false);
-            reloadPreviewAssets(false, true);
-            buildControls();
-        }).bounds(x, shownY(y), w, 20).build(), y);
+        Button hold = addScroll(Button.builder(Component.literal(holdLabel()), button ->
+                minecraft.setScreen(new NoteAssetPickerScreen(this, NoteAssetPickerScreen.Kind.HOLD_COVER)))
+                .bounds(x, shownY(y), w, 20).build(), y);
         hold.active = !NoteStyle.skinHasOwnHoldCover() && !ClientOptions.isLocked("holdSplashSkin");
         y += 28;
 
@@ -203,32 +213,34 @@ public final class NoteSettingsScreen extends Screen {
                 .bounds(x, shownY(y), w, 20).build(), y);
         y += 24;
 
-        int delayButtonWidth = 22;
-        int delaySliderX = x + delayButtonWidth + 4;
-        int delaySliderWidth = w - delayButtonWidth * 2 - 8;
-        Button delayMinus = addScroll(Button.builder(Component.literal("-"), button -> {
-            nudgeDelay(hasShiftDown() ? -8 : -1);
-            buildControls();
-        }).bounds(x, shownY(y), delayButtonWidth, 20).build(), y);
-        var delay = addScroll(new net.minecraft.client.gui.components.AbstractSliderButton(
-                delaySliderX, shownY(y), delaySliderWidth, 20, delayLabel(), delaySliderValue()) {
-            @Override protected void updateMessage() {
-                setMessage(delayLabel());
-            }
+        if (!editorMode) {
+            int delayButtonWidth = 22;
+            int delaySliderX = x + delayButtonWidth + 4;
+            int delaySliderWidth = w - delayButtonWidth * 2 - 8;
+            Button delayMinus = addScroll(Button.builder(Component.literal("-"), button -> {
+                nudgeDelay(hasShiftDown() ? -8 : -1);
+                buildControls();
+            }).bounds(x, shownY(y), delayButtonWidth, 20).build(), y);
+            var delay = addScroll(new net.minecraft.client.gui.components.AbstractSliderButton(
+                    delaySliderX, shownY(y), delaySliderWidth, 20, delayLabel(), delaySliderValue()) {
+                @Override protected void updateMessage() {
+                    setMessage(delayLabel());
+                }
 
-            @Override protected void applyValue() {
-                ClientOptions.get().offsetMs = Math.round(value * 2000.0 - 1000.0);
-                previousPreviewPosition = Double.NaN;
-                updateMessage();
-            }
-        }, y);
-        Button delayPlus = addScroll(Button.builder(Component.literal("+"), button -> {
-            nudgeDelay(hasShiftDown() ? 8 : 1);
-            buildControls();
-        }).bounds(x + w - delayButtonWidth, shownY(y), delayButtonWidth, 20).build(), y);
-        delayMinus.active = delayPlus.active = !ClientOptions.isLocked("offsetMs");
-        delay.active = !ClientOptions.isLocked("offsetMs");
-        y += 24;
+                @Override protected void applyValue() {
+                    ClientOptions.get().offsetMs = Math.round(value * 2000.0 - 1000.0);
+                    previousPreviewPosition = Double.NaN;
+                    updateMessage();
+                }
+            }, y);
+            Button delayPlus = addScroll(Button.builder(Component.literal("+"), button -> {
+                nudgeDelay(hasShiftDown() ? 8 : 1);
+                buildControls();
+            }).bounds(x + w - delayButtonWidth, shownY(y), delayButtonWidth, 20).build(), y);
+            delayMinus.active = delayPlus.active = !ClientOptions.isLocked("offsetMs");
+            delay.active = !ClientOptions.isLocked("offsetMs");
+            y += 24;
+        }
 
         Button skinRgb = addScroll(Button.builder(skinRgbLabel(), button -> {
             workingConfig = new NoteSkinConfig(!workingConfig.rgb(), workingConfig.note(),
@@ -238,7 +250,7 @@ public final class NoteSettingsScreen extends Screen {
             configDirty = true;
             button.setMessage(skinRgbLabel());
         }).bounds(x, shownY(y), w, 20).build(), y);
-        skinRgb.active = configTarget != null;
+        skinRgb.active = configTarget != null || editorMode && saveTarget != SaveTarget.NOTE_PATH;
         y += 24;
 
         addScroll(Button.builder(Component.literal("Preview UI: " + (pixelPreview ? "Pixel" : "Normal")), button -> {
@@ -248,51 +260,67 @@ public final class NoteSettingsScreen extends Screen {
         }).bounds(x, shownY(y), w, 20).build(), y);
         y += 24;
 
-        int colorW = (w - 8) / 3;
-        for (int i = 0; i < ColorPart.values().length; i++) {
-            ColorPart part = ColorPart.values()[i];
-            int index = i;
-            colorPartButtons[i] = addScroll(Button.builder(Component.literal(part.label), button -> {
-                colorPart = part;
-                syncHexField();
-            }).bounds(x + i * (colorW + 4), shownY(y), i == 2 ? w - (colorW + 4) * 2 : colorW, 20).build(), y);
+        if (editorMode) {
+            saveTargetButton = addScroll(Button.builder(Component.literal(saveTargetLabel()), button ->
+                    saveTargetDropdownOpen = !saveTargetDropdownOpen)
+                    .bounds(x, shownY(y), w, 20).build(), y);
+            y += 24;
+        } else {
+            saveTargetButton = null;
+            saveTargetDropdownOpen = false;
         }
-        y += 24;
 
-        sideLabels.add(new SideLabel("Hex", y));
-        hexField = new EditBox(font, x + 34, shownY(y) + 2, 72, 16, Component.literal("hex"));
-        hexField.setMaxLength(6);
-        hexField.setResponder(this::applyHex);
-        hexField.setEditable(!ClientOptions.isLocked(colorPart.optionKey));
-        addScroll(hexField, y);
-        syncHexField();
-        Button resetColor = addScroll(Button.builder(Component.literal("Reset"), button -> resetSelectedColor())
-                .bounds(x + 112, shownY(y), w - 112, 20).build(), y);
-        resetColor.active = !ClientOptions.isLocked(colorPart.optionKey);
-        y += 25;
-        colorPickerBaseY = y;
-        y += 82;
+        if (!editorMode) {
+            int colorW = (w - 8) / 3;
+            for (int i = 0; i < ColorPart.values().length; i++) {
+                ColorPart part = ColorPart.values()[i];
+                colorPartButtons[i] = addScroll(Button.builder(Component.literal(part.label), button -> {
+                    colorPart = part;
+                    syncHexField();
+                }).bounds(x + i * (colorW + 4), shownY(y),
+                        i == 2 ? w - (colorW + 4) * 2 : colorW, 20).build(), y);
+            }
+            y += 24;
 
-        addScroll(Button.builder(Component.literal("Edit Part: " + transformPart.label), button -> {
-            transformPart = TransformPart.values()[Math.floorMod(transformPart.ordinal()
-                    + (hasShiftDown() ? -1 : 1), TransformPart.values().length)];
-            buildControls();
-        }).bounds(x, shownY(y), w, 20).build(), y);
-        y += 25;
+            sideLabels.add(new SideLabel("Hex", y));
+            hexField = new EditBox(font, x + 34, shownY(y) + 2, 72, 16, Component.literal("hex"));
+            hexField.setMaxLength(6);
+            hexField.setResponder(this::applyHex);
+            hexField.setEditable(!ClientOptions.isLocked(colorPart.optionKey));
+            addScroll(hexField, y);
+            syncHexField();
+            Button resetColor = addScroll(Button.builder(Component.literal("Reset"), button -> resetSelectedColor())
+                    .bounds(x + 112, shownY(y), w - 112, 20).build(), y);
+            resetColor.active = !ClientOptions.isLocked(colorPart.optionKey);
+            y += 25;
+            colorPickerBaseY = y;
+            y += 82;
+        }
 
-        scaleField = numericField("Scale", x, w, y); y += 23;
-        alphaField = numericField("Alpha", x, w, y); y += 23;
-        xField = numericField("X", x, w, y); y += 23;
-        yField = numericField("Y", x, w, y); y += 27;
-        syncTransformFields();
+        if (editorMode) {
+            addScroll(Button.builder(Component.literal("Edit Part: " + transformPart.label), button -> {
+                transformPart = TransformPart.values()[Math.floorMod(transformPart.ordinal()
+                        + (hasShiftDown() ? -1 : 1), TransformPart.values().length)];
+                buildControls();
+            }).bounds(x, shownY(y), w, 20).build(), y);
+            y += 25;
+
+            scaleField = numericField("Scale", x, w, y); y += 23;
+            alphaField = numericField("Alpha", x, w, y); y += 23;
+            xField = numericField("X", x, w, y); y += 23;
+            yField = numericField("Y", x, w, y); y += 27;
+            syncTransformFields();
+        } else {
+            scaleField = alphaField = xField = yField = null;
+        }
 
         contentBottom = y;
 
         int footerX = panelX() + 10;
         int footerW = (panelWidth() - 24) / 2;
-        addRenderableWidget(Button.builder(Component.literal("Save"), button -> saveAndReturn())
+        addRenderableWidget(Button.builder(Component.literal("Apply"), button -> applyAndStay())
                 .bounds(footerX, height - 28, footerW, 20).build());
-        addRenderableWidget(Button.builder(Component.literal("Cancel"), button -> cancelAndReturn())
+        addRenderableWidget(Button.builder(Component.literal("Back"), button -> cancelAndReturn())
                 .bounds(footerX + footerW + 4, height - 28, footerW, 20).build());
         buildTransportControls();
         clampScroll();
@@ -329,6 +357,68 @@ public final class NoteSettingsScreen extends Screen {
         return Component.literal("Delay: " + Math.round(ClientOptions.get().offsetMs) + " ms");
     }
 
+    private String saveTargetLabel() {
+        return switch (saveTarget) {
+            case NOTE_PATH -> "Save To: Note's Path";
+            case SELECTED_MOD -> "Save To: Selected Mod Folder";
+            case BLOCKIFIED -> "Save To: Blockified Folders";
+        };
+    }
+
+    private int saveTargetMenuY() {
+        if (saveTargetButton == null) return 0;
+        int height = 3 * 18 + 2;
+        int below = saveTargetButton.getY() + saveTargetButton.getHeight() + 2;
+        return below + height <= viewportBottom() ? below
+                : Math.max(viewportTop(), saveTargetButton.getY() - height - 2);
+    }
+
+    private void chooseSaveTarget(int index) {
+        saveTargetDropdownOpen = false;
+        if (index == 0) {
+            saveTarget = SaveTarget.NOTE_PATH;
+            status = configTarget == null ? "This note skin has no editable source path."
+                    : "Changes will save beside the note assets.";
+            buildControls();
+            return;
+        }
+        if (index == 1) {
+            var chosen = NativeFilePicker.selectFolder("Choose mod folder for exported note assets");
+            if (chosen.isEmpty()) return;
+            selectedModFolder = chosen.get().toAbsolutePath().normalize();
+            saveTarget = SaveTarget.SELECTED_MOD;
+            exportCurrentSelection();
+            buildControls();
+            return;
+        }
+        saveTarget = SaveTarget.BLOCKIFIED;
+        exportCurrentSelection();
+        buildControls();
+    }
+
+    /** Exports immediately on destination choice and again whenever Apply is pressed. */
+    private boolean exportCurrentSelection() {
+        if (!editorMode || saveTarget == SaveTarget.NOTE_PATH) return true;
+        if (saveTarget == SaveTarget.SELECTED_MOD && selectedModFolder == null) {
+            status = "Choose a mod folder before exporting.";
+            return false;
+        }
+        applyTransformFields();
+        Path root = saveTarget == SaveTarget.SELECTED_MOD ? selectedModFolder
+                : SongLibrary.skinsDir().getParent();
+        NoteStyle.ExportLayout layout = saveTarget == SaveTarget.SELECTED_MOD
+                ? NoteStyle.ExportLayout.PSYCH_MOD : NoteStyle.ExportLayout.BLOCKIFIED_CONFIG;
+        try {
+            NoteStyle.ExportResult result = NoteStyle.exportCurrentAssets(root, layout, workingConfig);
+            configDirty = false;
+            status = "Exported note assets to " + result.root();
+            return true;
+        } catch (Exception error) {
+            status = "Could not export note assets: " + error.getMessage();
+            return false;
+        }
+    }
+
     private void nudgeDelay(int milliseconds) {
         ClientOptions.get().offsetMs = Mth.clamp(
                 ClientOptions.get().offsetMs + milliseconds, -1000.0, 1000.0);
@@ -341,7 +431,9 @@ public final class NoteSettingsScreen extends Screen {
                 Component.literal(label));
         box.setMaxLength(24);
         box.setResponder(value -> applyTransformFields());
-        box.setEditable(configTarget != null);
+        // An export destination is also a valid future config target. This lets
+        // imported atlas-only skins be authored instead of requiring a JSON first.
+        box.setEditable(configTarget != null || editorMode && saveTarget != SaveTarget.NOTE_PATH);
         return addScroll(box, baseY);
     }
 
@@ -379,6 +471,24 @@ public final class NoteSettingsScreen extends Screen {
             value = "Default (chart)";
         } else if (value.equalsIgnoreCase(ClientOptions.NOTE_SKIN_NONE)) value = "OFF";
         return "Hold Cover: " + value;
+    }
+
+    void previewNoteAsset(NoteAssetPickerScreen.Kind kind, String value, String source) {
+        switch (kind) {
+            case NOTE_SKIN -> {
+                ClientOptions.get().noteSkin = value;
+                ClientOptions.get().noteSkinSource = source;
+            }
+            case SPLASH -> {
+                ClientOptions.get().splashSkin = value;
+                ClientOptions.get().splashSkinSource = source;
+            }
+            case HOLD_COVER -> {
+                ClientOptions.get().holdSplashSkin = value;
+                ClientOptions.get().holdSplashSkinSource = source;
+            }
+        }
+        reloadPreviewAssets(kind == NoteAssetPickerScreen.Kind.NOTE_SKIN, true);
     }
 
     private Component skinRgbLabel() {
@@ -692,9 +802,11 @@ public final class NoteSettingsScreen extends Screen {
         }
     }
 
-    private void saveAndReturn() {
-        applyTransformFields();
-        if (configDirty && configTarget != null) {
+    private void applyAndStay() {
+        if (editorMode) applyTransformFields();
+        if (editorMode && saveTarget != SaveTarget.NOTE_PATH) {
+            if (!exportCurrentSelection()) return;
+        } else if (configDirty && configTarget != null) {
             try {
                 NoteSkinConfig.saveFile(configTarget, workingConfig);
                 configDirty = false;
@@ -704,12 +816,17 @@ public final class NoteSettingsScreen extends Screen {
             }
         }
         ClientOptions.save();
-        finishAndReturn();
+        // Back discards only edits made after the latest Apply, not values the
+        // user has already committed while keeping this preview open.
+        optionsSnapshot = captureOptions();
+        status = editorMode ? "Note-skin and user settings applied."
+                : "Note settings applied.";
     }
 
     private static OptionsSnapshot captureOptions() {
         ClientOptions options = ClientOptions.get();
         return new OptionsSnapshot(options.noteSkin, options.splashSkin, options.holdSplashSkin,
+                options.noteSkinSource, options.splashSkinSource, options.holdSplashSkinSource,
                 options.offsetMs, options.noteColorBase.clone(), options.noteColorHighlight.clone(),
                 options.noteColorOutline.clone());
     }
@@ -720,6 +837,9 @@ public final class NoteSettingsScreen extends Screen {
         options.noteSkin = optionsSnapshot.noteSkin();
         options.splashSkin = optionsSnapshot.splashSkin();
         options.holdSplashSkin = optionsSnapshot.holdSplashSkin();
+        options.noteSkinSource = optionsSnapshot.noteSkinSource();
+        options.splashSkinSource = optionsSnapshot.splashSkinSource();
+        options.holdSplashSkinSource = optionsSnapshot.holdSplashSkinSource();
         options.offsetMs = optionsSnapshot.offsetMs();
         options.noteColorBase = optionsSnapshot.primary().clone();
         options.noteColorHighlight = optionsSnapshot.secondary().clone();
@@ -777,7 +897,18 @@ public final class NoteSettingsScreen extends Screen {
 
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
-        if (button == 0 && selectPreviewNote(mouseX, mouseY)) return true;
+        if (editorMode && button == 0 && saveTargetDropdownOpen && saveTargetButton != null) {
+            int menuX = saveTargetButton.getX();
+            int menuY = saveTargetMenuY();
+            int menuW = saveTargetButton.getWidth();
+            if (mouseX >= menuX && mouseX < menuX + menuW
+                    && mouseY >= menuY + 1 && mouseY < menuY + 1 + 3 * 18) {
+                chooseSaveTarget((int) ((mouseY - menuY - 1) / 18));
+                return true;
+            }
+            if (!saveTargetButton.isMouseOver(mouseX, mouseY)) saveTargetDropdownOpen = false;
+        }
+        if (!editorMode && button == 0 && selectPreviewNote(mouseX, mouseY)) return true;
         if (button == 0 && overPreviewTimeline(mouseX, mouseY)) {
             draggingPreviewTimeline = true;
             seekPreviewFromMouse(mouseX);
@@ -788,7 +919,7 @@ public final class NoteSettingsScreen extends Screen {
             return true;
         }
         if (super.mouseClicked(mouseX, mouseY, button)) return true;
-        return button == 0 && mouseX >= panelX() && beginColorPick(mouseX, mouseY);
+        return !editorMode && button == 0 && mouseX >= panelX() && beginColorPick(mouseX, mouseY);
     }
 
     private boolean selectPreviewNote(double mouseX, double mouseY) {
@@ -817,7 +948,7 @@ public final class NoteSettingsScreen extends Screen {
             previewSeek(previewTimelineDragPosition);
             return true;
         }
-        if (button == 0 && colorDragTarget != 0) return updateColorPick(mouseX, mouseY);
+        if (!editorMode && button == 0 && colorDragTarget != 0) return updateColorPick(mouseX, mouseY);
         return super.mouseDragged(mouseX, mouseY, button, dragX, dragY);
     }
 
@@ -861,7 +992,7 @@ public final class NoteSettingsScreen extends Screen {
         super.render(gui, mouseX, mouseY, partialTick);
         gui.drawString(font, "BLOCKIFIED SETTINGS", 14, 13,
                 BlockifiedScreenStyle.ACCENT, false);
-        gui.drawCenteredString(font, "Note Settings", width / 2, 14,
+        gui.drawCenteredString(font, editorMode ? "NoteSkin Editor" : "Note Settings", width / 2, 14,
                 BlockifiedScreenStyle.TEXT);
         gui.drawCenteredString(font, "GAMEPLAY PREVIEW", split / 2, 24,
                 BlockifiedScreenStyle.TEXT_SECTION);
@@ -887,26 +1018,53 @@ public final class NoteSettingsScreen extends Screen {
                 gui.drawString(font, label.text(), controlX(), y, 0xFFBBBBBB);
             }
         }
-        Button selectedColorButton = colorPartButtons[colorPart.ordinal()];
-        if (selectedColorButton != null && selectedColorButton.visible) {
-            gui.renderOutline(selectedColorButton.getX() - 1, selectedColorButton.getY() - 1,
-                    selectedColorButton.getWidth() + 2, selectedColorButton.getHeight() + 2, 0xFFFFFFFF);
-        }
-        renderColorPicker(gui);
-        int swatchY = hexField == null ? -100 : hexField.getY() + 2;
-        if (swatchY >= viewportTop() && swatchY < viewportBottom()) {
-            gui.fill(controlX() + 108, swatchY, controlX() + 111, swatchY + 16,
-                    0xFF000000 | selectedColor());
+        if (!editorMode) {
+            Button selectedColorButton = colorPartButtons[colorPart.ordinal()];
+            if (selectedColorButton != null && selectedColorButton.visible) {
+                gui.renderOutline(selectedColorButton.getX() - 1, selectedColorButton.getY() - 1,
+                        selectedColorButton.getWidth() + 2, selectedColorButton.getHeight() + 2, 0xFFFFFFFF);
+            }
+            renderColorPicker(gui);
+            int swatchY = hexField == null ? -100 : hexField.getY() + 2;
+            if (swatchY >= viewportTop() && swatchY < viewportBottom()) {
+                gui.fill(controlX() + 108, swatchY, controlX() + 111, swatchY + 16,
+                        0xFF000000 | selectedColor());
+            }
         }
         gui.disableScissor();
 
-        if (configTarget == null) {
+        renderSaveTargetDropdown(gui, mouseX, mouseY);
+
+        if (editorMode && saveTarget == SaveTarget.NOTE_PATH && configTarget == null) {
             gui.drawCenteredString(font, "Current note skin has no editable JSON target.",
                     panelX() + panelWidth() / 2, height - 40, 0xFFFF9977);
-        } else if (configDirty) {
-            gui.drawCenteredString(font, "Unsaved transform changes", panelX() + panelWidth() / 2,
+        } else if (editorMode && configDirty) {
+            gui.drawCenteredString(font, "Unsaved note-skin changes", panelX() + panelWidth() / 2,
                     height - 40, 0xFFFFCC66);
         }
+    }
+
+    private void renderSaveTargetDropdown(GuiGraphics gui, int mouseX, int mouseY) {
+        if (!editorMode || !saveTargetDropdownOpen || saveTargetButton == null
+                || !saveTargetButton.visible) return;
+        String[] entries = {"Note's Path", "Selected Mod Folder...", "Blockified Folders"};
+        int x = saveTargetButton.getX(), y = saveTargetMenuY(), w = saveTargetButton.getWidth();
+        int selected = saveTarget.ordinal();
+        gui.pose().pushPose();
+        gui.pose().translate(0, 0, 400);
+        gui.fill(x - 1, y - 1, x + w + 1, y + 3 * 18 + 2, 0xFF000000);
+        gui.fill(x, y, x + w, y + 3 * 18 + 1, 0xF0181820);
+        for (int i = 0; i < entries.length; i++) {
+            int rowY = y + 1 + i * 18;
+            boolean hovered = mouseX >= x && mouseX < x + w
+                    && mouseY >= rowY && mouseY < rowY + 18;
+            if (i == selected) gui.fill(x, rowY, x + w, rowY + 18,
+                    BlockifiedScreenStyle.ACCENT_MEDIUM);
+            else if (hovered) gui.fill(x, rowY, x + w, rowY + 18, 0x33FFFFFF);
+            gui.drawString(font, entries[i], x + 6, rowY + 5,
+                    i == selected ? 0xFFFFFFFF : 0xFFCCCCCC, false);
+        }
+        gui.pose().popPose();
     }
 
     private void renderTransport(GuiGraphics gui, int mouseX, int mouseY, float partialTick) {
@@ -1098,24 +1256,28 @@ public final class NoteSettingsScreen extends Screen {
             }
             if (activeHold && NoteStyle.hasHoldCover(note.lane)) {
                 long holdFrame = (long) ((songPosition - note.timeMs) * 24.0 / 1000.0);
-                NoteStyle.drawHoldCover(gui, note.lane, holdFrame, laneX, receptorY, noteSize);
+                NoteStyle.drawHoldCover(gui, note.lane, holdFrame, laneX, receptorY, noteSize,
+                        isHurtNote(note));
             }
             double holdEnd = note.timeMs + note.sustainMs;
             if (note.sustainMs > 30 && Double.isFinite(previousPreviewPosition)
                     && songPosition >= previousPreviewPosition
                     && previousPreviewPosition < holdEnd && songPosition >= holdEnd) {
-                spawnPreviewCoverEnd(note.lane, visualLane, holdEnd);
+                spawnPreviewCoverEnd(note.lane, visualLane, holdEnd, isHurtNote(note));
             }
             double sinceHit = songPosition - note.timeMs;
             if (sinceHit >= 0 && sinceHit < 280) {
                 int frame = (int) (sinceHit * 24 / 1000.0);
                 boolean custom = false;
-                if (!chartSplash.isBlank() && previewTextures != null
-                        && frame < previewTextures.splashFrames(chartSplash, note.lane, 0)) {
-                    custom = previewTextures.drawSplash(gui, chartSplash, note.lane, 0, frame,
-                            laneX, receptorY, noteSize * 2.2f, splashTransform);
+                boolean hurt = isHurtNote(note);
+                String splashTexture = hurt ? previewHurtSplashTexture(note) : chartSplash;
+                if (!splashTexture.isBlank() && previewTextures != null
+                        && frame < previewTextures.splashFrames(splashTexture, note.lane, 0)) {
+                    custom = previewTextures.drawSplash(gui, splashTexture, note.lane, 0, frame,
+                            laneX, receptorY, noteSize * 2.2f, splashTransform,
+                            hurt && NoteStyle.currentSkinConfig().rgb());
                 }
-                if (!custom && NoteStyle.splashVariants(note.lane) > 0
+                if (!custom && !hurt && NoteStyle.splashVariants(note.lane) > 0
                         && frame < NoteStyle.splashFrameCount(note.lane, 0)) {
                     NoteStyle.drawSplash(gui, note.lane, 0, frame,
                             laneX, receptorY, noteSize * 2.2f);
@@ -1131,15 +1293,34 @@ public final class NoteSettingsScreen extends Screen {
                 continue;
             }
             NoteStyle.drawHoldCoverEnd(gui, end.lane(), frame,
-                    previewLaneX(startX, spacing, end.visualLane()), receptorY, noteSize);
+                    previewLaneX(startX, spacing, end.visualLane()), receptorY, noteSize, end.hurt());
         }
         previousPreviewPosition = songPosition;
     }
 
-    private void spawnPreviewCoverEnd(int lane, int visualLane, double startedAtMs) {
+    private void spawnPreviewCoverEnd(int lane, int visualLane, double startedAtMs, boolean hurt) {
         if (NoteStyle.holdCoverEndFrames(lane) <= 0) return;
-        previewCoverEnds.add(new PreviewCoverEnd(lane, visualLane, startedAtMs));
+        previewCoverEnds.add(new PreviewCoverEnd(lane, visualLane, startedAtMs, hurt));
         if (previewCoverEnds.size() > 16) previewCoverEnds.remove(0);
+    }
+
+    private static boolean isHurtNote(SongChart.Note note) {
+        return note != null && note.noteType != null
+                && note.noteType.equalsIgnoreCase("Hurt Note");
+    }
+
+    private String previewHurtSplashTexture(SongChart.Note note) {
+        if (previewTextures == null) return "";
+        String configured = note == null || note.noteSplashTexture == null
+                ? "" : note.noteSplashTexture.trim();
+        String[] candidates = {configured, "noteSplashes/noteSplashes-electric",
+                "noteSplashes-electric", "HURTnoteSplashes",
+                "noteSplashes/HURTnoteSplashes", "HURTNOTE_splashes"};
+        for (String candidate : candidates) {
+            if (!candidate.isBlank() && previewTextures.splashVariants(candidate,
+                    note == null ? 0 : note.lane) > 0) return candidate;
+        }
+        return "";
     }
 
     /**

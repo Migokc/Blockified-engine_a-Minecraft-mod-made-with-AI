@@ -1,7 +1,11 @@
 package com.fnfmod.client.render;
 
 import com.fnfmod.FnfMod;
+import com.mojang.blaze3d.platform.NativeImage;
+import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
+import net.minecraft.client.renderer.texture.DynamicTexture;
+import net.minecraft.resources.ResourceLocation;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -13,9 +17,11 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /** Per-song cache and renderer for Psych custom note Sparrow atlases. */
 public final class PsychNoteTextureCache implements AutoCloseable {
+    private static final AtomicInteger NEXT_GENERATED_TEXTURE = new AtomicInteger();
     private static final String[] COLORS = {"purple", "blue", "green", "red"};
     private static final String[] DIRECTIONS = {"left", "down", "up", "right"};
     private static final String[] CAPS = {"Left", "Down", "Up", "Right"};
@@ -28,6 +34,8 @@ public final class PsychNoteTextureCache implements AutoCloseable {
         final String[] ends = new String[4];
         @SuppressWarnings("unchecked")
         final List<String>[] splashes = new List[4];
+        ResourceLocation hurtSplashTexture;
+        DynamicTexture hurtSplashDynamic;
         float referenceSize;
 
         Style(SparrowAtlas atlas) {
@@ -85,6 +93,49 @@ public final class PsychNoteTextureCache implements AutoCloseable {
             List<SparrowAtlas.Frame> frames = atlas.frames(animation);
             if (frames.isEmpty()) return null;
             return frames.get((int) Math.floorMod(index, (long) frames.size()));
+        }
+
+        /** Psych RGB template mapping: red -> red, green/blue -> black. */
+        ResourceLocation fixedHurtSplashTexture() {
+            if (hurtSplashTexture != null) return hurtSplashTexture;
+            NativeImage source = atlas.image();
+            if (source == null) return null;
+            NativeImage recolored = null;
+            try {
+                recolored = new NativeImage(source.getWidth(), source.getHeight(), true);
+                for (int y = 0; y < source.getHeight(); y++) {
+                    for (int x = 0; x < source.getWidth(); x++) {
+                        int abgr = source.getPixelRGBA(x, y);
+                        int alpha = (abgr >>> 24) & 0xFF;
+                        int redTemplate = abgr & 0xFF;
+                        // ABGR output: only the template's red contribution remains
+                        // red. Green and blue template regions become opaque black.
+                        recolored.setPixelRGBA(x, y, (alpha << 24) | redTemplate);
+                    }
+                }
+                hurtSplashDynamic = new DynamicTexture(recolored);
+                hurtSplashTexture = FnfMod.id("gen/hurt_splash/"
+                        + NEXT_GENERATED_TEXTURE.incrementAndGet());
+                Minecraft.getInstance().getTextureManager().register(
+                        hurtSplashTexture, hurtSplashDynamic);
+                if (!NoteStyle.pixelUi()) Textures.smooth(hurtSplashDynamic);
+                return hurtSplashTexture;
+            } catch (Throwable error) {
+                if (hurtSplashDynamic != null) hurtSplashDynamic.close();
+                else if (recolored != null) recolored.close();
+                hurtSplashDynamic = null;
+                hurtSplashTexture = null;
+                return null;
+            }
+        }
+
+        void close() {
+            if (hurtSplashTexture != null) {
+                Minecraft.getInstance().getTextureManager().release(hurtSplashTexture);
+                hurtSplashTexture = null;
+                hurtSplashDynamic = null;
+            }
+            atlas.close();
         }
 
         private enum Part { HEAD, HOLD, END }
@@ -292,6 +343,14 @@ public final class PsychNoteTextureCache implements AutoCloseable {
     /** Draws an external/chart splash using the active note skin's transforms. */
     public boolean drawSplash(GuiGraphics gui, String texture, int lane, int variant, int frameIndex,
                               float centerX, float centerY, float size, NoteSkinConfig.Part config) {
+        return drawSplash(gui, texture, lane, variant, frameIndex, centerX, centerY,
+                size, config, false);
+    }
+
+    /** External splash draw with an optional fixed Hurt Note RGB palette. */
+    public boolean drawSplash(GuiGraphics gui, String texture, int lane, int variant, int frameIndex,
+                              float centerX, float centerY, float size,
+                              NoteSkinConfig.Part config, boolean hurtRgb) {
         Style style = style(texture);
         if (style == null) return false;
         List<String> variants = style.splashes[Math.floorMod(lane, 4)];
@@ -306,7 +365,8 @@ public final class PsychNoteTextureCache implements AutoCloseable {
                 / Math.max(1, Math.max(frame.frameW, frame.frameH));
         style.atlas.drawScaled(gui, frame,
                 centerX + transform.x() * pixelScale,
-                centerY + transform.y() * pixelScale, pixelScale);
+                centerY + transform.y() * pixelScale, pixelScale,
+                hurtRgb ? style.fixedHurtSplashTexture() : null);
         return true;
     }
 
@@ -576,7 +636,7 @@ public final class PsychNoteTextureCache implements AutoCloseable {
 
     @Override
     public void close() {
-        for (Style style : styles.values()) style.atlas.close();
+        for (Style style : styles.values()) style.close();
         styles.clear();
         missing.clear();
     }

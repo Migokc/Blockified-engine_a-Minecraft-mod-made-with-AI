@@ -25,6 +25,8 @@ import net.neoforged.neoforge.client.event.RegisterKeyMappingsEvent;
 import net.neoforged.neoforge.client.event.EntityRenderersEvent;
 import net.neoforged.neoforge.client.event.RenderGuiLayerEvent;
 import net.neoforged.neoforge.client.event.RenderGuiEvent;
+import net.neoforged.neoforge.client.event.RenderHandEvent;
+import net.neoforged.neoforge.client.event.RenderPlayerEvent;
 import net.neoforged.neoforge.client.event.ScreenEvent;
 import net.neoforged.neoforge.client.event.InputEvent;
 import net.neoforged.neoforge.client.event.RenderLevelStageEvent;
@@ -83,6 +85,7 @@ public final class FnfClient {
         public static void onRegisterShaders(net.neoforged.neoforge.client.event.RegisterShadersEvent event)
                 throws java.io.IOException {
             com.fnfmod.client.render.BbsObjectBorderRenderer.registerShader(event);
+            com.fnfmod.client.render.LuaLayerRenderer.registerShaders(event);
         }
     }
 
@@ -122,11 +125,13 @@ public final class FnfClient {
 
         @SubscribeEvent
         public static void onClientLogout(ClientPlayerNetworkEvent.LoggingOut event) {
+            AutoWorldMenuClient.clear();
             CharacterAnimations.stopPreview();
             bbsFormRecoveryDelay = 0;
             bbsFormRecoveryAttempts = 0;
             ClientSession.reset();
             ClientOptions.applyWorldOverrides(null);
+            com.fnfmod.client.render.PsychResolutionController.refresh();
             com.fnfmod.client.render.MachineHitboxPreview.clear();
             com.fnfmod.client.render.MachineAtlasCache.clear();
             com.fnfmod.client.render.MachineTextureCache.clear();
@@ -143,14 +148,39 @@ public final class FnfClient {
         /** Add a "Mod Worlds" button to the singleplayer world-selection screen. */
         @SubscribeEvent
         public static void onScreenInit(net.neoforged.neoforge.client.event.ScreenEvent.Init.Post event) {
-            if (!(event.getScreen() instanceof net.minecraft.client.gui.screens.worldselection.SelectWorldScreen select)) {
-                return;
+            if (event.getScreen() instanceof net.minecraft.client.gui.screens.worldselection.SelectWorldScreen select) {
+                event.addListener(net.minecraft.client.gui.components.Button.builder(
+                                Component.literal("Mod Worlds"),
+                                b -> Minecraft.getInstance().setScreen(
+                                        new com.fnfmod.client.gui.ModWorldSelectScreen(select)))
+                        .bounds(6, 6, 90, 20).build());
             }
-            event.addListener(net.minecraft.client.gui.components.Button.builder(
-                            Component.literal("Mod Worlds"),
-                            b -> Minecraft.getInstance().setScreen(
-                                    new com.fnfmod.client.gui.ModWorldSelectScreen(select)))
-                    .bounds(6, 6, 90, 20).build());
+            if (isVideoSettings(event.getScreen())) {
+                var screen = event.getScreen();
+                event.addListener(net.minecraft.client.gui.components.Button.builder(
+                                psychResolutionLabel(), button -> {
+                                    com.fnfmod.client.render.PsychResolutionController.toggle();
+                                    button.setMessage(psychResolutionLabel());
+                                })
+                        .tooltip(net.minecraft.client.gui.components.Tooltip.create(Component.literal(
+                                "Keep a Psych Engine-style 16:9 canvas at the display's native resolution. "
+                                        + "Anything outside the game rectangle is black.")))
+                        .bounds(Math.max(6, screen.width - 176), 6, 170, 20).build());
+            }
+        }
+
+        private static Component psychResolutionLabel() {
+            return Component.literal("Psych 1280x720: "
+                    + (com.fnfmod.client.render.PsychResolutionController.enabled() ? "ON" : "OFF"));
+        }
+
+        /** Vanilla, Sodium's full replacement, and Iris video/shader option screens. */
+        private static boolean isVideoSettings(net.minecraft.client.gui.screens.Screen screen) {
+            if (screen instanceof net.minecraft.client.gui.screens.options.VideoSettingsScreen) return true;
+            String name = screen.getClass().getName().toLowerCase(java.util.Locale.ROOT);
+            return (name.contains("sodium") && (name.contains("optionsgui") || name.contains("videosettings")))
+                    || (name.contains("iris") && (name.contains("video") || name.contains("option")
+                    || name.contains("shaderpackscreen")));
         }
 
         /** FNF-style, rebindable master volume available globally, including pause screens. */
@@ -183,6 +213,7 @@ public final class FnfClient {
         @SubscribeEvent
         public static void onScreenRender(ScreenEvent.Render.Post event) {
             MasterVolumeOverlay.render(event.getGuiGraphics(), event.getMouseX(), event.getMouseY(), event.getScreen());
+            com.fnfmod.client.render.PsychResolutionController.renderLetterbox(event.getGuiGraphics());
         }
 
         @SubscribeEvent
@@ -191,6 +222,31 @@ public final class FnfClient {
             if (mc.screen == null) {
                 com.fnfmod.client.render.MachineHitboxPreview.renderHud(event.getGuiGraphics());
                 MasterVolumeOverlay.render(event.getGuiGraphics(), Integer.MIN_VALUE, Integer.MIN_VALUE, null);
+            }
+            com.fnfmod.client.render.PsychResolutionController.renderLetterbox(event.getGuiGraphics());
+        }
+
+        /** Custom machine scenes and their editor own the whole view, including the hand layer. */
+        @SubscribeEvent
+        public static void onRenderHand(RenderHandEvent event) {
+            var screen = Minecraft.getInstance().screen;
+            if (screen instanceof com.fnfmod.client.gui.machine.MachineMenuEditorScreen
+                    || screen instanceof com.fnfmod.client.gui.machine.MachineMenuScreen menu
+                    && menu.usesCustomCamera()) {
+                event.setCanceled(true);
+            }
+        }
+
+        /** Detached menu cameras never show the local player's body. */
+        @SubscribeEvent
+        public static void onRenderPlayer(RenderPlayerEvent.Pre event) {
+            Minecraft minecraft = Minecraft.getInstance();
+            var screen = minecraft.screen;
+            if (event.getEntity() == minecraft.player
+                    && (screen instanceof com.fnfmod.client.gui.machine.MachineMenuEditorScreen
+                    || screen instanceof com.fnfmod.client.gui.machine.MachineMenuScreen menu
+                    && menu.usesCustomCamera())) {
+                event.setCanceled(true);
             }
         }
 
@@ -219,6 +275,7 @@ public final class FnfClient {
         @SubscribeEvent
         public static void onComputeFov(ViewportEvent.ComputeFov event) {
             float scale = com.fnfmod.client.camera.GameplayCamera.fovScale();
+            scale *= (float) com.fnfmod.client.camera.MenuCameraController.fovScale(event.getFOV());
             if (scale != 1f) {
                 event.setFOV(event.getFOV() * scale);
             }
@@ -229,7 +286,14 @@ public final class FnfClient {
         /** Hide unrelated vanilla HUD layers; vanilla style keeps Minecraft's real hearts and food. */
         @SubscribeEvent
         public static void onRenderGuiLayer(RenderGuiLayerEvent.Pre event) {
-            if (!(Minecraft.getInstance().screen instanceof GameplayScreen gameplay)) return;
+            var screen = Minecraft.getInstance().screen;
+            if (screen instanceof com.fnfmod.client.gui.machine.MachineMenuEditorScreen
+                    || screen instanceof com.fnfmod.client.gui.machine.MachineMenuScreen menu
+                    && menu.usesCustomCamera()) {
+                event.setCanceled(true);
+                return;
+            }
+            if (!(screen instanceof GameplayScreen gameplay)) return;
             var name = event.getName();
             String style = gameplay.effectiveHudStyle();
             boolean keepHotbar = !"fnf".equals(style) && VanillaGuiLayers.HOTBAR.equals(name);
@@ -262,10 +326,25 @@ public final class FnfClient {
         /** Draw Lua objects assigned to the world camera into the level itself. */
         @SubscribeEvent
         public static void onRenderLevelStage(RenderLevelStageEvent event) {
+            // AFTER_PARTICLES may be bound to Fabulous/Iris's intermediate target.
+            // Capture only after the completed level has been composited into the
+            // main target, otherwise the editor viewport can inherit a partial sky.
+            if (event.getStage() == RenderLevelStageEvent.Stage.AFTER_LEVEL) {
+                if (Minecraft.getInstance().screen
+                        instanceof com.fnfmod.client.gui.machine.MachineMenuEditorScreen)
+                    com.fnfmod.client.render.MenuEditorViewport.captureWorld();
+                return;
+            }
             if (event.getStage() != RenderLevelStageEvent.Stage.AFTER_PARTICLES) return;
             com.fnfmod.client.render.MachineHitboxPreview.render(event.getPoseStack(), event.getCamera());
             if (Minecraft.getInstance().screen instanceof GameplayScreen gameplay) {
                 gameplay.renderLuaWorld(event.getPoseStack(), event.getCamera());
+            } else if (Minecraft.getInstance().screen
+                    instanceof com.fnfmod.client.gui.machine.MachineMenuScreen menu) {
+                menu.renderLuaWorld(event.getPoseStack(), event.getCamera());
+            } else if (Minecraft.getInstance().screen
+                    instanceof com.fnfmod.client.gui.machine.MachineMenuEditorScreen editor) {
+                editor.renderLuaWorld(event.getPoseStack(), event.getCamera());
             }
         }
 
@@ -362,6 +441,8 @@ public final class FnfClient {
         @SubscribeEvent
         public static void onClientTick(net.neoforged.neoforge.client.event.ClientTickEvent.Post event) {
             com.fnfmod.client.world.WorldImportCutscene.tick();
+            AutoWorldMenuClient.tick();
+            com.fnfmod.client.render.PsychResolutionController.update();
             if (bbsFormRecoveryDelay > 0 && --bbsFormRecoveryDelay == 0) {
                 Minecraft minecraft = Minecraft.getInstance();
                 if (minecraft.player != null

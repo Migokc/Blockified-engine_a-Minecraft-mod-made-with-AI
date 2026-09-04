@@ -3,72 +3,1122 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#111015">
-  <meta name="description" content="Official Blockified Engine documentation, creation guides, and wiki for songs, animations, Lua, machines, editors, and Minecraft-specific extensions.">
-  <meta property="og:title" content="Blockified Engine Docs">
-  <meta property="og:description" content="Blockified documentation, step-by-step creation guides, and wiki for building FNF experiences inside Minecraft.">
+  <meta name="theme-color" content="#0b0810">
+  <meta name="description" content="Blockified Engine is a Minecraft creation engine made for creators already familiar with Psych Engine.">
+  <meta property="og:title" content="Blockified Engine">
+  <meta property="og:description" content="A Minecraft creation engine made for creators already familiar with Psych Engine.">
   <meta property="og:type" content="website">
-  <title>Blockified Engine Docs</title>
+  <meta property="og:image" content="./assets/blockified-engine-logo.png">
+  <title>Blockified Engine</title>
   <link rel="icon" type="image/png" href="./assets/blockified-note-icon.png">
   <link rel="apple-touch-icon" href="./assets/blockified-note-icon.png">
-  <link rel="stylesheet" href="./styles.css">
+  <script src="./site-zoom.js"></script>
+  <script>
+    (() => {
+      try {
+        if (sessionStorage.getItem('blockified-return-home') === '1') {
+          sessionStorage.removeItem('blockified-return-home');
+          document.documentElement.classList.add('returning-home');
+        } else {
+          document.documentElement.classList.add('intro-running');
+        }
+      } catch (_) {
+        document.documentElement.classList.add('intro-running');
+      }
+    })();
+  </script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+
+    @view-transition { navigation: auto; }
+
+    :root {
+      color-scheme: dark;
+      --bg: #0b0810;
+      --accent: #ff702e;
+      --text: #fffaf7;
+      --muted: #d8cbc4;
+      --pointer-x: 0;
+      --pointer-y: 0;
+    }
+
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+    }
+
+    body {
+      min-width: 18rem;
+      color: var(--text);
+      background: var(--bg);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+        "Segoe UI", sans-serif;
+      isolation: isolate;
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      z-index: -2;
+      inset: -75vmax;
+      pointer-events: none;
+      background-image: radial-gradient(circle, rgba(255, 112, 46, 0.34) 1.2px, transparent 1.5px);
+      background-size: 26px 26px;
+      transform: rotate(45deg);
+      transform-origin: center;
+    }
+
+    body::after {
+      content: "";
+      position: fixed;
+      z-index: -1;
+      inset: 0;
+      pointer-events: none;
+      background: linear-gradient(to bottom, rgba(11, 8, 16, 0.08), rgba(11, 8, 16, 0.72));
+    }
+
+    .page {
+      width: 100%;
+      height: 100%;
+      display: grid;
+      place-items: center;
+      padding: clamp(1rem, 3vh, 2.25rem) clamp(1rem, 4vw, 4rem);
+      opacity: 1;
+      transition: opacity 320ms ease;
+    }
+
+    .intro-running .page {
+      visibility: hidden;
+      opacity: 0;
+    }
+
+    .intro-running.intro-bubbles-entering .page {
+      visibility: visible;
+      opacity: 1;
+      transition: none;
+    }
+
+    .intro-running.intro-bubbles-entering .logo-motion,
+    .intro-running.intro-bubbles-entering .intro {
+      visibility: hidden;
+      opacity: 0;
+    }
+
+    .intro-running .bubble-slot { animation-play-state: paused; }
+
+    /* During handoff, intro logo covers this exact spot. Keep real logo hidden to avoid doubling. */
+    .intro-swap .logo-motion { visibility: hidden; }
+
+    .content {
+      width: min(72rem, 100%);
+      position: relative;
+      isolation: isolate;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: clamp(0.6rem, 1.6vh, 1.15rem);
+      text-align: center;
+    }
+
+    .transition-bar {
+      display: none;
+      view-transition-name: blockified-header-bar;
+    }
+
+    .header-search {
+      display: none;
+      min-width: 7rem;
+      flex: 1 1 18rem;
+      margin: 0;
+      view-transition-name: blockified-search;
+    }
+
+    .header-search input {
+      width: 100%;
+      min-width: 0;
+      height: 2.75rem;
+      padding: 0 0.9rem;
+      border: 1px solid rgba(255, 112, 46, 0.36);
+      border-radius: 0.7rem;
+      color: var(--text);
+      background: rgba(17, 10, 18, 0.78);
+      font: inherit;
+      outline: none;
+    }
+
+    .header-search input:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 2px rgba(255, 112, 46, 0.13);
+    }
+
+    .logo-motion {
+      position: relative;
+      isolation: isolate;
+      display: grid;
+      place-items: center;
+      transform: translate(
+        calc(var(--pointer-x) * 18px),
+        calc(var(--pointer-y) * 13px)
+      );
+      will-change: transform;
+    }
+
+    .logo {
+      display: block;
+      width: min(38rem, 72vw);
+      height: auto;
+      filter: drop-shadow(0 0 2.25rem rgba(184, 43, 255, 0.34));
+      view-transition-name: blockified-logo;
+    }
+
+    .intro {
+      width: min(48rem, 100%);
+      opacity: 1;
+      transition: opacity 320ms ease;
+    }
+
+    .eyebrow {
+      margin: 0 0 0.45rem;
+      color: var(--text);
+      font-size: clamp(0.7rem, 1.2vw, 0.82rem);
+      font-weight: 800;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      margin: 0 0 0.55rem;
+      font-size: clamp(1.75rem, 4.1vw, 3.35rem);
+      line-height: 1;
+      letter-spacing: -0.045em;
+    }
+
+    .description {
+      margin: 0;
+      color: var(--muted);
+      font-size: clamp(0.88rem, 1.45vw, 1.05rem);
+      line-height: 1.52;
+    }
+
+    .bubbles {
+      width: 100%;
+      display: grid;
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+      gap: clamp(0.55rem, 1vw, 0.9rem);
+      margin-top: clamp(0.2rem, 1vh, 0.65rem);
+    }
+
+    .bubble-slot {
+      position: relative;
+      min-width: 0;
+      height: clamp(7rem, 17vh, 9.25rem);
+      display: grid;
+      place-items: center;
+      animation: bubble-float var(--float-duration, 4s) ease-in-out
+        var(--float-delay, 0s) infinite alternate;
+      will-change: transform;
+    }
+
+    .bubble-slot:nth-child(1) .bubble { view-transition-name: guide-bubble; }
+    .bubble-slot:nth-child(2) .bubble { view-transition-name: wiki-bubble; }
+    .bubble-slot:nth-child(3) .bubble { view-transition-name: documentation-bubble; }
+    .bubble-slot:nth-child(4) .bubble { view-transition-name: report-bubble; }
+    .bubble-slot:nth-child(5) .bubble { view-transition-name: github-bubble; }
+    .bubble-slot:nth-child(6) .bubble { view-transition-name: download-bubble; }
+
+    .bubble-slot:has(.bubble:hover),
+    .bubble-slot:focus-within {
+      z-index: 5;
+      animation-play-state: paused;
+    }
+
+    @keyframes bubble-float {
+      0% { transform: translate(-2px, calc(var(--float-range, 6px) * -1)) rotate(-0.45deg); }
+      52% { transform: translate(3px, 1px) rotate(0.35deg); }
+      100% { transform: translate(-1px, var(--float-range, 6px)) rotate(-0.15deg); }
+    }
+
+    .bubble {
+      position: relative;
+      overflow: hidden;
+      width: clamp(4.4rem, 6.5vw, 5.25rem);
+      height: clamp(4.4rem, 6.5vw, 5.25rem);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 0;
+      padding: 0;
+      border: 1px solid rgba(255, 112, 46, 0.62);
+      border-radius: 999px;
+      color: var(--text);
+      background: rgba(17, 10, 18, 0.82);
+      box-shadow:
+        inset 0 0 1.5rem rgba(255, 112, 46, 0.05),
+        0 0.75rem 2.5rem rgba(0, 0, 0, 0.25);
+      backdrop-filter: blur(8px);
+      font: inherit;
+      text-decoration: none;
+      cursor: pointer;
+      transition: transform 180ms ease, border-color 160ms ease,
+        background-color 160ms ease, box-shadow 160ms ease;
+    }
+
+    .bubble:hover,
+    .bubble:focus-visible {
+      border-color: var(--accent);
+      background: rgba(255, 112, 46, 0.14);
+      box-shadow:
+        inset 0 0 2rem rgba(255, 112, 46, 0.1),
+        0 0 1.5rem rgba(255, 112, 46, 0.18);
+      outline: none;
+      transform: scale(1.14);
+    }
+
+    .bubble svg {
+      width: 2.3rem;
+      height: 2.3rem;
+      flex: 0 0 auto;
+      color: var(--accent);
+      stroke: currentColor;
+      stroke-width: 1.8;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      fill: none;
+      transition: width 180ms ease, height 180ms ease;
+    }
+
+    .bubble .github-icon {
+      fill: currentColor;
+      stroke: none;
+    }
+
+    .bubble:hover svg,
+    .bubble:focus-visible svg {
+      width: 2.65rem;
+      height: 2.65rem;
+    }
+
+    .bubble-tooltip {
+      position: fixed;
+      z-index: 100;
+      width: max-content;
+      max-width: min(21rem, calc(100vw - 2rem));
+      padding: 0.95rem 1.1rem;
+      border: 1px solid rgba(255, 112, 46, 0.72);
+      border-radius: 0.8rem;
+      color: var(--text);
+      background: rgba(13, 9, 15, 0.94);
+      box-shadow: 0 0.8rem 2.5rem rgba(0, 0, 0, 0.4);
+      backdrop-filter: blur(10px);
+      opacity: 0;
+      pointer-events: none;
+      transform: translateY(0.35rem) scale(0.98);
+      transition: opacity 120ms ease, transform 120ms ease;
+    }
+
+    .bubble-tooltip.visible {
+      opacity: 1;
+      transform: none;
+    }
+
+    .tooltip-title {
+      display: block;
+      margin-bottom: 0.25rem;
+      font-size: 1.1rem;
+      font-weight: 800;
+    }
+
+    .tooltip-description {
+      display: block;
+      color: var(--muted);
+      font-size: 0.94rem;
+      line-height: 1.4;
+    }
+
+    .site-intro {
+      position: fixed;
+      z-index: 200;
+      inset: 0;
+      overflow: hidden;
+      pointer-events: none;
+    }
+
+    .intro-sequence-logo {
+      position: absolute;
+      display: block;
+      height: auto;
+      opacity: 0;
+      filter: drop-shadow(0 0 2.25rem rgba(184, 43, 255, 0.34));
+      will-change: transform, opacity;
+    }
+
+    :is(.section-leaving, .returning-home) .page {
+      display: block;
+      padding: 1rem;
+    }
+
+    :is(.section-leaving, .returning-home) .content {
+      width: min(76rem, 100%);
+      min-height: 4.7rem;
+      margin: 0 auto;
+      flex-direction: row;
+      align-items: center;
+      gap: 1rem;
+      padding: 0.7rem 0.85rem;
+      border-radius: 1rem;
+    }
+
+    :is(.section-leaving, .returning-home) .transition-bar {
+      position: absolute;
+      z-index: -1;
+      inset: 0;
+      display: block;
+      border: 1px solid rgba(255, 112, 46, 0.35);
+      border-radius: 1rem;
+      background: rgba(11, 8, 16, 0.78);
+      backdrop-filter: blur(10px);
+      transform-origin: center;
+    }
+
+    :is(.section-leaving, .returning-home) .logo-motion {
+      flex: 0 0 auto;
+      transform: none;
+    }
+
+    :is(.section-leaving, .returning-home) .logo { width: clamp(9rem, 18vw, 14rem); }
+
+    :is(.section-leaving, .returning-home) .intro {
+      position: fixed;
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    :is(.section-leaving, .returning-home) .header-search { display: flex; }
+
+    :is(.section-leaving, .returning-home) .bubbles {
+      width: auto;
+      margin: 0 0 0 auto;
+      display: flex;
+      justify-content: flex-end;
+      gap: 0.35rem;
+    }
+
+    :is(.section-leaving, .returning-home) .bubble-slot {
+      width: 2.75rem;
+      height: 2.75rem;
+      animation: none;
+      transform: none;
+    }
+
+    :is(.section-leaving, .returning-home) .bubble,
+    :is(.section-leaving, .returning-home) .bubble:hover,
+    :is(.section-leaving, .returning-home) .bubble:focus-visible {
+      width: 2.75rem;
+      height: 2.75rem;
+      transform: none;
+    }
+
+    :is(.section-leaving, .returning-home) .bubble svg,
+    :is(.section-leaving, .returning-home) .bubble:hover svg,
+    :is(.section-leaving, .returning-home) .bubble:focus-visible svg {
+      width: 1.35rem;
+      height: 1.35rem;
+    }
+
+    @media (max-width: 58rem) {
+      .content { gap: 0.55rem; }
+      .logo { width: min(31rem, 70vw); }
+      .bubbles {
+        width: min(42rem, 100%);
+        grid-template-columns: repeat(6, minmax(0, 1fr));
+        gap: 0.45rem;
+      }
+      .bubble-slot { height: 7rem; }
+      .bubble {
+        width: 4rem;
+        height: 4rem;
+      }
+    }
+
+    @media (max-width: 52rem) {
+      :is(.section-leaving, .returning-home) .page {
+        padding: 1rem 0.5rem;
+      }
+
+      :is(.section-leaving, .returning-home) .content {
+        min-height: 0;
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr);
+        grid-template-areas:
+          "logo nav"
+          "search search";
+        align-items: center;
+        column-gap: 0.5rem;
+        row-gap: 0.6rem;
+        padding: 0.6rem 0.65rem;
+      }
+
+      :is(.section-leaving, .returning-home) .logo-motion {
+        grid-area: logo;
+      }
+
+      :is(.section-leaving, .returning-home) .logo {
+        width: clamp(5.25rem, 23vw, 8rem);
+      }
+
+      :is(.section-leaving, .returning-home) .header-search {
+        grid-area: search;
+        width: 100%;
+      }
+
+      :is(.section-leaving, .returning-home) .bubbles {
+        grid-area: nav;
+        width: 100%;
+        min-width: 0;
+        margin-left: 0;
+        display: grid;
+        grid-template-columns: repeat(6, minmax(0, 1fr));
+        justify-items: end;
+        gap: 0.25rem;
+      }
+
+      :is(.section-leaving, .returning-home) .bubble-slot {
+        width: min(2.5rem, 100%);
+        height: auto;
+        aspect-ratio: 1;
+      }
+
+      :is(.section-leaving, .returning-home) .bubble,
+      :is(.section-leaving, .returning-home) .bubble:hover,
+      :is(.section-leaving, .returning-home) .bubble:focus-visible {
+        width: 100%;
+        height: 100%;
+      }
+    }
+
+    @media (max-width: 42rem) {
+      .page { padding-inline: 0.65rem; }
+      .logo { width: min(28rem, 82vw); }
+      .description { max-width: 36rem; }
+      .bubbles { gap: 0.3rem; }
+      .bubble-slot { height: 6.5rem; }
+      .bubble {
+        width: 3.4rem;
+        height: 3.4rem;
+        border-radius: 50%;
+      }
+      .bubble svg { width: 1.8rem; height: 1.8rem; }
+      .bubble:hover svg,
+      .bubble:focus-visible svg { width: 2.05rem; height: 2.05rem; }
+    }
+
+    @media (max-width: 34rem) {
+      :is(.section-leaving, .returning-home) .content {
+        column-gap: 0.4rem;
+        row-gap: 0.5rem;
+        padding: 0.5rem;
+      }
+
+      :is(.section-leaving, .returning-home) .logo {
+        width: clamp(4.75rem, 24vw, 6.5rem);
+      }
+
+      :is(.section-leaving, .returning-home) .bubbles { gap: 0.15rem; }
+      :is(.section-leaving, .returning-home) .header-search input { height: 2.5rem; }
+
+      :is(.section-leaving, .returning-home) .bubble svg,
+      :is(.section-leaving, .returning-home) .bubble:hover svg,
+      :is(.section-leaving, .returning-home) .bubble:focus-visible svg {
+        width: 1.05rem;
+        height: 1.05rem;
+      }
+    }
+
+    @media (max-height: 42rem) {
+      .page { padding-block: 0.65rem; }
+      .content { gap: 0.4rem; }
+      .logo { width: min(30rem, 64vw); }
+      .eyebrow { margin-bottom: 0.3rem; }
+      h1 { margin-bottom: 0.35rem; }
+      .bubble-slot { height: 5.9rem; }
+      .bubble {
+        width: 3.5rem;
+        height: 3.5rem;
+      }
+      .bubble svg { width: 1.85rem; height: 1.85rem; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .logo-motion,
+      .bubble-slot { transform: none; animation: none; }
+      .bubble,
+      .bubble-tooltip { transition: none; }
+    }
+
+    .return-home-moving .bubble-slot { animation-play-state: paused; }
+  </style>
 </head>
 <body>
-  <a class="skip-link" href="#doc-content">Skip to documentation</a>
-  <div class="app-shell">
-    <header class="topbar">
-      <button class="icon-button mobile-menu" id="mobile-menu" aria-label="Open navigation" aria-expanded="false">&#9776;</button>
-      <a class="brand" href="#/home" aria-label="Blockified Docs home">
-        <img class="brand-logo" src="./assets/blockified-mark.png" alt="" width="712" height="1022">
-        <span class="visually-hidden">Blockified Engine Docs</span>
-      </a>
-      <div class="topbar-actions">
-        <button class="search-trigger" id="search-trigger" aria-label="Search documentation">
-          <span>Search docs</span><kbd>Ctrl K</kbd>
-        </button>
-        <span class="version-chip">2.3.4bbs</span>
-        <a class="icon-button github-link" href="https://github.com/Migokc/Blockified-engine_a-Minecraft-mod-made-with-AI" target="_blank" rel="noreferrer" aria-label="Open GitHub repository">GH</a>
+  <main class="page">
+    <div class="content">
+      <div class="transition-bar" aria-hidden="true"></div>
+      <div class="logo-motion">
+        <img class="logo" src="./assets/blockified-engine-logo.png"
+             alt="Blockified Engine" width="2048" height="569">
       </div>
-    </header>
 
-    <aside class="sidebar" id="sidebar" aria-label="Documentation navigation">
-      <nav id="nav"></nav>
-      <div class="sidebar-note">
-        <span>Scope rule</span>
-        <p>Only Blockified features and Blockified changes to compatible formats are documented here.</p>
-      </div>
-    </aside>
+      <section class="intro" aria-labelledby="intro-title">
+        <p class="eyebrow">Friday Night Funkin' engine built into Minecraft</p>
+        <h1 id="intro-title">A shell, for you to create at will.</h1>
+        <p class="description">
+          An engine made specifically for creators and for people who are already familiar with
+          Psych Engine. Bring that familiar workflow into Minecraft, then shape songs, worlds,
+          characters, interfaces, cameras, events, and Lua systems around your own ideas.
+        </p>
+      </section>
 
-    <main class="main-column">
-      <article id="doc-content" tabindex="-1"></article>
-      <footer class="page-footer">
-        <span>Blockified Engine &middot; NeoForge 1.21.1</span>
-        <span>Unofficial fan project; not affiliated with Mojang, Microsoft, The Funkin' Crew, or Friday Night Funkin'.</span>
-        <a href="https://github.com/Migokc/Blockified-engine_a-Minecraft-mod-made-with-AI/issues" target="_blank" rel="noreferrer">Report documentation issue</a>
-      </footer>
-    </main>
+      <form class="header-search" action="./documentation.html" method="get" role="search">
+        <input type="search" name="q" placeholder="Search Blockified…" aria-label="Search Blockified">
+      </form>
 
-    <aside class="toc" aria-label="On this page">
-      <div class="toc-title">ON THIS PAGE</div>
-      <nav id="toc"></nav>
-    </aside>
-  </div>
+      <nav class="bubbles" aria-label="Blockified resources">
+        <div class="bubble-slot" style="--float-range: 6px; --float-duration: 3.8s; --float-delay: -0.8s;">
+          <a class="bubble" href="./guide.html" aria-label="Guide" data-section-link
+             data-title="Guide" data-description="Here, you'll learn how to use Blockified.">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H11v16H6.5A2.5 2.5 0 0 0 4 21.5z"/>
+              <path d="M20 5.5A2.5 2.5 0 0 0 17.5 3H13v16h4.5a2.5 2.5 0 0 1 2.5 2.5z"/>
+            </svg>
+          </a>
+        </div>
 
-  <div class="search-overlay" id="search-overlay" hidden>
-    <div class="search-dialog" role="dialog" aria-modal="true" aria-labelledby="search-title">
-      <div class="search-box">
-        <span aria-hidden="true">&#8981;</span>
-        <input id="search-input" type="search" autocomplete="off" placeholder="Search Blockified features..." aria-labelledby="search-title">
-        <button id="search-close" aria-label="Close search">Esc</button>
-      </div>
-      <h2 id="search-title" class="visually-hidden">Search documentation</h2>
-      <div id="search-results" class="search-results"></div>
-      <p class="search-hint">Search covers page titles, APIs, events, formats, and examples.</p>
+        <div class="bubble-slot" style="--float-range: 8px; --float-duration: 4.4s; --float-delay: -2.1s;">
+          <a class="bubble" href="./wiki.html" aria-label="Wiki" data-section-link
+             data-title="Wiki" data-description="Explore Blockified's features, systems, and concepts.">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M5 4h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3z"/>
+              <path d="M8 16h11M8 8h7M8 11h7"/>
+            </svg>
+          </a>
+        </div>
+
+        <div class="bubble-slot" style="--float-range: 5px; --float-duration: 3.5s; --float-delay: -1.4s;">
+          <a class="bubble" href="./documentation.html" aria-label="Documentation" data-section-link
+             data-title="Documentation" data-description="Find technical references for APIs, events, and formats.">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M7 3h7l4 4v14H7z"/>
+              <path d="M14 3v5h5M10 12h5M10 16h5"/>
+            </svg>
+          </a>
+        </div>
+
+        <div class="bubble-slot" style="--float-range: 7px; --float-duration: 4.1s; --float-delay: -2.8s;">
+          <a class="bubble" href="https://github.com/Migokc/Blockified-engine_a-Minecraft-mod-made-with-AI/issues"
+             target="_blank" rel="noreferrer" aria-label="Report Bug"
+             data-title="Report Bug" data-description="Report issues and help improve Blockified.">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M9 9h6M10 5l1-2h2l1 2M8 7 5 5M16 7l3-2M7 12H4M17 12h3M7 16l-3 2M17 16l3 2"/>
+              <rect x="7" y="5" width="10" height="16" rx="5"/>
+              <path d="M12 9v12"/>
+            </svg>
+          </a>
+        </div>
+
+        <div class="bubble-slot" style="--float-range: 6px; --float-duration: 3.7s; --float-delay: -1.9s;">
+          <a class="bubble" href="https://github.com/Migokc/Blockified-engine_a-Minecraft-mod-made-with-AI"
+             target="_blank" rel="noreferrer" aria-label="GitHub Repo"
+             data-title="GitHub Repo" data-description="Browse source code, releases, and development.">
+            <svg class="github-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 .7a11.5 11.5 0 0 0-3.64 22.41c.58.11.79-.25.79-.56v-2.23c-3.22.7-3.9-1.37-3.9-1.37-.53-1.34-1.29-1.7-1.29-1.7-1.05-.72.08-.71.08-.71 1.16.08 1.78 1.2 1.78 1.2 1.04 1.77 2.72 1.26 3.38.96.1-.75.4-1.26.74-1.55-2.57-.29-5.27-1.28-5.27-5.69 0-1.26.45-2.28 1.19-3.09-.12-.29-.52-1.47.11-3.05 0 0 .97-.31 3.16 1.18a10.9 10.9 0 0 1 5.76 0c2.19-1.49 3.15-1.18 3.15-1.18.63 1.58.23 2.76.11 3.05.74.81 1.19 1.83 1.19 3.09 0 4.42-2.71 5.39-5.29 5.68.42.36.79 1.06.79 2.14v3.18c0 .31.21.68.8.56A11.5 11.5 0 0 0 12 .7z"/>
+            </svg>
+          </a>
+        </div>
+
+        <div class="bubble-slot" style="--float-range: 7px; --float-duration: 4.2s; --float-delay: -2.4s;">
+          <a class="bubble" href="https://github.com/Migokc/Blockified-engine_a-Minecraft-mod-made-with-AI/releases/latest"
+             target="_blank" rel="noreferrer" aria-label="Download Blockified"
+             data-title="Download Blockified" data-description="Get the newest release JAR and its release notes.">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 3v12M7 10l5 5 5-5M5 20h14"/>
+            </svg>
+          </a>
+        </div>
+      </nav>
     </div>
+  </main>
+
+  <div class="site-intro" id="site-intro" aria-hidden="true">
+    <img class="intro-sequence-logo" id="intro-sequence-logo"
+         src="./assets/blockified-engine-logo.png" alt="" width="2048" height="569">
   </div>
 
-  <div class="sidebar-scrim" id="sidebar-scrim" hidden></div>
-  <script src="./content.js"></script>
-  <script src="./app.js"></script>
+  <div class="bubble-tooltip" id="bubble-tooltip" role="tooltip" aria-hidden="true">
+    <strong class="tooltip-title"></strong>
+    <span class="tooltip-description"></span>
+  </div>
+
+  <script>
+    const root = document.documentElement;
+    const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
+    let targetX = 0;
+    let targetY = 0;
+    let currentX = 0;
+    let currentY = 0;
+    let animationFrame = 0;
+    let logoPointerEnabled = false;
+    const tooltip = document.getElementById('bubble-tooltip');
+    const tooltipTitle = tooltip.querySelector('.tooltip-title');
+    const tooltipDescription = tooltip.querySelector('.tooltip-description');
+    let activeBubble = null;
+    const siteIntro = document.getElementById('site-intro');
+    const introSequenceLogo = document.getElementById('intro-sequence-logo');
+    const introTarget = document.querySelector('.logo');
+    const bubbleSlots = [...document.querySelectorAll('.bubble-slot')];
+    let bubbleEntranceAnimations = [];
+    let layoutTransitionVersion = 0;
+
+    function toLayoutPixels(value) {
+      return window.BlockifiedSiteZoom?.toLayoutPixels(value) ?? value;
+    }
+
+    function cancelLayoutAnimations() {
+      const elements = [
+        introTarget,
+        document.querySelector('.intro'),
+        document.querySelector('.transition-bar'),
+        document.querySelector('.header-search'),
+        ...document.querySelectorAll('.bubble')
+      ];
+      elements.forEach(element => {
+        element?.getAnimations().forEach(animation => animation.cancel());
+      });
+    }
+
+    function wait(milliseconds) {
+      return new Promise(resolve => setTimeout(resolve, milliseconds));
+    }
+
+    async function finishIntro(skipHandoff) {
+      if (!skipHandoff) root.classList.add('intro-swap');
+      root.classList.remove('intro-running');
+      root.classList.remove('intro-bubbles-entering');
+      if (!skipHandoff) await wait(340);
+
+      siteIntro.hidden = true;
+      root.classList.remove('intro-swap');
+      root.classList.add('intro-complete');
+      targetX = 0;
+      targetY = 0;
+      currentX = 0;
+      currentY = 0;
+      root.style.setProperty('--pointer-x', '0');
+      root.style.setProperty('--pointer-y', '0');
+      logoPointerEnabled = true;
+    }
+
+    function shuffle(values) {
+      for (let index = values.length - 1; index > 0; index -= 1) {
+        const other = Math.floor(Math.random() * (index + 1));
+        [values[index], values[other]] = [values[other], values[index]];
+      }
+      return values;
+    }
+
+    function startBubbleEntrances() {
+      const sides = shuffle(['left', 'right', 'top', 'bottom',
+        Math.random() < 0.5 ? 'left' : 'right', Math.random() < 0.5 ? 'top' : 'bottom']);
+      const durations = shuffle([1300, 1500, 1700, 1900, 2150, 2400]);
+
+      bubbleEntranceAnimations = bubbleSlots.map((slot, index) => {
+        const rect = slot.getBoundingClientRect();
+        const bubble = slot.querySelector('.bubble');
+        const side = sides[index];
+        let startX = 0;
+        let startY = 0;
+
+        if (side === 'left') startX = -rect.right - 48;
+        if (side === 'right') startX = innerWidth - rect.left + 48;
+        if (side === 'top') startY = -rect.bottom - 48;
+        if (side === 'bottom') startY = innerHeight - rect.top + 48;
+
+        const perpendicularX = side === 'top' || side === 'bottom'
+          ? (Math.random() * 180 - 90)
+          : (Math.random() * 42 - 21);
+        const perpendicularY = side === 'left' || side === 'right'
+          ? (Math.random() * 130 - 65)
+          : (Math.random() * 42 - 21);
+        const overshootX = side === 'left' ? 22 : side === 'right' ? -22 : Math.random() * 28 - 14;
+        const overshootY = side === 'top' ? 18 : side === 'bottom' ? -18 : Math.random() * 24 - 12;
+
+        const animation = bubble.animate([
+          {
+            translate: `${toLayoutPixels(startX)}px ${toLayoutPixels(startY)}px`,
+            rotate: `${Math.random() * 16 - 8}deg`
+          },
+          {
+            translate: `${toLayoutPixels(startX * 0.58 + perpendicularX)}px ${toLayoutPixels(startY * 0.58 + perpendicularY)}px`,
+            rotate: `${Math.random() * 10 - 5}deg`,
+            offset: 0.34
+          },
+          {
+            translate: `${toLayoutPixels(startX * 0.18 - perpendicularX * 0.35)}px ${toLayoutPixels(startY * 0.18 - perpendicularY * 0.35)}px`,
+            rotate: `${Math.random() * 6 - 3}deg`,
+            offset: 0.7
+          },
+          {
+            translate: `${toLayoutPixels(overshootX)}px ${toLayoutPixels(overshootY)}px`,
+            rotate: `${Math.random() * 2 - 1}deg`,
+            offset: 0.88
+          },
+          { translate: '0px 0px', rotate: '0deg' }
+        ], {
+          duration: durations[index],
+          easing: 'cubic-bezier(0.22, 0.8, 0.28, 1)',
+          fill: 'both'
+        });
+        animation.pause();
+        animation.finished.then(() => {
+          animation.cancel();
+          bubbleEntranceAnimations = bubbleEntranceAnimations.filter(active => active !== animation);
+        }).catch(() => {});
+        return animation;
+      });
+
+      root.classList.add('intro-bubbles-entering');
+      bubbleEntranceAnimations.forEach(animation => animation.play());
+    }
+
+    async function runIntro() {
+      if (reducedMotion.matches) {
+        await finishIntro(true);
+        return;
+      }
+
+      await document.fonts.ready;
+      const targetRect = introTarget.getBoundingClientRect();
+      const targetCenterX = targetRect.left + targetRect.width * 0.5;
+      const targetCenterY = targetRect.top + targetRect.height * 0.5;
+      const offsetX = innerWidth * 0.5 - targetCenterX;
+      const offsetY = innerHeight * 0.5 - targetCenterY;
+      const fadeStartTransform = `translate(${toLayoutPixels(offsetX)}px, ${toLayoutPixels(offsetY)}px) scale(0.82)`;
+      const centerTransform = `translate(${toLayoutPixels(offsetX)}px, ${toLayoutPixels(offsetY)}px) scale(1.22)`;
+
+      Object.assign(introSequenceLogo.style, {
+        left: toLayoutPixels(targetRect.left) + 'px',
+        top: toLayoutPixels(targetRect.top) + 'px',
+        width: toLayoutPixels(targetRect.width) + 'px',
+        transform: fadeStartTransform
+      });
+
+      await introSequenceLogo.animate([
+        { opacity: 0, transform: fadeStartTransform },
+        { opacity: 1, transform: centerTransform }
+      ], {
+        duration: 700,
+        easing: 'cubic-bezier(0.455, 0.03, 0.515, 0.955)',
+        fill: 'forwards'
+      }).finished;
+
+      await wait(450);
+
+      startBubbleEntrances();
+      const logoRise = introSequenceLogo.animate([
+        { opacity: 1, transform: centerTransform },
+        { opacity: 1, transform: 'translate(0, 0) scale(1)' }
+      ], {
+        duration: 900,
+        easing: 'cubic-bezier(0.68, -0.55, 0.265, 1.55)',
+        fill: 'forwards'
+      });
+
+      await logoRise.finished;
+
+      await finishIntro(false);
+    }
+
+    function placeTooltip(clientX, clientY) {
+      const gap = 16;
+      const margin = 12;
+      const rect = tooltip.getBoundingClientRect();
+      let left = clientX + gap;
+      let top = clientY + gap;
+
+      if (left + rect.width > innerWidth - margin) left = clientX - rect.width - gap;
+      if (top + rect.height > innerHeight - margin) top = clientY - rect.height - gap;
+
+      tooltip.style.left = toLayoutPixels(Math.max(margin, left)) + 'px';
+      tooltip.style.top = toLayoutPixels(Math.max(margin, top)) + 'px';
+    }
+
+    function showTooltip(bubble, clientX, clientY) {
+      activeBubble = bubble;
+      tooltipTitle.textContent = bubble.dataset.title;
+      tooltipDescription.textContent = bubble.dataset.description;
+      tooltip.classList.add('visible');
+      tooltip.setAttribute('aria-hidden', 'false');
+      placeTooltip(clientX, clientY);
+    }
+
+    function hideTooltip() {
+      activeBubble = null;
+      tooltip.classList.remove('visible');
+      tooltip.setAttribute('aria-hidden', 'true');
+    }
+
+    function animatePointerDepth() {
+      currentX += (targetX - currentX) * 0.09;
+      currentY += (targetY - currentY) * 0.09;
+      root.style.setProperty('--pointer-x', currentX.toFixed(4));
+      root.style.setProperty('--pointer-y', currentY.toFixed(4));
+
+      if (Math.abs(targetX - currentX) > 0.001 || Math.abs(targetY - currentY) > 0.001) {
+        animationFrame = requestAnimationFrame(animatePointerDepth);
+      } else {
+        animationFrame = 0;
+      }
+    }
+
+    function schedulePointerDepth() {
+      if (!animationFrame) animationFrame = requestAnimationFrame(animatePointerDepth);
+    }
+
+    addEventListener('pointermove', event => {
+      if (logoPointerEnabled && !reducedMotion.matches) {
+        targetX = Math.max(-1, Math.min(1, (event.clientX / innerWidth - 0.5) * 2));
+        targetY = Math.max(-1, Math.min(1, (event.clientY / innerHeight - 0.5) * 2));
+        schedulePointerDepth();
+      }
+
+      const bubble = event.target.closest?.('.bubble');
+      if (bubble) showTooltip(bubble, event.clientX, event.clientY);
+      else if (activeBubble) hideTooltip();
+    }, { passive: true });
+
+    document.addEventListener('focusin', event => {
+      const bubble = event.target.closest?.('.bubble');
+      if (!bubble) return;
+      const rect = bubble.getBoundingClientRect();
+      showTooltip(bubble, rect.right, rect.top + rect.height * 0.5);
+    });
+
+    document.addEventListener('focusout', event => {
+      if (event.target.closest?.('.bubble')) hideTooltip();
+    });
+
+    async function leaveForSection(link) {
+      if (document.body.classList.contains('section-leaving')) return;
+      if (reducedMotion.matches) {
+        try { sessionStorage.setItem('blockified-return-home', '1'); } catch (_) {}
+        location.href = link.href;
+        return;
+      }
+
+      try { sessionStorage.setItem('blockified-return-home', '1'); } catch (_) {}
+
+      const transitionVersion = ++layoutTransitionVersion;
+      cancelLayoutAnimations();
+
+      const moving = [introTarget, ...document.querySelectorAll('.bubble')];
+      const before = moving.map(element => element.getBoundingClientRect());
+      const intro = document.querySelector('.intro');
+      const introRect = intro.getBoundingClientRect();
+
+      logoPointerEnabled = false;
+      targetX = currentX = 0;
+      targetY = currentY = 0;
+      root.style.setProperty('--pointer-x', '0');
+      root.style.setProperty('--pointer-y', '0');
+      hideTooltip();
+      Object.assign(intro.style, {
+        left: toLayoutPixels(introRect.left) + 'px',
+        top: toLayoutPixels(introRect.top) + 'px',
+        width: toLayoutPixels(introRect.width) + 'px'
+      });
+      document.body.classList.add('section-leaving');
+      root.classList.remove('returning-home', 'return-home-moving');
+
+      await new Promise(resolve => requestAnimationFrame(resolve));
+      if (transitionVersion !== layoutTransitionVersion) return;
+      const animations = moving.map((element, index) => {
+        const start = before[index];
+        const end = element.getBoundingClientRect();
+        const translateX = start.left + start.width / 2 - end.left - end.width / 2;
+        const translateY = start.top + start.height / 2 - end.top - end.height / 2;
+        const scaleX = start.width / Math.max(1, end.width);
+        const scaleY = start.height / Math.max(1, end.height);
+        return element.animate([
+          { transform: `translate(${toLayoutPixels(translateX)}px, ${toLayoutPixels(translateY)}px) scale(${scaleX}, ${scaleY})` },
+          { transform: 'translate(0, 0) scale(1)' }
+        ], {
+          duration: index === 0 ? 850 : 720 + index * 55,
+          easing: index === 0
+            ? 'cubic-bezier(0.68, -0.28, 0.265, 1.22)'
+            : 'cubic-bezier(0.22, 0.82, 0.3, 1)',
+          fill: 'none'
+        });
+      });
+
+      const introFade = intro.animate([
+        { opacity: 1, transform: 'translateY(0)' },
+        { opacity: 0, transform: 'translateY(-12px)' }
+      ], { duration: 320, easing: 'ease-in', fill: 'forwards' });
+
+      const barGrow = document.querySelector('.transition-bar').animate([
+        { opacity: 0, transform: 'scaleX(0)' },
+        { opacity: 1, transform: 'scaleX(1)' }
+      ], {
+        duration: 620,
+        easing: 'cubic-bezier(0.22, 0.82, 0.3, 1)',
+        fill: 'forwards'
+      });
+
+      const searchGrow = document.querySelector('.header-search').animate([
+        { opacity: 0, transform: 'scaleX(0.15)' },
+        { opacity: 1, transform: 'scaleX(1)' }
+      ], {
+        duration: 520,
+        delay: 130,
+        easing: 'cubic-bezier(0.22, 0.82, 0.3, 1)',
+        fill: 'backwards'
+      });
+
+      await Promise.all(
+        [...animations, introFade, barGrow, searchGrow]
+          .map(animation => animation.finished.catch(() => {}))
+      );
+      if (transitionVersion !== layoutTransitionVersion) return;
+
+      // The section layout supplies the final appearance. Remove WAAPI fill state
+      // before the browser captures the outgoing page for its view transition.
+      cancelLayoutAnimations();
+      await new Promise(resolve => requestAnimationFrame(resolve));
+      if (transitionVersion !== layoutTransitionVersion) return;
+      location.href = link.href;
+    }
+
+    async function returnToHomeLayout() {
+      const transitionVersion = ++layoutTransitionVersion;
+      cancelLayoutAnimations();
+      siteIntro.hidden = true;
+      logoPointerEnabled = false;
+      if (reducedMotion.matches) {
+        root.classList.remove('returning-home');
+        logoPointerEnabled = true;
+        return;
+      }
+      await document.fonts.ready;
+      if (transitionVersion !== layoutTransitionVersion) return;
+
+      const moving = [introTarget, ...document.querySelectorAll('.bubble')];
+      const before = moving.map(element => element.getBoundingClientRect());
+      const bar = document.querySelector('.transition-bar');
+      const search = document.querySelector('.header-search');
+
+      const barCollapse = bar.animate([
+          { opacity: 1, transform: 'scaleX(1)' },
+          { opacity: 0, transform: 'scaleX(0)' }
+        ], {
+          duration: 430,
+          easing: 'cubic-bezier(0.55, 0.06, 0.68, 0.19)',
+          fill: 'forwards'
+        });
+      const searchCollapse = search.animate([
+          { opacity: 1, transform: 'scaleX(1)' },
+          { opacity: 0, transform: 'scaleX(0.15)' }
+        ], {
+          duration: 300,
+          easing: 'ease-in',
+          fill: 'forwards'
+        });
+      await Promise.all([
+        barCollapse.finished.catch(() => {}),
+        searchCollapse.finished.catch(() => {})
+      ]);
+      if (transitionVersion !== layoutTransitionVersion) return;
+
+      root.classList.add('return-home-moving');
+      root.classList.remove('returning-home');
+      await new Promise(resolve => requestAnimationFrame(resolve));
+      if (transitionVersion !== layoutTransitionVersion) return;
+
+      const animations = moving.map((element, index) => {
+        const start = before[index];
+        const end = element.getBoundingClientRect();
+        const translateX = start.left + start.width / 2 - end.left - end.width / 2;
+        const translateY = start.top + start.height / 2 - end.top - end.height / 2;
+        const scaleX = start.width / Math.max(1, end.width);
+        const scaleY = start.height / Math.max(1, end.height);
+        return element.animate([
+          { transform: `translate(${toLayoutPixels(translateX)}px, ${toLayoutPixels(translateY)}px) scale(${scaleX}, ${scaleY})` },
+          { transform: 'translate(0, 0) scale(1)' }
+        ], {
+          duration: index === 0 ? 850 : 720 + index * 55,
+          easing: index === 0
+            ? 'cubic-bezier(0.68, -0.28, 0.265, 1.22)'
+            : 'cubic-bezier(0.22, 0.82, 0.3, 1)',
+          fill: 'none'
+        });
+      });
+
+      const intro = document.querySelector('.intro');
+      const introFade = intro.animate([
+        { opacity: 0, transform: 'translateY(-12px)' },
+        { opacity: 1, transform: 'translateY(0)' }
+      ], {
+        duration: 520,
+        delay: 260,
+        easing: 'ease-out',
+        fill: 'backwards'
+      });
+
+      await Promise.all(
+        [...animations, introFade].map(animation => animation.finished.catch(() => {}))
+      );
+      if (transitionVersion !== layoutTransitionVersion) return;
+      root.classList.remove('return-home-moving');
+      cancelLayoutAnimations();
+      targetX = currentX = 0;
+      targetY = currentY = 0;
+      root.style.setProperty('--pointer-x', '0');
+      root.style.setProperty('--pointer-y', '0');
+      logoPointerEnabled = true;
+    }
+
+    document.querySelectorAll('[data-section-link]').forEach(link => {
+      link.addEventListener('click', event => {
+        if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+        event.preventDefault();
+        leaveForSection(link);
+      });
+    });
+
+    addEventListener('pointerleave', () => {
+      if (!logoPointerEnabled) return;
+      targetX = 0;
+      targetY = 0;
+      schedulePointerDepth();
+      hideTooltip();
+    });
+
+    addEventListener('pageshow', event => {
+      if (!event.persisted || !document.body.classList.contains('section-leaving')) return;
+      try { sessionStorage.removeItem('blockified-return-home'); } catch (_) {}
+      const intro = document.querySelector('.intro');
+      const reset = [introTarget, intro, document.querySelector('.transition-bar'),
+        document.querySelector('.header-search'), ...document.querySelectorAll('.bubble')];
+      reset.forEach(element => element?.getAnimations().forEach(animation => animation.cancel()));
+      intro.removeAttribute('style');
+      document.body.classList.remove('section-leaving');
+      root.classList.add('returning-home');
+      returnToHomeLayout();
+    });
+
+    if (root.classList.contains('returning-home')) returnToHomeLayout();
+    else runIntro();
+  </script>
 </body>
 </html>

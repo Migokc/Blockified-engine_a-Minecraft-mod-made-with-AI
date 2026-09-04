@@ -89,7 +89,7 @@ public final class ExtraCharacterRoster implements AutoCloseable {
             double rotationX, double rotationY, double rotationZ, boolean visible,
             double width, double height, double scaleX, double scaleY, double scaleZ,
             double alpha, int color, boolean billboard, boolean lighting,
-            boolean seeThrough, boolean antialiasing, String animation,
+            String renderMode, boolean seeThrough, boolean antialiasing, String animation,
             List<String> animations) {}
 
     private final BlockPos machinePosition;
@@ -97,6 +97,14 @@ public final class ExtraCharacterRoster implements AutoCloseable {
     private ClientLevel level;
     /** Resolves a definition name to a Psych character JSON (2D); null keeps the BBS path. */
     private Function<String, Path> characterResolver;
+    private java.util.function.BiFunction<String,LuaWorldObject.Sprite,LuaWorldObject.Sprite> layerProcessor;
+
+    public void setLayerProcessor(java.util.function.BiFunction<String,LuaWorldObject.Sprite,LuaWorldObject.Sprite> processor) {
+        layerProcessor=processor;
+    }
+    public LuaWorldObject.Sprite layerSnapshot(String tag) {
+        Entry entry=entries.get(key(tag));return entry==null?null:snapshot2D(entry);
+    }
     private long lastUpdateNano;
 
     public ExtraCharacterRoster(BlockPos machinePosition) {
@@ -281,6 +289,7 @@ public final class ExtraCharacterRoster implements AutoCloseable {
                     wc == null ? entry.scaleZ : 1,
                     wc == null ? 1 : wc.alpha(), wc == null ? 0xFFFFFF : wc.color(),
                     wc == null || wc.billboard(), wc == null || wc.lighting(),
+                    wc == null ? "lit" : wc.renderMode(),
                     wc != null && wc.seeThrough(), wc == null || wc.antialiasing(),
                     wc == null ? "idle" : wc.current(),
                     wc == null ? List.of() : List.copyOf(wc.animationNames())));
@@ -312,6 +321,7 @@ public final class ExtraCharacterRoster implements AutoCloseable {
             setColor(entry.tag, edit.color());
             setBillboard(entry.tag, edit.billboard());
             setLighting(entry.tag, edit.lighting());
+            setRenderMode(entry.tag, edit.renderMode());
             setSeeThrough(entry.tag, edit.seeThrough());
             setAntialiasing(entry.tag, edit.antialiasing());
             if (edit.animation() != null && !edit.animation().isBlank()
@@ -688,6 +698,12 @@ public final class ExtraCharacterRoster implements AutoCloseable {
         e.world2d.setLighting(v); return true;
     }
 
+    public boolean setRenderMode(String tag, String value) {
+        Entry e = entries.get(key(tag));
+        if (e == null || e.world2d == null) return false;
+        e.world2d.setRenderMode(value); return true;
+    }
+
     public boolean setSeeThrough(String tag, boolean v) {
         Entry e = entries.get(key(tag));
         if (e == null || e.world2d == null) return false;
@@ -702,6 +718,8 @@ public final class ExtraCharacterRoster implements AutoCloseable {
 
     public boolean billboard(String tag) { Entry e = entries.get(key(tag)); return e == null || e.world2d == null || e.world2d.billboard(); }
     public boolean lighting(String tag) { Entry e = entries.get(key(tag)); return e == null || e.world2d == null || e.world2d.lighting(); }
+    public String renderMode(String tag) { Entry e = entries.get(key(tag));
+        return e == null || e.world2d == null ? "lit" : e.world2d.renderMode(); }
     public boolean seeThrough(String tag) { Entry e = entries.get(key(tag)); return e != null && e.world2d != null && e.world2d.seeThrough(); }
     public boolean antialiasing(String tag) { Entry e = entries.get(key(tag)); return e == null || e.world2d == null || e.world2d.antialiasing(); }
 
@@ -758,6 +776,7 @@ public final class ExtraCharacterRoster implements AutoCloseable {
         entity.noPhysics = true;
         WorldSpriteEntityVisuals.bind(entity, () -> {
             LuaWorldObject.Sprite sprite = snapshot2D(entry);
+            if(sprite!=null && layerProcessor!=null) sprite=layerProcessor.apply(entry.tag,sprite);
             if (sprite == null) return null;
             Direction facing = com.fnfmod.client.gameplay.StageOrientation.facingOr(
                     Minecraft.getInstance().level, machinePosition);
@@ -796,7 +815,9 @@ public final class ExtraCharacterRoster implements AutoCloseable {
                 0, 0, 0, wc.refW(), wc.refH(), wc.refW(), wc.refH(),
                 sx, wc.scaleY(), wc.alpha(), entry.rotation,
                 entry.rotationX, entry.rotationY,
-                wc.color(), wc.billboard(), wc.lighting(), wc.seeThrough());
+                wc.color(), wc.billboard(), wc.lighting(),
+                LuaWorldObject.RenderMode.resolve(wc.renderMode().equalsIgnoreCase("auto") ? null : wc.renderMode(),
+                        wc.lighting()), wc.seeThrough());
     }
 
     private void update2DTransform(Entry entry, boolean authored) {

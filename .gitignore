@@ -4,6 +4,7 @@ build/
 
 # Dev run environment (worlds, logs, configs, downloaded songs)
 run/
+logs/
 
 # IDE
 .idea/

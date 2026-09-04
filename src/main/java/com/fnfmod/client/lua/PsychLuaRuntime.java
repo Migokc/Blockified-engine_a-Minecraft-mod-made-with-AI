@@ -24,6 +24,7 @@ import com.fnfmod.client.render.MissingAssetTexture;
 import com.fnfmod.client.render.WorldTextTextures;
 import com.fnfmod.client.render.WorldSpriteEntityVisuals;
 import com.fnfmod.client.render.HudLayerOrder;
+import com.fnfmod.client.render.LuaTextBaker;
 import com.fnfmod.client.render.SparrowAtlas;
 import com.fnfmod.client.render.AnimateAtlas;
 import com.fnfmod.client.render.SpriteAtlasCache;
@@ -59,6 +60,7 @@ import org.lwjgl.glfw.GLFW;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.Comparator;
 import java.util.EnumSet;
 import java.util.HashMap;
@@ -106,6 +108,9 @@ public final class PsychLuaRuntime implements AutoCloseable {
     }
 
     private static final class LuaObject {
+        final LuaTable effects = new LuaTable();
+        String effectKind = "";
+        LuaWorldObject.Sprite externalSprite;
         String tag;
         String image = "";
         String text = "";
@@ -125,6 +130,8 @@ public final class PsychLuaRuntime implements AutoCloseable {
         boolean imageBlockedByPolicy;
         /** World-camera behavior. Billboard matches vanilla name tags; lighting matches world entities. */
         boolean worldBillboard = true, worldLighting = true;
+        /** auto follows worldLighting; explicit modes separate flat from emissive under shaders. */
+        String worldRenderMode = "auto";
         /** World-camera see-through: when true the object ignores depth and draws over geometry. */
         boolean worldSeeThrough;
         /** Physics belongs to the client-side host entity when this is a world sprite. */
@@ -163,6 +170,12 @@ public final class PsychLuaRuntime implements AutoCloseable {
          */
         boolean autoSize;
         double heightLimit;
+        /** Extra pixels added between wrapped lines; negative tightens them. */
+        double lineSpacing;
+        /** Extra pixels added between characters (tracking); negative tightens them. */
+        double letterSpacing;
+        /** Glyph atlas oversampling for a custom font: higher is sharper when scaled up. */
+        double fontQuality = LuaFontLoader.DEFAULT_OVERSAMPLE;
         /** Psych blend mode name; only "add" changes rendering, the rest draw normally. */
         String blend = "";
         final Map<String, LuaAnimation> animations = new LinkedHashMap<>();
@@ -180,7 +193,8 @@ public final class PsychLuaRuntime implements AutoCloseable {
             double scaleX, double scaleY, double alpha,
             double rotationX, double rotationY, double rotationZ,
             int color, int textSize,
-            boolean visible, boolean billboard, boolean lighting, boolean seeThrough, boolean antialiasing,
+            boolean visible, boolean billboard, boolean lighting, String renderMode,
+            boolean seeThrough, boolean antialiasing,
             double borderSize, int borderColor, String borderStyle,
             String alignment, boolean italic,
             String animation, List<String> animations, int fps, boolean loop) {}
@@ -372,6 +386,9 @@ public final class PsychLuaRuntime implements AutoCloseable {
                     String property = line.substring(0, separator).trim();
                     if (property.equals("noteType") || property.startsWith("extraData")) continue;
                     Object value = interpretConfigValue(line.substring(separator + 1).trim());
+                    if (isNoteAssetProperty(property)) {
+                        host.psychLuaAllowCustomNoteAsset(value == null ? "" : String.valueOf(value));
+                    }
                     for (int index : entry.getValue()) host.psychLuaSetGroup("unspawnNotes", index, property, value);
                 }
             } catch (Exception error) {
@@ -394,6 +411,23 @@ public final class PsychLuaRuntime implements AutoCloseable {
             } catch (Exception ignored) {}
         }
         return null;
+    }
+
+    private static boolean isCustomNoteTypeScript(Path file) {
+        if (file == null) return false;
+        Path parent = file.getParent();
+        return parent != null && parent.getFileName() != null
+                && parent.getFileName().toString().equalsIgnoreCase("custom_notetypes");
+    }
+
+    private static boolean isNoteGroup(String group) {
+        return group != null && (group.equalsIgnoreCase("unspawnNotes")
+                || group.equalsIgnoreCase("notes"));
+    }
+
+    private static boolean isNoteAssetProperty(String property) {
+        return property != null && (property.equalsIgnoreCase("texture")
+                || property.equalsIgnoreCase("noteSplashData.texture"));
     }
 
     private static Object interpretConfigValue(String raw) {
@@ -497,7 +531,8 @@ public final class PsychLuaRuntime implements AutoCloseable {
             scriptBudgets.put(globals, budget);
             sandbox(globals);
             installConstants(globals, file);
-            installCallbacks(globals);
+            installCallbacks(globals, file);
+            installLayerEffects(globals);
             budget.begin();
             try {
                 globals.load(Files.readString(file), file.toString()).call();
@@ -666,7 +701,8 @@ public final class PsychLuaRuntime implements AutoCloseable {
         g.set("splashSkinPostfix", "");
     }
 
-    private void installCallbacks(Globals g) {
+    private void installCallbacks(Globals g, Path scriptFile) {
+        boolean customNoteTypeScript = isCustomNoteTypeScript(scriptFile);
         fn(g, "debugPrint", args -> { debugPrint(args); return LuaValue.NIL; });
         // Render distance for the length of the song; restored when it ends. The
         // value is clamped to Minecraft's own 2..32 range.
@@ -727,8 +763,17 @@ public final class PsychLuaRuntime implements AutoCloseable {
         fn(g, "setProperty", args -> { setProperty(args.checkjstring(1), fromLua(args.arg(2))); return LuaValue.TRUE; });
         fn(g, "getPropertyFromGroup", args -> toLua(host.psychLuaGetGroup(
                 args.checkjstring(1), args.checkint(2), args.optjstring(3, ""))));
-        fn(g, "setPropertyFromGroup", args -> { host.psychLuaSetGroup(args.checkjstring(1), args.checkint(2),
-                args.optjstring(3, ""), fromLua(args.arg(4))); return LuaValue.TRUE; });
+        fn(g, "setPropertyFromGroup", args -> {
+            String group = args.checkjstring(1);
+            int index = args.checkint(2);
+            String property = args.optjstring(3, "");
+            Object value = fromLua(args.arg(4));
+            if (customNoteTypeScript && isNoteGroup(group) && isNoteAssetProperty(property)) {
+                host.psychLuaAllowCustomNoteAsset(value == null ? "" : String.valueOf(value));
+            }
+            host.psychLuaSetGroup(group, index, property, value);
+            return LuaValue.TRUE;
+        });
         fn(g, "setVar", args -> { sharedVars.put(args.checkjstring(1), args.arg(2)); return args.arg(2); });
         fn(g, "getVar", args -> sharedVars.getOrDefault(args.checkjstring(1), LuaValue.NIL));
         fn(g, "triggerEvent", args -> { host.psychLuaTriggerEvent(args.optjstring(1, ""),
@@ -826,6 +871,13 @@ public final class PsychLuaRuntime implements AutoCloseable {
         fn(g, "getTextSize", args -> LuaValue.valueOf(object(args.checkjstring(1)).textSize));
         fn(g, "setTextFont", args -> { object(args.checkjstring(1)).fontName = args.optjstring(2, ""); return LuaValue.NIL; });
         fn(g, "getTextFont", args -> LuaValue.valueOf(object(args.checkjstring(1)).fontName));
+        fn(g, "setTextQuality", args -> {
+            object(args.checkjstring(1)).fontQuality =
+                    args.optdouble(2, LuaFontLoader.DEFAULT_OVERSAMPLE);
+            return LuaValue.TRUE;
+        });
+        fn(g, "getTextQuality", args ->
+                LuaValue.valueOf(object(args.checkjstring(1)).fontQuality));
         fn(g, "setTextWidth", args -> { object(args.checkjstring(1)).width = Math.max(0, args.optdouble(2, 0)); return LuaValue.NIL; });
         fn(g, "getTextWidth", args -> LuaValue.valueOf(object(args.checkjstring(1)).width));
         fn(g, "setTextHeight", args -> {
@@ -840,6 +892,18 @@ public final class PsychLuaRuntime implements AutoCloseable {
             object(args.checkjstring(1)).italic = luaBoolean(args, 2, false);
             return LuaValue.TRUE;
         });
+        fn(g, "setTextLineSpacing", args -> {
+            object(args.checkjstring(1)).lineSpacing = args.optdouble(2, 0);
+            return LuaValue.TRUE;
+        });
+        fn(g, "getTextLineSpacing", args ->
+                LuaValue.valueOf(object(args.checkjstring(1)).lineSpacing));
+        fn(g, "setTextLetterSpacing", args -> {
+            object(args.checkjstring(1)).letterSpacing = args.optdouble(2, 0);
+            return LuaValue.TRUE;
+        });
+        fn(g, "getTextLetterSpacing", args ->
+                LuaValue.valueOf(object(args.checkjstring(1)).letterSpacing));
         fn(g, "setTextAlignment", args -> {
             object(args.checkjstring(1)).alignment = args.optjstring(2, "left");
             return LuaValue.TRUE;
@@ -873,7 +937,14 @@ public final class PsychLuaRuntime implements AutoCloseable {
         // World-camera see-through for any Lua object (text or sprite): draw over
         // geometry instead of being occluded. Off by default (respects depth).
         fn(g, "setObjectSeeThrough", args -> { object(args.checkjstring(1)).worldSeeThrough = args.optboolean(2, true); return LuaValue.NIL; });
-        fn(g, "setWorldSpriteLighting", args -> { object(args.checkjstring(1)).worldLighting = args.optboolean(2, true); return LuaValue.NIL; });
+        fn(g, "setWorldSpriteLighting", args -> { setProperty(args.checkjstring(1) + ".lighting",
+                args.optboolean(2, true)); return LuaValue.NIL; });
+        fn(g, "setObjectRenderMode", args -> { setProperty(args.checkjstring(1) + ".renderMode",
+                args.optjstring(2, "auto")); return LuaValue.NIL; });
+        fn(g, "setWorldSpriteRenderMode", args -> { setProperty(args.checkjstring(1) + ".renderMode",
+                args.optjstring(2, "auto")); return LuaValue.NIL; });
+        fn(g, "setObjectShaderMode", args -> { setProperty(args.checkjstring(1) + ".renderMode",
+                args.optjstring(2, "auto")); return LuaValue.NIL; });
         fn(g, "setWorldSpriteGravity", args -> { object(args.checkjstring(1)).worldGravity = args.optboolean(2, true); return LuaValue.NIL; });
         fn(g, "setWorldSpriteCollision", args -> { object(args.checkjstring(1)).worldCollision = args.optboolean(2, true); return LuaValue.NIL; });
         fn(g, "setWorldSpriteShadows", args -> { object(args.checkjstring(1)).worldShadow = args.optboolean(2, true); return LuaValue.NIL; });
@@ -1081,14 +1152,6 @@ public final class PsychLuaRuntime implements AutoCloseable {
                 args.checkjstring(1), args.checkjstring(2), args.optboolean(3, false))));
         fn(g, "characterDance", args -> LuaValue.valueOf(
                 host.psychLuaCharacterDance(args.optjstring(1, "boyfriend"))));
-        fn(g, "getCharacterX", args -> LuaValue.valueOf(
-                host.psychLuaCharacterX(args.optjstring(1, "boyfriend"))));
-        fn(g, "getCharacterY", args -> LuaValue.valueOf(
-                host.psychLuaCharacterY(args.optjstring(1, "boyfriend"))));
-        fn(g, "setCharacterX", args -> LuaValue.valueOf(host.psychLuaSetCharacterX(
-                args.optjstring(1, "boyfriend"), args.optdouble(2, 0))));
-        fn(g, "setCharacterY", args -> LuaValue.valueOf(host.psychLuaSetCharacterY(
-                args.optjstring(1, "boyfriend"), args.optdouble(2, 0))));
         fn(g, "addBlockifiedCharacter", args -> LuaValue.valueOf(host.psychLuaAddCharacter(
                 args.checkjstring(1), args.checkjstring(2), args.optdouble(3, 0),
                 args.optdouble(4, 0), args.optdouble(5, 0), args.optdouble(6, 0),
@@ -1102,12 +1165,6 @@ public final class PsychLuaRuntime implements AutoCloseable {
         // Character-to-character pushing. Block collision, gravity and everything
         // else stay untouched, so a performer with collisions off still stands on
         // the ground and simply stops shoving (and being shoved by) other characters.
-        fn(g, "setCharacterCollision", args -> LuaValue.valueOf(
-                host.psychLuaSetCharacterCollision(args.checkjstring(1), luaBoolean(args, 2, true))));
-        fn(g, "getCharacterCollision", args -> LuaValue.valueOf(
-                host.psychLuaCharacterCollision(args.checkjstring(1))));
-        fn(g, "setCharacterCollisions", args -> LuaValue.valueOf(
-                host.psychLuaSetCharacterCollision(args.checkjstring(1), luaBoolean(args, 2, true))));
         fn(g, "setAllCharacterCollisions", args -> {
             host.psychLuaSetAllCharacterCollisions(luaBoolean(args, 1, true));
             return LuaValue.NIL;
@@ -1118,26 +1175,12 @@ public final class PsychLuaRuntime implements AutoCloseable {
                 host.psychLuaResetCharacterPosition(args.checkjstring(1))));
         // Vanilla blob shadow under a character. Shadows stay on unless a script
         // turns them off, so existing songs look the same.
-        fn(g, "setCharacterShadow", args -> LuaValue.valueOf(
-                host.psychLuaSetCharacterShadow(args.checkjstring(1), luaBoolean(args, 2, true))));
-        fn(g, "getCharacterShadow", args -> LuaValue.valueOf(
-                host.psychLuaCharacterShadow(args.checkjstring(1))));
         fn(g, "setAllCharacterShadows", args -> {
             host.psychLuaSetAllCharacterShadows(luaBoolean(args, 1, true));
             return LuaValue.NIL;
         });
-        fn(g, "setCharacterIRLightsShadows", args -> LuaValue.valueOf(
-                host.psychLuaSetProperty(args.checkjstring(1) + ".irlightsShadows",
-                        luaBoolean(args, 2, true))));
-        fn(g, "getCharacterIRLightsShadows", args -> toLua(
-                host.psychLuaGetProperty(args.checkjstring(1) + ".irlightsShadows")));
         fn(g, "blockifiedCharacterExists", args -> LuaValue.valueOf(
                 host.psychLuaExtraCharacterExists(args.checkjstring(1))));
-        fn(g, "setBlockifiedCharacterPosition", args -> LuaValue.valueOf(
-                host.psychLuaSetCharacterPosition(args.checkjstring(1), args.optdouble(2, 0),
-                        args.optdouble(3, 0), args.optdouble(4, 0))));
-        fn(g, "setBlockifiedCharacterRotation", args -> LuaValue.valueOf(
-                host.psychLuaSetCharacterRotation(args.checkjstring(1), args.optdouble(2, 0))));
         fn(g, "changeBlockifiedCharacter", args -> LuaValue.valueOf(
                 host.psychLuaChangeExtraCharacter(args.checkjstring(1), args.checkjstring(2),
                         args.optjstring(3, ""))));
@@ -1734,6 +1777,154 @@ public final class PsychLuaRuntime implements AutoCloseable {
         return objects.computeIfAbsent(tag, key -> { LuaObject o = new LuaObject(); o.tag = key; return o; });
     }
 
+    private final com.fnfmod.client.render.LuaLayerRenderer layerRenderer = new com.fnfmod.client.render.LuaLayerRenderer();
+    private final Map<String,LuaObject> externalLayerObjects = new LinkedHashMap<>();
+
+    private LuaObject resolveLayerObject(String id) {
+        LuaObject own=objects.get(id);if(own!=null) return own;
+        LuaWorldObject.Sprite snapshot=host.psychLuaLayerSprite(id);if(snapshot==null) return null;
+        LuaObject o=externalLayerObjects.computeIfAbsent(id.toLowerCase(Locale.ROOT),key->{LuaObject value=new LuaObject();value.tag=key;return value;});
+        o.externalSprite=snapshot;o.width=snapshot.width();o.height=snapshot.height();
+        o.camera="world";o.alpha=snapshot.alpha();o.color=snapshot.color();return o;
+    }
+    public LuaWorldObject.Sprite applyExternalLayer(String tag,LuaWorldObject.Sprite snapshot) {
+        LuaObject o=externalLayerObjects.get(tag.toLowerCase(Locale.ROOT));
+        if(o==null) return snapshot;
+        o.externalSprite=snapshot;o.width=snapshot.width();o.height=snapshot.height();
+        if(LuaLayerEffects.hidden(o.effects)) return null;
+        if(!LuaLayerEffects.active(o.effects)) return snapshot;
+        var surface=objectSurface(o);if(surface==null)return snapshot;
+        return new LuaWorldObject.Sprite(surface.texture,surface.width,surface.height,null,0,0,
+                snapshot.x(),snapshot.y(),snapshot.z(),snapshot.width(),snapshot.height(),snapshot.width(),snapshot.height(),
+                snapshot.scaleX(),snapshot.scaleY(),1,snapshot.angle(),snapshot.rotationX(),snapshot.rotationY(),0xFFFFFF,
+                snapshot.billboard(),false,LuaWorldObject.RenderMode.FLAT,snapshot.seeThrough());
+    }
+
+    private void installLayerEffects(Globals globals) {
+        LuaLayerEffects.install(globals, new LuaLayerEffects.Host() {
+            public LuaTable data(String id) { LuaObject o=resolveLayerObject(id);return o==null?null:o.effects; }
+            public LuaTable create(String kind,String id,double x,double y,double width,double height) {
+                removeObject(id); LuaObject o=object(id); o.effectKind=kind;o.x=x;o.y=y;
+                o.width=o.graphicWidth=Math.max(1,width);o.height=o.graphicHeight=Math.max(1,height);
+                o.added=true;o.color=0xFFFFFFFF;o.effects.set("kind",kind);return o.effects;
+            }
+            public void tween(String tag,String id,String field,double target,double seconds,String easing) {
+                if(field.startsWith("gradientColor")) tweens.put(tag,new Tween(tag,List.of(),GameplayClock.now(),
+                        Math.max(1,(long)(seconds*1000)),easing,id+"."+field,(int)LuaLayerEffects.number(data(id),field),(int)target,0));
+                else startTween(tag,id+"."+field,LuaLayerEffects.number(data(id),field),target,seconds,easing);
+            }
+        });
+        LuaObjectParenting.install(globals,new LuaObjectParenting.Host() {
+            public LuaTable data(String id) { LuaObject o=objects.get(id);return o==null?null:o.effects; }
+            public String space(String id) { return cameraGroup(objects.get(id).camera).name(); }
+            public org.joml.Matrix4f transform(String id) { return objectTransform(objects.get(id),new HashSet<>()); }
+            public double width(String id) { return objects.get(id).width; }
+            public double height(String id) { return objects.get(id).height; }
+            public void position(String id,double x,double y,double z) { LuaObject o=objects.get(id);o.x=x;o.y=y;o.z=z; }
+            public void localTransform(String id,org.joml.Matrix4f m) {
+                LuaObject o=objects.get(id);var r=LuaObjectParenting.rotation(m);var s=m.getScale(new org.joml.Vector3f());
+                boolean world=cameraGroup(o.camera)==CameraGroup.WORLD;
+                o.scaleX=s.x;o.scaleY=s.y;o.rotationX=world?-r.x:r.x;o.rotationY=r.y;o.angle=world?-r.z:r.z;
+                if(!world && o.effects.get("parent").optjstring("").isBlank()) m.translate((float)-o.width/2,(float)-o.height/2,0);
+                position(id,m.m30(),m.m31(),m.m32());
+            }
+        });
+    }
+
+    /** Matrix maps an object's centred local pixels into its camera/stage coordinates. */
+    private org.joml.Matrix4f objectTransform(LuaObject o,Set<String> seen) {
+        var matrix=new org.joml.Matrix4f();
+        if(o==null || seen.size()>=32 || !seen.add(o.tag)) return matrix;
+        LuaObject parent=objects.get(o.effects.get("parent").optjstring(""));
+        boolean world=cameraGroup(o.camera)==CameraGroup.WORLD;
+        if(parent!=null && cameraGroup(parent.camera)==cameraGroup(o.camera)) {
+            matrix.set(objectTransform(parent,seen));
+            // Width/height edits are scaling in the visual editor too.
+            matrix.scale((float)(parent.width/Math.max(.0001,o.effects.get("parentWidth").optdouble(parent.width))),
+                    (float)(parent.height/Math.max(.0001,o.effects.get("parentHeight").optdouble(parent.height))),1);
+        }
+        matrix.translate((float)o.x,(float)o.y,(float)o.z)
+                .rotateXYZ((float)Math.toRadians(world?-o.rotationX:o.rotationX),
+                        (float)Math.toRadians(o.rotationY),(float)Math.toRadians(world?-o.angle:o.angle))
+                .scale((float)o.scaleX,(float)o.scaleY,1);
+        if(parent==null && !world) matrix.translate((float)o.width/2,(float)o.height/2,0);
+        return matrix;
+    }
+
+    private boolean layered(LuaObject o) {
+        return LuaLayerEffects.active(o.effects) || !o.effectKind.isBlank() || !o.effects.get("parent").optjstring("").isBlank();
+    }
+    private com.fnfmod.client.render.LuaLayerRenderer.Surface objectSurface(LuaObject o) {
+        if(o.imageBlockedByPolicy || !layerRenderer.enter(o.tag)) return null;
+        try {
+            LuaObject maskObject=resolveLayerObject(o.effects.get("mask").optjstring(""));
+            var mask=maskObject==null?null:objectSurface(maskObject);
+            List<LuaObject> children=o.effectKind.equals("group")?objects.values().stream()
+                    .filter(c->c.effects.get("group").optjstring("").equals(o.tag))
+                    .sorted(Comparator.comparingInt(c->c.order)).toList():List.of();
+            double width=Math.max(1,o.width),height=Math.max(1,o.height),padding=0;
+            if(o.textObject) {
+                Font custom=o.fontName.isBlank()?null:fontLoader.get(o.fontName,o.fontQuality);
+                Font font=custom==null?Minecraft.getInstance().font:custom;
+                double size=Math.max(.25,o.textSize/9d);
+                int wrap=o.width<=0||o.autoSize?Integer.MAX_VALUE:Math.max(1,(int)(o.width/size));
+                var lines=font.split(Component.literal(o.text),wrap);
+                padding=(Math.abs(o.borderSize)+16)*size;
+                width=Math.max(o.width,lines.stream().mapToInt(line->lineWidth(font,line,o.letterSpacing)).max().orElse(1)*size)+padding*2;
+                height=Math.max(1,(Math.max(0,lines.size()-1)*Math.max(1,9+o.lineSpacing)+9)*size)+padding*2;
+            }
+            double raster=Math.max(1,Minecraft.getInstance().getWindow().getHeight()/720d);
+            final double logicalWidth=width,logicalHeight=height;
+            final double textPadding=padding;
+            int rw=Math.max(1,(int)Math.ceil(width*raster)),rh=Math.max(1,(int)Math.ceil(height*raster));
+            String signature=layerFingerprint(o)+children.stream().map(this::layerFingerprint).toList();
+            if(o.effectKind.equals("group")) signature+=objects.values().stream().map(this::layerFingerprint).toList();
+            var result=layerRenderer.paint(o.tag,rw,rh,signature,o.effects,mask,gui->{
+                gui.pose().scale((float)(rw/logicalWidth),(float)(rh/logicalHeight),1);
+                if(o.effectKind.equals("group")) {
+                    gui.pose().scale((float)(logicalWidth/1280),(float)(logicalHeight/720),1);
+                    for(LuaObject child:children) if(child.visible && !child.imageBlockedByPolicy) {
+                        String camera=child.camera;child.camera="other";
+                        try {renderObject(gui,child,0);gui.flush();} finally {child.camera=camera;}
+                    }
+                } else if(o.externalSprite!=null) {
+                    paintExternalSprite(gui,o.externalSprite);
+                } else {
+                    gui.pose().translate(textPadding,textPadding,0);
+                    double x=o.x,y=o.y,z=o.z,angle=o.angle,sx=o.scaleX,sy=o.scaleY;
+                    String camera=o.camera;boolean visible=o.visible;
+                    o.x=0;o.y=0;o.z=0;o.angle=0;o.scaleX=1;o.scaleY=1;o.camera="other";o.visible=true;
+                    try { renderObjectRaw(gui,o,0);gui.flush(); }
+                    finally { o.x=x;o.y=y;o.z=z;o.angle=angle;o.scaleX=sx;o.scaleY=sy;o.camera=camera;o.visible=visible; }
+                }
+            });
+            if(result!=null){result.logicalWidth=logicalWidth;result.logicalHeight=logicalHeight;result.offsetX=-textPadding;result.offsetY=-textPadding;}
+            return result;
+        } finally { layerRenderer.leave(o.tag); }
+    }
+    private String layerFingerprint(LuaObject o) {
+        StringBuilder effectSignature=new StringBuilder();
+        for(LuaValue key:o.effects.keys()) effectSignature.append(key).append('=').append(o.effects.get(key)).append('|');
+        return effectSignature+String.valueOf(o.externalSprite)+String.join("|",o.image,o.text,o.fontName,o.effectKind,String.valueOf(o.texture),String.valueOf(o.atlas),
+                String.valueOf(o.animationFrame),String.valueOf(o.currentAnimation),String.valueOf(o.width),String.valueOf(o.height),
+                String.valueOf(o.color),String.valueOf(o.alpha),String.valueOf(o.borderSize),String.valueOf(o.borderColor),
+                o.borderStyle,o.alignment,String.valueOf(o.textSize),String.valueOf(o.fontQuality),String.valueOf(o.italic),
+                String.valueOf(o.lineSpacing),String.valueOf(o.letterSpacing),String.valueOf(o.visible),
+                String.valueOf(o.x),String.valueOf(o.y),String.valueOf(o.angle),String.valueOf(o.scaleX),String.valueOf(o.scaleY));
+    }
+
+    private static void paintExternalSprite(GuiGraphics gui,LuaWorldObject.Sprite sprite) {
+        var frame=sprite.frame();if(frame==null)return;
+        int c=sprite.color();gui.setColor((c>>16&255)/255f,(c>>8&255)/255f,(c&255)/255f,(float)sprite.alpha());
+        gui.pose().pushPose();
+        float sx=(float)(sprite.width()/Math.max(1,sprite.graphicWidth())),sy=(float)(sprite.height()/Math.max(1,sprite.graphicHeight()));
+        gui.pose().translate((-frame.frameX()-sprite.animationOffsetX())*sx,(-frame.frameY()-sprite.animationOffsetY())*sy,0);
+        gui.pose().scale(sx,sy,1);
+        if(frame.rotated()){gui.pose().translate(0,frame.width(),0);gui.pose().mulPose(com.mojang.math.Axis.ZP.rotationDegrees(-90));}
+        gui.blit(sprite.texture(),0,0,frame.x(),frame.y(),frame.width(),frame.height(),sprite.textureWidth(),sprite.textureHeight());
+        gui.pose().popPose();gui.setColor(1,1,1,1);
+    }
+
     private void removeObject(String tag) {
         LuaObject object = objects.remove(tag);
         if (object != null) disposeGraphic(object);
@@ -1875,7 +2066,8 @@ public final class PsychLuaRuntime implements AutoCloseable {
         return false;
     }
 
-    private static int[] physicalKeyCodes(String raw) {
+    /** Shared physical-key name mapping used by gameplay and machine-menu Lua. */
+    static int[] physicalKeyCodes(String raw) {
         String key = controlName(raw);
         return switch (key) {
             case "SHIFT" -> new int[]{GLFW.GLFW_KEY_LEFT_SHIFT, GLFW.GLFW_KEY_RIGHT_SHIFT};
@@ -2008,6 +2200,7 @@ public final class PsychLuaRuntime implements AutoCloseable {
         int dot = path.indexOf('.');
         String tag = dot < 0 ? path : path.substring(0, dot);
         LuaObject object = objects.get(tag);
+        if(object==null && dot>=0 && LuaLayerEffects.field(path.substring(dot+1))) object=resolveLayerObject(tag);
         if (object == null) return sharedVars.containsKey(path) ? fromLua(sharedVars.get(path)) : null;
         return objectProperty(object, dot < 0 ? "" : path.substring(dot + 1));
     }
@@ -2017,6 +2210,7 @@ public final class PsychLuaRuntime implements AutoCloseable {
         int dot = path.indexOf('.');
         if (dot < 0) { sharedVars.put(path, toLua(value)); return; }
         LuaObject object = objects.get(path.substring(0, dot));
+        if(object==null && LuaLayerEffects.field(path.substring(dot+1))) object=resolveLayerObject(path.substring(0,dot));
         if (object != null) {
             setObjectProperty(object, path.substring(dot + 1), value);
             syncObjectBorder(object);
@@ -2031,6 +2225,8 @@ public final class PsychLuaRuntime implements AutoCloseable {
     }
 
     private static Object objectProperty(LuaObject o, String property) {
+        if (LuaLayerEffects.field(property) || property.equals("parentWidth") || property.equals("parentHeight"))
+            return fromLua(LuaLayerEffects.value(o.effects,property));
         LuaAnimation animation = currentAnimation(o);
         double[] offset = currentAnimationOffset(o);
         return switch (property) {
@@ -2047,8 +2243,10 @@ public final class PsychLuaRuntime implements AutoCloseable {
             case "scale.y" -> o.scaleY; case "offset.x" -> offset[0]; case "offset.y" -> offset[1];
             case "scrollFactor.x" -> o.scrollFactorX; case "scrollFactor.y" -> o.scrollFactorY;
             case "billboard", "worldBillboard", "alwaysFaceCamera" -> o.worldBillboard;
-            case "lighting", "worldLighting", "affectedByLighting" -> o.worldLighting;
-            case "fullbright", "fullBright", "unlit", "flat", "flatShading", "flatshading" -> !o.worldLighting;
+            case "lighting", "worldLighting", "affectedByLighting" -> worldRenderMode(o).usesWorldLight();
+            case "renderMode", "worldRenderMode", "shaderMode" -> worldRenderMode(o).luaName();
+            case "fullbright", "fullBright", "unlit", "flat", "flatShading", "flatshading" ->
+                    worldRenderMode(o) == LuaWorldObject.RenderMode.FLAT;
             case "seeThrough", "seethrough", "worldSeeThrough", "throughWalls", "noDepth" -> o.worldSeeThrough;
             case "grav", "gravity" -> o.worldGravity;
             case "collision", "collisions", "solid" -> o.worldCollision;
@@ -2065,6 +2263,9 @@ public final class PsychLuaRuntime implements AutoCloseable {
     }
 
     private static void setObjectProperty(LuaObject o, String property, Object value) {
+        if (LuaLayerEffects.field(property) || property.equals("parentWidth") || property.equals("parentHeight")) {
+            o.effects.set(property,toLua(value)); return;
+        }
         LuaAnimation animation = currentAnimation(o);
         switch (property) {
             case "x" -> o.x = number(value, o.x); case "y" -> o.y = number(value, o.y);
@@ -2088,13 +2289,20 @@ public final class PsychLuaRuntime implements AutoCloseable {
                 else o.objectBorderColor = parsed;
             }
             case "antialiasing" -> setAntialiasing(o, bool(value));
+            case "fontQuality", "fontquality", "textQuality", "fontOversample" ->
+                    o.fontQuality = number(value, o.fontQuality);
+            case "lineSpacing", "linespacing", "lineGap" -> o.lineSpacing = number(value, o.lineSpacing);
+            case "letterSpacing", "letterspacing", "tracking" ->
+                    o.letterSpacing = number(value, o.letterSpacing);
             case "text" -> o.text = String.valueOf(value); case "scale.x" -> o.scaleX = number(value, o.scaleX);
             case "scale.y" -> o.scaleY = number(value, o.scaleY);
             case "scrollFactor.x" -> o.scrollFactorX = number(value, o.scrollFactorX);
             case "scrollFactor.y" -> o.scrollFactorY = number(value, o.scrollFactorY);
             case "billboard", "worldBillboard", "alwaysFaceCamera" -> o.worldBillboard = bool(value);
-            case "lighting", "worldLighting", "affectedByLighting" -> o.worldLighting = bool(value);
-            case "fullbright", "fullBright", "unlit", "flat", "flatShading", "flatshading" -> o.worldLighting = !bool(value);
+            case "lighting", "worldLighting", "affectedByLighting" -> setWorldLighting(o, bool(value));
+            case "renderMode", "worldRenderMode", "shaderMode" -> setWorldRenderMode(o, String.valueOf(value));
+            case "fullbright", "fullBright", "unlit", "flat", "flatShading", "flatshading" ->
+                    setWorldLighting(o, !bool(value));
             case "seeThrough", "seethrough", "worldSeeThrough", "throughWalls", "noDepth" -> o.worldSeeThrough = bool(value);
             case "grav", "gravity" -> o.worldGravity = bool(value);
             case "collision", "collisions", "solid" -> o.worldCollision = bool(value);
@@ -2293,6 +2501,30 @@ public final class PsychLuaRuntime implements AutoCloseable {
         return Math.max(0, Math.min(255, (int) Math.round(start + (end - start) * progress)));
     }
 
+    private static LuaWorldObject.RenderMode worldRenderMode(LuaObject object) {
+        String explicit = "auto".equalsIgnoreCase(object.worldRenderMode)
+                ? null : object.worldRenderMode;
+        return LuaWorldObject.RenderMode.resolve(explicit, object.worldLighting);
+    }
+
+    private static String normalizeWorldRenderMode(String value) {
+        if (value == null || value.isBlank() || value.equalsIgnoreCase("auto")) return "auto";
+        return LuaWorldObject.RenderMode.resolve(value, true).luaName();
+    }
+
+    private static void setWorldRenderMode(LuaObject object, String value) {
+        object.worldRenderMode = normalizeWorldRenderMode(value);
+        if (!"auto".equals(object.worldRenderMode)) {
+            object.worldLighting = worldRenderMode(object).usesWorldLight();
+        }
+    }
+
+    /** Legacy lighting/fullbright writes deliberately return to automatic mode. */
+    private static void setWorldLighting(LuaObject object, boolean lighting) {
+        object.worldLighting = lighting;
+        object.worldRenderMode = "auto";
+    }
+
     private void runTimer(String tag, double seconds, int loops) {
         long interval = Math.max(1, (long) (seconds * 1000));
         timers.put(tag, new Timer(tag, interval, Math.max(1, loops), GameplayClock.now() + interval, 0));
@@ -2304,7 +2536,7 @@ public final class PsychLuaRuntime implements AutoCloseable {
             host.psychLuaSetProperty(tag + ".fullbright", on);
         }
         for (LuaObject object : objects.values()) {
-            object.worldLighting = !on;
+            setWorldLighting(object, !on);
         }
     }
 
@@ -2686,6 +2918,7 @@ public final class PsychLuaRuntime implements AutoCloseable {
             }
         }
         List<LuaObject> visible = objects.values().stream().filter(o -> o.added && o.visible)
+                .filter(o -> !LuaLayerEffects.hidden(o.effects))
                 .filter(o -> !o.imageBlockedByPolicy)
                 .filter(o -> cameraGroup(o.camera) == group)
                 .filter(o -> o.order >= minOrderInclusive && o.order < maxOrderExclusive)
@@ -2725,7 +2958,8 @@ public final class PsychLuaRuntime implements AutoCloseable {
                     o.scaleX, o.scaleY, o.alpha,
                     o.rotationX, o.rotationY, o.angle,
                     o.color & 0xFFFFFF, o.textSize,
-                    o.visible, o.worldBillboard, o.worldLighting, o.worldSeeThrough, o.antialiasing,
+                    o.visible, o.worldBillboard, o.worldLighting, worldRenderMode(o).luaName(),
+                    o.worldSeeThrough, o.antialiasing,
                     o.borderSize, o.borderColor & 0xFFFFFF, o.borderStyle,
                     o.alignment, o.italic,
                     o.currentAnimation == null ? "" : o.currentAnimation,
@@ -2768,6 +3002,7 @@ public final class PsychLuaRuntime implements AutoCloseable {
         o.textSize = Math.max(1, Math.min(512, edit.textSize()));
         o.worldBillboard = edit.billboard();
         o.worldLighting = edit.lighting();
+        o.worldRenderMode = normalizeWorldRenderMode(edit.renderMode());
         o.worldSeeThrough = edit.seeThrough();
         o.borderSize = Math.max(0, editorFinite(edit.borderSize(), o.borderSize));
         o.borderColor = edit.borderColor() & 0xFFFFFF;
@@ -2803,28 +3038,48 @@ public final class PsychLuaRuntime implements AutoCloseable {
         syncWorldSpriteEntities(speakers, facing);
         List<LuaObject> visible = objects.values().stream()
                 .filter(o -> o.added && o.visible && !o.imageBlockedByPolicy
+                        && !LuaLayerEffects.hidden(o.effects)
                         && o.textObject && o.camera.equalsIgnoreCase("world"))
                 .sorted(Comparator.comparingInt(o -> o.order))
                 .toList();
         List<LuaWorldObject> worldObjects = new ArrayList<>(visible.size());
         for (LuaObject o : visible) {
+            if(layered(o)) {
+                var surface=objectSurface(o);
+                if(surface!=null) {
+                    var m=objectTransform(o,new HashSet<>()); var r=LuaObjectParenting.rotation(m);var s=m.getScale(new org.joml.Vector3f());
+                    worldObjects.add(new LuaWorldObject.Sprite(surface.texture,surface.width,surface.height,null,0,0,
+                            m.m30(),m.m31(),m.m32(),surface.logicalWidth,surface.logicalHeight,surface.logicalWidth,surface.logicalHeight,s.x,s.y,1,-r.z,-r.x,r.y,
+                            0xFFFFFF,o.worldBillboard,false,LuaWorldObject.RenderMode.FLAT,o.worldSeeThrough));
+                }
+                continue;
+            }
             // Text remains a direct world draw. Sprite-like objects are now rendered
             // by their real client-side entity during Minecraft's entity pass.
-            Font selected = o.fontName.isBlank() ? null : fontLoader.get(o.fontName);
+            Font selected = o.fontName.isBlank() ? null : fontLoader.get(o.fontName, o.fontQuality);
             Font font = selected == null ? Minecraft.getInstance().font : selected;
             worldObjects.add(new LuaWorldObject.Text(
                     font, o.text == null ? "" : o.text,
                     o.x, o.y, o.z, o.width, o.textSize,
                     o.scaleX, o.scaleY, o.alpha, o.angle, o.rotationX, o.rotationY,
-                    o.color, o.worldBillboard, o.worldLighting, o.worldSeeThrough,
-                    o.borderSize, o.borderColor, o.borderStyle, o.alignment, o.italic));
+                    o.color, o.worldBillboard, o.worldLighting, worldRenderMode(o), o.worldSeeThrough,
+                    o.borderSize, o.borderColor, o.borderStyle, o.alignment, o.italic,
+                    o.lineSpacing, o.letterSpacing, false, false));
         }
         LuaWorldObjectRenderer.render(poseStack, camera, speakers, facing, worldObjects);
     }
 
     private LuaWorldObject.Sprite worldSpriteSnapshot(LuaObject o) {
         if (o == null || !o.added || !o.visible || o.textObject || o.imageBlockedByPolicy
+                || LuaLayerEffects.hidden(o.effects)
                 || !o.camera.equalsIgnoreCase("world")) return null;
+        if(layered(o)) {
+            var surface=objectSurface(o);if(surface==null) return null;
+            var m=objectTransform(o,new HashSet<>());var r=LuaObjectParenting.rotation(m);var s=m.getScale(new org.joml.Vector3f());
+            return new LuaWorldObject.Sprite(surface.texture,surface.width,surface.height,null,0,0,0,0,0,
+                    o.width,o.height,o.width,o.height,s.x,s.y,o.effectKind.equals("group")?o.alpha:1,-r.z,-r.x,r.y,
+                    0xFFFFFF,o.worldBillboard,false,LuaWorldObject.RenderMode.FLAT,o.worldSeeThrough);
+        }
         SparrowAtlas.Frame frame = o.texture == null ? null : currentFrame(o);
         LuaWorldObject.Frame renderFrame = frame == null ? null
                 : new LuaWorldObject.Frame(frame.x, frame.y, frame.w, frame.h,
@@ -2836,7 +3091,7 @@ public final class PsychLuaRuntime implements AutoCloseable {
                 0, 0, 0, o.width, o.height, o.graphicWidth, o.graphicHeight,
                 o.scaleX, o.scaleY, o.alpha, o.angle, o.rotationX, o.rotationY,
                 o.missingAsset ? 0xFFFFFF : o.color,
-                o.worldBillboard, o.worldLighting, o.worldSeeThrough);
+                o.worldBillboard, o.worldLighting, worldRenderMode(o), o.worldSeeThrough);
     }
 
     /** Keeps entity physics and Psych's stage-local XYZ properties in both directions. */
@@ -2849,6 +3104,7 @@ public final class PsychLuaRuntime implements AutoCloseable {
         Set<String> active = new LinkedHashSet<>();
         for (LuaObject o : objects.values()) {
             if (!o.added || o.textObject || o.imageBlockedByPolicy
+                    || LuaLayerEffects.hidden(o.effects)
                     || !o.camera.equalsIgnoreCase("world")) continue;
             active.add(o.tag);
             WorldEntityBinding binding = worldSpriteEntities.get(o.tag);
@@ -2879,8 +3135,11 @@ public final class PsychLuaRuntime implements AutoCloseable {
 
             boolean authored = created || different(o.x, binding.lastX)
                     || different(o.y, binding.lastY) || different(o.z, binding.lastZ);
-            if (authored || !o.worldGravity) {
-                Vec3 world = worldFromStage(speakers, stageFacing, o.x, o.y, o.z);
+            boolean parented=!o.effects.get("parent").optjstring("").isBlank();
+            if (authored || !o.worldGravity || parented) {
+                var resolved=parented?objectTransform(o,new HashSet<>()):null;
+                Vec3 world = resolved==null?worldFromStage(speakers, stageFacing, o.x, o.y, o.z)
+                        :worldFromStage(speakers,stageFacing,resolved.m30(),resolved.m31(),resolved.m32());
                 entity.setPos(world);
                 if (!o.worldGravity) entity.setDeltaMovement(Vec3.ZERO);
             } else {
@@ -2943,6 +3202,28 @@ public final class PsychLuaRuntime implements AutoCloseable {
     }
 
     private void renderObject(GuiGraphics gui, LuaObject o, float z) {
+        if(!layered(o)) { renderObjectRaw(gui,o,z);return; }
+        if(!o.visible || o.alpha<=0 || o.imageBlockedByPolicy) return;
+        gui.flush(); var surface=objectSurface(o);if(surface==null) return;
+        gui.pose().pushPose();
+        var m=objectTransform(o,new HashSet<>());
+        if(cameraGroup(o.camera)==CameraGroup.GAME) {
+            var t=PsychCameraTransform.apply(m.m30(),m.m31(),o.scrollFactorX,o.scrollFactorY,
+                    host.psychLuaGameCameraX(),host.psychLuaGameCameraY(),GameplayCamera.gameZoom(),
+                    GameplayCamera.gameShakeX(),GameplayCamera.gameShakeY());
+            m.m30((float)t.x()).m31((float)t.y());
+            m.scale((float)t.scaleX(),(float)t.scaleY(),1);
+        }
+        gui.pose().mulPose(m);
+        boolean parented=!o.effects.get("parent").optjstring("").isBlank();
+        float left=(float)(parented?-surface.logicalWidth/2:-o.width/2+surface.offsetX);
+        float top=(float)(parented?-surface.logicalHeight/2:-o.height/2+surface.offsetY);
+        com.fnfmod.client.render.LuaLayerRenderer.draw(gui.pose().last().pose(),surface,left,top,
+                (float)surface.logicalWidth,(float)surface.logicalHeight,o.effectKind.equals("group")?(float)o.alpha:1,false,false);
+        gui.pose().popPose();
+    }
+
+    private void renderObjectRaw(GuiGraphics gui, LuaObject o, float z) {
         int alpha = Math.max(0, Math.min(255, (int) Math.round(o.alpha * 255)));
         int color = (o.color & 0x00FFFFFF) | alpha << 24;
         double drawX = o.x;
@@ -2983,7 +3264,7 @@ public final class PsychLuaRuntime implements AutoCloseable {
         if (o.textObject) {
             float scale = Math.max(0.25f, o.textSize / 9f);
             gui.pose().scale(scale, scale, 1);
-            Font selected = o.fontName.isBlank() ? null : fontLoader.get(o.fontName);
+            Font selected = o.fontName.isBlank() ? null : fontLoader.get(o.fontName, o.fontQuality);
             Font font = selected == null ? Minecraft.getInstance().font : selected;
             int wrapWidth = o.width <= 0 || o.autoSize ? Integer.MAX_VALUE
                     : Math.max(1, (int) Math.floor(o.width / scale));
@@ -3083,24 +3364,82 @@ public final class PsychLuaRuntime implements AutoCloseable {
      * The border is stroked first so the fill always sits on top of it, matching
      * FlxText's outline and shadow styles.
      */
+    /** Vanilla font line height, the step this renderer has always used between lines. */
+    private static final int LINE_HEIGHT = 9;
+
     private void renderText(GuiGraphics gui, LuaObject o, Font font, int wrapWidth, int color) {
         List<net.minecraft.util.FormattedCharSequence> lines = wrapWidth == Integer.MAX_VALUE
                 ? List.of(Component.literal(o.text).getVisualOrderText())
                 : font.split(Component.literal(o.text), wrapWidth);
+        // One line's step down the block, so lineSpacing widens or tightens the gap.
+        double advance = Math.max(1.0, LINE_HEIGHT + o.lineSpacing);
         // Psych stops drawing once the text passes an explicit height limit.
         int maxLines = o.heightLimit <= 0 ? lines.size()
-                : Math.max(1, (int) Math.floor(o.heightLimit / 9.0));
+                : Math.max(1, (int) Math.floor(o.heightLimit / advance));
         int borderAlpha = Math.max(0, Math.min(255, (int) Math.round(o.alpha * 255)));
         int borderColor = (o.borderColor & 0x00FFFFFF) | borderAlpha << 24;
         int stroke = (int) Math.round(Math.abs(o.borderSize));
 
+        // A translucent outline is the one case the direct draw cannot do: its stamps overlap,
+        // and translucent copies pile up into a solid ring. Bake those blocks opaque and draw
+        // the result once at the real alpha. Opaque text keeps the plain path.
+        if (stroke > 0 && o.alpha < 0.999
+                && drawBakedText(gui, o, font, wrapWidth, color, lines, maxLines, advance, stroke)) {
+            return;
+        }
+
         for (int i = 0; i < Math.min(maxLines, lines.size()); i++) {
             var line = lines.get(i);
-            int y = i * 9;
-            int x = alignedX(o, font.width(line), wrapWidth);
+            int y = (int) Math.round(i * advance);
+            int x = alignedX(o, lineWidth(font, line, o.letterSpacing), wrapWidth);
             if (stroke > 0) drawTextBorder(gui, o, font, line, x, y, stroke, borderColor);
             drawTextLine(gui, o, font, line, x, y, color);
         }
+    }
+
+    /**
+     * Paints the block opaque into its own texture and draws that once at the object's alpha.
+     * Returns false when the block cannot be baked, so the caller falls back to drawing it
+     * straight into the scene.
+     */
+    private boolean drawBakedText(GuiGraphics gui, LuaObject o, Font font, int wrapWidth, int color,
+                                  List<net.minecraft.util.FormattedCharSequence> lines,
+                                  int maxLines, double advance, int stroke) {
+        int drawn = Math.min(maxLines, lines.size());
+        if (drawn <= 0) return false;
+        int blockWidth = 1;
+        for (int i = 0; i < drawn; i++) {
+            blockWidth = Math.max(blockWidth, lineWidth(font, lines.get(i), o.letterSpacing));
+        }
+        // The outline reaches one stroke past the glyphs on every side, plus slack for the
+        // italic shear and rounding.
+        int margin = stroke + LuaTextBaker.PADDING;
+        int width = blockWidth + margin * 2;
+        int height = (int) Math.ceil((drawn - 1) * advance) + LINE_HEIGHT + margin * 2;
+
+        int opaqueFill = (color & 0x00FFFFFF) | 0xFF000000;
+        int opaqueBorder = (o.borderColor & 0x00FFFFFF) | 0xFF000000;
+        String signature = String.join("|", o.text, o.fontName, String.valueOf(o.fontQuality),
+                String.valueOf(o.textSize), String.valueOf(wrapWidth), o.alignment,
+                String.valueOf(o.italic), String.valueOf(stroke), o.borderStyle,
+                Integer.toHexString(opaqueFill), Integer.toHexString(opaqueBorder),
+                String.valueOf(o.lineSpacing), String.valueOf(o.letterSpacing),
+                String.valueOf(drawn));
+
+        var baked = LuaTextBaker.bake(new LuaTextBaker.Key(signature, width, height), target -> {
+            for (int i = 0; i < drawn; i++) {
+                var line = lines.get(i);
+                int y = (int) Math.round(i * advance) + margin;
+                int x = alignedX(o, lineWidth(font, line, o.letterSpacing), wrapWidth) + margin;
+                drawTextBorder(target, o, font, line, x, y, stroke, opaqueBorder);
+                drawTextLine(target, o, font, line, x, y, opaqueFill);
+            }
+        });
+        if (baked == null) return false;
+        // Placed so the baked block's glyphs land exactly where the direct draw puts them.
+        LuaTextBaker.draw(gui.pose().last().pose(), baked, -margin, -margin,
+                width, height, (float) Math.max(0, Math.min(1, o.alpha)));
+        return true;
     }
 
     /** Psych's left/center/right/justify alignment inside the wrap width. */
@@ -3117,10 +3456,13 @@ public final class PsychLuaRuntime implements AutoCloseable {
                                 net.minecraft.util.FormattedCharSequence line,
                                 int x, int y, int stroke, int borderColor) {
         if ("shadow".equalsIgnoreCase(o.borderStyle)) {
+            // A shadow is a single copy, so its alpha is already the requested one.
             drawTextLine(gui, o, font, line, x + stroke, y + stroke, borderColor);
             return;
         }
-        // Outline draws the eight surrounding offsets, like FlxText's OUTLINE style.
+        // The outline is the glyph at every surrounding offset, like FlxText's OUTLINE style.
+        // These copies overlap, which is harmless while they are opaque; a translucent block is
+        // baked into its own texture instead (see drawBakedText), so nothing piles up there.
         for (int dx = -stroke; dx <= stroke; dx++) {
             for (int dy = -stroke; dy <= stroke; dy++) {
                 if (dx == 0 && dy == 0) continue;
@@ -3130,11 +3472,52 @@ public final class PsychLuaRuntime implements AutoCloseable {
     }
 
     /** Italic is a horizontal shear, since Minecraft fonts have no oblique variant. */
+    /** Width of one drawn line, including the gaps letterSpacing inserts between glyphs. */
+    static int lineWidth(Font font, net.minecraft.util.FormattedCharSequence line,
+                         double letterSpacing) {
+        if (letterSpacing == 0) return font.width(line);
+        java.util.List<Integer> points = codePoints(line);
+        if (points.isEmpty()) return 0;
+        double total = -letterSpacing;
+        for (int point : points) total += font.width(glyph(point)) + letterSpacing;
+        return (int) Math.round(Math.max(0, total));
+    }
+
+    /** The line's characters in draw order; Lua text carries no styling to preserve. */
+    static java.util.List<Integer> codePoints(net.minecraft.util.FormattedCharSequence line) {
+        java.util.List<Integer> points = new java.util.ArrayList<>();
+        line.accept((index, style, codePoint) -> {
+            points.add(codePoint);
+            return true;
+        });
+        return points;
+    }
+
+    static String glyph(int codePoint) {
+        return new String(Character.toChars(codePoint));
+    }
+
+    /** Draws a line one glyph at a time so each gap can carry the tracking value. */
+    private void drawSpacedLine(GuiGraphics gui, LuaObject o, Font font,
+                                net.minecraft.util.FormattedCharSequence line,
+                                int x, int y, int color) {
+        if (o.letterSpacing == 0) {
+            gui.drawString(font, line, x, y, color, false);
+            return;
+        }
+        double penX = x;
+        for (int point : codePoints(line)) {
+            String glyph = glyph(point);
+            gui.drawString(font, glyph, (int) Math.round(penX), y, color, false);
+            penX += font.width(glyph) + o.letterSpacing;
+        }
+    }
+
     private void drawTextLine(GuiGraphics gui, LuaObject o, Font font,
                               net.minecraft.util.FormattedCharSequence line,
                               int x, int y, int color) {
         if (!o.italic) {
-            gui.drawString(font, line, x, y, color, false);
+            drawSpacedLine(gui, o, font, line, x, y, color);
             return;
         }
         gui.pose().pushPose();
@@ -3146,7 +3529,7 @@ public final class PsychLuaRuntime implements AutoCloseable {
         gui.pose().translate(0, y, 0);
         gui.pose().mulPose(shear);
         gui.pose().translate(0, -y, 0);
-        gui.drawString(font, line, x, y, color, false);
+        drawSpacedLine(gui, o, font, line, x, y, color);
         gui.pose().popPose();
     }
 
@@ -3548,6 +3931,10 @@ public final class PsychLuaRuntime implements AutoCloseable {
         for (LuaObject object : objects.values()) disposeGraphic(object);
         soundPlayer.close();
         fontLoader.close();
+        layerRenderer.close();
+        externalLayerObjects.clear();
+        // Baked text blocks are framebuffers tied to this song's fonts and colours.
+        LuaTextBaker.clear();
         scripts.clear(); scriptBudgets.clear(); scriptSnapshot = null;
         objects.clear(); timers.clear(); tweens.clear(); sharedVars.clear();
     }

@@ -1,0 +1,458 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0b0810">
+  <meta name="description" content="Blockified Engine technical documentation.">
+  <title>Documentation · Blockified Engine</title>
+  <link rel="icon" type="image/png" href="./assets/blockified-note-icon.png">
+  <link rel="apple-touch-icon" href="./assets/blockified-note-icon.png">
+  <script src="./site-zoom.js"></script>
+  <link rel="stylesheet" href="./section.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="transition-bar" aria-hidden="true"></div>
+    <a class="home-link" href="./index.html" aria-label="Blockified Engine home">
+      <img src="./assets/blockified-engine-logo.png" alt="Blockified Engine" width="2048" height="569">
+    </a>
+    <form class="header-search" action="./documentation.html" method="get" role="search">
+      <input type="search" name="q" placeholder="Search Blockified…" aria-label="Search Blockified">
+    </form>
+    <nav class="site-nav" aria-label="Website sections">
+      <a href="./guide.html" aria-label="Guide" title="Guide">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H11v16H6.5A2.5 2.5 0 0 0 4 21.5z"/>
+          <path d="M20 5.5A2.5 2.5 0 0 0 17.5 3H13v16h4.5a2.5 2.5 0 0 1 2.5 2.5z"/>
+        </svg>
+      </a>
+      <a href="./wiki.html" aria-label="Wiki" title="Wiki">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M5 4h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3z"/>
+          <path d="M8 16h11M8 8h7M8 11h7"/>
+        </svg>
+      </a>
+      <a href="./documentation.html" aria-current="page" aria-label="Documentation" title="Documentation">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M7 3h7l4 4v14H7z"/>
+          <path d="M14 3v5h5M10 12h5M10 16h5"/>
+        </svg>
+      </a>
+      <a href="https://github.com/Migokc/Blockified-engine_a-Minecraft-mod-made-with-AI/issues"
+         target="_blank" rel="noreferrer" aria-label="Report Bug" title="Report Bug">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M9 9h6M10 5l1-2h2l1 2M8 7 5 5M16 7l3-2M7 12H4M17 12h3M7 16l-3 2M17 16l3 2"/>
+          <rect x="7" y="5" width="10" height="16" rx="5"/>
+          <path d="M12 9v12"/>
+        </svg>
+      </a>
+      <a href="https://github.com/Migokc/Blockified-engine_a-Minecraft-mod-made-with-AI"
+         target="_blank" rel="noreferrer" aria-label="GitHub" title="GitHub">
+        <svg class="github-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M12 .7a11.5 11.5 0 0 0-3.64 22.41c.58.11.79-.25.79-.56v-2.23c-3.22.7-3.9-1.37-3.9-1.37-.53-1.34-1.29-1.7-1.29-1.7-1.05-.72.08-.71.08-.71 1.16.08 1.78 1.2 1.78 1.2 1.04 1.77 2.72 1.26 3.38.96.1-.75.4-1.26.74-1.55-2.57-.29-5.27-1.28-5.27-5.69 0-1.26.45-2.28 1.19-3.09-.12-.29-.52-1.47.11-3.05 0 0 .97-.31 3.16 1.18a10.9 10.9 0 0 1 5.76 0c2.19-1.49 3.15-1.18 3.15-1.18.63 1.58.23 2.76.11 3.05.74.81 1.19 1.83 1.19 3.09 0 4.42-2.71 5.39-5.29 5.68.42.36.79 1.06.79 2.14v3.18c0 .31.21.68.8.56A11.5 11.5 0 0 0 12 .7z"/>
+        </svg>
+      </a>
+      <a href="https://github.com/Migokc/Blockified-engine_a-Minecraft-mod-made-with-AI/releases/latest"
+         target="_blank" rel="noreferrer" aria-label="Download Blockified" title="Download Blockified">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M12 3v12M7 10l5 5 5-5M5 20h14"/>
+        </svg>
+      </a>
+    </nav>
+  </header>
+  <main class="placeholder-page">
+    <section class="section-shell docs-shell">
+      <header class="section-intro">
+        <p class="eyebrow">Documentation</p>
+        <h1>Technical reference.</h1>
+        <p>Exact syntax and behavior for Blockified APIs, events, properties, and supported data formats.</p>
+      </header>
+
+      <div class="docs-layout">
+        <aside class="docs-nav" aria-label="Documentation topics">
+          <label>Reference</label>
+          <a class="active" href="#events">Chart events</a>
+          <a href="#gameplay-lua">Gameplay Lua</a>
+          <a href="#machine-lua">Machine Lua</a>
+          <a href="#properties">Properties</a>
+          <a href="#creator-tools">Creator tools</a>
+          <a href="#commands">Commands</a>
+          <a href="#compatibility">Compatibility</a>
+        </aside>
+
+        <article class="reference-panel">
+          <section class="reference-section" id="events">
+            <div class="reference-path">Reference <span>/</span> Chart events</div>
+            <h2 id="event-list" data-toc="Built-in events">Built-in chart events</h2>
+            <p class="lead">Events may run on the timeline or before the song. Custom event files are discovered from the active pack’s <code>custom_events</code> folder.</p>
+            <div class="reference-list">
+              <details class="reference-entry" open><summary><code>Minecraft Command</code><span>Blockified</span></summary><div><p>Runs a Minecraft command. Value 1 is the command; the Chart Editor's Value 2 toggle chooses <code>Player</code> or <code>Server</code>.</p><p>Placeholders include <code>&lt;player&gt;</code>, <code>&lt;opponent&gt;</code>, <code>&lt;speakers&gt;</code>, camera-relative directions such as <code>&lt;forward:2,left:1&gt;</code>, <code>&lt;camera_rotation&gt;</code>, and <code>&lt;character_rotation:degrees&gt;</code>.</p></div></details>
+              <details class="reference-entry"><summary><code>Camera Zoom</code><span>Blockified</span></summary><div><p>Persistent zoom. Values: amount <code>-1..0.9</code>, duration in seconds, easing. Amount <code>0</code> restores normal zoom.</p></div></details>
+              <details class="reference-entry"><summary><code>Camera Focus</code><span>Blockified</span></summary><div><p>Overrides section focus. Value 1 accepts player/BF, opponent/Dad, GF/speakers, or an extra-character tag; Value 2 is easing. Empty focus restores Must Hit behavior.</p></div></details>
+              <details class="reference-entry"><summary><code>Camera Behavior</code><span>Blockified</span></summary><div><p>Minecraft and Legacy only. Values: focus speed multiplier, easing, and whether sing/animation camera offsets are enabled. Empty values restore defaults.</p></div></details>
+              <details class="reference-entry"><summary><code>Camera Follow Pos</code><span>Hybrid</span></summary><div><p>Values 1–2 retain Psych screen coordinates. Extended values add 3D right/up/forward offsets, easing, override mode, machine/camera reference frame, and move duration.</p></div></details>
+              <details class="reference-entry"><summary><code>Camera Rotation 3D</code><span>Blockified</span></summary><div><p>Values: pitch, yaw, roll, easing, duration, and layer. The normal/orbit layer moves around an active pivot; camera/view/local rotates the view independently.</p></div></details>
+              <details class="reference-entry"><summary><code>Camera Orbit</code><span>Blockified</span></summary><div><p>Values: on/off, follow/pin, pivot X/Y/Z, pivot duration, and easing. Camera Follow Pos supplies the radius/position; Camera Rotation 3D animates around the pivot.</p></div></details>
+              <details class="reference-entry"><summary><code>Directional Shading</code><span>Blockified</span></summary><div><p>Value 1 controls block/fluid directional shading and ambient occlusion. Value 2 controls vanilla entity shading. Both restore when the song exits.</p></div></details>
+              <details class="reference-entry"><summary><code>Add Character</code><span>Blockified</span></summary><div><p>Values: unique tag, animation definition, stage X/Y/Z, extra yaw, and initial animation plus player/opponent definition side.</p></div></details>
+              <details class="reference-entry"><summary><code>Remove Character</code><span>Blockified</span></summary><div><p>Value 1 removes the matching extra-character tag.</p></div></details>
+              <details class="reference-entry"><summary><code>Tween Character</code><span>Blockified</span></summary><div><p>Values: tag, target X/Y/Z, duration, easing, and optional target yaw. Empty coordinate components retain their current values.</p></div></details>
+            </div>
+            <h3 id="psych-events" data-toc="Psych-compatible events">Psych-compatible events</h3>
+            <div class="tag-list event-tags"><span>Hey!</span><span>Set GF Speed</span><span>Add Camera Zoom</span><span>Play Animation</span><span>Alt Idle Animation</span><span>Screen Shake</span><span>Change Character</span><span>Change Scroll Speed</span><span>Set Property</span><span>Play Sound</span></div>
+            <aside class="callout"><strong>Trigger from Lua</strong><span><code>triggerEvent(name, value1, value2, ...)</code> uses the same dispatcher as charted events, including Blockified’s extra value slots.</span></aside>
+          </section>
+
+          <section class="reference-section" id="gameplay-lua">
+            <div class="reference-path">Reference <span>/</span> Gameplay Lua</div>
+            <h2 id="gameplay-lua-overview" data-toc="Overview">Gameplay Lua</h2>
+            <p class="lead">This section documents the difference between Psych Engine 1.0.4 Lua and Blockified—not the Psych API itself. Ordinary Psych sprite, text, animation, property, timer, sound, input, and callback syntax is omitted when Blockified does not change it.</p>
+            <aside class="callout"><strong>Compatibility baseline</strong><span>Blockified recognizes most common Psych 1.0.4 gameplay Lua calls, but implements them against Minecraft and its own renderer. The entries below are additions, changed behavior, or unsupported Psych features.</span></aside>
+
+            <h3 id="lua-script-differences" data-toc="Script discovery">Script-discovery differences</h3>
+            <p>Psych’s normal <code>scripts</code>, <code>stages</code>, <code>custom_notetypes</code>, <code>custom_events</code>, and <code>data/&lt;song&gt;</code> locations remain supported. Blockified adds these cases:</p>
+            <div class="parameter-list lua-path-list">
+              <div><div class="parameter-label"><code>mods/scripts</code><span>global</span></div><p>The naked installed-mod scripts remain active for eligible standalone/lightweight songs instead of depending on the song’s source folder.</p></div>
+              <div><div class="parameter-label"><code>scripts/stages</code><span>fallback</span></div><p>Stage Lua may also live in <code>data/stages</code> or <code>assets/stages</code>, in addition to Psych’s normal <code>stages</code> folder.</p></div>
+              <div><div class="parameter-label"><code>songs/&lt;song&gt;</code><span>extra</span></div><p>Lua stored beside <code>Inst.ogg</code> and the voice stems is loaded.</p></div>
+              <div><div class="parameter-label"><code>&lt;song folder&gt;</code><span>extra</span></div><p>Top-level Lua in a resolved standalone song folder is loaded after pack scripts.</p></div>
+            </div>
+            <aside class="callout"><strong>Psych character scripts</strong><span>Blockified does not currently auto-load <code>characters/&lt;character&gt;.lua</code>. Put that behavior in a pack script, stage script, or song script instead.</span></aside>
+
+            <h3 id="lua-world-space" data-toc="World-space additions">World-space objects and characters</h3>
+            <p>Psych’s <code>game</code>, <code>hud</code>, and <code>other</code> cameras remain on the fixed 1280×720 canvas. Blockified adds the <code>world</code> camera for Minecraft/Legacy stage space.</p>
+            <div class="api-table">
+              <div><code>setObjectCamera(tag, 'world')</code><p>Moves a Lua sprite or text object into 3D stage-local space with real depth.</p></div>
+              <div><code>makeLuaSprite(...[, z])</code> <code>makeLuaText(...[, z])</code><p>Static sprites accept an optional fifth Z argument; text accepts an optional sixth. Animated sprites set Z through <code>setProperty(tag .. '.z', value)</code>.</p></div>
+              <div><code>setObjectRotation(tag, pitch, yaw, roll)</code><p>Adds three-axis rotation. Rotation and XYZ scale properties also work on supported main characters, extra characters, and BBS forms.</p></div>
+              <div><code>setWorldSpriteBillboard/Lighting(tag, enabled)</code><p>Controls camera-facing and Minecraft light response.</p></div>
+              <div><code>setWorldSpriteGravity/Collision/Shadows(tag, enabled)</code><p>Adds client-side entity physics, collision, and vanilla blob shadows during gameplay.</p></div>
+              <div><code>setWorldSpriteIRLightsShadows(tag, enabled)</code><p>Adds IRLights projected-shadow participation; enabled by default.</p></div>
+              <div><code>setObjectSeeThrough(tag, enabled)</code><p>Lets a world object render through Minecraft geometry.</p></div>
+              <div><code>setObjectBorder(tag, size, color, style)</code><p>Adds a fixed-Psych-resolution outline to Lua sprites and performer characters, including BBS forms.</p></div>
+            </div>
+            <p>World sprites are backed by client-side entities during gameplay so physics and lighting integrations can see them. Free Cam continues using its editor renderer.</p>
+
+            <h3 id="lua-layer-effects" data-toc="Layers, masks and parenting">Layers, masks and parenting</h3>
+            <p>Gameplay and machine-menu Lua share Blockified's gradient, mask, clipping, and blend APIs. They work on flat Lua objects in 2D or 3D, including animated sprites, text, menu widgets, and extra 2D characters. They are not arbitrary Psych shader support or effects on BBS 3D meshes.</p>
+            <div class="api-table">
+              <div><code>makeLuaGradient / ui.gradient</code><p>Create a standalone linear, radial, or angular gradient, including color and alpha stops. It can be drawn normally or used as a mask.</p></div>
+              <div><code>setObjectGradient(tag, type, stops, angle)</code><p>Apply a non-destructive gradient to existing pixels. Up to 16 color/alpha stops; geometry and strength are tweenable.</p></div>
+              <div><code>setObjectMask(target, source, mode, inverted, hideSource)</code><p>Alpha masks use opacity (opaque black reveals); luminance masks use brightness (white reveals, black hides). Masks remain local to the target, with editable offset, scale, rotation and softness.</p></div>
+              <div><code>setBlendMode(tag, mode)</code><p>Normal, add, multiply, screen, subtract, lighten, darken, difference, and overlay now have distinct rendering in both Lua runtimes, including depth-tested world planes.</p></div>
+              <div><code>setObjectClip(tag, type, x, y, width, height, radius, softness)</code><p>Normalized local rectangle, ellipse, or rounded-rectangle clipping without rescaling the source.</p></div>
+              <div><code>makeLuaGroup / ui.group</code><p>Composite child layers before applying group opacity/effects. Add members with <code>addToGroup(group, child)</code>. These are flat visual composites, not interactive child-widget containers.</p></div>
+              <div><code>setObjectParent(child, parent, keepPosition)</code><p>Transform-only attachment for gameplay Lua objects or menu widgets. By default the child's X/Y/Z become zero at its parent's center. Its own offsets stay editable; parent movement, rotation and scaling carry it along. Use <code>true</code> to preserve its current placement instead.</p></div>
+              <div><code>removeObjectParent(child, keepPosition)</code><p>Detach; placement is preserved by default. <code>getObjectParent(child)</code> returns the current parent ID. Extra performers and BBS/vanilla entities do not participate in this hierarchy.</p></div>
+              <div><code>doTweenEffect(tag, object, property, target, duration, easing)</code><p>Tween numeric gradient, mask, and clipping properties using the runtime's usual clock and callbacks.</p></div>
+            </div>
+            <p>The Menu Lua Editor's <strong>Effects</strong> tab exposes these controls and saves ordinary Lua. Parented screen widgets use local pixels, not normalized coordinates; world widgets use local blocks. <a href="./lua-layer-effects.md">Full signatures, examples, limits, and performance notes</a>.</p>
+
+            <h3 id="blockified-lua" data-toc="Other Blockified calls">Other Blockified additions</h3>
+            <div class="api-table">
+              <div><code>setRenderDistance(chunks)</code> <code>getRenderDistance()</code><p>Temporarily changes render distance, clamped to Minecraft’s 2–32 range and restored after gameplay.</p></div>
+              <div><code>setFOV(value)</code> <code>getFOV()</code><p>Changes the base Minecraft FOV for the song; camera zoom remains multiplicative.</p></div>
+              <div><code>setHudStyle(style)</code> <code>getHudStyle()</code><p>Changes or reads the active HUD style during gameplay. <code>showTimeBar(visible)</code> controls the native time bar.</p></div>
+              <div><code>runMinecraftCommand(command[, source])</code><p>Runs through the same permission-aware path as the chart event. Source defaults to <code>player</code>; <code>server</code> still requires authority. <code>runCommand</code> is an alias.</p></div>
+              <div><code>cameraOrbit(pinned, x, y, z, duration, easing)</code><p>Starts or updates the world-camera pivot. Follow mode offsets the focused character; pinned mode uses absolute stage-local XYZ. <code>startCameraOrbit</code> is an alias and <code>stopCameraOrbit()</code> ends it.</p></div>
+              <div><code>setCameraFollowPoint(x, y)</code> <code>addCameraFollowPoint(x, y)</code><p>Sets or offsets the Psych-compatible camera follow point. Scroll equivalents are <code>setCameraScroll</code> and <code>addCameraScroll</code>.</p></div>
+              <div><code>setCameraBopEnabled(target, enabled)</code><p>Controls game, HUD, or both beat bops. Read it with <code>getCameraBopEnabled(target)</code>.</p></div>
+              <div><code>addBlockifiedCharacter(tag, character, x, y, z, yaw, animation, side)</code><p>Adds a named BBS or 2D performer in Minecraft/Legacy presentation. <code>makeBlockifiedCharacter</code> is an alias.</p></div>
+              <div><code>changeBlockifiedCharacter(tag, character, side)</code><p>Changes an existing extra performer without replacing its tag. Existence, remove, reset-position, all-collision, and all-shadow helpers are also available.</p></div>
+              <div><code>getBlockShading()</code> <code>getMobShading()</code><p>Reads current directional-shading state. Change it through <code>triggerEvent('Directional Shading', ...)</code>.</p></div>
+              <div><code>doTweenZ / doTweenRotationX/Y/Z</code><p>Extends Psych tweens with depth and three-axis rotation. <code>doTweenAngleX/Y/Z</code> are aliases. All unchanged Psych tween/timer/audio calls keep their normal names and are not repeated here.</p></div>
+              <div><code>setTextQuality / setTextLineSpacing / setTextLetterSpacing</code><p>Adds font oversampling quality and explicit line/letter spacing, with matching getters.</p></div>
+              <div><code>achievementExists / unlockAchievement / achievement score calls</code><p>Adds Blockified-backed achievement storage helpers.</p></div>
+            </div>
+
+            <h3 id="lua-timing-notes" data-toc="Timing and note differences">Timing, events, and note assets</h3>
+            <div class="api-table compact">
+              <div><code>curMeterBeat curBeatInMeasure curMeasure</code><p>Adds time-signature-aware counters. <code>timeSignatureNumerator</code> and <code>timeSignatureDenominator</code> expose the current meter.</p></div>
+              <div><code>onMeterBeatHit(beat, numerator, denominator)</code><p>Runs when the beat inside the current measure changes.</p></div>
+              <div><code>onMeasureHit(measure)</code><p>Runs at the start of each measure.</p></div>
+              <div><code>triggerEvent(name, value1, ... value7)</code><p>Blockified extends the Psych dispatcher with additional value slots for its larger camera/world events.</p></div>
+              <div><code>custom_notetypes texture access</code><p>A custom-note script may expose only the exact atlas names assigned through <code>texture</code> or <code>noteSplashData.texture</code> when general pack images are unavailable in Minecraft presentation.</p></div>
+              <div><code>onStartCountdown()</code><p>Unlike Psych, Blockified currently treats this as a setup notification. Returning <code>Function_Stop</code> does not hold the countdown.</p></div>
+            </div>
+
+            <h3 id="lua-porting-limits" data-toc="Porting limits">Known differences from Psych</h3>
+            <div class="compat-grid">
+              <div><strong>No Haxe execution</strong><p><code>runHaxeCode</code> does not execute arbitrary Haxe. HScript registration/calls, Haxe libraries, arbitrary method calls, and runtime class creation are compatibility no-ops.</p></div>
+              <div><strong>No GLSL shaders yet</strong><p>Shader setters are compatibility no-ops and shader getters return typed empty values. Scripts should branch on <code>shadersEnabled == false</code>.</p></div>
+              <div><strong>Limited pointer/controller API</strong><p>Keyboard APIs work. Mouse-button reads are partial, mouse coordinates currently return zero, and gamepad APIs return false/zero.</p></div>
+              <div><strong>No video/dialogue runtime</strong><p><code>startVideo</code> and <code>startDialogue</code> are registered so a port does not crash, but they do not open Psych substates.</p></div>
+              <div><strong>No arbitrary Flixel groups</strong><p><code>addToGroup</code>, <code>removeFromGroup</code>, and <code>updateHitboxFromGroup</code> are not implemented. Use the supported note/strum groups and object order.</p></div>
+              <div><strong>Unsupported engine transitions</strong><p><code>loadSong</code>, <code>addCharacterToList</code>, <code>startCountdown</code>, and <code>setTimeBarColors</code> are compatibility no-ops. Use Blockified events, menu APIs, or native song flow.</p></div>
+              <div><strong>Restricted class access</strong><p><code>getPropertyFromClass</code>/<code>setPropertyFromClass</code> map selected <code>ClientPrefs</code> and <code>PlayState</code> fields plus <code>FlxG.width/height</code>. Other Haxe classes return <code>nil</code>.</p></div>
+              <div><strong>Reduced startTween options</strong><p>Multi-property and color tweening work, but only <code>ease</code> and <code>startDelay</code> options are read. Psych loop and ping-pong tween types are not reproduced.</p></div>
+              <div><strong>Small missing legacy surface</strong><p>Psych’s <code>getCharacterX/Y</code>, <code>setCharacterX/Y</code>, and <code>addAnimationByIndicesLoop</code> are not registered. Use properties and the loop argument of <code>addAnimationByIndices</code>.</p></div>
+              <div><strong>Settings and presence</strong><p><code>getModSetting</code> reads the declared default because Blockified has no Psych mod-settings UI. Discord presence/client-ID calls are accepted but do nothing.</p></div>
+            </div>
+
+            <h3 id="lua-safety" data-toc="Safety and multiplayer">Safety and multiplayer</h3>
+            <p>Each script has isolated globals. Lua’s process, environment, arbitrary filesystem, module loading, classloading, and dynamic-code surfaces—<code>os</code>, <code>io</code>, <code>package</code>, <code>require</code>, <code>load*</code>, <code>dofile</code>, <code>debug</code>, and <code>luajava</code>—are removed.</p>
+            <div class="api-table compact">
+              <div><code>getTextFromFile / checkFileExists / directoryFileList</code><p>Read only inside the resolved song folder or its mod root; parent-path escapes are rejected.</p></div>
+              <div><code>saveFile / deleteFile</code><p>Write or delete only inside the resolved song folder. Save slots use Blockified’s sandboxed Lua-save storage.</p></div>
+              <div><code>5,000,000 instructions / 1 second</code><p>Each top-level chunk or callback has a runaway-script budget. Time spent inside trusted asset-loading host calls is excluded from the wall-clock limit.</p></div>
+              <div><code>Dedicated server</code><p>Gameplay Lua is disabled completely. Integrated singleplayer and LAN retain Lua, subject to the active mod/source permissions.</p></div>
+            </div>
+          </section>
+
+          <section class="reference-section" id="machine-lua">
+            <div class="reference-path">Reference <span>/</span> Machine-menu Lua</div>
+            <h2 id="machine-lua-overview" data-toc="Overview">Machine-menu Lua</h2>
+            <p class="lead">Machine menus use a fixed 1280×720 centered canvas. Normalized X/Y values from −1 through 1 scale with that canvas; larger values are pixels.</p>
+            <h3 id="machine-ui" data-toc="UI constructors">UI constructors</h3>
+            <div class="api-table compact">
+              <div><code>ui.label(id, text, x, y)</code><p>Text label.</p></div>
+              <div><code>ui.button(id, text, x, y, width, height)</code><p>Clickable button with <code>function button:onClick()</code>.</p></div>
+              <div><code>ui.toggle(id, text, x, y, width, height)</code><p>Boolean control with <code>onChange(value)</code>.</p></div>
+              <div><code>ui.slider(id, text, x, y, width, height)</code><p>Numeric control using mutable <code>min</code>, <code>max</code>, and <code>value</code>.</p></div>
+              <div><code>ui.panel(id, text, x, y, width, height)</code><p>Colored background panel. Its default color is translucent near-black.</p></div>
+              <div><code>ui.image(id, path, x, y, width, height)</code><p>Static image from the machine profile or owning mod.</p></div>
+              <div><code>ui.sprite(id, path, x, y, width, height)</code><p>Static sprite alias with angle and other sprite fields.</p></div>
+              <div><code>ui.animatedSprite(id, png, xml, x, y, width, height)</code><p>Sparrow XML animation with prefix animations and playback methods.</p></div>
+              <div><code>ui.graph(id, shape, x, y, width, height, color)</code><p>Rectangle, circle/ellipse, line, triangle, or polygon. <code>ui.graphic</code> is an alias.</p></div>
+              <div><code>ui.world(widget, x, y, z)</code><p>Moves any constructor into Minecraft’s 3D scene. Coordinates are block offsets from the menu origin, Y points up, and interactive controls remain clickable.</p></div>
+            </div>
+            <h3 id="machine-camera" data-toc="3D camera and zoom">3D camera and zoom</h3>
+            <div class="api-table compact">
+              <div><code>camera.setPosition(x, y, z)</code><p>Immediately sets the absolute Minecraft camera position.</p></div>
+              <div><code>doTweenCamX/Y/Z(tag, value, duration, easing)</code><p>Tweens one position axis. Multiple axes can run together and completion calls <code>onTweenCompleted(tag)</code>.</p></div>
+              <div><code>camera.setRotation(pitch, yaw, roll)</code><p>Immediately sets all three Minecraft camera angles.</p></div>
+              <div><code>doTweenCamRotationX/Y/Z(tag, value, duration, easing)</code><p>Tweens pitch, yaw, or roll using the same Psych-style argument order.</p></div>
+              <div><code>camera.lookAt(x, y, z)</code><p>Immediately aims the camera at a world point while retaining roll.</p></div>
+              <div><code>camera.setZoom(value)</code> <code>doTweenCamZoom(tag, value, duration, easing)</code><p>Changes or tweens the menu FOV multiplier: <code>1</code> is normal and larger values zoom in.</p></div>
+              <div><code>camera.getX/Y/Z()</code> <code>camera.getPitch/Yaw/Roll()</code> <code>camera.getZoom()</code><p>Reads the current, including in-progress tween, camera state. <code>camera.reset()</code> restores the entry view.</p></div>
+            </div>
+            <h3 id="machine-navigation" data-toc="Navigation and song data">Navigation and song data</h3>
+            <div class="api-table">
+              <div><code>machine.openSongSelect(returnTo)</code><p>Opens the built-in selector; exit target may be menu, world, or selector.</p></div>
+              <div><code>machine.playSong(id, difficulty, options)</code><p>Starts a song. Set <code>machine = 'stage_tag'</code> to use a different hitbox-less virtual machine's position/facing, or omit it to use the menu's origin. Other options: <code>duet</code>, <code>playAs</code>, <code>look</code>, and <code>returnTo</code>. With a named stage, <code>returnTo = 'menu'</code> reopens the launching menu's main page, not the target's profile. <code>machine.id</code>/<code>machine.tag</code> continue to describe the menu's own origin.</p></div>
+              <div><code>machine.getSongs()</code> <code>machine.getSong(id)</code><p>Returns authoritative song IDs, display names, opponent icons, and difficulties.</p></div>
+              <div><code>machine.getWeeks()</code> <code>machine.getWeek(id)</code><p>Returns week identity, visibility, unlock, artwork, difficulty, character, and ordered-song metadata.</p></div>
+              <div><code>machine.openScreen(name)</code><p>Loads <code>screens/&lt;name&gt;.lua</code> inside the current machine profile. Use <code>'main'</code> to return to <code>menu.lua</code>. Widgets/timers/tweens/page callbacks reset; <code>machineData</code> and tagged audio persist.</p></div>
+              <div><code>machine.openSettings()</code><p>Opens Blockified settings and returns to the Lua menu.</p></div>
+              <div><code>machine.openCharacterEditor()</code><p>Opens the Character Editor.</p></div>
+              <div><code>machine.openChartEditor(songId, difficulty)</code><p>Opens the Chart Editor, optionally at a chosen song and difficulty.</p></div>
+              <div><code>machine.setSongExitTarget(target)</code><p>Selects menu, world, or selector for finish, quit, or loss.</p></div>
+              <div><code>machine.saveData()</code><p>Immediately persists per-machine <code>machineData</code>.</p></div>
+              <div><code>machine.close()</code><p>Closes the Lua menu and releases its machine session. Disabled when the world requires <code>autoOpenMenu</code>.</p></div>
+              <div><code>machine.exitWorld()</code><p>Leaves the current world without a prompt, using Minecraft's normal disconnect/save lifecycle. Returns true when queued, false when unavailable or already requested. Disabled in the Menu Editor.</p></div>
+            </div>
+            <p>Escape opens Minecraft's pause menu directly on every Lua page. Resuming returns to that same page, without restarting its script or shared music.</p>
+            <pre><code>-- machines/my-machine/menu.lua
+local extras = ui.button('extras', 'Extras', 0.5, 0.5, 180, 24)
+function extras:onClick()
+    machine.openScreen('extras') -- machines/my-machine/screens/extras.lua
+end
+-- On the Extras page, use machine.openScreen('main') to return.</code></pre>
+            <pre><code>function play:onClick()
+    machine.playSong('earrings', 'normal', {
+        machine = 'earrings_stage', -- Designer tag on the hitbox-less virtual machine
+        returnTo = 'menu'
+    })
+end</code></pre>
+            <p>Place the target with the Designer's Blocks tools and give it a unique tag. It needs no custom menu profile or manual interaction. Tags are case-insensitive and scoped to the current dimension; allowed characters are letters, numbers, underscores, and hyphens (up to 64). Unknown, duplicate, removed, or busy targets show an error without starting the song. A true Lua return means the request was queued, not that server validation has finished.</p>
+            <p>Named stages support singleplayer/LAN mod worlds. Their index survives world saves and chunk unloads; older anchors register when their chunk next loads, so visit one once if it is not found after updating. Temporary stage chunk loading is released when the session ends. Omitting <code>machine</code> preserves the existing behavior; <code>returnTo = 'world'</code> and <code>'selector'</code> also remain available.</p>
+            <h3 id="machine-input" data-toc="Keyboard and cursor input">Keyboard and cursor input</h3>
+            <div class="api-table compact">
+              <div><code>keyboardPressed(name)</code><p>True while a physical key is held. Uses Psych names such as <code>A</code>, <code>SPACE</code>, <code>LEFT</code>, <code>SHIFT</code>, <code>F1</code>, and <code>NUMPAD1</code>.</p></div>
+              <div><code>keyboardJustPressed(name)</code><p>True only during the update in which the physical key was pressed.</p></div>
+              <div><code>keyboardReleased(name)</code><p>True only during the update in which the physical key was released.</p></div>
+              <div><code>onKeyPress(keyName, keyCode, modifiers)</code><p>Fires once on physical press, without OS key-repeat callbacks. <code>keyName</code> is the stable Lua-facing name.</p></div>
+              <div><code>onKeyRelease(keyName, keyCode, modifiers)</code><p>Fires once when the physical key is released. Keyboard Lua is suppressed while an editable text box has focus.</p></div>
+              <div><code>cursor / getMouseX() / getMouseY()</code><p>Reads the fixed-canvas cursor position; mouse helpers and widget hover callbacks remain available alongside keyboard input.</p></div>
+              <div><code>onScroll(dy, dx)</code><p>Runs for wheel/trackpad input anywhere in the menu. Positive <code>dy</code> scrolls up; negative scrolls down. <code>dx</code> carries horizontal input. Lua decides which objects/properties to move.</p></div>
+              <div><code>function object:onScroll(dy, dx)</code><p>Runs on the topmost visible object under the cursor that defines this handler, before the global callback. Supports 2D and 3D hit testing; decorative objects without handlers let scroll input through.</p></div>
+              <div><code>getMouseWheel() / getMouseWheelX()</code><p>Polling alternative: accumulated vertical/horizontal deltas, also exposed as <code>cursor.scrollY</code>/<code>cursor.scrollX</code>. Reset after each <code>onUpdate</code>, page change, or pause. Reads do not consume input; do not multiply by <code>dt</code>.</p></div>
+            </div>
+            <pre><code>local title = ui.label('title', 'Scroll me', 0.5, 360)
+local targetY = 360
+function onScroll(dy, dx)
+    targetY = math.max(100, math.min(620, targetY + dy * 30))
+    doTweenY('scrollTitle', 'title', targetY, 0.2, 'expoOut')
+end</code></pre>
+            <p>Widgets expose position, dimensions, color, alpha, visibility, order, and type-specific fields. Text widgets also support <code>font</code>, <code>fontScale</code>, and <code>shadow</code>. Available tweens include X, Y, width, height, alpha, angle, font scale, color, and menu blur.</p>
+          </section>
+
+          <section class="reference-section" id="properties">
+            <div class="reference-path">Reference <span>/</span> Properties</div>
+            <h2 id="property-paths" data-toc="Property paths">Common property paths</h2>
+            <p class="lead">Properties use Psych-style dotted paths. Some values are writable; getters return live runtime state.</p>
+            <div class="parameter-list property-list">
+              <div><div class="parameter-label"><code>boyfriend / dad / gf</code><span>character</span></div><p>Position, scale, rotation, animation, visibility, alpha, lighting, camera offsets, and related character state.</p></div>
+              <div><div class="parameter-label"><code>&lt;extraTag&gt;</code><span>character</span></div><p>Extra characters created by Lua or Add Character, including world position, XYZ rotation, XYZ scale, collision, and shadows.</p></div>
+              <div><div class="parameter-label"><code>playerStrums / opponentStrums</code><span>group</span></div><p>Use <code>getPropertyFromGroup(group, lane, field)</code> for X, Y, alpha, angle, direction, and visibility.</p></div>
+              <div><div class="parameter-label"><code>healthBar / healthBarBG</code><span>HUD</span></div><p>Visibility and alpha apply to the complete health-bar presentation, including its background outline.</p></div>
+              <div><div class="parameter-label"><code>rating / timeBar / timeTxt</code><span>HUD</span></div><p>Visibility and common display properties.</p></div>
+              <div><div class="parameter-label"><code>camGame / camHUD / camOther</code><span>camera</span></div><p>Zoom, angle, alpha, visibility, follow position, and scroll where supported.</p></div>
+              <div><div class="parameter-label"><code>chunkLoadPoints.&lt;tag&gt;</code><span>world</span></div><p>Read or change <code>enabled</code>, <code>radius</code>, <code>tag</code>, and coordinates. Song changes roll back.</p></div>
+            </div>
+            <pre><code>local noteX = getPropertyFromGroup('playerStrums', 1, 'x')
+setProperty('boyfriend.rotation.x', 15)
+setProperty('chunkLoadPoints.stage_right.enabled', true)</code></pre>
+          </section>
+
+          <section class="reference-section" id="creator-tools">
+            <div class="reference-path">Tutorials <span>/</span> Creator tools</div>
+            <h2 id="creator-tools-overview" data-toc="Open Creator Tools">Create without hand-editing every file</h2>
+            <p class="lead">Right-click a Funkin’ Machine to open the Song Menu, then press <kbd>8</kbd> (the main keyboard or numpad key). Pressing <kbd>8</kbd> again returns to the Song Menu.</p>
+            <div class="api-table">
+              <div><code>Chart Editor</code><p>Starts a new chart workspace at this machine. Because the editor remembers the machine position and facing, it can launch a complete world playtest and Free Cam.</p></div>
+              <div><code>Character Editor</code><p>Creates or edits the animation definition that maps FNF actions such as <code>left</code> and <code>idle</code> to BBS form states.</p></div>
+              <div><code>Reload Songs</code><p>Rescans songs, difficulties, weeks, and health icons after files are changed outside Minecraft. It does not save or rewrite those files.</p></div>
+              <div><code>Week Maker</code><p>Creates a Psych-compatible Story Mode week and its ordered song list.</p></div>
+              <div><code>NoteSkin Editor</code><p>Edits note artwork configuration with a playable chart preview. This is the advanced editor; normal Settings keeps only the everyday note options.</p></div>
+              <div><code>Menu Lua Editor</code><p>Visually edits a current-mod machine menu in 2D or 3D, including its Minecraft camera. Save updates a marked generated block inside <code>menu.lua</code>; handwritten callbacks and code outside that block remain untouched.</p></div>
+              <div><code>World Settings</code><p>Appears only while hosting a bundled mod world, unless that world hides the button. It edits that world’s <code>blockified-options.json</code>.</p></div>
+            </div>
+
+            <h3 id="chart-editor-tool" data-toc="Chart Editor">Chart and test a song</h3>
+            <p>Select <strong>Chart Editor</strong> in Creator Tools. The six right-side tabs separate saved song data from editor-only aids:</p>
+            <div class="function-groups">
+              <div><strong>Song</strong><span>Sets the title, starting BPM and meter, gameplay scroll speed, gameplay offset, player/opponent IDs, vocal use, pixel UI, and exact song audio.</span></div>
+              <div><strong>Section</strong><span>Controls who must hit, GF notes, alternate animations, section length, BPM or meter changes, and section copy, clear, side-swap, mirror, or duet operations.</span></div>
+              <div><strong>Note</strong><span>Edits one note’s exact time, sustain, and note type. <em>Apply Selected Note</em> commits all three fields to the active note; <em>Apply Notetype to Selected</em> changes only the type of every selected note.</span></div>
+              <div><strong>Events</strong><span>Adds, edits, removes, and stacks events at one timestamp. The dropdown includes built-in and discovered custom events; <em>Event Help</em> uses the custom event’s matching TXT documentation when present.</span></div>
+              <div><strong>Charting</strong><span>Contains editor-only playback rate and offset, beat snap, Vortex mode, hitsounds, metronome and volume, loop points and pre-roll, three-tap BPM, stem mute/solo, and named bookmarks.</span></div>
+              <div><strong>Data</strong><span>Assigns chart note, splash, and hold-cover asset paths. The visible game-over fields are reserved and currently disabled.</span></div>
+            </div>
+            <div class="api-table">
+              <div><code>Choose Song Audio</code><p>Select one or several files. Recognized Inst/Voices names become the matching stems; common non-OGG formats are converted for the saved copy without renaming the original file.</p></div>
+              <div><code>Save / Ctrl+S</code><p>Saves to this song’s assigned folder when one exists; otherwise it uses the normal generated song folder without opening a dialog.</p></div>
+              <div><code>Edit → Choose Saving Folder / Mod</code><p>Assigns an output destination to this song. Select an exact chart folder to write there directly, or select a recognized mod root to use <code>&lt;mod&gt;/data/&lt;song-id&gt;</code>. The mod’s song folder is created when needed.</p></div>
+              <div><code>Saved assignment</code><p>The resolved destination is remembered by song name in <code>config/fnfmod/chart_editor_save_folders.json</code>. Ctrl+S and <em>Save Events</em> reuse it until <strong>Clear Saving Folder</strong> is pressed.</p></div>
+              <div><code>Missing destination</code><p>If the remembered folder no longer exists, opening the chart displays a foreground warning, clears the invalid assignment, and returns Ctrl+S to the normal generated song folder.</p></div>
+              <div><code>Save As</code><p>Asks every time and also accepts either an exact folder or a mod root. The chosen resolved destination becomes this song’s new saved assignment.</p></div>
+              <div><code>File → Import Song to Mod</code><p>Creates the named mod template and copies chart, events, metadata, and OGG stems into it. It does not copy arbitrary rich assets.</p></div>
+              <div><code>View</code><p>Toggles waveforms, onset markers, instrumental waveform color, Vortex mode, the playtest axis gizmo, and optional playtest transport controls.</p></div>
+              <div><code>F12</code><p>Opens the self-contained note preview. It does not build the Minecraft stage and therefore cannot use Free Cam.</p></div>
+              <div><code>Enter / Shift+Enter</code><p>Launches full gameplay from the beginning or from the current timeline position. This requires the editor to have been opened from a Funkin’ Machine.</p></div>
+            </div>
+
+            <h3 id="week-maker-tool" data-toc="Week Maker">Build a Story Mode week</h3>
+            <p>Select <strong>Week Maker</strong> in Creator Tools. The preview on the left updates while the fields on the right are edited.</p>
+            <div class="api-table">
+              <div><code>Week ID</code><p>Becomes the lowercase JSON filename. Spaces and unsupported characters are converted to hyphens.</p></div>
+              <div><code>Display Name</code><p>Is the title shown in Story Mode. If left blank, the Week ID is used.</p></div>
+              <div><code>Songs</code><p>Enter existing song IDs separated by commas, in play order. Story Mode starts with the first ID and finishes after the last.</p></div>
+              <div><code>Difficulties</code><p>Enter comma-separated difficulty names. A blank list becomes <code>normal</code>.</p></div>
+              <div><code>Choose Image</code><p>Selects a PNG for the Story Mode card. Saving copies it into <code>config/fnfmod/mods/images/storymenu/&lt;week-id&gt;.png</code>.</p></div>
+              <div><code>Load Week</code><p>Opens an existing Psych week JSON and fills the ID, name, songs, difficulties, visibility toggles, and image source for editing.</p></div>
+              <div><code>Story / Freeplay visibility</code><p>Controls whether the week appears in Story Mode and whether its songs may be exposed through Freeplay metadata.</p></div>
+              <div><code>Save</code><p>Writes <code>config/fnfmod/mods/weeks/&lt;week-id&gt;.json</code>, copies the image, appends a new ID to <code>weekList.txt</code>, and reloads the song/week libraries.</p></div>
+            </div>
+
+            <h3 id="character-tool" data-toc="Character Editor">Map FNF actions to BBS animation</h3>
+            <p>Select <strong>Character Editor</strong> in Creator Tools. In a bundled mod world it edits that pack’s <code>animations</code> folder; otherwise it edits the global <code>config/fnfmod/mods/animations</code> area.</p>
+            <div class="api-table">
+              <div><code>Player / Opponent</code><p>Switches which half of the same character package is being edited. It does not change who the local user controls. Player values go to <code>character.json</code>; meaningful opponent overrides go to <code>character-opp.json</code>. A blank opponent form inherits the player form.</p></div>
+              <div><code>Load...</code><p>Opens a searchable list of existing animation packages. Loading restores both the player and opponent definitions, their action mappings, camera offsets, icons, colors, and form choices. If the package bundles a BBS form that is not already installed under the same identity, it is copied into BBS’s Recent category for previewing.</p></div>
+              <div><code>New</code><p>Creates an unsaved package with a unique <code>new-character</code> name. Choose its form and mappings before saving.</p></div>
+              <div><code>Character tab</code><p><strong>Character name</strong> chooses the saved package name. <strong>Health icon</strong> is the icon identifier, <strong>Vocal prefix</strong> selects performer-specific Voices filenames, and <strong>Character Color</strong> supplies the health-bar/waveform color.</p></div>
+              <div><code>Model tab</code><p>Selects a BBS form, base model rotation, and base camera X/Y offsets. The Player form can use the currently selected BBS form; the Opponent may inherit it or choose another.</p></div>
+              <div><code>Skin / Model Rules</code><p><strong>Player changes</strong> allows or locks the user’s Settings override. <strong>Authored Skin</strong> cycles between the form texture, the current performer’s Minecraft skin/model, and a named Minecraft account when the form supports skin replacement.</p></div>
+              <div><code>Animations tab</code><p>Selects an FNF action and maps it to a real BBS state. Per-action camera X/Y values add to the model’s base camera offset. Built-in slots are idle, idle2, four directions, miss, and hey; custom named actions may be added for events or Lua.</p></div>
+              <div><code>Animation selector</code><p>Is searchable and scrollable, with a live model preview on the right. Hovering the Anim button and using the wheel changes actions without opening the list. The configured note keys preview directional actions when no text field is active.</p></div>
+              <div><code>Idle: Loop / Bop on beat</code><p>Loop lets the BBS state repeat itself. Bop on beat re-triggers the idle using song-style beat timing, including single-idle and alternating idle/idle2 packages.</p></div>
+              <div><code>Save</code><p>Writes the player definition and, when used, the opponent definition together. Custom packages are saved as <code>animations/&lt;name&gt;/character.json</code> and <code>character-opp.json</code>; available selected form assets are bundled so the package can work without a separately installed form.</p></div>
+            </div>
+
+            <h3 id="noteskin-tool" data-toc="NoteSkin Editor">Tune notes, splashes, and hold covers</h3>
+            <p>Select <strong>NoteSkin Editor</strong> in Creator Tools. Its left panel is a gameplay-style preview; the right panel scrolls through editable choices.</p>
+            <div class="api-table">
+              <div><code>Note Skin / Splashes / Hold Cover</code><p>Each opens a searchable chooser with an animated up-lane preview. <strong>Current Mod</strong> shows assets owned by the active pack; <strong>Global</strong> shows assets installed for general use. A splash or hold cover embedded by the selected note skin takes priority and disables the separate picker.</p></div>
+              <div><code>Preview Chart</code><p>Chooses an installed full-pack song and difficulty. Its chart and audio drive the notes, sustains, splashes, hold covers, timing, pixel UI, and transport bar shown on the left.</p></div>
+              <div><code>Playback controls</code><p>Jump to the beginning, move backward/forward five seconds, play or pause, or drag the timeline. Hold Shift while dragging for finer movement.</p></div>
+              <div><code>Skin Uses RGB</code><p>Changes whether the selected skin accepts Blockified’s three-color recoloring. This belongs to the skin JSON, not to an individual chart.</p></div>
+              <div><code>Preview UI</code><p>Switches the preview between normal and pixel assets without requiring a pixel chart.</p></div>
+              <div><code>Save To</code><p><strong>Note’s Path</strong> updates the JSON beside the original note assets. <strong>Selected Mod Folder</strong> opens the modern folder picker and exports the required assets below that mod’s <code>images/noteSkins</code>, <code>images/noteSplashes</code>, and <code>images/pixelUI</code> paths. <strong>Blockified Folders</strong> installs them into <code>config/fnfmod/skins</code>, <code>config/fnfmod/splashes</code>, and <code>config/fnfmod/splashes/holdSplashes</code>. Existing files with the same names are updated; unrelated files are left alone.</p></div>
+              <div><code>User-settings preview</code><p>The editor renders with the user’s currently saved lane colors and timing settings so it shows how the finished skin will look in normal gameplay. Those values are edited from <strong>Settings → Note Settings</strong>, not here.</p></div>
+              <div><code>Edit Part</code><p>Cycles Note, Receptor, Sustain, Splash, and Hold Cover. Scale, alpha, X, and Y are stored in the selected skin’s JSON and update the preview immediately.</p></div>
+              <div><code>Apply / Back</code><p><strong>Apply</strong> writes or exports the editable skin configuration and its required normal/pixel assets, keeps the selected note, splash, and hold-cover packs as the user’s settings, and leaves the editor open. It also becomes the new rollback point. <strong>Back</strong> exits and discards only changes made since the latest Apply.</p></div>
+            </div>
+
+            <h3 id="world-settings-tool" data-toc="World Settings">Configure a bundled mod world</h3>
+            <p><strong>World Settings</strong> exists only for the singleplayer/LAN host inside a verified bundled mod world.</p>
+            <div class="api-table">
+              <div><code>World tab</code><p>Controls cheats, persistence, external content, button visibility, and an automatic uncloseable Lua menu. Choose the machine profile whose <code>menu.lua</code> becomes the world’s main UI.</p></div>
+              <div><code>Gameplay tab</code><p>Copies the host’s current gameplay and visual options into the world as forced settings, or clears an existing forced copy. Mods and directory selections are never forced.</p></div>
+              <div><code>Display tab</code><p>Keeps the game inside a centered Psych-style 16:9 rectangle, with opaque black letterboxing outside it. Rendering remains at the display’s native resolution and the player’s GUI scale is not changed. The same personal toggle appears in vanilla Video Settings and optional Sodium/Iris replacements.</p></div>
+              <div><code>Assets tab</code><p>Bundles assets used by placed BBS model blocks into the world so shared copies can render them without the host’s separate files.</p></div>
+              <div><code>Save &amp; Close / Cancel</code><p>Save writes <code>blockified-options.json</code>, reapplies world overrides, and reloads visible content. Cancel discards changes made in this screen.</p></div>
+            </div>
+
+            <h3 id="machine-profile-tool" data-toc="Machine profiles">Edit a machine profile</h3>
+            <p>Hold the <strong>Funkin’ Designer</strong> and right-click a Funkin’ Machine or virtual hitbox. Profile editing is limited to the singleplayer/LAN host inside a bundled mod world.</p>
+            <div class="api-table">
+              <div><code>Profile list</code><p>Clicking a profile previews it on the selected machine immediately. The original profile returns when the screen closes unless <strong>Apply</strong>, <strong>Save As</strong>, or a successful <strong>Save Profile Changes</strong> has committed the selected profile.</p></div>
+              <div><code>Apply</code><p>Assigns the selected existing profile to this machine or virtual hitbox.</p></div>
+              <div><code>Save As</code><p>Creates a new editable profile folder with <code>machine.json</code>, starter <code>menu.lua</code>, and a <code>textures</code> folder, then assigns it to the machine. Built-in profiles must be saved this way before they can be edited.</p></div>
+              <div><code>Appearance tab</code><p>Edits the display name and relative PNG paths. <strong>all</strong> is the fallback texture; front, back, left, right, top, bottom, and side can override individual faces.</p></div>
+              <div><code>Menu tab</code><p>Changes the relative path to the profile’s menu Lua file. It chooses which script loads; it does not edit the Lua source itself.</p></div>
+              <div><code>Behavior tab</code><p>Adds, changes, or removes named string, number, and boolean values under <code>behavior</code>. These are profile data for machine-specific code to interpret.</p></div>
+              <div><code>Files tab</code><p>Shows the profile folder and explains which files are written. Lua and PNG contents remain separate from <code>machine.json</code>.</p></div>
+              <div><code>Save Profile Changes</code><p>Validates relative paths and typed behavior values, writes formatted <code>machine.json</code>, reloads the profile, and keeps its identity.</p></div>
+              <div><code>Reload</code><p>Rescans machine files after Lua, PNG, or JSON is changed outside the game.</p></div>
+            </div>
+
+            <h3 id="freecam-tool" data-toc="Free camera">Place stage objects and author camera events</h3>
+            <ol class="guide-steps compact-steps">
+              <li><span class="step-number">1</span><div><h3>Open a machine-based Chart Editor</h3><p>Right-click a Funkin’ Machine, press <kbd>8</kbd>, and select <strong>Chart Editor</strong>. Opening it with the command does not provide the stage anchor required by the full playtest.</p></div></li>
+              <li><span class="step-number">2</span><div><h3>Launch full gameplay</h3><p>Press <kbd>Enter</kbd> to start at the beginning or <kbd>Shift + Enter</kbd> to start at the current chart position. Do not use <kbd>F12</kbd>; that is only the note preview.</p></div></li>
+              <li><span class="step-number">3</span><div><h3>Toggle Free Cam</h3><p>During the playtest press <kbd>Ctrl + Shift + Space</kbd>. The same shortcut or the menu’s Exit button leaves Free Cam.</p></div></li>
+            </ol>
+            <div class="api-table">
+              <div><code>Objects → Add object</code><p>Creates a Sprite, Sparrow XML Spritesheet, Graph, 2D character, 3D character, or Text object at the current view.</p></div>
+              <div><code>Objects → Existing objects</code><p>Refreshes and selects live Lua objects plus main or extra characters. Editing is linked to the runtime object, so transforms update the actual stage object rather than making an unrelated duplicate.</p></div>
+              <div><code>Selected object controls</code><p>Choose its PNG/JSON/text/color, animation and FPS where relevant, and modifiers such as billboard, lighting, see-through rendering, and antialiasing. Runtime-linked tags stay fixed so Lua references remain valid.</p></div>
+              <div><code>G / R / S</code><p>Moves, rotates, or scales the selected object. Type a number for an exact value; X/Y/Z constrain axes, Shift slows motion, Ctrl snaps, Alt+G/R/S resets, and click/Enter confirms. Press R twice for trackball rotation.</p></div>
+              <div><code>Numpad .</code><p>Frames the selected object’s actual origin in the camera. Delete removes an editor-created object or stops editing a linked runtime object.</p></div>
+              <div><code>Camera → Movement</code><p><strong>Override</strong> authors a position fixed to the machine anchor. <strong>Attached</strong> authors a position relative to the currently focused character.</p></div>
+              <div><code>Camera → Frame</code><p><strong>Machine</strong> expresses XYZ using the machine’s facing. <strong>Camera</strong> uses the current view axes. The P and R rows and Zoom accept typed values for precise placement.</p></div>
+              <div><code>Camera mode</code><p><strong>Normal</strong> copies a fixed camera pose. <strong>Orbit</strong> adds a pivot: Pinned stores a world-relative point, while Follow Focus stores an XYZ offset from the player/opponent focus. Camera Rotation 3D can then animate around that pivot.</p></div>
+              <div><code>Viewport navigation</code><p>Hold left click in empty space to fly/look, or start with Shift+click to move through an object. Middle mouse orbits, Shift+MMB pans, Ctrl+MMB dollies, and the wheel dollies unless the fly cursor is grabbed, when it changes fly speed.</p></div>
+              <div><code>Ctrl+C / Ctrl+V</code><p>Ctrl+C copies the selected object as complete ready-to-paste Lua. With no selection it copies the camera event set for the Chart Editor. Ctrl+V duplicates supported world-object Lua only when the generated first-line type comment is present.</p></div>
+              <div><code>F1</code><p>Shows the complete in-game Free Cam key reference, including undo/redo, roll, zoom, speed modifiers, menu visibility, and transform confirmation/cancel keys.</p></div>
+            </div>
+          </section>
+
+          <section class="reference-section" id="commands">
+            <div class="reference-path">Reference <span>/</span> Commands</div>
+            <h2 id="command-list" data-toc="Command list">Commands</h2>
+            <div class="api-table">
+              <div><code>/fnf editor [song]</code><p>Opens the Chart Editor, optionally loading an exact song ID.</p></div>
+              <div><code>/fnf reload</code><p>Reloads options, songs, machines, icons, animations, skins, splashes, hitsounds, fonts, and scores.</p></div>
+              <div><code>/fnf reload songs|skins|splashes|animations|icons|hitsounds|fonts|options|scores</code><p>Reloads one content group.</p></div>
+              <div><code>/fnf world export &lt;pack&gt;</code><p>Moves the current save into the selected pack’s bundled worlds and reopens it there.</p></div>
+              <div><code>/fnf world import</code><p>Moves the active bundled world back into normal Minecraft saves.</p></div>
+            </div>
+            <aside class="callout"><strong>Authority</strong><span>FNF commands require permission level 2: cheats in singleplayer or operator permission on a server.</span></aside>
+          </section>
+
+          <section class="reference-section" id="compatibility">
+            <div class="reference-path">Reference <span>/</span> Compatibility</div>
+            <h2 id="compatibility-boundaries" data-toc="Compatibility boundaries">Compatibility boundaries</h2>
+            <div class="compat-grid">
+              <div><strong>Implemented</strong><p>Psych-style charts, V-Slice chart/metadata pairs, Codename modern charts, Psych events, weeks, stage/character JSON, Sparrow XML, Adobe Animate atlases, custom events/note types, and broad Psych Lua behavior.</p></div>
+              <div><strong>Graceful no-op</strong><p>GLSL shader setters, HScript APIs, video/dialogue playback, arbitrary Haxe/class invocation, Flixel group mutation, controller input, <code>loadSong</code>, and script-driven countdown start are accepted but do not execute.</p></div>
+              <div><strong>Sandboxed</strong><p>Lua has no OS, environment, Java, package loading, unrestricted filesystem, or dynamic-code access. Each callback is capped at 5,000,000 Lua instructions and one second of Lua wall time; trusted host work does not consume the wall limit.</p></div>
+              <div><strong>Dedicated servers</strong><p>Gameplay Lua and rich executable assets are disabled. Chart, events, and audio remain playable through validated server transfer and cache.</p></div>
+            </div>
+            <p>Supported easing bases are Smooth, Sine, Cubic, Quint, Circ, Elastic, Quad, Quart, Expo, Back, Bounce, Linear, and Constant, with in, out, and inOut directions.</p>
+          </section>
+        </article>
+
+        <aside class="on-this-page" aria-label="On this page">
+          <p>On this page</p>
+          <div class="on-this-page-links" aria-live="polite"></div>
+        </aside>
+      </div>
+    </section>
+  </main>
+  <script src="./section.js"></script>
+</body>
+</html>

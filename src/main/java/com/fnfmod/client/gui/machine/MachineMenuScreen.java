@@ -12,10 +12,12 @@ import com.fnfmod.machine.MachineLibrary;
 import com.fnfmod.net.FnfPayloads;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;
+import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
 import net.neoforged.neoforge.network.PacketDistributor;
+import org.lwjgl.glfw.GLFW;
 
 import java.util.List;
 
@@ -24,14 +26,23 @@ public final class MachineMenuScreen extends Screen implements MachineMenuRuntim
 
     private final BlockPos pos;
     private final String profileId;
+    private final String machineTag;
     private final String compatibilityError;
     private final List<FnfPayloads.SongInfo> songs;
+    private final boolean lockedWorldMenu;
     private String currentData;
     private MachineMenuRuntime runtime;
+    private final com.fnfmod.client.camera.MenuCameraController menuCamera =
+            new com.fnfmod.client.camera.MenuCameraController();
     private String loadError;
     private boolean closing;
     /** Direct settings navigation suspends this screen without destroying shared Lua audio. */
-    private boolean preserveRuntimeForSettings;
+    private boolean preserveRuntimeForChild;
+    private boolean disposed;
+    private boolean exitWorldRequested;
+    private boolean taggedLaunchPending;
+    private String launchError;
+    private long launchErrorUntil;
     // Silent preload gate: while menuLoading the screen renders nothing and input
     // stays blocked. Heavy asset decoding runs on a worker thread; the cheap GL
     // upload finalizes on the render thread afterwards.
@@ -42,20 +53,24 @@ public final class MachineMenuScreen extends Screen implements MachineMenuRuntim
             new java.util.concurrent.atomic.AtomicBoolean();
     private Thread preloadThread;
 
-    public MachineMenuScreen(BlockPos pos, String profileId, String initialData,
-                             String compatibilityError, List<FnfPayloads.SongInfo> songs) {
+    public MachineMenuScreen(BlockPos pos, String profileId, String machineTag, String initialData,
+                             String compatibilityError, List<FnfPayloads.SongInfo> songs,
+                             boolean lockedWorldMenu) {
         super(Component.literal("Funkin' Machine"));
         this.pos = pos;
         this.profileId = MachineLibrary.canonical(profileId);
+        this.machineTag = machineTag == null ? "" : machineTag;
         this.currentData = initialData;
         this.compatibilityError = compatibilityError;
         this.songs = songs == null ? List.of() : List.copyOf(songs);
+        this.lockedWorldMenu = lockedWorldMenu;
     }
 
     @Override
     protected void init() {
+        menuCamera.activate();
         closing = false;
-        preserveRuntimeForSettings = false;
+        preserveRuntimeForChild = false;
         preloadCancelled.set(false);
         loadError = null;
         MachineDefinition definition = MachineLibrary.find(profileId).orElse(null);
@@ -64,7 +79,7 @@ public final class MachineMenuScreen extends Screen implements MachineMenuRuntim
         } else if (definition == null) {
             loadError = "Profile unavailable. Install matching mod/version.";
         } else if (runtime == null) {
-            runtime = new MachineMenuRuntime(definition, currentData, songs, this);
+            runtime = new MachineMenuRuntime(definition, machineTag, currentData, songs, this);
             if (!runtime.loaded()) loadError = runtime.error();
             else beginPreload();
         } else if (!runtime.loaded()) {
@@ -135,7 +150,10 @@ public final class MachineMenuScreen extends Screen implements MachineMenuRuntim
 
     @Override
     public void tick() {
-        if (!menuLoading && runtime != null) runtime.tick();
+        if (!menuLoading && runtime != null) {
+            runtime.setKeyboardSuppressed(getFocused() instanceof EditBox);
+            runtime.tick();
+        }
     }
 
     @Override
@@ -150,13 +168,11 @@ public final class MachineMenuScreen extends Screen implements MachineMenuRuntim
         // While the menu is still loading, the gate is invisible: no blur yet, so the
         // player just sees the world with input held until the menu is ready.
         if (menuLoading) return;
-        // A menu that controls the blur overrides the player's option for its own
-        // screen only; otherwise vanilla behavior (the player's setting) is kept.
+        // Custom UI is transparent by default so 2D controls can be composed with
+        // the world-space scene. Lua may still opt into blur explicitly.
         if (runtime != null && runtime.loaded() && runtime.isMenuBlurControlled()) {
             com.fnfmod.client.render.MenuBlur.render(minecraft, (float) runtime.currentMenuBlur(), partialTick);
-            return;
         }
-        super.renderBlurredBackground(partialTick);
     }
 
     @Override
@@ -167,6 +183,20 @@ public final class MachineMenuScreen extends Screen implements MachineMenuRuntim
             return;
         }
         if (runtime != null && runtime.loaded()) runtime.render(gui, font, mouseX, mouseY);
+        if (launchError != null && System.nanoTime() < launchErrorUntil) {
+            var lines = font.split(Component.literal(launchError), Math.max(80, width - 48));
+            int y = Math.max(8, height - 20 - lines.size() * font.lineHeight);
+            gui.flush();
+            gui.pose().pushPose();
+            gui.pose().translate(0, 0, 1000);
+            gui.fill(16, y - 6, width - 16, y + lines.size() * font.lineHeight + 6, 0xEE17111C);
+            for (var line : lines) {
+                gui.drawString(font, line, (width - font.width(line)) / 2, y, 0xFFFF9999);
+                y += font.lineHeight;
+            }
+            gui.flush();
+            gui.pose().popPose();
+        }
         String runtimeError = runtime == null ? loadError : runtime.error();
         if (runtimeError != null) {
             gui.drawCenteredString(font, Component.literal("Machine menu error"), width / 2,
@@ -176,6 +206,24 @@ public final class MachineMenuScreen extends Screen implements MachineMenuRuntim
             gui.drawCenteredString(font, Component.literal("Fallback keeps built-in song selection available."),
                     width / 2, height / 2, 0xFF999999);
         }
+    }
+
+    public void renderLuaWorld(com.mojang.blaze3d.vertex.PoseStack poseStack,
+                               net.minecraft.client.Camera camera) {
+        if (menuLoading || runtime == null || !runtime.loaded() || minecraft == null) return;
+        net.minecraft.core.Direction facing = net.minecraft.core.Direction.NORTH;
+        if (minecraft.level != null) {
+            var state = minecraft.level.getBlockState(pos);
+            if (state.hasProperty(com.fnfmod.block.FunkinMachineBlock.FACING)) {
+                facing = state.getValue(com.fnfmod.block.FunkinMachineBlock.FACING);
+            }
+        }
+        runtime.renderWorld(poseStack, camera, pos, facing);
+    }
+
+    /** Whether this menu explicitly authored a detached camera. */
+    public boolean usesCustomCamera() {
+        return menuCamera.isEngaged();
     }
 
     @Override
@@ -190,6 +238,36 @@ public final class MachineMenuScreen extends Screen implements MachineMenuRuntim
         if (!menuLoading && runtime != null && runtime.loaded()
                 && runtime.mouseReleased(mouseX, mouseY, button)) return true;
         return super.mouseReleased(mouseX, mouseY, button);
+    }
+
+    @Override
+    public boolean mouseScrolled(double mouseX, double mouseY, double dx, double dy) {
+        if (!menuLoading && runtime != null && runtime.loaded()) {
+            runtime.mouseScrolled(mouseX, mouseY, dx, dy);
+            // Lua may poll the wheel in onUpdate without defining a callback.
+            return true;
+        }
+        return super.mouseScrolled(mouseX, mouseY, dx, dy);
+    }
+
+    @Override
+    public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
+        if (keyCode == GLFW.GLFW_KEY_ESCAPE) {
+            onClose();
+            return true;
+        }
+        if (getFocused() instanceof EditBox) return super.keyPressed(keyCode, scanCode, modifiers);
+        if (!menuLoading && runtime != null && runtime.loaded())
+            runtime.keyPressed(keyCode, scanCode, modifiers);
+        return super.keyPressed(keyCode, scanCode, modifiers);
+    }
+
+    @Override
+    public boolean keyReleased(int keyCode, int scanCode, int modifiers) {
+        if (!(getFocused() instanceof EditBox) && !menuLoading
+                && runtime != null && runtime.loaded())
+            runtime.keyReleased(keyCode, scanCode, modifiers);
+        return super.keyReleased(keyCode, scanCode, modifiers);
     }
 
     @Override
@@ -213,7 +291,8 @@ public final class MachineMenuScreen extends Screen implements MachineMenuRuntim
 
     @Override
     public boolean playSong(String songId, String difficulty, boolean duet,
-                            byte playSide, byte playbackMode, byte returnTarget) {
+                            byte playSide, byte playbackMode, byte returnTarget, String targetMachine) {
+        if (taggedLaunchPending) return false;
         FnfPayloads.SongInfo song = songs.stream()
                 .filter(value -> value.id().equalsIgnoreCase(songId == null ? "" : songId.trim()))
                 .findFirst().orElse(null);
@@ -225,15 +304,34 @@ public final class MachineMenuScreen extends Screen implements MachineMenuRuntim
         ClientSession.pendingPlaySide = duet ? 0 : (byte) Math.max(0, Math.min(2, playSide));
         ClientSession.pendingPlaybackMode = PlaybackMode.fromNetworkId(playbackMode);
         ClientSession.pendingSongExitTarget = FnfPayloads.LeaveC2S.normalizeReturnTarget(returnTarget);
-        PacketDistributor.sendToServer(new FnfPayloads.MachineDirectPlayC2S(pos, song.id(), difficulty,
-                duet, ClientSession.pendingPlaySide, ClientSession.pendingPlaybackMode.networkId()));
+        if (targetMachine == null || targetMachine.isBlank()) {
+            PacketDistributor.sendToServer(new FnfPayloads.MachineDirectPlayC2S(pos, song.id(), difficulty,
+                    duet, ClientSession.pendingPlaySide, ClientSession.pendingPlaybackMode.networkId()));
+        } else {
+            launchError = null;
+            taggedLaunchPending = true;
+            ClientSession.expectTaggedPlay(this::onTaggedPlayResult);
+            PacketDistributor.sendToServer(new FnfPayloads.MachineTaggedPlayC2S(pos, targetMachine,
+                    song.id(), difficulty, duet, ClientSession.pendingPlaySide,
+                    ClientSession.pendingPlaybackMode.networkId()));
+        }
+        return true;
+    }
+
+    public boolean onTaggedPlayResult(FnfPayloads.MachineTaggedPlayResultS2C result) {
+        if (!taggedLaunchPending || !pos.equals(result.menuPos())) return false;
+        if (!result.error().isEmpty()) {
+            taggedLaunchPending = false;
+            launchError = result.error();
+            launchErrorUntil = System.nanoTime() + 8_000_000_000L;
+        }
         return true;
     }
 
     @Override
     public void openSettings() {
         if (minecraft != null) {
-            preserveRuntimeForSettings = true;
+            preserveRuntimeForChild = true;
             minecraft.setScreen(new FnfSettingsScreen(this));
         }
     }
@@ -270,7 +368,7 @@ public final class MachineMenuScreen extends Screen implements MachineMenuRuntim
 
     @Override
     public void closeMenu() {
-        if (!closing && minecraft != null) {
+        if (!lockedWorldMenu && !closing && minecraft != null) {
             ClientSession.leave();
             minecraft.setScreen(null);
         }
@@ -278,8 +376,27 @@ public final class MachineMenuScreen extends Screen implements MachineMenuRuntim
 
     @Override
     public void onClose() {
+        if (minecraft != null && minecraft.level != null) {
+            preserveRuntimeForChild = true;
+            com.fnfmod.client.AutoWorldMenuClient.openPauseMenu(this, this::disposeRuntime);
+            return;
+        }
         if (!closing) ClientSession.leave();
         super.onClose();
+    }
+
+    @Override
+    public boolean exitWorld() {
+        if (disposed || closing || exitWorldRequested || minecraft == null || minecraft.level == null)
+            return false;
+        exitWorldRequested = true;
+        // Finish the Lua callback before disposing its runtime or disconnecting.
+        var sourceLevel = minecraft.level;
+        minecraft.tell(() -> {
+            if (minecraft.level == sourceLevel)
+                com.fnfmod.client.AutoWorldMenuClient.exitWorld(this::disposeRuntime);
+        });
+        return true;
     }
 
     @Override
@@ -297,11 +414,20 @@ public final class MachineMenuScreen extends Screen implements MachineMenuRuntim
 
     @Override
     public void removed() {
-        if (preserveRuntimeForSettings) {
-            preserveRuntimeForSettings = false;
+        if (preserveRuntimeForChild) {
+            preserveRuntimeForChild = false;
+            if (runtime != null) runtime.suspendInput();
             super.removed();
             return;
         }
+        disposeRuntime();
+        super.removed();
+    }
+
+    private void disposeRuntime() {
+        if (disposed) return;
+        disposed = true;
+        menuCamera.deactivate();
         closing = true;
         // Esc/close during loading cancels the background decode and frees anything
         // it decoded that never got uploaded.
@@ -312,10 +438,12 @@ public final class MachineMenuScreen extends Screen implements MachineMenuRuntim
         com.fnfmod.client.render.MachineAtlasCache.dropPending();
         if (runtime != null) {
             runtime.close();
-            saveData(runtime.dataSnbt());
+            // Disconnecting through the embedded vanilla pause menu reaches cleanup after the
+            // network connection is gone; saving there would try to send on a closed channel.
+            if (minecraft != null && minecraft.level != null && minecraft.getConnection() != null)
+                saveData(runtime.dataSnbt());
             runtime = null;
         }
-        super.removed();
     }
 
     @Override

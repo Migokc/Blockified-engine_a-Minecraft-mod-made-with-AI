@@ -24,7 +24,7 @@ public final class SongSelectActionsScreen extends Screen {
     private int panelHeight;
 
     public SongSelectActionsScreen(SongSelectScreen parent, BlockPos machinePos) {
-        super(Component.literal("Song Selector Actions"));
+        super(Component.literal("Creator Tools"));
         this.parent = parent;
         this.machinePos = machinePos;
     }
@@ -67,15 +67,29 @@ public final class SongSelectActionsScreen extends Screen {
                 minecraft.setScreen(new WeekMakerScreen(this)))
                 .bounds(right, firstRow + 36, cardWidth, 28).build());
 
+        addRenderableWidget(Button.builder(Component.literal("NoteSkin Editor"), button ->
+                minecraft.setScreen(new NoteSettingsScreen(this, true)))
+                .bounds(left, firstRow + 72, cardWidth, 28).build());
+
+        if (worldRoot != null) {
+            addRenderableWidget(Button.builder(Component.literal("Menu Lua Editor"), button ->
+                    minecraft.setScreen(new com.fnfmod.client.gui.machine.MachineMenuEditorSelectScreen(this)))
+                    .bounds(right, firstRow + 72, cardWidth, 28).build());
+        }
+
         if (showWorldSettings) {
             addRenderableWidget(Button.builder(Component.literal("World Settings"), button ->
                     minecraft.setScreen(new WorldSettingsScreen(this, worldRoot)))
-                    .bounds(left, firstRow + 72, panelWidth - 28, 24).build());
+                    .bounds(left, firstRow + 108, cardWidth, 28).build());
         }
 
         int footerY = panelY + panelHeight - 34;
         int footerWidth = (panelWidth - 34) / 2;
         addRenderableWidget(Button.builder(Component.literal("Close Machine"), button -> {
+            if (ClientSession.lockedWorldMenu) {
+                PacketDistributor.sendToServer(new FnfPayloads.AutoWorldMenuC2S());
+                return;
+            }
             ClientSession.leave();
             minecraft.setScreen(null);
         }).bounds(left, footerY, footerWidth, 20).build());
@@ -89,7 +103,7 @@ public final class SongSelectActionsScreen extends Screen {
         BlockifiedScreenStyle.backdrop(gui, width, height);
         BlockifiedScreenStyle.panel(gui, panelX, panelY, panelWidth, panelHeight);
         BlockifiedScreenStyle.header(gui, font, panelX + 16, panelY + 13,
-                "BLOCKIFIED ENGINE", "Song tools",
+                "BLOCKIFIED ENGINE", "Creator Tools",
                 "Editors, content refresh, and world-specific controls.");
         BlockifiedScreenStyle.inner(gui, panelX + 14, panelY + 68,
                 panelWidth - 28, panelHeight - 108);

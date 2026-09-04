@@ -37,8 +37,20 @@ final class LuaFontLoader implements AutoCloseable {
     private final List<Path> assetRoots;
     private final Path globalFonts;
     private final boolean allowSongFonts;
-    private final Map<Path, Loaded> loaded = new LinkedHashMap<>();
-    private final Set<Path> failed = new LinkedHashSet<>();
+    /**
+     * Atlas resolution is baked in when a face is rasterized, so a file loaded at two
+     * qualities is two entries rather than one shared font.
+     */
+    private record Key(Path file, int oversample) {}
+
+    /** Minecraft rasterizes around 11px; Lua scales that to arbitrary FNF sizes. */
+    static final int DEFAULT_OVERSAMPLE = 8;
+    private static final int MIN_OVERSAMPLE = 1;
+    /** Past this the atlas cost grows fast for no visible gain. */
+    private static final int MAX_OVERSAMPLE = 16;
+
+    private final Map<Key, Loaded> loaded = new LinkedHashMap<>();
+    private final Set<Key> failed = new LinkedHashSet<>();
     private final Set<String> missing = new LinkedHashSet<>();
 
     LuaFontLoader(List<Path> assetRoots, Path globalFonts, boolean allowSongFonts) {
@@ -49,6 +61,16 @@ final class LuaFontLoader implements AutoCloseable {
     }
 
     Font get(String name) {
+        return get(name, DEFAULT_OVERSAMPLE);
+    }
+
+    /** Clamps a requested quality into the range the atlas can serve. */
+    static int clampOversample(double requested) {
+        if (!Double.isFinite(requested)) return DEFAULT_OVERSAMPLE;
+        return (int) Math.max(MIN_OVERSAMPLE, Math.min(MAX_OVERSAMPLE, Math.round(requested)));
+    }
+
+    Font get(String name, double oversample) {
         Path file = resolve(name);
         if (file == null) {
             if (name != null && missing.add(name.toLowerCase(Locale.ROOT))) {
@@ -56,19 +78,20 @@ final class LuaFontLoader implements AutoCloseable {
             }
             return null;
         }
-        Loaded cached = loaded.get(file);
+        Key key = new Key(file, clampOversample(oversample));
+        Loaded cached = loaded.get(key);
         if (cached != null) return cached.font;
-        if (failed.contains(file)) return null;
-        Loaded created = load(file);
+        if (failed.contains(key)) return null;
+        Loaded created = load(file, key.oversample());
         if (created == null) {
-            failed.add(file);
+            failed.add(key);
             return null;
         }
-        loaded.put(file, created);
+        loaded.put(key, created);
         return created.font;
     }
 
-    private Loaded load(Path file) {
+    private Loaded load(Path file, int oversample) {
         FT_Face face = null;
         ByteBuffer memory = null;
         TrueTypeGlyphProvider provider = null;
@@ -87,17 +110,17 @@ final class LuaFontLoader implements AutoCloseable {
                         "Finding Lua font Unicode charmap");
             }
 
-            // Minecraft normally rasterizes around 11px. Lua then scales that image
-            // to arbitrary FNF sizes, so use an 8x atlas to avoid blocky edges.
+            // Minecraft normally rasterizes around 11px. Lua then scales that image to
+            // arbitrary FNF sizes, so the atlas is oversampled to avoid blocky edges.
             provider = new TrueTypeGlyphProvider(memory, face,
-                    11f, 8f, 0f, 0f, "");
+                    11f, oversample, 0f, 0f, "");
             memory = null;
             face = null;
             textureBase = FnfMod.id("lua_font/" + NEXT_ID.incrementAndGet());
             FontSet set = new FontSet(Minecraft.getInstance().getTextureManager(), textureBase);
             set.reload(List.of(new GlyphProvider.Conditional(provider, FontOption.Filter.ALWAYS_PASS)), Set.of());
             Font font = new Font(ignored -> set, false);
-            FnfMod.LOGGER.info("Loaded Lua font {}", file);
+            FnfMod.LOGGER.info("Loaded Lua font {} at {}x quality", file, oversample);
             return new Loaded(font, set, provider, textureBase);
         } catch (Throwable error) {
             if (textureBase != null) releaseFontTextures(textureBase);

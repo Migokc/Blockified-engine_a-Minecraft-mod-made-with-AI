@@ -20,10 +20,15 @@ public class ClientOptions {
     public static final String SONG_ICON = "__song__";
     public static final String NOTE_SKIN_DEFAULT = "default";
     public static final String NOTE_SKIN_NONE = "none";
+    public static final String NOTE_ASSET_SOURCE_AUTO = "auto";
+    public static final String NOTE_ASSET_SOURCE_CURRENT = "current";
+    public static final String NOTE_ASSET_SOURCE_GLOBAL = "global";
     public static final String SKIN_SOURCE_FORM = "form";
     public static final String SKIN_SOURCE_PLAYER = "player";
     public static final String SKIN_SOURCE_FILE = "file";
     public static final String SKIN_SOURCE_ACCOUNT = "account";
+    /** Keep Blockified/Minecraft GUI coordinates at a Psych-style 1280x720 minimum canvas. */
+    public boolean forcePsychResolution = false;
     public boolean downscroll = false;
     /** Your strumline centered, opponent notes split to the screen edges. */
     public boolean middlescroll = false;
@@ -61,6 +66,8 @@ public class ClientOptions {
     public int playAs = 0;
     /** default = chart arrowSkin/splashSkin; none = procedural; otherwise skins/&lt;name&gt;. */
     public String noteSkin = NOTE_SKIN_DEFAULT;
+    /** Source tab used for same-named note assets: auto (legacy), current, or global. */
+    public String noteSkinSource = NOTE_ASSET_SOURCE_AUTO;
     /** Health icons (__song__ = current song, "" = none). */
     public String playerIcon = SONG_ICON;
     public String botIcon = SONG_ICON;
@@ -68,21 +75,26 @@ public class ClientOptions {
     public String hudStyle = "default";
     /** Splash pair name in config/fnfmod/splashes/ ("" = off). Ignored when the note skin ships its own. */
     public String splashSkin = "";
+    public String splashSkinSource = NOTE_ASSET_SOURCE_AUTO;
     /** default = chart/Psych hold cover; none = off; otherwise a pack in splashes/holdSplashes/. */
     public String holdSplashSkin = NOTE_SKIN_DEFAULT;
+    public String holdSplashSkinSource = NOTE_ASSET_SOURCE_AUTO;
     /** Hitsound file name in config/fnfmod/hitsounds/ ("" = off). */
     public String hitsound = "";
     public double hitsoundVolume = 1.0;
 
-    /** Chart editor playback hitsounds, per chart side. */
+    // The Chart tab's options moved to per-song files (config/fnfmod/editor/<song>.json), since
+    // a value tuned for one chart should not follow the user into every other one. These fields
+    // remain only as the starting values a song inherits the first time it is opened.
+    /** Legacy seed: chart editor playback hitsounds, per chart side. */
     public boolean editorHitsoundPlayer = false;
     public boolean editorHitsoundOpponent = false;
-    /** Editor-only metronome; never used by gameplay. */
+    /** Legacy seed: editor-only metronome; never used by gameplay. */
     public boolean editorMetronome = false;
     public double editorMetronomeVolume = 0.75;
     public boolean editorWaveforms = true;
     public boolean editorOnsetMarkers = true;
-    /** Added to the chart's song offset only inside the chart editor. */
+    /** Legacy seed: added to the chart's song offset only inside the chart editor. */
     public double editorChartingOffsetMs = 0.0;
     /** Chart-editor instrumental waveform RGB. */
     public int editorInstWaveformColor = 0x0000FF;
@@ -194,6 +206,9 @@ public class ClientOptions {
         if (o.botSkinAccount == null) o.botSkinAccount = "";
         if (o.noteSkin == null || o.noteSkin.isBlank()) o.noteSkin = NOTE_SKIN_DEFAULT;
         if (o.holdSplashSkin == null || o.holdSplashSkin.isBlank()) o.holdSplashSkin = NOTE_SKIN_DEFAULT;
+        o.noteSkinSource = normalizeNoteAssetSource(o.noteSkinSource);
+        o.splashSkinSource = normalizeNoteAssetSource(o.splashSkinSource);
+        o.holdSplashSkinSource = normalizeNoteAssetSource(o.holdSplashSkinSource);
         if (o.noteColorBase == null || o.noteColorBase.length != 4) o.noteColorBase = defaultBase();
         if (o.noteColorHighlight == null || o.noteColorHighlight.length != 4) {
             o.noteColorHighlight = defaultHighlight();
@@ -209,6 +224,15 @@ public class ClientOptions {
         return switch (normalized) {
             case SKIN_SOURCE_PLAYER, SKIN_SOURCE_FILE, SKIN_SOURCE_ACCOUNT -> normalized;
             default -> SKIN_SOURCE_FORM;
+        };
+    }
+
+    private static String normalizeNoteAssetSource(String source) {
+        if (source == null) return NOTE_ASSET_SOURCE_AUTO;
+        return switch (source.trim().toLowerCase(java.util.Locale.ROOT)) {
+            case NOTE_ASSET_SOURCE_CURRENT -> NOTE_ASSET_SOURCE_CURRENT;
+            case NOTE_ASSET_SOURCE_GLOBAL -> NOTE_ASSET_SOURCE_GLOBAL;
+            default -> NOTE_ASSET_SOURCE_AUTO;
         };
     }
 

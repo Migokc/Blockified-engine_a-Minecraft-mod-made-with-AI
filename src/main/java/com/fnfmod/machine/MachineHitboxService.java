@@ -54,15 +54,18 @@ public final class MachineHitboxService {
     private MachineHitboxService() {}
 
     public static void openBuilder(ServerPlayer player) {
-        if (!canEdit(player)) {
+        var server = player.getServer();
+        if (server == null || server.isDedicatedServer()
+                || (!server.isSingleplayerOwner(player.getGameProfile()) && !player.hasPermissions(2))) {
             player.displayClientMessage(Component.literal(
-                    "Machine hitboxes can be created only by the singleplayer/LAN host in a mod world."), true);
+                    "Funkin' Designer is available only to the singleplayer/LAN host or an operator."), true);
             return;
         }
         String suggested = MachineEditorService.copiedProfile(player)
                 .filter(id -> MachineLibrary.find(id).isPresent())
                 .orElse(MachineDefinition.DEFAULT_ID);
-        PacketDistributor.sendToPlayer(player, new FnfPayloads.OpenHitboxBuilderS2C(suggested));
+        PacketDistributor.sendToPlayer(player, new FnfPayloads.OpenHitboxBuilderS2C(
+                suggested, ModContentScope.isModWorld()));
     }
 
     public static void handleBuilder(ServerPlayer player, FnfPayloads.HitboxBuilderC2S payload) {

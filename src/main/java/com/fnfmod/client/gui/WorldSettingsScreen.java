@@ -5,6 +5,8 @@ import com.fnfmod.client.anim.CharacterAnimations;
 import com.fnfmod.client.render.IconLibrary;
 import com.fnfmod.client.world.WorldSettingsIO;
 import com.fnfmod.net.FnfPayloads;
+import com.fnfmod.machine.MachineDefinition;
+import com.fnfmod.machine.MachineLibrary;
 import com.fnfmod.song.SongLibrary;
 import com.fnfmod.world.ModWorldOptions;
 import com.google.gson.JsonObject;
@@ -27,7 +29,7 @@ import java.nio.file.Path;
 public class WorldSettingsScreen extends Screen {
 
     private enum Tab {
-        WORLD("World"), GAMEPLAY("Gameplay"), ASSETS("Assets");
+        WORLD("World"), GAMEPLAY("Gameplay"), DISPLAY("Display"), ASSETS("Assets");
         final String label;
         Tab(String label) { this.label = label; }
     }
@@ -77,6 +79,20 @@ public class WorldSettingsScreen extends Screen {
                 add(x, y += step, w, boolLabel("Hide this button", "hideSettingsButton", false),
                         b -> { toggle("hideSettingsButton", false); b.setMessage(boolLabel("Hide this button", "hideSettingsButton", false)); },
                         "Hides this World Settings button in the menu. Re-enable by editing blockified-options.json.");
+                add(x, y += step, w, autoMenuLabel(), b -> {
+                    toggle("autoOpenMenu", false);
+                    if (settings.get("autoOpenMenu").getAsBoolean()
+                            && (!settings.has("autoMenuProfile")
+                            || MachineLibrary.find(settings.get("autoMenuProfile").getAsString()).isEmpty())) {
+                        cycleAutoMenuProfile();
+                    }
+                    b.setMessage(autoMenuLabel());
+                }, "When enabled, entering this world opens its chosen Lua menu. The menu cannot be closed; "
+                        + "it may only navigate to another allowed screen or start a song.");
+                add(x, y += step, w, autoMenuProfileLabel(), b -> {
+                    cycleAutoMenuProfile();
+                    b.setMessage(autoMenuProfileLabel());
+                }, "Machine profile whose menu.lua becomes this world's automatic main menu.");
             }
             case GAMEPLAY -> add(x, y, w, forcedLabel(), b -> {
                 if (WorldSettingsIO.hasForcedGameplay(settings)) WorldSettingsIO.clearForcedGameplay(settings);
@@ -84,6 +100,12 @@ public class WorldSettingsScreen extends Screen {
                 b.setMessage(forcedLabel());
             }, "Force this world's players to use YOUR current gameplay/visual settings (note colors, scroll, HUD, "
                     + "skins, icons...). Saved in the world file. Mods and directories are never forced. Toggle to clear.");
+            case DISPLAY -> add(x, y, w, boolLabel("Psych 1280x720 canvas", "forcePsychResolution", false), b -> {
+                toggle("forcePsychResolution", false);
+                b.setMessage(boolLabel("Psych 1280x720 canvas", "forcePsychResolution", false));
+            }, "Keeps the game inside a centered Psych-style 16:9 canvas while this world is open. "
+                    + "Rendering stays at the display's native resolution and outside space is black. "
+                    + "The player's personal video option is restored outside the world.");
             case ASSETS -> add(x, y, w, Component.literal("Bundle BBS model-block assets"), b -> {
                 Path assets = ModWorldOptions.bundledAssetsRoot();
                 int n = assets == null ? 0 : CharacterAnimations.bundleWorldModelBlocks(assets);
@@ -130,6 +152,34 @@ public class WorldSettingsScreen extends Screen {
                 : "Force my gameplay settings");
     }
 
+    private Component autoMenuLabel() {
+        return boolLabel("Automatic Lua menu", "autoOpenMenu", false);
+    }
+
+    private Component autoMenuProfileLabel() {
+        String id = settings.has("autoMenuProfile")
+                ? settings.get("autoMenuProfile").getAsString() : "";
+        MachineDefinition definition = MachineLibrary.find(id).orElse(null);
+        return Component.literal("Menu: " + (definition == null ? "Choose a profile" : definition.displayName()));
+    }
+
+    private void cycleAutoMenuProfile() {
+        java.util.List<MachineDefinition> menus = MachineLibrary.all().values().stream()
+                .filter(value -> !value.builtIn() && value.menuScript() != null)
+                .sorted(java.util.Comparator.comparing(MachineDefinition::displayName,
+                        String.CASE_INSENSITIVE_ORDER)).toList();
+        if (menus.isEmpty()) {
+            settings.remove("autoMenuProfile");
+            settings.addProperty("autoOpenMenu", false);
+            return;
+        }
+        String current = settings.has("autoMenuProfile")
+                ? settings.get("autoMenuProfile").getAsString() : "";
+        int index = -1;
+        for (int i = 0; i < menus.size(); i++) if (menus.get(i).id().equalsIgnoreCase(current)) index = i;
+        settings.addProperty("autoMenuProfile", menus.get((index + 1) % menus.size()).id());
+    }
+
     private Component boolLabel(String name, String key, boolean fallback) {
         boolean on = settings.has(key) ? settings.get(key).getAsBoolean() : fallback;
         return Component.literal(name + ": " + (on ? "Yes" : "No"));
@@ -153,11 +203,15 @@ public class WorldSettingsScreen extends Screen {
         if (WorldSettingsIO.write(worldRoot, settings)) {
             ModWorldOptions.loadActiveWorld();
             ClientOptions.applyWorldOverrides(worldRoot);
+            com.fnfmod.client.render.PsychResolutionController.refresh();
             SongLibrary.rescan();
             IconLibrary.rescan();
             PacketDistributor.sendToServer(new FnfPayloads.ReloadC2S(
                     SongLibrary.processNonce(), SongLibrary.rescanGeneration()));
             com.fnfmod.client.render.NoteStyle.reload();
+            if (ModWorldOptions.autoOpenMenu()) {
+                PacketDistributor.sendToServer(new FnfPayloads.AutoWorldMenuC2S());
+            }
         }
         onClose();
     }
@@ -176,6 +230,7 @@ public class WorldSettingsScreen extends Screen {
         String hint = switch (activeTab) {
             case WORLD -> "Controls for this bundled world.";
             case GAMEPLAY -> "Force your visual/gameplay settings onto this world (stored in its JSON).";
+            case DISPLAY -> "World-scoped canvas and camera presentation controls.";
             case ASSETS -> "Ship BBS model-block assets inside the world for sharing.";
         };
         gui.drawCenteredString(font, Component.literal(hint), width / 2, 54 - 4, 0xFFB0B0C0);

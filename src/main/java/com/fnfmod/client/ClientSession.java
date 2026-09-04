@@ -31,8 +31,10 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 
@@ -58,6 +60,8 @@ public final class ClientSession {
     public static boolean songAssets = true;
     /** Dedicated servers disable gameplay Lua; integrated/LAN servers retain it. */
     public static boolean luaAllowed = true;
+    /** The current chooser belongs to an automatic mod-world menu and cannot exit to world. */
+    public static boolean lockedWorldMenu;
 
     public static SongChart chart;
     public static SongPlayer preloadedPlayer;
@@ -67,14 +71,42 @@ public final class ClientSession {
     private static final Map<String, FnfPayloads.FileMeta> manifestByName = new HashMap<>();
     private static final Map<String, IncomingFile> receiving = new HashMap<>();
     private static List<String> missingFiles = new ArrayList<>();
-    private static final int MAX_CONCURRENT_FILES = 8;
+    /** Files requested but not yet atomically published. Keeps packet queues bounded. */
+    private static final Set<String> requestedFiles = new HashSet<>();
+    private static final int REQUEST_BATCH_FILES = 2;
+    private static final int MAX_CONCURRENT_FILES = REQUEST_BATCH_FILES;
     /** Invalidates asynchronous hash checks when a session changes or the client disconnects. */
     private static long generation;
+    private static BlockPos taggedStagePos;
+    private static Direction taggedStageFacing;
+    private static java.util.function.Consumer<FnfPayloads.MachineTaggedPlayResultS2C> taggedPlayListener;
+
+    public static void expectTaggedPlay(java.util.function.Consumer<FnfPayloads.MachineTaggedPlayResultS2C> listener) {
+        taggedPlayListener = listener;
+    }
+
+    public static void onTaggedPlayResult(FnfPayloads.MachineTaggedPlayResultS2C result) {
+        if (taggedPlayListener == null || !result.menuPos().equals(activePos)) return;
+        var listener = taggedPlayListener;
+        taggedPlayListener = null;
+        if (result.error().isEmpty()) setTaggedStage(result.stagePos(), result.facing());
+        // The same menu may currently be behind Minecraft's pause/settings screen.
+        listener.accept(result);
+    }
+
+    public static void setTaggedStage(BlockPos pos, byte facing) {
+        taggedStagePos = pos.immutable();
+        Direction value = Direction.from3DDataValue(facing);
+        taggedStageFacing = value.getAxis().isHorizontal() ? value : Direction.NORTH;
+    }
 
     private ClientSession() {}
 
     public static void reset() {
         generation++;
+        taggedStagePos = null;
+        taggedStageFacing = null;
+        taggedPlayListener = null;
         activePos = null;
         songId = "";
         difficulty = "";
@@ -84,11 +116,13 @@ public final class ClientSession {
         playbackMode = PlaybackMode.MINECRAFT;
         songAssets = true;
         luaAllowed = true;
+        lockedWorldMenu = false;
         chart = null;
         resolvedFolder = null;
         manifest = List.of();
         manifestByName.clear();
         receiving.clear();
+        requestedFiles.clear();
         missingFiles.clear();
         if (preloadedPlayer != null) {
             preloadedPlayer.dispose();
@@ -108,6 +142,10 @@ public final class ClientSession {
 
     public static void onManifest(FnfPayloads.FileManifestS2C payload) {
         activePos = payload.pos();
+        if (!activePos.equals(taggedStagePos)) {
+            taggedStagePos = null;
+            taggedStageFacing = null;
+        }
         songId = payload.songId();
         difficulty = payload.difficulty();
         duet = payload.duet();
@@ -124,6 +162,7 @@ public final class ClientSession {
         manifestByName.clear();
         for (FnfPayloads.FileMeta meta : manifest) manifestByName.put(meta.name(), meta);
         receiving.clear();
+        requestedFiles.clear();
         long requestGeneration = ++generation;
         String requestedSongId = songId;
         String requestedDifficulty = difficulty;
@@ -159,12 +198,29 @@ public final class ClientSession {
                     } else {
                         Minecraft.getInstance().setScreen(new WaitingScreen(
                                 Component.literal("Downloading song from server...")));
-                        PacketDistributor.sendToServer(new FnfPayloads.RequestFilesC2S(
-                                activePos, songId, new ArrayList<>(missingFiles)));
+                        requestNextFileBatch();
                     }
                 }
             });
         });
+    }
+
+    /**
+     * Requests only a tiny window of files. The old all-at-once request let a server
+     * queue an entire mod pack behind Minecraft's keepalive packets, timing out both
+     * the downloading client and the duet partner. Completing the window acknowledges
+     * it implicitly and opens the next one.
+     */
+    private static void requestNextFileBatch() {
+        if (!requestedFiles.isEmpty() || missingFiles.isEmpty()) return;
+        List<String> batch = new ArrayList<>(REQUEST_BATCH_FILES);
+        for (String name : missingFiles) {
+            if (batch.size() >= REQUEST_BATCH_FILES) break;
+            batch.add(name);
+        }
+        if (batch.isEmpty()) return;
+        requestedFiles.addAll(batch);
+        PacketDistributor.sendToServer(new FnfPayloads.RequestFilesC2S(activePos, songId, batch));
     }
 
     private record LocalCheck(SongEntry sourceEntry, boolean allLocal, List<String> missingInCache) {}
@@ -267,7 +323,7 @@ public final class ClientSession {
         if (!payload.songId().equals(songId)) return;
         String name = safeRelativeName(payload.fileName());
         FnfPayloads.FileMeta meta = name == null ? null : manifestByName.get(name);
-        if (meta == null || !missingFiles.contains(name)) {
+        if (meta == null || !missingFiles.contains(name) || !requestedFiles.contains(name)) {
             fail("Server sent a song resource that was not requested");
             return;
         }
@@ -333,8 +389,10 @@ public final class ClientSession {
             }
         }
         receiving.remove(name);
+        requestedFiles.remove(name);
         missingFiles.remove(name);
         if (missingFiles.isEmpty()) finishLoad(null);
+        else if (requestedFiles.isEmpty()) requestNextFileBatch();
     }
 
     private static String sanitize(String name) {
@@ -422,7 +480,8 @@ public final class ClientSession {
                 }
             }
             CharacterTransform transform = CharacterTransform.load(
-                    animationSet, animationRoot, facing, opponentSide,
+                    animationSet, animationRoot,
+                    activePos.equals(taggedStagePos) ? taggedStageFacing : facing, opponentSide,
                     opponentSide ? chart.player2 : chart.player1);
             PacketDistributor.sendToServer(new FnfPayloads.ReadyC2S(activePos, animationSet,
                     transform.positionOffset().x, transform.positionOffset().y,
@@ -467,6 +526,8 @@ public final class ClientSession {
             }
         }
 
+        if (payload.pos().equals(taggedStagePos))
+            com.fnfmod.client.gameplay.StageOrientation.set(taggedStageFacing);
         Minecraft.getInstance().setScreen(new GameplayScreen(
                 payload.pos(), chart, player, mode,
                 partner, payload.partnerName(), payload.partnerAnimSet(), payload.botEntityId(), startAt));

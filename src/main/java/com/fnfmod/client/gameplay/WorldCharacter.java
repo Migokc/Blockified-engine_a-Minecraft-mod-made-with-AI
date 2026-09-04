@@ -50,6 +50,7 @@ public final class WorldCharacter implements AutoCloseable {
     private boolean antialiasing = true;
     private boolean billboard = true;
     private boolean lighting = true;
+    private String renderMode = "auto";
     private boolean seeThrough = false;
     private double singDuration = 4;
     private int danceEvery = 2;
@@ -282,6 +283,7 @@ public final class WorldCharacter implements AutoCloseable {
 
     public boolean billboard() { return billboard; }
     public boolean lighting() { return lighting; }
+    public String renderMode() { return renderMode; }
     public boolean seeThrough() { return seeThrough; }
     public boolean antialiasing() { return antialiasing; }
 
@@ -291,7 +293,15 @@ public final class WorldCharacter implements AutoCloseable {
     public void setColor(int rgb) { color = rgb & 0xFFFFFF; }
     public void setFlipX(boolean v) { flipX = v; }
     public void setBillboard(boolean v) { billboard = v; }
-    public void setLighting(boolean v) { lighting = v; }
+    public void setLighting(boolean v) { lighting = v; renderMode = "auto"; }
+    public void setRenderMode(String value) {
+        if (value == null || value.isBlank() || value.equalsIgnoreCase("auto")) {
+            renderMode = "auto";
+            return;
+        }
+        renderMode = com.fnfmod.client.render.LuaWorldObject.RenderMode.resolve(value, lighting).luaName();
+        lighting = renderMode.equals("lit");
+    }
     public void setSeeThrough(boolean v) { seeThrough = v; }
     public String image() { return image; }
     public String current() { return animation; }

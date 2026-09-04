@@ -81,3 +81,39 @@ tasks.named('jar', Jar) {
     from('LICENSE') { into 'META-INF' }
     from('THIRD_PARTY_NOTICES.md') { into 'META-INF' }
 }
+
+// Standalone regression checks: no Minecraft world or JUnit dependency required.
+sourceSets.test.compileClasspath += sourceSets.main.compileClasspath
+sourceSets.test.runtimeClasspath += sourceSets.main.runtimeClasspath
+tasks.register('validateLuaLayers', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.fnfmod.client.lua.LuaLayerEffectsChecks'
+    if (project.hasProperty('luaLayerGpuChecks')) args '--gpu'
+}
+
+tasks.register('validateMenuInput', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.fnfmod.client.lua.MenuScrollInputChecks'
+}
+
+tasks.register('validateVirtualMachines', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.fnfmod.machine.VirtualMachineDataChecks'
+}
+
+tasks.register('validateWeatherRollback', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.fnfmod.session.WeatherRollbackChecks'
+}
+tasks.named('test', Test) {
+    // The regression checks above have an executable main, not JUnit annotations.
+    failOnNoDiscoveredTests = false
+}
+tasks.named('check') {
+    dependsOn tasks.named('validateLuaLayers'), tasks.named('validateMenuInput'),
+            tasks.named('validateVirtualMachines'), tasks.named('validateWeatherRollback')
+}

@@ -23,6 +23,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.stream.Stream;
@@ -563,6 +564,95 @@ public class SongLibrary {
             return Files.isDirectory(root) ? root : null;
         } catch (Exception ignored) {
             return null;
+        }
+    }
+
+    /**
+     * Every installed/configured content root in the same order shown by Mods settings.
+     * The installed source comes first, followed by external paths from top to bottom;
+     * loose source assets precede that source's isolated packs. Per-source and per-pack
+     * permissions are respected, and a bundled mod world keeps its owning pack first.
+     *
+     * <p>This is intentionally broader than {@link #primaryExternalAssetRoot}: global
+     * pickers such as Note Settings need to enumerate assets from every enabled path,
+     * while ordinary runtime fallback still uses only the primary shared root.</p>
+     */
+    public static List<Path> orderedContentRoots(ExternalContent content) {
+        if (content == null) return List.of();
+        LinkedHashMap<Path, Boolean> roots = new LinkedHashMap<>();
+        ModContentScope.activeMod().ifPresent(active -> roots.put(
+                active.root().toAbsolutePath().normalize(), Boolean.TRUE));
+
+        boolean includeAll = ModContentScope.mode() == ModContentScope.Mode.ALL
+                || ModWorldOptions.allowExternalContent();
+        if (!includeAll) return List.copyOf(roots.keySet());
+
+        Path installed = modsDir().toAbsolutePath().normalize();
+        String installedKey = installed.toString();
+        addOrderedContentSource(roots, installedKey, installed, content);
+        for (String configured : getExternalFolders()) {
+            try {
+                addOrderedContentSource(roots, configured,
+                        Path.of(configured).toAbsolutePath().normalize(), content);
+            } catch (Exception ignored) {}
+        }
+        return List.copyOf(roots.keySet());
+    }
+
+    /**
+     * Content roots exposed by explicit client-side library pickers. Unlike ordinary
+     * world asset fallback, these remain visible while playing a bundled mod world:
+     * choosing a personal note skin is a user setting, not cross-pack song loading.
+     * Source/pack permissions and their priority order are still respected.
+     */
+    public static List<Path> orderedPickerContentRoots(ExternalContent content) {
+        if (content == null) return List.of();
+        LinkedHashMap<Path, Boolean> roots = new LinkedHashMap<>();
+        ModContentScope.activeMod().ifPresent(active -> roots.put(
+                active.root().toAbsolutePath().normalize(), Boolean.TRUE));
+
+        Path installed = modsDir().toAbsolutePath().normalize();
+        addOrderedContentSource(roots, installed.toString(), installed, content);
+        for (String configured : getExternalFolders()) {
+            try {
+                addOrderedContentSource(roots, configured,
+                        Path.of(configured).toAbsolutePath().normalize(), content);
+            } catch (Exception ignored) {}
+        }
+        return List.copyOf(roots.keySet());
+    }
+
+    /** The active bundled pack, if this client is currently inside one of its worlds. */
+    public static Optional<Path> currentModPickerRoot() {
+        return ModContentScope.activeMod().map(active -> active.root().toAbsolutePath().normalize());
+    }
+
+    /** Personal/configured picker roots, excluding the current mod so tabs never duplicate it. */
+    public static List<Path> orderedGlobalPickerContentRoots(ExternalContent content) {
+        Path current = currentModPickerRoot().orElse(null);
+        return orderedPickerContentRoots(content).stream()
+                .filter(root -> current == null || !root.toAbsolutePath().normalize().equals(current))
+                .toList();
+    }
+
+    private static void addOrderedContentSource(Map<Path, Boolean> roots, String sourceKey,
+                                                Path source, ExternalContent content) {
+        if (source == null || !Files.isDirectory(source)) return;
+        if (isDirectModSelection(source)) {
+            if (getExternalPackContent(sourceKey, source).contains(content)) {
+                roots.put(source, Boolean.TRUE);
+            }
+            return;
+        }
+        // A selected engine assets folder may not look like a complete mod, but its
+        // shared/images tree is still a valid resource source for global pickers.
+        if (getExternalFolderContent(sourceKey).contains(content)) {
+            roots.put(source, Boolean.TRUE);
+        }
+        for (ModPackInfo pack : discoverModPacks(source)) {
+            if (getExternalPackContent(sourceKey, pack.root()).contains(content)) {
+                roots.put(pack.root().toAbsolutePath().normalize(), Boolean.TRUE);
+            }
         }
     }
 

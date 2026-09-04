@@ -2,7 +2,6 @@ package com.fnfmod.client.render;
 
 import com.fnfmod.FnfMod;
 import com.fnfmod.song.SongLibrary;
-import com.fnfmod.world.ModContentScope;
 import com.mojang.blaze3d.platform.NativeImage;
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.math.Axis;
@@ -79,6 +78,9 @@ public final class NoteStyle {
     }
 
     private static RGBSet noteRGB, strumRGB, splashRGB, holdRGB, holdSplashRGB;
+    /** Hurt covers use Psych's fixed palette: template red -> red, green/blue -> black. */
+    private static RGBSet hurtHoldSplashRGB;
+    private static final RGBSet[] hurtCoverRGB = new RGBSet[4];
     private static boolean holdsFromStrumAtlas;
     /** the note skin folder ships its own noteSplashes files */
     private static boolean skinOwnSplash;
@@ -86,6 +88,7 @@ public final class NoteStyle {
     private static boolean skinOwnHoldCover;
     private static NoteSkinConfig skinConfig = NoteSkinConfig.DEFAULT;
     private static java.nio.file.Path skinConfigFile;
+    private static SkinFiles activeSkinFiles;
     // The current song's arrowSkin (chart noteTexture), fed in so the "default"
     // note-skin setting renders it through this pipeline (RGB, proper sustains)
     // instead of the raw per-note path. songSkinActive is true once it is loaded.
@@ -149,7 +152,9 @@ public final class NoteStyle {
 
     private static void closeLoadedResources() {
         Set<RGBSet> rgbSets = Collections.newSetFromMap(new IdentityHashMap<>());
-        Collections.addAll(rgbSets, noteRGB, strumRGB, splashRGB, holdRGB, holdSplashRGB);
+        Collections.addAll(rgbSets, noteRGB, strumRGB, splashRGB, holdRGB, holdSplashRGB,
+                hurtHoldSplashRGB);
+        Collections.addAll(rgbSets, hurtCoverRGB);
         rgbSets.remove(null);
         var textureManager = Minecraft.getInstance().getTextureManager();
         for (RGBSet set : rgbSets) {
@@ -161,11 +166,12 @@ public final class NoteStyle {
                 set.pixels[lane] = null;
             }
         }
-        noteRGB = strumRGB = splashRGB = holdRGB = holdSplashRGB = null;
+        noteRGB = strumRGB = splashRGB = holdRGB = holdSplashRGB = hurtHoldSplashRGB = null;
         skinOwnSplash = false;
         skinOwnHoldCover = false;
         skinConfig = NoteSkinConfig.DEFAULT;
         skinConfigFile = null;
+        activeSkinFiles = null;
 
         if (holdSheetTextureId != null) textureManager.release(holdSheetTextureId);
         holdSheetTextureId = null;
@@ -185,6 +191,7 @@ public final class NoteStyle {
             coverAtlases[i] = null;
             coverAnims[i] = null;
             coverEndAnims[i] = null;
+            hurtCoverRGB[i] = null;
         }
     }
 
@@ -195,14 +202,21 @@ public final class NoteStyle {
      */
     private record SkinFiles(Path dir, Path classicPng, Path classicXml, Path json,
                              Path notesPng, Path notesXml, Path strumPng, Path strumXml,
-                             Path holdAssetsPng, Path splashPng, Path splashXml, boolean folder) {}
+                             Path holdAssetsPng, Path splashPng, Path splashXml, boolean folder,
+                             Path pixelPng, Path pixelEndsPng) {}
+
+    public enum ExportLayout { PSYCH_MOD, BLOCKIFIED_CONFIG }
+
+    public record ExportResult(Path root, Path configFile, int copiedFiles) {}
 
     private static SkinFiles resolveSkinFiles(String name) {
-        // Flat file in the active mod's images/noteSkins/, named by the skin.
-        Path flatDir = ModContentScope.resolveActive("images/noteSkins").orElse(null);
-        if (flatDir != null && java.nio.file.Files.isRegularFile(flatDir.resolve(name + ".png"))) {
-            return flatSkin(flatDir, name);
+        String source = com.fnfmod.client.ClientOptions.get().noteSkinSource;
+        if (allowsCurrentSource(source)) {
+            Path current = SongLibrary.currentModPickerRoot().orElse(null);
+            SkinFiles fromCurrent = skinInContentRoot(current, name);
+            if (fromCurrent != null) return fromCurrent;
         }
+        if (!allowsGlobalSource(source)) return null;
         // Flat file directly in config/fnfmod/skins/, named by the skin or NOTE_assets-<skin>.
         Path skins = SongLibrary.skinsDir();
         String flatStem = flatStemFor(skins, name);
@@ -211,19 +225,105 @@ public final class NoteStyle {
         // or a NOTE_assets-<whatever>.png named like a flat skin.
         Path folder = skins.resolve(name);
         if (java.nio.file.Files.isDirectory(folder)) return folderSkin(folder);
+        // Mods settings paths are ordered. Search every enabled source in that exact
+        // order so a duplicate skin name always resolves from the upper path.
+        for (Path root : SongLibrary.orderedGlobalPickerContentRoots(SongLibrary.ExternalContent.IMAGES)) {
+            SkinFiles external = skinInContentRoot(root, name);
+            if (external != null) return external;
+        }
         return null;
+    }
+
+    private static boolean allowsCurrentSource(String source) {
+        return source == null || !source.equalsIgnoreCase(
+                com.fnfmod.client.ClientOptions.NOTE_ASSET_SOURCE_GLOBAL);
+    }
+
+    private static boolean allowsGlobalSource(String source) {
+        return source == null || !source.equalsIgnoreCase(
+                com.fnfmod.client.ClientOptions.NOTE_ASSET_SOURCE_CURRENT);
     }
 
     private static SkinFiles flatSkin(Path dir, String stem) {
         return new SkinFiles(dir, dir.resolve(stem + ".png"), dir.resolve(stem + ".xml"),
-                dir.resolve(stem + ".json"), null, null, null, null, null, null, null, false);
+                dir.resolve(stem + ".json"), null, null, null, null, null, null, null, false,
+                null, null);
     }
 
     /** The flat-skin stem in {@code dir} for a display name: {@code <name>} or {@code NOTE_assets-<name>}. */
     private static String flatStemFor(Path dir, String name) {
+        if (dir == null || !java.nio.file.Files.isDirectory(dir)) return null;
         if (java.nio.file.Files.isRegularFile(dir.resolve(name + ".png"))) return name;
         String prefixed = "NOTE_assets-" + name;
         if (java.nio.file.Files.isRegularFile(dir.resolve(prefixed + ".png"))) return prefixed;
+        return null;
+    }
+
+    /** Accepted image roots for a mod, engine root, shared library, or selected assets folder. */
+    private static java.util.List<Path> imageRoots(Path root) {
+        if (root == null) return java.util.List.of();
+        java.util.LinkedHashSet<Path> result = new java.util.LinkedHashSet<>();
+        for (String relative : new String[]{"images", "shared/images", "assets/images",
+                "assets/shared/images", ""}) {
+            Path candidate = relative.isEmpty() ? root : root.resolve(relative);
+            candidate = candidate.toAbsolutePath().normalize();
+            if (java.nio.file.Files.isDirectory(candidate)) result.add(candidate);
+        }
+        return java.util.List.copyOf(result);
+    }
+
+    /** Finds one normal or pixel-only Psych skin inside a single ordered content root. */
+    private static SkinFiles skinInContentRoot(Path root, String name) {
+        for (Path images : imageRoots(root)) {
+            Path normalDir = images.resolve("noteSkins");
+            Path folder = normalDir.resolve(name);
+            if (java.nio.file.Files.isDirectory(folder) && folderHasAtlas(folder)) {
+                return folderSkin(folder);
+            }
+            String normalStem = flatStemFor(normalDir, name);
+            if (normalStem != null
+                    && java.nio.file.Files.isRegularFile(normalDir.resolve(normalStem + ".xml"))) {
+                return flatSkin(normalDir, normalStem);
+            }
+            for (Path pixelDir : new Path[]{images.resolve("pixelUI/noteSkins"),
+                    images.resolve("pixelUI")}) {
+                String pixelStem = flatStemFor(pixelDir, name);
+                if (pixelStem == null) continue;
+                Path pixelPng = pixelDir.resolve(pixelStem + ".png");
+                Path pixelEnds = pixelEndsPath(pixelDir, pixelStem);
+                Path json = firstExisting(normalDir.resolve(pixelStem + ".json"),
+                        pixelDir.resolve(pixelStem + ".json"));
+                if (json == null) json = pixelDir.resolve(pixelStem + ".json");
+                // Keep the expected classic path so normal mode can gracefully fall back;
+                // pixel mode uses the explicit grid files below and needs no XML.
+                return new SkinFiles(normalDir, normalDir.resolve(pixelStem + ".png"),
+                        normalDir.resolve(pixelStem + ".xml"), json,
+                        null, null, null, null, null, null, null, false,
+                        pixelPng, pixelEnds);
+            }
+        }
+        return null;
+    }
+
+    private static Path firstExisting(Path... candidates) {
+        for (Path candidate : candidates) {
+            if (candidate != null && java.nio.file.Files.isRegularFile(candidate)) return candidate;
+        }
+        return null;
+    }
+
+    /** Psych inserts ENDS before a variant suffix, otherwise appends it. */
+    private static Path pixelEndsPath(Path dir, String stem) {
+        java.util.List<String> candidates = new java.util.ArrayList<>();
+        int dash = stem.indexOf('-');
+        if (dash > 0) candidates.add(stem.substring(0, dash) + "ENDS" + stem.substring(dash));
+        candidates.add(stem + "ENDS");
+        for (String candidate : candidates) {
+            Path exact = dir.resolve(candidate + ".png");
+            if (java.nio.file.Files.isRegularFile(exact)) return exact;
+            Path insensitive = firstNamed(dir, candidate + ".png");
+            if (insensitive != null) return insensitive;
+        }
         return null;
     }
 
@@ -255,7 +355,8 @@ public final class NoteStyle {
                 notesPng, folder.resolve("notes.xml"),
                 strumPng, folder.resolve("noteStrumline.xml"),
                 folder.resolve("NOTE_hold_assets.png"),
-                folder.resolve("noteSplashes.png"), folder.resolve("noteSplashes.xml"), true);
+                folder.resolve("noteSplashes.png"), folder.resolve("noteSplashes.xml"), true,
+                null, null);
     }
 
     private static String fileStem(Path png) {
@@ -312,6 +413,8 @@ public final class NoteStyle {
      * {@code ENDS} after the base atlas name (NOTE_assets-bar.png -&gt; NOTE_assetsENDS-bar.png).
      */
     private static Path pixelSheetPath(SkinFiles files, boolean ends) {
+        Path explicit = ends ? files.pixelEndsPng() : files.pixelPng();
+        if (explicit != null && java.nio.file.Files.isRegularFile(explicit)) return explicit;
         Path png = files.classicPng();
         if (png == null || files.dir() == null) return null;
         String stem = fileStem(png);
@@ -355,6 +458,10 @@ public final class NoteStyle {
                     Path relative = cursor.relativize(parent);
                     Path standard = cursor.resolve("pixelUI").resolve(relative).normalize();
                     if (!result.contains(standard)) result.add(standard);
+                    // Psych also places some selectable pixel note sheets directly in
+                    // images/pixelUI rather than its noteSkins child.
+                    Path flatPixelUi = cursor.resolve("pixelUI").normalize();
+                    if (!result.contains(flatPixelUi)) result.add(flatPixelUi);
                     break;
                 }
                 cursor = cursor.getParent();
@@ -445,37 +552,44 @@ public final class NoteStyle {
         return selected == null ? null : atlasOrNull(selected.png(), selected.xml());
     }
 
+    /** Resolves one named splash from a Psych images root, preferring its pixel counterpart. */
+    private static SplashPair splashPairInImages(Path images, String name) {
+        Path normalDir = images.resolve("noteSplashes");
+        Path normalFolder = normalDir.resolve(name);
+        SplashPair normal = splashPairInFolder(normalFolder, name, null);
+        if (normal == null) normal = splashPair(normalDir, name);
+        if (!pixelUi) return normal;
+
+        String preferredStem = normal == null ? name : fileStem(normal.png());
+        SplashPair pixel = splashPairInFolder(normalFolder.resolve("pixelUI"), name, preferredStem);
+        if (pixel != null) return pixel;
+        for (Path pixelDir : new Path[]{images.resolve("pixelUI/noteSplashes"),
+                images.resolve("pixelUI")}) {
+            pixel = splashPairInFolder(pixelDir.resolve(name), name, preferredStem);
+            if (pixel == null) pixel = splashPair(pixelDir, preferredStem);
+            if (pixel == null && !preferredStem.equals(name)) pixel = splashPair(pixelDir, name);
+            if (pixel != null) return pixel;
+        }
+        return normal;
+    }
+
+    private static SplashPair splashPairInContentRoot(Path root, String name) {
+        for (Path images : imageRoots(root)) {
+            SplashPair pair = splashPairInImages(images, name);
+            if (pair != null) return pair;
+        }
+        return null;
+    }
+
     /** Resolves folder packs first, then legacy flat pairs, from active mod and global config. */
     private static SparrowAtlas resolveSplashAtlas(String name) {
-        Path modDir = ModContentScope.resolveActive("images/noteSplashes").orElse(null);
-        if (modDir != null) {
-            SparrowAtlas fromMod = splashFolderAtlas(modDir.resolve(name), name);
-            if (fromMod == null) {
-                SplashPair pair = splashPair(modDir, name);
-                if (pixelUi) {
-                    Path pixelDir = ModContentScope.resolveActive("images/pixelUI/noteSplashes").orElse(null);
-                    SplashPair pixel = splashPair(pixelDir, name);
-                    if (pixel == null) {
-                        pixelDir = ModContentScope.resolveActive("images/pixelUI").orElse(null);
-                        pixel = splashPair(pixelDir, name);
-                    }
-                    if (pixel != null) pair = pixel;
-                }
-                fromMod = pair == null ? null : atlasOrNull(pair.png(), pair.xml());
-            }
-            if (fromMod != null) return fromMod;
+        String source = com.fnfmod.client.ClientOptions.get().splashSkinSource;
+        if (allowsCurrentSource(source)) {
+            Path current = SongLibrary.currentModPickerRoot().orElse(null);
+            SplashPair fromCurrent = splashPairInContentRoot(current, name);
+            if (fromCurrent != null) return atlasOrNull(fromCurrent.png(), fromCurrent.xml());
         }
-        // Pixel-only mod splash packs remain valid even when images/noteSplashes is absent.
-        if (pixelUi) {
-            for (String path : new String[]{"images/pixelUI/noteSplashes", "images/pixelUI"}) {
-                Path pixelDir = ModContentScope.resolveActive(path).orElse(null);
-                SparrowAtlas pixelFolder = pixelDir == null ? null
-                        : splashFolderAtlas(pixelDir.resolve(name), name);
-                if (pixelFolder != null) return pixelFolder;
-                SplashPair pixel = splashPair(pixelDir, name);
-                if (pixel != null) return atlasOrNull(pixel.png(), pixel.xml());
-            }
-        }
+        if (!allowsGlobalSource(source)) return null;
         Path dir = SongLibrary.splashesDir();
         SparrowAtlas folder = splashFolderAtlas(dir.resolve(name), name);
         if (folder != null) return folder;
@@ -484,7 +598,14 @@ public final class NoteStyle {
             SplashPair pixel = splashPair(dir.resolve("pixelUI"), name);
             if (pixel != null) pair = pixel;
         }
-        return pair == null ? null : atlasOrNull(pair.png(), pair.xml());
+        if (pair != null) return atlasOrNull(pair.png(), pair.xml());
+        // Installed mods first, then external paths from top to bottom. The first
+        // same-named pair wins, exactly like the note-skin selector.
+        for (Path root : SongLibrary.orderedGlobalPickerContentRoots(SongLibrary.ExternalContent.IMAGES)) {
+            SplashPair external = splashPairInContentRoot(root, name);
+            if (external != null) return atlasOrNull(external.png(), external.xml());
+        }
+        return null;
     }
 
     /** A note-skin folder may bundle normal and pixel splashes using the same layout. */
@@ -508,14 +629,24 @@ public final class NoteStyle {
                                                            String color, String direction) {
         java.util.List<String> lane = new java.util.ArrayList<>();
         java.util.List<String> generic = new java.util.ArrayList<>();
+        java.util.List<String> fallbackLane = new java.util.ArrayList<>();
+        java.util.List<String> fallback = new java.util.ArrayList<>();
         if (atlas == null) return lane;
         for (String animation : atlas.animationNames()) {
             String lower = animation.toLowerCase(java.util.Locale.ROOT);
-            if (!lower.contains("impact") && !lower.contains("splash")) continue;
-            generic.add(animation);
-            if (lower.contains(color) || lower.contains(direction)) lane.add(animation);
+            boolean matchesLane = lower.contains(color) || lower.contains(direction);
+            fallback.add(animation);
+            if (matchesLane) fallbackLane.add(animation);
+            if (lower.contains("impact") || lower.contains("splash")) {
+                generic.add(animation);
+                if (matchesLane) lane.add(animation);
+            }
         }
-        if (lane.isEmpty()) lane.addAll(generic);
+        // Psych normally names these "note splash"/"note impact", but RGB and
+        // custom packs often use arbitrary prefixes. Prefer the known names,
+        // then a lane/color match, and finally any animation in the chosen atlas.
+        if (lane.isEmpty()) lane.addAll(!generic.isEmpty() ? generic
+                : !fallbackLane.isEmpty() ? fallbackLane : fallback);
         java.util.Collections.sort(lane);
         return lane;
     }
@@ -530,8 +661,48 @@ public final class NoteStyle {
         return firstSplashPair(folder);
     }
 
-    /** Pixel-aware pack lookup confined to config/fnfmod/splashes/holdSplashes. */
+    private static SplashPair holdSplashPairInImages(Path images, String name) {
+        boolean defaultPack = name == null || name.isBlank()
+                || name.equalsIgnoreCase(com.fnfmod.client.ClientOptions.NOTE_SKIN_DEFAULT);
+        String packName = defaultPack ? "holdSplash" : name;
+        Path normalRoot = images.resolve("noteSplashes/holdSplashes");
+        Path normalFolder = defaultPack ? normalRoot : normalRoot.resolve(name);
+        SplashPair normal = defaultPack ? splashPair(normalRoot, "holdSplash")
+                : holdSplashPairInFolder(normalFolder, packName);
+        if (!defaultPack && normal == null) normal = splashPair(normalRoot, name);
+        if (!pixelUi) return normal;
+
+        String stem = normal == null ? packName : fileStem(normal.png());
+        SplashPair pixel = defaultPack ? splashPair(normalRoot.resolve("pixelUI"), "holdSplash")
+                : holdSplashPairInFolder(normalFolder.resolve("pixelUI"), stem);
+        if (pixel != null) return pixel;
+        for (Path pixelRoot : new Path[]{images.resolve("pixelUI/noteSplashes/holdSplashes"),
+                images.resolve("pixelUI/holdSplashes")}) {
+            pixel = defaultPack ? splashPair(pixelRoot, "holdSplash")
+                    : holdSplashPairInFolder(pixelRoot.resolve(name), stem);
+            if (!defaultPack && pixel == null) pixel = splashPair(pixelRoot, name);
+            if (pixel != null) return pixel;
+        }
+        return normal;
+    }
+
+    private static SplashPair holdSplashPairInContentRoot(Path root, String name) {
+        for (Path images : imageRoots(root)) {
+            SplashPair pair = holdSplashPairInImages(images, name);
+            if (pair != null) return pair;
+        }
+        return null;
+    }
+
+    /** Pixel-aware pack lookup in local config followed by every enabled Mods path. */
     private static SplashPair resolveGlobalHoldSplash(String name) {
+        String source = com.fnfmod.client.ClientOptions.get().holdSplashSkinSource;
+        if (allowsCurrentSource(source)) {
+            Path current = SongLibrary.currentModPickerRoot().orElse(null);
+            SplashPair fromCurrent = holdSplashPairInContentRoot(current, name);
+            if (fromCurrent != null) return fromCurrent;
+        }
+        if (!allowsGlobalSource(source)) return null;
         Path root = SongLibrary.splashesDir().resolve("holdSplashes");
         boolean defaultPack = name == null || name.isBlank()
                 || name.equalsIgnoreCase(com.fnfmod.client.ClientOptions.NOTE_SKIN_DEFAULT);
@@ -548,7 +719,12 @@ public final class NoteStyle {
             if (!defaultPack && pixel == null) pixel = splashPair(root.resolve("pixelUI"), name);
             if (pixel != null) selected = pixel;
         }
-        return selected;
+        if (selected != null) return selected;
+        for (Path contentRoot : SongLibrary.orderedGlobalPickerContentRoots(SongLibrary.ExternalContent.IMAGES)) {
+            SplashPair external = holdSplashPairInContentRoot(contentRoot, name);
+            if (external != null) return external;
+        }
+        return null;
     }
 
     /**
@@ -572,7 +748,37 @@ public final class NoteStyle {
         if (holdSplashAtlas == null) return;
         holdSplashStartAnim = holdSplashAtlas.findAnimation("start", "hold start");
         holdSplashLoopAnim = holdSplashAtlas.findAnimation("hold", "loop", "hold loop");
-        holdSplashEndAnim = holdSplashAtlas.findAnimation("end", "hold end");
+        holdSplashEndAnim = holdSplashAtlas.findAnimation("end", "hold end", "explode");
+        // V-Slice and RGB templates may use holdCoverStart*, holdCover*, and
+        // holdCoverEnd* (or entirely custom prefixes) instead of the short
+        // Psych names. Classify their actual animation names before rejecting
+        // the atlas, so a direction-neutral cover is valid for every lane.
+        for (String animation : holdSplashAtlas.animationNames()) {
+            String lower = animation.toLowerCase(java.util.Locale.ROOT);
+            boolean ending = lower.contains("end") || lower.contains("explode");
+            boolean starting = lower.contains("start");
+            if (holdSplashStartAnim == null && starting) holdSplashStartAnim = animation;
+            if (holdSplashEndAnim == null && ending) holdSplashEndAnim = animation;
+            if (holdSplashLoopAnim == null && !starting && !ending
+                    && (lower.contains("hold") || lower.contains("cover") || lower.contains("loop"))) {
+                holdSplashLoopAnim = animation;
+            }
+        }
+        if (holdSplashLoopAnim == null) {
+            for (String animation : holdSplashAtlas.animationNames()) {
+                if (animation.equals(holdSplashStartAnim) || animation.equals(holdSplashEndAnim)) continue;
+                String lower = animation.toLowerCase(java.util.Locale.ROOT);
+                if (!lower.contains("end") && !lower.contains("explode")) {
+                    holdSplashLoopAnim = animation;
+                    break;
+                }
+            }
+        }
+        // A one-animation template is also valid: play it once as the start,
+        // then keep looping it for both the picker and gameplay hold duration.
+        if (holdSplashLoopAnim == null && holdSplashStartAnim != null) {
+            holdSplashLoopAnim = holdSplashStartAnim;
+        }
         if (holdSplashLoopAnim == null && holdSplashEndAnim == null) {
             holdSplashAtlas.close();
             holdSplashAtlas = null;
@@ -595,11 +801,53 @@ public final class NoteStyle {
         out.add(name);
     }
 
-    /** Selectable skins: folders under config/fnfmod/skins plus flat files in the mod's images/noteSkins. */
-    public static java.util.List<String> listSkins() {
-        java.util.List<String> out = new java.util.ArrayList<>();
-        out.add(com.fnfmod.client.ClientOptions.NOTE_SKIN_DEFAULT);
-        out.add(com.fnfmod.client.ClientOptions.NOTE_SKIN_NONE);
+    private static void addNormalSkinNames(java.util.List<String> out, Path normalDir) {
+        if (normalDir == null || !java.nio.file.Files.isDirectory(normalDir)) return;
+        try (var entries = java.nio.file.Files.list(normalDir)) {
+            entries.filter(java.nio.file.Files::isDirectory)
+                    .filter(NoteStyle::folderHasAtlas)
+                    .map(path -> path.getFileName().toString())
+                    .sorted()
+                    .forEach(name -> addSkinName(out, name));
+        } catch (Exception ignored) {}
+        try (var entries = java.nio.file.Files.list(normalDir)) {
+            entries.filter(java.nio.file.Files::isRegularFile)
+                    .map(path -> path.getFileName().toString())
+                    .filter(name -> name.toLowerCase(java.util.Locale.ROOT).endsWith(".png"))
+                    .map(name -> name.substring(0, name.length() - 4))
+                    .filter(stem -> firstNamed(normalDir, stem + ".xml") != null)
+                    .sorted()
+                    .forEach(stem -> addSkinName(out, displaySkinName(stem)));
+        } catch (Exception ignored) {}
+    }
+
+    private static void addPixelSkinNames(java.util.List<String> out, Path pixelDir,
+                                          boolean requireEndsCompanion) {
+        if (pixelDir == null || !java.nio.file.Files.isDirectory(pixelDir)) return;
+        try (var entries = java.nio.file.Files.list(pixelDir)) {
+            entries.filter(java.nio.file.Files::isRegularFile)
+                    .map(path -> path.getFileName().toString())
+                    .filter(name -> name.toLowerCase(java.util.Locale.ROOT).endsWith(".png"))
+                    .map(name -> name.substring(0, name.length() - 4))
+                    .filter(stem -> !stem.toLowerCase(java.util.Locale.ROOT).contains("ends"))
+                    // A dedicated noteSkins folder is unambiguous. In the general pixelUI
+                    // folder, require the matching sustain sheet to avoid listing countdown,
+                    // rating and number graphics as note skins.
+                    .filter(stem -> !requireEndsCompanion || pixelEndsPath(pixelDir, stem) != null)
+                    .sorted()
+                    .forEach(stem -> addSkinName(out, displaySkinName(stem)));
+        } catch (Exception ignored) {}
+    }
+
+    private static void addContentSkinNames(java.util.List<String> out, Path root) {
+        for (Path images : imageRoots(root)) {
+            addNormalSkinNames(out, images.resolve("noteSkins"));
+            addPixelSkinNames(out, images.resolve("pixelUI/noteSkins"), false);
+            addPixelSkinNames(out, images.resolve("pixelUI"), true);
+        }
+    }
+
+    private static void addGlobalConfigSkinNames(java.util.List<String> out) {
         try (var dirs = java.nio.file.Files.list(SongLibrary.skinsDir())) {
             dirs.filter(java.nio.file.Files::isDirectory)
                     .filter(NoteStyle::folderHasAtlas)
@@ -618,17 +866,34 @@ public final class NoteStyle {
                     .sorted()
                     .forEach(stem -> addSkinName(out, displaySkinName(stem)));
         } catch (Exception ignored) {}
-        // Flat files in the active mod's images/noteSkins/, named by the skin.
-        Path modSkins = ModContentScope.resolveActive("images/noteSkins").orElse(null);
-        if (modSkins != null) {
-            try (var files = java.nio.file.Files.list(modSkins)) {
-                files.map(f -> f.getFileName().toString())
-                        .filter(n -> n.toLowerCase(java.util.Locale.ROOT).endsWith(".png"))
-                        .map(n -> n.substring(0, n.length() - 4))
-                        .filter(n -> java.nio.file.Files.isRegularFile(modSkins.resolve(n + ".xml")))
-                        .sorted()
-                        .forEach(n -> addSkinName(out, n));
-            } catch (Exception ignored) {}
+    }
+
+    public static java.util.List<String> listCurrentModSkins() {
+        java.util.List<String> out = new java.util.ArrayList<>();
+        SongLibrary.currentModPickerRoot().ifPresent(root -> addContentSkinNames(out, root));
+        return out;
+    }
+
+    public static java.util.List<String> listGlobalSkins() {
+        java.util.List<String> out = new java.util.ArrayList<>();
+        out.add(com.fnfmod.client.ClientOptions.NOTE_SKIN_DEFAULT);
+        out.add(com.fnfmod.client.ClientOptions.NOTE_SKIN_NONE);
+        addGlobalConfigSkinNames(out);
+        for (Path root : SongLibrary.orderedGlobalPickerContentRoots(SongLibrary.ExternalContent.IMAGES)) {
+            addContentSkinNames(out, root);
+        }
+        return out;
+    }
+
+    /** Backward-compatible combined view; dedicated settings use source tabs. */
+    public static java.util.List<String> listSkins() {
+        java.util.List<String> out = new java.util.ArrayList<>(listCurrentModSkins());
+        for (String name : listGlobalSkins()) addSkinName(out, name);
+        if (!out.contains(com.fnfmod.client.ClientOptions.NOTE_SKIN_DEFAULT)) {
+            out.add(0, com.fnfmod.client.ClientOptions.NOTE_SKIN_DEFAULT);
+        }
+        if (!out.contains(com.fnfmod.client.ClientOptions.NOTE_SKIN_NONE)) {
+            out.add(1, com.fnfmod.client.ClientOptions.NOTE_SKIN_NONE);
         }
         return out;
     }
@@ -705,6 +970,251 @@ public final class NoteStyle {
         return skinConfigFile;
     }
 
+    /**
+     * Copies the active skin and selected companion effects into a reusable pack.
+     * Psych exports always live below an images folder; Blockified exports use
+     * config/fnfmod's native skins and splashes folders.
+     */
+    public static synchronized ExportResult exportCurrentAssets(Path selectedRoot,
+                                                                 ExportLayout layout,
+                                                                 NoteSkinConfig config)
+            throws java.io.IOException {
+        load();
+        if (activeSkinFiles == null) throw new java.io.IOException("Selected note skin has no source assets");
+        if (selectedRoot == null) throw new java.io.IOException("No export folder selected");
+
+        Path root = selectedRoot.toAbsolutePath().normalize();
+        Path skinRoot;
+        Path splashRoot;
+        Path holdRoot;
+        Path pixelSkinRoot;
+        Path pixelSplashRoot;
+        Path pixelHoldRoot;
+        if (layout == ExportLayout.PSYCH_MOD) {
+            Path images = root.getFileName() != null
+                    && root.getFileName().toString().equalsIgnoreCase("images")
+                    ? root : root.resolve("images");
+            root = images;
+            skinRoot = images.resolve("noteSkins");
+            splashRoot = images.resolve("noteSplashes");
+            holdRoot = splashRoot.resolve("holdSplashes");
+            pixelSkinRoot = images.resolve("pixelUI/noteSkins");
+            pixelSplashRoot = images.resolve("pixelUI/noteSplashes");
+            pixelHoldRoot = pixelSplashRoot.resolve("holdSplashes");
+        } else {
+            skinRoot = SongLibrary.skinsDir();
+            splashRoot = SongLibrary.splashesDir();
+            holdRoot = splashRoot.resolve("holdSplashes");
+            pixelSkinRoot = skinRoot.resolve("pixelUI");
+            pixelSplashRoot = splashRoot.resolve("pixelUI");
+            pixelHoldRoot = holdRoot.resolve("pixelUI");
+            root = SongLibrary.skinsDir().getParent();
+        }
+
+        String selected = com.fnfmod.client.ClientOptions.get().noteSkin;
+        String packName = safeExportName(selected, activeSkinFiles);
+        int copied = 0;
+        Path targetConfig;
+        if (activeSkinFiles.folder() && java.nio.file.Files.isDirectory(activeSkinFiles.dir())) {
+            Path destination = skinRoot.resolve(packName).normalize();
+            copied += copyTree(activeSkinFiles.dir(), destination);
+            String configName = activeSkinFiles.json() != null && activeSkinFiles.json().getFileName() != null
+                    ? activeSkinFiles.json().getFileName().toString() : "skin.json";
+            targetConfig = destination.resolve(configName);
+        } else {
+            copied += copyFiles(skinRoot, activeSkinFiles.classicPng(), activeSkinFiles.classicXml(),
+                    activeSkinFiles.notesPng(), activeSkinFiles.notesXml(), activeSkinFiles.strumPng(),
+                    activeSkinFiles.strumXml(), activeSkinFiles.holdAssetsPng());
+            Path pixel = pixelSheetPath(activeSkinFiles, false);
+            Path pixelEnds = pixelSheetPath(activeSkinFiles, true);
+            copied += copyFiles(pixelSkinRoot, pixel, pixelEnds);
+            String configName = activeSkinFiles.json() != null && activeSkinFiles.json().getFileName() != null
+                    ? activeSkinFiles.json().getFileName().toString()
+                    : fileStem(activeSkinFiles.classicPng()) + ".json";
+            targetConfig = skinRoot.resolve(configName);
+        }
+        NoteSkinConfig.saveFile(targetConfig, config == null ? skinConfig : config);
+
+        if (!skinOwnSplash) {
+            String splash = com.fnfmod.client.ClientOptions.get().splashSkin;
+            if (splash != null && !splash.isBlank()
+                    && !splash.equalsIgnoreCase(com.fnfmod.client.ClientOptions.NOTE_SKIN_NONE)) {
+                copied += copyEffectPack(resolveSplashPairForExport(splash), splash,
+                        splashRoot, pixelSplashRoot);
+            }
+        }
+        if (!skinOwnHoldCover) {
+            String hold = com.fnfmod.client.ClientOptions.get().holdSplashSkin;
+            SplashPair pair = songHoldSplashPng != null && songHoldSplashXml != null
+                    && java.nio.file.Files.isRegularFile(songHoldSplashPng)
+                    && java.nio.file.Files.isRegularFile(songHoldSplashXml)
+                    ? new SplashPair(songHoldSplashPng, songHoldSplashXml)
+                    : resolveGlobalHoldSplash(hold);
+            if (hold == null || hold.isBlank()
+                    || hold.equalsIgnoreCase(com.fnfmod.client.ClientOptions.NOTE_SKIN_DEFAULT)) hold = "holdSplash";
+            if (!hold.equalsIgnoreCase(com.fnfmod.client.ClientOptions.NOTE_SKIN_NONE)) {
+                copied += copyEffectPack(pair, hold, holdRoot, pixelHoldRoot);
+            }
+        }
+        return new ExportResult(root, targetConfig, copied);
+    }
+
+    private static SplashPair resolveSplashPairForExport(String name) {
+        String source = com.fnfmod.client.ClientOptions.get().splashSkinSource;
+        if (allowsCurrentSource(source)) {
+            Path current = SongLibrary.currentModPickerRoot().orElse(null);
+            for (Path images : imageRoots(current)) {
+                SplashPair pair = splashPairInImages(images, name);
+                if (pair != null) return pair;
+            }
+        }
+        if (!allowsGlobalSource(source)) return null;
+        Path dir = SongLibrary.splashesDir();
+        SplashPair pair = splashPairInFolder(dir.resolve(name), name, null);
+        if (pair == null) pair = splashPair(dir, name);
+        if (pixelUi) {
+            SplashPair pixel = splashPairInFolder(dir.resolve(name).resolve("pixelUI"), name,
+                    pair == null ? null : fileStem(pair.png()));
+            if (pixel == null) pixel = splashPair(dir.resolve("pixelUI"), name);
+            if (pixel != null) pair = pixel;
+        }
+        if (pair != null) return pair;
+        for (Path contentRoot : SongLibrary.orderedGlobalPickerContentRoots(SongLibrary.ExternalContent.IMAGES)) {
+            for (Path images : imageRoots(contentRoot)) {
+                pair = splashPairInImages(images, name);
+                if (pair != null) return pair;
+            }
+        }
+        return null;
+    }
+
+    private static String safeExportName(String selected, SkinFiles files) {
+        String value = selected == null ? "" : selected.trim();
+        if (value.isBlank() || value.equalsIgnoreCase(com.fnfmod.client.ClientOptions.NOTE_SKIN_DEFAULT)) {
+            if (files.folder() && files.dir() != null && files.dir().getFileName() != null) {
+                value = files.dir().getFileName().toString();
+            } else if (files.classicPng() != null) value = displaySkinName(fileStem(files.classicPng()));
+        }
+        return safePathSegment(value, "note-skin");
+    }
+
+    private static int copyTree(Path source, Path destination) throws java.io.IOException {
+        Path src = source.toAbsolutePath().normalize();
+        Path dst = destination.toAbsolutePath().normalize();
+        if (src.equals(dst)) return 0;
+        if (dst.startsWith(src)) throw new java.io.IOException("Export folder cannot be inside the source skin");
+        java.nio.file.Files.createDirectories(dst);
+        int copied = 0;
+        try (var entries = java.nio.file.Files.walk(src)) {
+            for (Path entry : entries.toList()) {
+                Path relative = src.relativize(entry);
+                Path target = dst.resolve(relative);
+                if (java.nio.file.Files.isDirectory(entry)) java.nio.file.Files.createDirectories(target);
+                else if (java.nio.file.Files.isRegularFile(entry)) {
+                    java.nio.file.Files.createDirectories(target.getParent());
+                    if (!entry.toAbsolutePath().normalize().equals(target.toAbsolutePath().normalize())) {
+                        java.nio.file.Files.copy(entry, target,
+                                java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                                java.nio.file.StandardCopyOption.COPY_ATTRIBUTES);
+                        copied++;
+                    }
+                }
+            }
+        }
+        return copied;
+    }
+
+    private static int copyFiles(Path destination, Path... files) throws java.io.IOException {
+        int copied = 0;
+        java.nio.file.Files.createDirectories(destination);
+        java.util.LinkedHashSet<Path> unique = new java.util.LinkedHashSet<>();
+        if (files != null) java.util.Collections.addAll(unique, files);
+        unique.remove(null);
+        for (Path source : unique) {
+            if (!java.nio.file.Files.isRegularFile(source)) continue;
+            Path target = destination.resolve(source.getFileName()).toAbsolutePath().normalize();
+            if (source.toAbsolutePath().normalize().equals(target)) continue;
+            java.nio.file.Files.copy(source, target,
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                    java.nio.file.StandardCopyOption.COPY_ATTRIBUTES);
+            copied++;
+        }
+        return copied;
+    }
+
+    private static int copyEffectPack(SplashPair pair, String name, Path normalRoot, Path pixelRoot)
+            throws java.io.IOException {
+        if (pair == null || pair.png() == null || pair.xml() == null) return 0;
+        Path parent = pair.png().getParent();
+        boolean pixel = containsPathPart(pair.png(), "pixelUI");
+        Path pack = parent;
+        if (pack != null && pack.getFileName() != null
+                && pack.getFileName().toString().equalsIgnoreCase("pixelUI")) pack = null;
+        if (pack != null && pack.getFileName() != null
+                && pack.getFileName().toString().equalsIgnoreCase(name)) {
+            return copyTree(pack, (pixel ? pixelRoot : normalRoot).resolve(safeEffectName(name)));
+        }
+        int copied = copyFiles(pixel ? pixelRoot : normalRoot, pair.png(), pair.xml());
+        SplashPair companion = companionEffectPair(pair, pixel);
+        if (companion != null) copied += copyFiles(pixel ? normalRoot : pixelRoot,
+                companion.png(), companion.xml());
+        return copied;
+    }
+
+    private static SplashPair companionEffectPair(SplashPair pair, boolean sourceIsPixel) {
+        Path png = pair.png(), xml = pair.xml();
+        if (png == null || xml == null) return null;
+        java.util.List<Path> candidates = new java.util.ArrayList<>();
+        Path parent = png.getParent();
+        if (sourceIsPixel) {
+            Path cursor = parent;
+            while (cursor != null && cursor.getFileName() != null) {
+                if (cursor.getFileName().toString().equalsIgnoreCase("pixelUI")) {
+                    Path base = cursor.getParent();
+                    if (base != null) candidates.add(base.resolve(cursor.relativize(png)));
+                    break;
+                }
+                cursor = cursor.getParent();
+            }
+        } else if (parent != null) {
+            candidates.add(parent.resolve("pixelUI").resolve(png.getFileName()));
+            Path images = parent.getParent();
+            if (images != null) candidates.add(images.resolve("pixelUI")
+                    .resolve(parent.getFileName()).resolve(png.getFileName()));
+        }
+        for (Path candidate : candidates) {
+            Path candidateXml = candidate.resolveSibling(fileStem(candidate) + ".xml");
+            if (java.nio.file.Files.isRegularFile(candidate)
+                    && java.nio.file.Files.isRegularFile(candidateXml)) {
+                return new SplashPair(candidate, candidateXml);
+            }
+        }
+        return null;
+    }
+
+    private static boolean containsPathPart(Path path, String wanted) {
+        if (path == null) return false;
+        for (Path part : path) if (part.toString().equalsIgnoreCase(wanted)) return true;
+        return false;
+    }
+
+    private static String safeEffectName(String value) {
+        return safePathSegment(value, "effect");
+    }
+
+    private static String safePathSegment(String value, String fallback) {
+        String raw = value == null ? "" : value.trim();
+        StringBuilder clean = new StringBuilder(raw.length());
+        String invalid = "<>:\"/\\|?*";
+        for (int i = 0; i < raw.length(); i++) {
+            char c = raw.charAt(i);
+            clean.append(invalid.indexOf(c) >= 0 || c < 32 ? '_' : c);
+        }
+        while (!clean.isEmpty() && (clean.charAt(clean.length() - 1) == '.'
+                || clean.charAt(clean.length() - 1) == ' ')) clean.setLength(clean.length() - 1);
+        return clean.isEmpty() ? fallback : clean.toString();
+    }
+
     /** Live settings preview; call reload() to discard unsaved values. */
     public static void previewSkinConfig(NoteSkinConfig config) {
         load();
@@ -752,7 +1262,7 @@ public final class NoteStyle {
             SkinFiles songFiles = songSkinPng == null ? null : songFolder
                     ? folderSkin(songSkinPng)
                     : new SkinFiles(songSkinPng.getParent(), songSkinPng, songSkinXml, songSkinJson,
-                    null, null, null, null, null, null, null, false);
+                    null, null, null, null, null, null, null, false, null, null);
             boolean classicAvailable = songFolder && songFiles != null && folderHasAtlas(songSkinPng)
                     || songSkinPng != null && java.nio.file.Files.isRegularFile(songSkinPng)
                     && songSkinXml != null && java.nio.file.Files.isRegularFile(songSkinXml);
@@ -773,6 +1283,7 @@ public final class NoteStyle {
             }
         }
         Path skinDir = files.dir();
+        activeSkinFiles = files;
 
         skinConfigFile = files.json();
         skinConfig = NoteSkinConfig.loadFile(skinConfigFile);
@@ -912,6 +1423,14 @@ public final class NoteStyle {
                 : makeRGBSet("hold", holdSheetImage, Boolean.TRUE);
         holdSplashRGB = makeRGBSet("hold_splash",
                 holdSplashAtlas == null ? null : holdSplashAtlas.image(), Boolean.TRUE);
+        hurtHoldSplashRGB = makeFixedRGBSet("hurt_hold_splash",
+                holdSplashAtlas == null ? null : holdSplashAtlas.image(),
+                0xFF0000, 0x000000, 0x000000);
+        for (int lane = 0; lane < 4; lane++) {
+            hurtCoverRGB[lane] = makeFixedRGBSet("hurt_hold_cover_" + lane,
+                    coverAtlases[lane] == null ? null : coverAtlases[lane].image(),
+                    0xFF0000, 0x000000, 0x000000);
+        }
 
         FnfMod.LOGGER.info("Loaded FNF note skin from {} ({}{}{})", skinDir,
                 classic != null ? "classic NOTE_assets" : "V-Slice notes/noteStrumline",
@@ -925,6 +1444,9 @@ public final class NoteStyle {
         loadHoldSplashAtlas();
         holdSplashRGB = makeRGBSet("hold_splash",
                 holdSplashAtlas == null ? null : holdSplashAtlas.image(), Boolean.TRUE);
+        hurtHoldSplashRGB = makeFixedRGBSet("hurt_hold_splash",
+                holdSplashAtlas == null ? null : holdSplashAtlas.image(),
+                0xFF0000, 0x000000, 0x000000);
         String selected = com.fnfmod.client.ClientOptions.get().splashSkin;
         if (selected == null || selected.isBlank()) return;
         splashAtlas = resolveSplashAtlas(selected);
@@ -952,6 +1474,18 @@ public final class NoteStyle {
                 remapLane(set, lane);
             }
         }
+        return set;
+    }
+
+    /** One fixed recolored copy shared by every hurt-note lane. */
+    private static RGBSet makeFixedRGBSet(String name, NativeImage src,
+                                          int base, int highlight, int outline) {
+        if (src == null) return null;
+        RGBSet set = new RGBSet();
+        set.src = src;
+        set.template = true;
+        set.id[0] = FnfMod.id("gen/rgb/" + name);
+        remapColors(set, 0, base, highlight, outline);
         return set;
     }
 
@@ -1005,9 +1539,11 @@ public final class NoteStyle {
     /** Rewrites one lane's recolored copy: out = r*base + g*highlight + b*outline. */
     private static void remapLane(RGBSet set, int lane) {
         var opts = com.fnfmod.client.ClientOptions.get();
-        int base = opts.noteColorBase[lane];
-        int highlight = opts.noteColorHighlight[lane];
-        int outline = opts.noteColorOutline[lane];
+        remapColors(set, lane, opts.noteColorBase[lane], opts.noteColorHighlight[lane],
+                opts.noteColorOutline[lane]);
+    }
+
+    private static void remapColors(RGBSet set, int lane, int base, int highlight, int outline) {
         int baseR = (base >> 16) & 0xFF, baseG = (base >> 8) & 0xFF, baseB = base & 0xFF;
         int hiR = (highlight >> 16) & 0xFF, hiG = (highlight >> 8) & 0xFF, hiB = highlight & 0xFF;
         int outR = (outline >> 16) & 0xFF, outG = (outline >> 8) & 0xFF, outB = outline & 0xFF;
@@ -1086,9 +1622,48 @@ public final class NoteStyle {
         out.add(name);
     }
 
-    /** Folder splash packs plus legacy flat PNG/XML pairs. */
-    public static java.util.List<String> listSplashes() {
-        java.util.List<String> out = new java.util.ArrayList<>();
+    private static void addSplashNamesFromDirectory(java.util.List<String> out, Path directory) {
+        if (directory == null || !java.nio.file.Files.isDirectory(directory)) return;
+        try (var dirs = java.nio.file.Files.list(directory)) {
+            dirs.filter(java.nio.file.Files::isDirectory)
+                    .filter(NoteStyle::splashFolderHasAtlas)
+                    .map(path -> path.getFileName().toString())
+                    .sorted()
+                    .forEach(name -> addSplashName(out, name));
+        } catch (Exception ignored) {}
+        try (var files = java.nio.file.Files.list(directory)) {
+            files.filter(java.nio.file.Files::isRegularFile)
+                    .map(path -> path.getFileName().toString())
+                    .filter(name -> name.toLowerCase(java.util.Locale.ROOT).endsWith(".png"))
+                    .map(name -> name.substring(0, name.length() - 4))
+                    .filter(name -> firstNamed(directory, name + ".xml") != null)
+                    .sorted()
+                    .forEach(name -> addSplashName(out, name));
+        } catch (Exception ignored) {}
+    }
+
+    private static void addContentSplashNames(java.util.List<String> out, Path root) {
+        for (Path images : imageRoots(root)) {
+            addSplashNamesFromDirectory(out, images.resolve("noteSplashes"));
+            addSplashNamesFromDirectory(out, images.resolve("pixelUI/noteSplashes"));
+            // A general pixelUI directory contains many unrelated UI atlases. Only
+            // advertise explicit splash-named pairs from that ambiguous location.
+            Path flatPixel = images.resolve("pixelUI");
+            if (!java.nio.file.Files.isDirectory(flatPixel)) continue;
+            try (var files = java.nio.file.Files.list(flatPixel)) {
+                files.filter(java.nio.file.Files::isRegularFile)
+                        .map(path -> path.getFileName().toString())
+                        .filter(name -> name.toLowerCase(java.util.Locale.ROOT).endsWith(".png"))
+                        .map(name -> name.substring(0, name.length() - 4))
+                        .filter(name -> name.toLowerCase(java.util.Locale.ROOT).contains("splash"))
+                        .filter(name -> firstNamed(flatPixel, name + ".xml") != null)
+                        .sorted()
+                        .forEach(name -> addSplashName(out, name));
+            } catch (Exception ignored) {}
+        }
+    }
+
+    private static void addGlobalConfigSplashNames(java.util.List<String> out) {
         try (var dirs = java.nio.file.Files.list(SongLibrary.splashesDir())) {
             dirs.filter(java.nio.file.Files::isDirectory)
                     .filter(NoteStyle::splashFolderHasAtlas)
@@ -1107,40 +1682,6 @@ public final class NoteStyle {
                     .sorted()
                     .forEach(name -> addSplashName(out, name));
         } catch (Exception ignored) {}
-        // Folder packs and flat pairs in the active mod's images/noteSplashes/.
-        Path modSplashes = ModContentScope.resolveActive("images/noteSplashes").orElse(null);
-        if (modSplashes != null) {
-            try (var dirs = java.nio.file.Files.list(modSplashes)) {
-                dirs.filter(java.nio.file.Files::isDirectory)
-                        .filter(NoteStyle::splashFolderHasAtlas)
-                        .map(path -> path.getFileName().toString())
-                        .sorted()
-                        .forEach(name -> addSplashName(out, name));
-            } catch (Exception ignored) {}
-            try (var files = java.nio.file.Files.list(modSplashes)) {
-                files.filter(java.nio.file.Files::isRegularFile)
-                        .map(f -> f.getFileName().toString())
-                        .filter(n -> n.toLowerCase(java.util.Locale.ROOT).endsWith(".png"))
-                        .map(n -> n.substring(0, n.length() - 4))
-                        .filter(n -> java.nio.file.Files.isRegularFile(modSplashes.resolve(n + ".xml")))
-                        .sorted()
-                        .forEach(name -> addSplashName(out, name));
-            } catch (Exception ignored) {}
-        }
-        // Also advertise pixel-only active-mod pairs so they can be selected before a
-        // pixel chart is opened. They simply have no normal-mode preview/fallback.
-        Path modPixelSplashes = ModContentScope.resolveActive("images/pixelUI/noteSplashes").orElse(null);
-        if (modPixelSplashes != null) {
-            try (var files = java.nio.file.Files.list(modPixelSplashes)) {
-                files.filter(java.nio.file.Files::isRegularFile)
-                        .map(path -> path.getFileName().toString())
-                        .filter(name -> name.toLowerCase(java.util.Locale.ROOT).endsWith(".png"))
-                        .map(name -> name.substring(0, name.length() - 4))
-                        .filter(name -> firstNamed(modPixelSplashes, name + ".xml") != null)
-                        .sorted()
-                        .forEach(name -> addSplashName(out, name));
-            } catch (Exception ignored) {}
-        }
         // Backward-compatible global pixelUI/<name>.png+xml pairs.
         Path globalPixelSplashes = SongLibrary.splashesDir().resolve("pixelUI");
         if (java.nio.file.Files.isDirectory(globalPixelSplashes)) {
@@ -1154,6 +1695,27 @@ public final class NoteStyle {
                         .forEach(name -> addSplashName(out, name));
             } catch (Exception ignored) {}
         }
+    }
+
+    public static java.util.List<String> listCurrentModSplashes() {
+        java.util.List<String> out = new java.util.ArrayList<>();
+        SongLibrary.currentModPickerRoot().ifPresent(root -> addContentSplashNames(out, root));
+        return out;
+    }
+
+    public static java.util.List<String> listGlobalSplashes() {
+        java.util.List<String> out = new java.util.ArrayList<>();
+        addGlobalConfigSplashNames(out);
+        for (Path root : SongLibrary.orderedGlobalPickerContentRoots(SongLibrary.ExternalContent.IMAGES)) {
+            addContentSplashNames(out, root);
+        }
+        return out;
+    }
+
+    /** Folder splash packs plus legacy flat PNG/XML pairs. */
+    public static java.util.List<String> listSplashes() {
+        java.util.List<String> out = new java.util.ArrayList<>(listCurrentModSplashes());
+        for (String name : listGlobalSplashes()) addSplashName(out, name);
         return out;
     }
 
@@ -1173,15 +1735,8 @@ public final class NoteStyle {
         out.add(name);
     }
 
-    /** Dedicated sustain-cover packs under config/fnfmod/splashes/holdSplashes only. */
-    public static java.util.List<String> listHoldSplashes() {
-        java.util.List<String> out = new java.util.ArrayList<>();
-        out.add(com.fnfmod.client.ClientOptions.NOTE_SKIN_DEFAULT);
-        out.add(com.fnfmod.client.ClientOptions.NOTE_SKIN_NONE);
-        Path root = SongLibrary.splashesDir().resolve("holdSplashes");
-        try {
-            java.nio.file.Files.createDirectories(root);
-        } catch (Exception ignored) {}
+    private static void addHoldSplashNamesFromRoot(java.util.List<String> out, Path root) {
+        if (root == null || !java.nio.file.Files.isDirectory(root)) return;
         try (var dirs = java.nio.file.Files.list(root)) {
             dirs.filter(java.nio.file.Files::isDirectory)
                     .filter(path -> !path.getFileName().toString().equalsIgnoreCase("pixelUI"))
@@ -1209,6 +1764,47 @@ public final class NoteStyle {
                     .sorted()
                     .forEach(name -> addHoldSplashName(out, name));
         } catch (Exception ignored) {}
+    }
+
+    private static void addContentHoldSplashNames(java.util.List<String> out, Path contentRoot) {
+        for (Path images : imageRoots(contentRoot)) {
+            addHoldSplashNamesFromRoot(out, images.resolve("noteSplashes/holdSplashes"));
+            addHoldSplashNamesFromRoot(out, images.resolve("pixelUI/noteSplashes/holdSplashes"));
+            addHoldSplashNamesFromRoot(out, images.resolve("pixelUI/holdSplashes"));
+        }
+    }
+
+    public static java.util.List<String> listCurrentModHoldSplashes() {
+        java.util.List<String> out = new java.util.ArrayList<>();
+        SongLibrary.currentModPickerRoot().ifPresent(root -> addContentHoldSplashNames(out, root));
+        return out;
+    }
+
+    public static java.util.List<String> listGlobalHoldSplashes() {
+        java.util.List<String> out = new java.util.ArrayList<>();
+        out.add(com.fnfmod.client.ClientOptions.NOTE_SKIN_DEFAULT);
+        out.add(com.fnfmod.client.ClientOptions.NOTE_SKIN_NONE);
+        Path root = SongLibrary.splashesDir().resolve("holdSplashes");
+        try {
+            java.nio.file.Files.createDirectories(root);
+        } catch (Exception ignored) {}
+        addHoldSplashNamesFromRoot(out, root);
+        for (Path contentRoot : SongLibrary.orderedGlobalPickerContentRoots(SongLibrary.ExternalContent.IMAGES)) {
+            addContentHoldSplashNames(out, contentRoot);
+        }
+        return out;
+    }
+
+    /** Dedicated sustain-cover packs under config/fnfmod/splashes/holdSplashes only. */
+    public static java.util.List<String> listHoldSplashes() {
+        java.util.List<String> out = new java.util.ArrayList<>(listCurrentModHoldSplashes());
+        for (String name : listGlobalHoldSplashes()) {
+            if (name.equalsIgnoreCase(com.fnfmod.client.ClientOptions.NOTE_SKIN_DEFAULT)
+                    || name.equalsIgnoreCase(com.fnfmod.client.ClientOptions.NOTE_SKIN_NONE)) continue;
+            addHoldSplashName(out, name);
+        }
+        out.add(0, com.fnfmod.client.ClientOptions.NOTE_SKIN_DEFAULT);
+        out.add(1, com.fnfmod.client.ClientOptions.NOTE_SKIN_NONE);
         return out;
     }
 
@@ -1216,6 +1812,11 @@ public final class NoteStyle {
         if (set == null || !set.template) return null;
         if (!skinConfig.rgb()) return null;
         return set.id[lane];
+    }
+
+    private static ResourceLocation fixedTex(RGBSet set) {
+        if (set == null || !set.template || !skinConfig.rgb()) return null;
+        return set.id[0];
     }
 
     private static float refSize(SparrowAtlas atlas, String[] anims, float fallback) {
@@ -1297,25 +1898,31 @@ public final class NoteStyle {
 
     /** receptorSize = the receptor's on-screen size; cover placement derives from it. */
     public static void drawHoldCover(GuiGraphics gui, int lane, long frameIndex, float x, float y, float receptorSize) {
+        drawHoldCover(gui, lane, frameIndex, x, y, receptorSize, false);
+    }
+
+    public static void drawHoldCover(GuiGraphics gui, int lane, long frameIndex,
+                                     float x, float y, float receptorSize, boolean hurtNote) {
         if (!hasHoldCover(lane)) return;
         if (coverAtlases[lane] != null && coverAnims[lane] != null) {
             var frames = coverAtlases[lane].frames(coverAnims[lane]);
             if (frames.isEmpty()) return;
             int frame = (int) Math.floorMod(frameIndex, (long) frames.size());
-            drawCoverFrame(gui, lane, frames.get(frame), x, y, receptorSize);
+            drawCoverFrame(gui, lane, frames.get(frame), x, y, receptorSize, hurtNote);
             return;
         }
         var start = holdSplashStartAnim == null ? java.util.List.<SparrowAtlas.Frame>of()
                 : holdSplashAtlas.frames(holdSplashStartAnim);
         if (frameIndex < start.size()) {
-            drawGenericHoldSplashFrame(gui, lane, start.get((int) frameIndex), x, y, receptorSize);
+            drawGenericHoldSplashFrame(gui, lane, start.get((int) frameIndex), x, y,
+                    receptorSize, hurtNote);
             return;
         }
         var loop = holdSplashLoopAnim == null ? java.util.List.<SparrowAtlas.Frame>of()
                 : holdSplashAtlas.frames(holdSplashLoopAnim);
         if (!loop.isEmpty()) {
             int frame = (int) Math.floorMod(frameIndex - start.size(), (long) loop.size());
-            drawGenericHoldSplashFrame(gui, lane, loop.get(frame), x, y, receptorSize);
+            drawGenericHoldSplashFrame(gui, lane, loop.get(frame), x, y, receptorSize, hurtNote);
         }
     }
 
@@ -1329,29 +1936,36 @@ public final class NoteStyle {
     }
 
     public static void drawHoldCoverEnd(GuiGraphics gui, int lane, int frameIndex, float x, float y, float receptorSize) {
+        drawHoldCoverEnd(gui, lane, frameIndex, x, y, receptorSize, false);
+    }
+
+    public static void drawHoldCoverEnd(GuiGraphics gui, int lane, int frameIndex,
+                                        float x, float y, float receptorSize, boolean hurtNote) {
         load();
         if (coverAtlases[lane] != null && coverEndAnims[lane] != null) {
             var frames = coverAtlases[lane].frames(coverEndAnims[lane]);
             if (frameIndex < 0 || frameIndex >= frames.size()) return;
-            drawCoverFrame(gui, lane, frames.get(frameIndex), x, y, receptorSize);
+            drawCoverFrame(gui, lane, frames.get(frameIndex), x, y, receptorSize, hurtNote);
             return;
         }
         if (holdSplashAtlas == null || holdSplashEndAnim == null) return;
         var frames = holdSplashAtlas.frames(holdSplashEndAnim);
         if (frameIndex < 0 || frameIndex >= frames.size()) return;
-        drawGenericHoldSplashFrame(gui, lane, frames.get(frameIndex), x, y, receptorSize);
+        drawGenericHoldSplashFrame(gui, lane, frames.get(frameIndex), x, y, receptorSize, hurtNote);
     }
 
     private static void drawGenericHoldSplashFrame(GuiGraphics gui, int lane, SparrowAtlas.Frame frame,
-                                                    float x, float y, float receptorSize) {
+                                                    float x, float y, float receptorSize,
+                                                    boolean hurtNote) {
         NoteSkinConfig.Part config = skinConfig.holdCover();
         applyAlpha(config.alpha());
         float guiScale = receptorSize / 104f;
         float pixelScale = 0.7f * guiScale * HOLD_COVER_BASE_SCALE * config.scale();
         holdSplashAtlas.drawScaled(gui, frame,
-                x + config.x() * pixelScale,
+                x - 12f * guiScale + config.x() * pixelScale,
                 y + 15.4f * guiScale + (HOLD_COVER_BASE_Y + config.y()) * pixelScale,
-                pixelScale, laneTex(holdSplashRGB, Math.floorMod(lane, 4)));
+                pixelScale, hurtNote ? fixedTex(hurtHoldSplashRGB)
+                        : laneTex(holdSplashRGB, Math.floorMod(lane, 4)));
     }
 
     /**
@@ -1361,7 +1975,8 @@ public final class NoteStyle {
      * (-12, +15.4) receptor-pixels off the receptor center.
      */
     private static void drawCoverFrame(GuiGraphics gui, int lane, SparrowAtlas.Frame f,
-                                       float receptorX, float receptorY, float receptorSize) {
+                                       float receptorX, float receptorY, float receptorSize,
+                                       boolean hurtNote) {
         NoteSkinConfig.Part config = skinConfig.holdCover();
         applyAlpha(config.alpha());
         float g = receptorSize / 104f;
@@ -1369,7 +1984,7 @@ public final class NoteStyle {
         coverAtlases[lane].drawScaled(gui, f,
                 receptorX - 12f * g + config.x() * pixelScale,
                 receptorY + 15.4f * g + (HOLD_COVER_BASE_Y + config.y()) * pixelScale,
-                pixelScale);
+                pixelScale, hurtNote ? fixedTex(hurtCoverRGB[lane]) : null);
     }
 
     /** Number of splash animation variants for a lane (0 = no splashes available). */

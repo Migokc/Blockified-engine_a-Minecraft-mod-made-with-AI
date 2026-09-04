@@ -10,6 +10,7 @@ import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.ModifyArg;
+import org.spongepowered.asm.mixin.injection.ModifyVariable;
 
 /** Encodes the selected entity's individual Psych-space border radius in alpha. */
 @Mixin(LevelRenderer.class)
@@ -24,6 +25,22 @@ public abstract class LevelRendererObjectBorderMixin {
             index = 3)
     private int fnfmod$objectBorderWidth(int vanillaAlpha) {
         return ObjectBorderRegistry.consumeAlpha(vanillaAlpha);
+    }
+
+    /**
+     * Hides only Minecraft's targeted-block wireframe while Blockified owns the view.
+     * Blockified selection boxes use separate render types and remain visible.
+     */
+    @ModifyVariable(method = "renderLevel", at = @At("HEAD"), argsOnly = true, index = 2)
+    private boolean fnfmod$hideVanillaBlockOutline(boolean renderBlockOutline) {
+        if (!renderBlockOutline) return false;
+        net.minecraft.client.gui.screens.Screen screen = minecraft.screen;
+        if (com.fnfmod.client.ClientSession.activePos != null
+                || screen instanceof com.fnfmod.client.gui.machine.MachineMenuScreen
+                || screen instanceof com.fnfmod.client.gui.machine.MachineMenuEditorScreen) {
+            return false;
+        }
+        return true;
     }
 
     /** Gives the custom outline target the completed world/entity depth before it flushes. */

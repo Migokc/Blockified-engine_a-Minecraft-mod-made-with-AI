@@ -3,8 +3,10 @@ package com.fnfmod.item;
 import com.fnfmod.FnfMod;
 import com.fnfmod.block.FunkinMachineBlock;
 import com.fnfmod.entity.MachineHitboxEntity;
+import com.fnfmod.machine.DesignerPlacementService;
 import com.fnfmod.machine.MachineEditorService;
 import com.fnfmod.machine.MachineHitboxService;
+import com.fnfmod.machine.MachineMenuService;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.neoforge.common.util.TriState;
@@ -32,10 +34,18 @@ public final class FunkinDesignerItem extends Item {
         Level level = context.getLevel();
         var block = level.getBlockState(context.getClickedPos()).getBlock();
         if (!level.isClientSide && context.getPlayer() instanceof ServerPlayer player) {
-            if (block instanceof com.fnfmod.block.ChunkLoaderPointBlock) {
+            if (DesignerPlacementService.hasPending(player)) {
+                DesignerPlacementService.place(player, context);
+            } else if (block instanceof com.fnfmod.block.ChunkLoaderPointBlock) {
                 com.fnfmod.world.ChunkLoaderPointService.openEditor(player, context.getClickedPos());
             } else if (block instanceof com.fnfmod.block.MachineAnchorBlock) {
-                MachineHitboxService.requestRemovalAt(player, context.getClickedPos());
+                if (level.getBlockEntity(context.getClickedPos())
+                        instanceof com.fnfmod.block.MachineAnchorBlockEntity anchor && anchor.standalone()) {
+                    if (player.isShiftKeyDown()) MachineEditorService.open(player, context.getClickedPos());
+                    else MachineMenuService.onInteract(player, context.getClickedPos());
+                } else {
+                    MachineHitboxService.requestRemovalAt(player, context.getClickedPos());
+                }
             } else if (block instanceof FunkinMachineBlock) {
                 if (player.isShiftKeyDown()) MachineEditorService.copyOrApply(player, context.getClickedPos());
                 else MachineEditorService.open(player, context.getClickedPos());
@@ -53,10 +63,16 @@ public final class FunkinDesignerItem extends Item {
         if (!level.isClientSide && player instanceof ServerPlayer serverPlayer && player.isShiftKeyDown()) {
             MachineEditorService.clearCopied(serverPlayer);
             MachineHitboxService.cancel(serverPlayer, false);
+            DesignerPlacementService.cancel(serverPlayer, false);
             return InteractionResultHolder.success(player.getItemInHand(hand));
         }
         if (!level.isClientSide && player instanceof ServerPlayer serverPlayer) {
-            MachineHitboxService.openBuilder(serverPlayer);
+            if (DesignerPlacementService.hasPending(serverPlayer)) {
+                serverPlayer.displayClientMessage(net.minecraft.network.chat.Component.literal(
+                        "Aim at a block face and right-click, or sneak-right-click to cancel."), true);
+            } else {
+                MachineHitboxService.openBuilder(serverPlayer);
+            }
         }
         return InteractionResultHolder.success(player.getItemInHand(hand));
     }
@@ -80,7 +96,12 @@ public final class FunkinDesignerItem extends Item {
         event.setCanceled(true);
         event.setCancellationResult(InteractionResult.SUCCESS);
         if (!event.getLevel().isClientSide && event.getEntity() instanceof ServerPlayer player) {
-            MachineHitboxService.openBuilder(player);
+            if (DesignerPlacementService.hasPending(player)) {
+                player.displayClientMessage(net.minecraft.network.chat.Component.literal(
+                        "Aim at a block face to place the selected Designer block."), true);
+            } else {
+                MachineHitboxService.openBuilder(player);
+            }
         }
     }
 }

@@ -2,13 +2,41 @@
 
 A feature-full Friday Night Funkin' engine inside of Minecraft — **NeoForge 1.21.1**.
 
-Current release: **2.3.4bbs**.
+Current release: **2.5.0bbs**.
 
 Documentation: **[Blockified Engine Docs](https://migokc.github.io/Blockified-engine_a-Minecraft-mod-made-with-AI/)**.
 
 > **Unofficial fan project.** Blockified Engine is not affiliated with or
 > endorsed by Mojang Studios, Microsoft, The Funkin' Crew, or Friday Night
 > Funkin'. All referenced names and trademarks belong to their respective owners.
+
+### 2.5.0bbs highlights
+
+- Machine-menu Lua now supports projected 3D widgets, an authored Minecraft camera
+  and FOV, multiple Lua screens with shared audio/data, keyboard and scroll input,
+  tagged virtual-machine song launches, and direct world exit. Menus that never
+  control the camera retain Minecraft's first-person HUD and hand presentation.
+- The Menu Lua Editor is a full 2D/3D authoring viewport with clickable and
+  multi-selectable objects, draggable layers, grid snapping, local/global transforms,
+  free and authored camera modes, undo/redo, property copy/paste, and tween/keyframe
+  editing. It saves ordinary Lua inside a marked generated block and preserves
+  handwritten callbacks outside that block.
+- Gameplay and menu Lua share gradients, alpha/luminance masks, clipping, nine blend
+  modes, compositing groups, object parenting, effect tweens, font-quality controls,
+  and shader-facing lit/flat/emissive world rendering. See
+  [Lua layer effects](docs/lua-layer-effects.md) for signatures and limits.
+- Funkin' Designer now owns chunk-loader and hitbox-less virtual-machine placement;
+  the separate Chunk Loader item is gone. Blue/orange crosshair outlines guide
+  placement, virtual machines have unique Lua-addressable tags, and chunk points
+  remain invisible outside Designer authoring.
+- Note Settings and the Creator Tools NoteSkin Editor now separate everyday choices
+  from asset authoring. Pack/global pickers preview note skins, splashes, and hold
+  covers; Psych-style normal/pixel layouts, per-skin RGB behavior, hurt-note sustains,
+  export destinations, and live chart/audio previews share the gameplay renderer.
+- The optional Psych-shaped display keeps a native-resolution centered 16:9 game
+  canvas with black letterboxing. Gameplay/playtest rollback now also restores
+  weather changed by song commands, alongside player, block, time, and game-mode
+  state.
 
 ### 2.3.4bbs highlights
 
@@ -17,10 +45,11 @@ Documentation: **[Blockified Engine Docs](https://migokc.github.io/Blockified-en
   artwork, a Week Maker, and Lua-readable metadata. Machine menus can use multiple
   Lua screens while tagged audio and shared data continue between them.
 - Note Settings is now a full live chart/song preview and music player. It supports
-  per-part Base, Highlight, and Outline RGB colors, delay fine-tuning, note-skin
-  transforms, pixel notes, sustain pieces, splashes, hold covers, chart/difficulty
-  selection, real-time skin changes, and Save/Cancel semantics for both skin JSON
-  and user settings. Gameplay receptors use the same 24 FPS animation behavior.
+  per-part Base, Highlight, and Outline RGB colors, delay fine-tuning, pixel notes,
+  sustain pieces, splashes, hold covers, chart/difficulty selection, and real-time
+  skin changes. The Creator Tools NoteSkin Editor separately edits skin transforms
+  while previewing the user's saved settings. Gameplay receptors use the same
+  24 FPS animation behavior.
 - Chart editing and playtesting gained improved timeline playback, optional playtest
   controls, state-preserving catch-up, stronger rollback when seeking, charting
   offset, Psych/Codename/V-Slice compatibility fixes, and formatted chart/event
@@ -199,6 +228,10 @@ Documentation: **[Blockified Engine Docs](https://migokc.github.io/Blockified-en
 - Final playstate restoration now reapplies participant game modes after player
   NBT and restores world time from a dimension-aware exit snapshot, covering
   normal finish, quit, give-up, cancellation, and restart paths reliably.
+- Gameplay and Chart Editor playtest rollback also restores rain/thunder flags and
+  clear, rain, and thunder transition timers after a song command changes weather.
+  Weather is captured lazily, so natural weather progression is not rewound when
+  the song never modifies it. Restart/reset and playtest rewind use the same path.
 
 ### 2.2.2bbs highlights
 
@@ -372,7 +405,7 @@ Documentation: **[Blockified Engine Docs](https://migokc.github.io/Blockified-en
 - Expanded Psych Engine compatibility for stages, characters, events, Lua,
   keyboard input, cameras, notes, and HUD behavior.
 - Per-song rollback restores participant position, inventory, XP, effects,
-  abilities, health, food, and other saved player state on finish, quit, loss,
+  abilities, health, food, weather changed by song commands, and other saved player state on finish, quit, loss,
   or disconnect.
 - Chart and Lua commands use a copy-on-write world journal. Blocks and block
   entities changed synchronously by those commands return to their original
@@ -395,12 +428,13 @@ they are part of the supported installation, not optional extras.
 - **Funkin' Machine block** (Functional Blocks creative tab). Right-click it to open the song menu.
 - **Funkin' Designer item** (Functional Blocks creative tab). Right-click a
   machine to edit. Shift-right-click copies a profile, then shift-right-click
-  another machine to apply it. Right-click air opens virtual hitbox builder.
-  Shift-use in air clears copied profile and unfinished hitbox selection.
-- **Chunk Loader Point block** (Functional Blocks creative tab). It is invisible,
-  non-colliding, and untargetable unless its own item or Funkin' Designer is held.
-  Right-click it with either tool to edit its persistent tag, 0-12 chunk radius,
-  and enabled state.
+  another machine to apply it. Using the Designer on air, an ordinary block, or
+  an ordinary entity opens its Machines/Blocks tool screen. Shift-use in air clears
+  copied profiles and unfinished selections.
+- **Chunk Loader Point block** (Designer only). It is invisible, non-colliding,
+  and untargetable unless the Funkin' Designer is held. Arm placement from the
+  Designer's Blocks tab, then right-click the point with the Designer to edit its
+  persistent tag, 0-12 chunk radius, and enabled state.
 - **Lightweight songs or complete mods**: use `config/fnfmod/songs/<song-name>/`
   for basic chart/audio entries, or `config/fnfmod/mods/<mod>/` for full creations.
 - **Play as Both** merges both chart sides into the existing centered four-lane
@@ -629,14 +663,114 @@ One machine menu can be split into multiple files. Keep the initial page as
 `machine.getScreens()` lists every discovered page. Widgets, tweens, timers, and
 page callbacks reset during navigation; `machineData` and tagged `playSound`
 audio stay alive, so looping menu music does not restart or cut between pages.
+Use `machine.openScreen('main')` to go back to `menu.lua`. For example,
+`machines/neon/screens/extras.lua` is opened from that profile with:
+
+```lua
+local extras = ui.button('extras', 'Extras', 0.5, 0.5, 180, 24)
+function extras:onClick()
+  machine.openScreen('extras')
+end
+```
+
 Shared audio follows Minecraft's master-volume setting immediately. Use
 `soundExists('menuMusic')` before starting a shared track when a page may reopen.
+Physical keyboard input uses Psych-compatible `keyboardPressed(name)`,
+`keyboardJustPressed(name)`, and `keyboardReleased(name)`. Menu pages may also
+define `onKeyPress(keyName, keyCode, modifiers)` and
+`onKeyRelease(keyName, keyCode, modifiers)`; callbacks do not repeat while a key
+is held and keyboard Lua is suppressed while an editable text box owns input.
+
+Mouse-wheel/trackpad input calls `onScroll(dy, dx)` anywhere in the menu. Positive
+`dy` means up, negative means down; `dx` is horizontal scrolling. Fractions are
+preserved. A widget can define `function widget:onScroll(dy, dx)`; only the topmost
+visible object under the pointer with that handler receives it, followed by the
+global callback. This works on 2D and projected 3D objects, including masks and
+transforms used by their normal hit testing. Decorative objects without a scroll
+handler do not block one underneath. Use either the global or widget callback for
+the same action, not both. No layout moves automatically; Lua decides what moves:
+
+```lua
+local list = ui.label('list', 'Scroll me', 0.5, 360)
+local targetY = 360
+function onScroll(dy, dx)
+  targetY = math.max(100, math.min(620, targetY + dy * 30))
+  doTweenY('listScroll', 'list', targetY, 0.2, 'expoOut')
+end
+```
+
+Polling alternative: `getMouseWheel()` / `cursor.scrollY` and `getMouseWheelX()` /
+`cursor.scrollX` accumulate since the previous `onUpdate` and reset after the next
+one (also on page changes/pause). Reading does not consume the delta. Do not
+multiply it by `dt`. Menu Editor preview supports wheel Lua; edit-mode scrolling
+still controls the editor panel/camera.
 
 Machine menus use a fixed 1280x720 canvas, scaled uniformly and centered. Window
 resolution and Minecraft GUI scale therefore do not change widget layout;
 GUI scale also does not change physical widget size. Normalized X/Y values (`-1` through `1`) use canvas dimensions;
 larger values are canvas pixels. Lua globals `screenWidth` and `screenHeight` are
 always `1280` and `720`. Non-16:9 screens letterbox the canvas.
+
+Every menu constructor can also render in Minecraft's 3D scene. Call
+`ui.world(widget, x, y, z)` after construction, or set `widget.space = 'world'`.
+World X/Y/Z are block offsets from the machine/automatic-menu origin; Y points up.
+World buttons, toggles, sliders, and custom mouse handlers remain clickable through
+projected bounds. `billboard`, `lighting`, `seeThrough`, `rotationX`, `rotationY`,
+and `angle` control their world presentation.
+
+```lua
+local sign = ui.animatedSprite('sign', 'images/sign.png', 'images/sign.xml', 0, 0, 160, 80)
+ui.world(sign, 2, 1.5, -3)
+sign.billboard = false
+sign.rotationY = 25
+
+camera.setPosition(120.5, 68, -42.5)
+camera.lookAt(124, 66, -38)
+doTweenCamX('cameraX', 128, 0.8, 'expoOut')
+doTweenCamRotationY('cameraYaw', 35, 0.8, 'expoOut')
+doTweenCamZoom('cameraZoom', 1.35, 0.6, 'quadInOut') -- 1 = normal FOV
+```
+
+Camera Lua uses immediate `camera.setPosition`, `camera.setRotation`, `camera.lookAt`,
+`camera.setZoom`, matching getters, and `camera.reset`. Tween individual axes with
+`doTweenCamX/Y/Z`, rotate with `doTweenCamRotationX/Y/Z`, and tween FOV with
+`doTweenCamZoom`. Their Psych-style arguments are `(tag, value, duration, easing)`;
+completion calls `onTweenCompleted(tag)`. This menu camera is independent of
+gameplay Lua's existing `setFOV` behavior.
+
+Creator Tools includes **Menu Lua Editor** for profiles in the current mod. Its
+viewport reserves a uniformly scaled 1280x720 canvas while its tabbed panel edits
+screen/world position, size, rotation, layers, effects, parenting, tweens, and the
+Minecraft camera. Click or Shift-click objects/layers to select one or several;
+G/R/S transforms them, Shift gives precision, right-drag + WASD/Q/E flies the
+viewport camera, Numpad Decimal frames a selected 3D object, and MMB orbits. Save
+updates a marked generated block inside `menu.lua`; handwritten callbacks and code
+outside that block remain untouched.
+
+A bundled world's `blockified-options.json` may use:
+
+```json
+{
+  "autoOpenMenu": true,
+  "autoMenuProfile": "my-mod:neon",
+  "forcePsychResolution": true
+}
+```
+
+Escape on any custom Lua menu page opens Minecraft's pause menu directly, without
+a Blockified exit dialog. Returning restores the same Lua page and shared audio;
+Escape does not navigate from a secondary page to `menu.lua`. Lua can call
+`machine.exitWorld()` to leave the world immediately without a confirmation prompt.
+This uses the normal disconnect/save lifecycle (including the world's existing
+save rules), not a forced game shutdown. It returns false in the Menu Editor,
+where world exit is disabled to protect editing.
+
+The automatic menu opens on entry, uses a virtual machine session, and cannot be
+closed while enabled. The fixed-canvas option is also available in vanilla Video
+Settings and is injected into Sodium/Iris replacement video screens when present.
+It keeps a centered 16:9 Psych-shaped game rectangle with opaque black letterboxing;
+rendering remains at the window or monitor's native resolution instead of becoming
+a pixelated 720p framebuffer, and the user's GUI scale is left unchanged.
 
 Machine widgets expose mutable `order`. Higher values render in front and receive
 clicks first. Creation order is used by default. Psych-style
@@ -778,6 +912,39 @@ if machine.hasWeek('week1') then print(week.songs[1].id) end
 Positional form is `machine.playSong(id, difficulty, duet, playAs, look)`.
 Invalid songs/difficulties stay in menu and show error. Server revalidates every
 launch. `machine.openSongDetails(id)` opens built-in options for one song.
+By default, the song uses the machine that opened this menu: a normal machine,
+hitbox anchor, hitbox-less virtual machine, or automatic world-menu origin.
+To use a different hitbox-less virtual machine, set the `machine` option to its
+Designer tag/ID. You do not need to click that anchor or give it a custom profile:
+
+```lua
+function play:onClick()
+  machine.playSong('earrings', 'normal', {
+    machine = 'earrings_stage', -- tag assigned to the virtual machine with the Designer
+    returnTo = 'menu'
+  })
+end
+```
+
+Gameplay uses the target's Minecraft position and facing; `returnTo = 'menu'`
+reopens the original launching menu (its main page), not the target anchor's
+profile. `returnTo = 'world'` still closes menus after returning the player from
+the stage; `selector` opens the original machine's built-in selector. With
+`autoOpenMenu`, the world's required menu can reopen after a `world` exit as usual.
+All other options (`duet`, `playAs`, `look`) keep working. Omitting `machine`, or
+using an empty string, keeps the existing current-machine behavior. `machine.id`
+and `machine.tag` still describe the menu's own origin; they do not change when a
+button targets another stage.
+
+Tags are case-insensitive, unique within the current dimension, and use up to
+64 letters/numbers/underscores/hyphens. Missing, removed, ambiguous, or busy targets
+show an error above the menu and do not launch at a fallback location. A true
+`playSong` result means a request was sent; server validation is asynchronous.
+Tagged launches are for singleplayer/LAN mod worlds, like custom menu Lua itself.
+The tag index is saved with the world, so known anchors can be found in unloaded
+chunks. Existing anchors from older builds register when their chunk next loads;
+visit them once if a tag is not found after updating. Only a small temporary stage
+chunk ticket is held while preparing/playing, then released when the session ends.
 
 Navigation/API calls:
 
@@ -788,13 +955,16 @@ Navigation/API calls:
 - `machine.openChartEditor([songId], [difficulty])` — chart editor.
 - `machine.join()` — join waiting LAN session; alias of selector/session interaction.
 - `machine.saveData()` — persist `machineData` immediately.
-- `machine.close()` — close menu and release machine session.
+- `machine.close()` — close menu and release machine session; blocked by `autoOpenMenu`.
+- `machine.exitWorld()` — leave this world without a prompt; true when queued,
+  false if unavailable, already requested, or running inside the Menu Editor.
 - `machine.setSongExitTarget('menu'|'world'|'selector')` — choose where solo
   gameplay returns after finish, quit, or loss. Direct custom-menu songs default
   to `menu`; `world` closes every menu. The target also survives a handoff through
   `machine.openSongSelect()`.
 
-Existing APIs remain compatible. Escape also releases chooser ownership. Lua menu
+Closing the menu or leaving the world releases chooser ownership; opening the
+pause menu preserves it. Lua menu
 owns normal machine session rules: one host, optional LAN guest, busy-state checks.
 
 Custom machines: singleplayer/LAN only. LAN host edits; guests use menus. Guest
@@ -841,18 +1011,18 @@ and invalidates selection. Stale/copied anchor items are automatically removed.
 
 #### Chunk loader points
 
-Place **Chunk Loader Point** blocks anywhere a stage, moving performer, command,
-or gameplay camera may reach. Each enabled point persistently keeps a square of
+Use the Funkin' Designer's **Blocks → Chunk Loader** tool to place points anywhere
+a stage, moving performer, command, or gameplay camera may reach. Each enabled
+point persistently keeps a square of
 ticking chunks loaded around itself; radius 0 loads only its own chunk, radius 2
 loads a 5x5 region, and the safety cap is radius 12. Overlapping points have
 independent tickets, so disabling or breaking one never unloads chunks still
 owned by another point.
 
 Like Minecraft's Light Block, a point has no collision, model, outline, or target
-shape during ordinary play. Hold its block item or Funkin' Designer to reveal a
-cyan outline and the exact chunk boundary; disabled points render red. Normal
-right-click opens its in-game tag/radius/on-off editor. Sneak-right-click while
-holding another point block places that block adjacent instead.
+shape during ordinary play. Hold the Funkin' Designer to reveal its marker and the
+exact chunk boundary; disabled points render red. Right-click it with the Designer
+to open its in-game tag/radius/on-off editor.
 
 Points work in singleplayer and LAN worlds, restore their tickets after reopening
 the world, and do not alter gameplay camera coordinates. Gameplay Lua can read or
@@ -1294,9 +1464,22 @@ act as local offsets instead of replacing the object's camera-facing behavior.
 
 World objects billboard toward the camera by default, like vanilla name tags.
 Use `setWorldSpriteBillboard(tag, false)` or set `tag.billboard` to `false` to
-lock the sprite to the stage direction. They use Minecraft world lighting by
-default; use `setWorldSpriteLighting(tag, false)` or set `tag.lighting` to
-`false` for a full-bright sprite.
+lock the sprite to the stage direction. Gameplay Lua and menu Lua world objects
+support three shader-facing render modes:
+
+```lua
+setObjectRenderMode('worldSign', 'lit')      -- entity lighting and shader shadows
+setObjectRenderMode('worldSign', 'flat')     -- full-bright, no directional shading
+setObjectRenderMode('worldSign', 'emissive') -- glow/emissive entity material
+```
+
+`setWorldSpriteRenderMode` and `setObjectShaderMode` are aliases. Setting
+`tag.renderMode` or `tag.shaderMode` works too. `setWorldSpriteLighting(tag,
+false)`, `tag.lighting = false`, and `tag.unlit = true` remain compatible and
+now select the shader-friendlier `flat` path instead of treating every unlit
+object as emissive. Shader packs control their own materials, so `lit` is the
+best choice when an object must participate in pack lighting/shadows, while
+`flat` is the predictable choice when its texture color must remain unchanged.
 
 Minecraft's directional face lighting is controlled separately from full-bright
 object lighting through the built-in `Directional Shading` event. Value 1 controls
@@ -1500,14 +1683,21 @@ rewind/forward, play/pause, and a draggable timeline seek the loaded song. Hold
 Shift while dragging the timeline for one-fifth-speed precision without snapping
 when Shift is pressed or released mid-drag.
 Click a visible note or either matching receptor to choose the direction whose
-colors are being edited; the selected direction is outlined. Primary, Secondary,
+colors are being edited; the selected direction is outlined. Base, Highlight,
 and Outline are separate color-part buttons.
 
-Choose **Edit Part** to adjust Scale, Alpha, X, and Y for notes, receptors,
-sustains, splashes, or hold covers, then use the fixed **Save** button beside
-**Cancel**. Changes remain live only for preview until then. **Save** writes both
-the active skin JSON (when editable) and the complete Note Settings user options;
-**Cancel** restores every user option to its value from when the screen opened.
+Open **NoteSkin Editor** from Creator Tools to adjust Scale, Alpha, X, and Y for
+notes, receptors, sustains, splashes, or hold covers, then use the fixed **Apply**
+button beside **Back**. It intentionally does not duplicate Note Settings' lane
+color picker or delay control: the preview uses those saved user settings so it
+shows how the authored skin will look in gameplay. **Save To** can update the
+skin's original path, export a selected mod folder using Psych's `images/noteSkins`,
+`images/noteSplashes`, and `images/pixelUI` layout, or install the complete pack
+into Blockified's `config/fnfmod/skins` and `config/fnfmod/splashes` folders.
+Folder exports copy the required normal and pixel note, splash, and hold-cover
+assets alongside the edited JSON. **Apply** writes or exports the active skin,
+keeps the selected note assets as user options, and leaves the screen open.
+**Back** discards only changes made since the latest Apply.
 New configs use the active PNG's basename (for example,
 `NOTE_assets.png` saves as `NOTE_assets.json`). If a skin already has a JSON,
 Blockified preserves that file's current name. Splash and

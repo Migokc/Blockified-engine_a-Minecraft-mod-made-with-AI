@@ -5,6 +5,11 @@ import com.fnfmod.block.FunkinMachineBlockEntity;
 import com.fnfmod.block.MachineAnchorBlockEntity;
 import com.fnfmod.net.FnfPayloads;
 import com.fnfmod.world.ModContentScope;
+import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerPlayer;
@@ -22,6 +27,7 @@ import java.util.Optional;
 public final class MachineEditorService {
 
     private static final Map<UUID, String> copiedProfiles = new HashMap<>();
+    private static final Gson PRETTY_JSON = new GsonBuilder().setPrettyPrinting().create();
 
     private MachineEditorService() {}
 
@@ -71,6 +77,7 @@ public final class MachineEditorService {
             case 0 -> saveSelection(player, machine, payload.value());
             case 1 -> createProfile(player, machine, payload.value());
             case 2 -> reload(player, machine);
+            case 3 -> updateProfile(player, machine, payload.value());
             default -> result(player, false, "Unknown editor action.", machine.profileId(), false);
         }
     }
@@ -141,6 +148,91 @@ public final class MachineEditorService {
                 ? machine.profileId() : MachineDefinition.DEFAULT_ID;
         machine.setProfileId(id);
         result(player, true, "Machine files reloaded.", id, true);
+    }
+
+    private static void updateProfile(ServerPlayer player, MachineDataHolder machine, String value) {
+        try {
+            JsonElement parsed = JsonParser.parseString(value == null ? "{}" : value);
+            if (!parsed.isJsonObject()) throw new IllegalArgumentException("profile data must be an object");
+            JsonObject input = parsed.getAsJsonObject();
+            String requestedId = cleanText(input, "profileId", machine.profileId(), 128);
+            MachineDefinition definition = MachineLibrary.find(requestedId).orElse(null);
+            if (definition == null || definition.builtIn() || definition.root() == null) {
+                result(player, false, "Built-in profiles cannot be edited. Use Save As first.",
+                        machine.profileId(), false);
+                return;
+            }
+            JsonObject output = new JsonObject();
+            String localId = definition.id().substring(definition.id().indexOf(':') + 1);
+            output.addProperty("id", localId);
+            output.addProperty("displayName", cleanText(input, "displayName", definition.displayName(), 128));
+
+            String menu = safeRelative(input, "menu", "menu.lua", ".lua");
+            output.addProperty("menu", menu);
+            String allTexture = safeRelative(input, "texture", "", ".png");
+            if (!allTexture.isBlank()) output.addProperty("texture", allTexture);
+
+            JsonObject textures = new JsonObject();
+            if (input.has("textures") && input.get("textures").isJsonObject()) {
+                for (Map.Entry<String, JsonElement> entry : input.getAsJsonObject("textures").entrySet()) {
+                    String face = entry.getKey().toLowerCase(Locale.ROOT);
+                    if (!isTextureFace(face) || !entry.getValue().isJsonPrimitive()) continue;
+                    String path = safeRelativeValue(entry.getValue().getAsString(), ".png");
+                    if (!path.isBlank()) textures.addProperty(face, path);
+                }
+            }
+            if (!textures.isEmpty()) output.add("textures", textures);
+            JsonObject behavior = input.has("behavior") && input.get("behavior").isJsonObject()
+                    ? input.getAsJsonObject("behavior").deepCopy() : new JsonObject();
+            if (behavior.size() > 64) throw new IllegalArgumentException("behavior supports at most 64 properties");
+            output.add("behavior", behavior);
+
+            Path file = definition.root().resolve("machine.json").normalize();
+            if (!file.startsWith(definition.root().toAbsolutePath().normalize())) {
+                throw new IllegalArgumentException("invalid profile path");
+            }
+            Files.writeString(file, PRETTY_JSON.toJson(output));
+            MachineLibrary.rescan();
+            MachineDefinition updated = MachineLibrary.find(definition.id()).orElse(null);
+            if (updated == null) throw new IllegalArgumentException("saved profile could not be reloaded");
+            machine.setProfileId(updated.id());
+            result(player, true, "Saved profile fields for " + updated.displayName() + ".",
+                    updated.id(), true);
+        } catch (Exception error) {
+            result(player, false, "Could not save profile: " + error.getMessage(),
+                    machine.profileId(), false);
+        }
+    }
+
+    private static String cleanText(JsonObject input, String key, String fallback, int max) {
+        String value = input.has(key) && input.get(key).isJsonPrimitive()
+                ? input.get(key).getAsString().trim() : fallback;
+        if (value.isBlank()) value = fallback;
+        return value.length() <= max ? value : value.substring(0, max);
+    }
+
+    private static String safeRelative(JsonObject input, String key, String fallback, String extension) {
+        String value = input.has(key) && input.get(key).isJsonPrimitive()
+                ? input.get(key).getAsString() : fallback;
+        return safeRelativeValue(value, extension);
+    }
+
+    private static String safeRelativeValue(String value, String extension) {
+        if (value == null || value.isBlank()) return "";
+        String normalized = value.trim().replace('\\', '/');
+        Path relative = Path.of(normalized).normalize();
+        if (relative.isAbsolute() || relative.startsWith("..") || normalized.length() > 256
+                || extension != null && !normalized.toLowerCase(Locale.ROOT).endsWith(extension)) {
+            throw new IllegalArgumentException("invalid relative " + extension + " path: " + value);
+        }
+        return relative.toString().replace('\\', '/');
+    }
+
+    private static boolean isTextureFace(String face) {
+        return switch (face) {
+            case "side", "front", "back", "left", "right", "top", "bottom" -> true;
+            default -> false;
+        };
     }
 
     private static MachineDataHolder machine(ServerPlayer player, BlockPos pos) {

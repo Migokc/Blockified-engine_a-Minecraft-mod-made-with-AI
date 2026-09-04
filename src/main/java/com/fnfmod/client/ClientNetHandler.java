@@ -7,6 +7,7 @@ import com.fnfmod.client.gui.RollbackWaitingScreen;
 import com.fnfmod.client.gui.machine.MachineEditorScreen;
 import com.fnfmod.client.gui.machine.MachineMenuScreen;
 import com.fnfmod.client.gui.machine.HitboxBuilderScreen;
+import com.fnfmod.client.gui.machine.FunkinDesignerScreen;
 import com.fnfmod.client.gui.machine.ChunkLoaderPointEditorScreen;
 import com.fnfmod.net.FnfPayloads;
 import com.fnfmod.machine.MachineLibrary;
@@ -32,8 +33,10 @@ public final class ClientNetHandler {
                     // A custom menu may hand off to the built-in selector while
                     // retaining its chosen post-song destination.
                     byte returnTarget = ClientSession.pendingSongExitTarget;
+                    boolean lockedWorldMenu = ClientSession.lockedWorldMenu;
                     ClientSession.reset();
                     ClientSession.pendingSongExitTarget = FnfPayloads.LeaveC2S.normalizeReturnTarget(returnTarget);
+                    ClientSession.lockedWorldMenu = lockedWorldMenu;
                     ClientSession.activePos = p.pos();
                     mc.setScreen(new SongSelectScreen(p.pos(), p.songs()));
                 }
@@ -78,6 +81,8 @@ public final class ClientNetHandler {
             ClientSession.onCancel(p);
         } else if (payload instanceof FnfPayloads.RollbackCompleteS2C p) {
             if (mc.screen instanceof RollbackWaitingScreen waiting) waiting.complete(p.pos());
+        } else if (payload instanceof FnfPayloads.EditorBotS2C p) {
+            if (mc.screen instanceof GameplayScreen gameplay) gameplay.onEditorBotSpawned(p);
         } else if (payload instanceof FnfPayloads.OpenMachineEditorS2C p) {
             mc.setScreen(new MachineEditorScreen(p.pos(), p.profileId()));
         } else if (payload instanceof FnfPayloads.MachineEditorResultS2C p) {
@@ -88,6 +93,7 @@ public final class ClientNetHandler {
             }
         } else if (payload instanceof FnfPayloads.OpenMachineMenuS2C p) {
             ClientSession.reset();
+            ClientSession.lockedWorldMenu = p.lockedWorldMenu();
             ClientSession.activePos = p.pos();
             String compatibilityError = null;
             String activeId = ModContentScope.activeMod().map(ModContentScope.ActiveMod::id).orElse("");
@@ -105,9 +111,12 @@ public final class ClientNetHandler {
                 compatibilityError = "Mod version/content mismatch. Server: " + p.packVersion()
                         + ", client: " + MachineLibrary.packVersion();
             }
-            mc.setScreen(new MachineMenuScreen(p.pos(), p.profileId(), p.machineData(),
-                    compatibilityError, p.songs()));
+            mc.setScreen(new MachineMenuScreen(p.pos(), p.profileId(), p.machineTag(), p.machineData(),
+                    compatibilityError, p.songs(), p.lockedWorldMenu()));
+        } else if (payload instanceof FnfPayloads.MachineTaggedPlayResultS2C p) {
+            ClientSession.onTaggedPlayResult(p);
         } else if (payload instanceof FnfPayloads.ModScopeS2C p) {
+            com.fnfmod.client.AutoWorldMenuClient.configure(p.automaticMenu());
             if (p.modId().isBlank()) {
                 ModContentScope.clear();
             } else {
@@ -129,7 +138,7 @@ public final class ClientNetHandler {
                         "Machine mod mismatch. Custom menus use fallback until versions match."), false);
             }
         } else if (payload instanceof FnfPayloads.OpenHitboxBuilderS2C p) {
-            mc.setScreen(new HitboxBuilderScreen(p.profileId()));
+            mc.setScreen(new FunkinDesignerScreen(p.profileId(), p.machineToolsEnabled()));
         } else if (payload instanceof FnfPayloads.HitboxSelectionStateS2C p) {
             com.fnfmod.client.render.MachineHitboxPreview.apply(p);
         } else if (payload instanceof FnfPayloads.ConfirmHitboxRemovalS2C p) {
@@ -149,6 +158,8 @@ public final class ClientNetHandler {
             } else if (mc.player != null) {
                 mc.player.displayClientMessage(Component.literal(p.message()), true);
             }
+        } else if (payload instanceof FnfPayloads.DesignerPlacementStateS2C p) {
+            com.fnfmod.client.render.MachineHitboxPreview.setDesignerPlacement(p.mode());
         }
     }
 }

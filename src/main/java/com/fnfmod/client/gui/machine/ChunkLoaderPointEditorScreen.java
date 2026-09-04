@@ -103,6 +103,7 @@ public final class ChunkLoaderPointEditorScreen extends Screen {
 
     @Override
     public void render(GuiGraphics gui, int mouseX, int mouseY, float partialTick) {
+        super.renderBackground(gui, mouseX, mouseY, partialTick);
         BlockifiedScreenStyle.backdrop(gui, width, height);
         BlockifiedScreenStyle.panel(gui, panelX, panelY, panelWidth, panelHeight);
         BlockifiedScreenStyle.header(gui, font, panelX + 16, panelY + 13,

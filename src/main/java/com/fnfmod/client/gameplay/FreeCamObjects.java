@@ -95,6 +95,7 @@ public final class FreeCamObjects {
         // is an alias of lighting (one toggle), not a separate field.
         public boolean billboard = true;   // worldBillboard
         public boolean lighting = true;    // worldLighting (a.k.a. shadows)
+        public String renderMode = "auto"; // auto / lit / flat / emissive
         public boolean seeThrough = false; // worldSeeThrough
         public boolean antialiasing = true;
 
@@ -138,7 +139,7 @@ public final class FreeCamObjects {
             c.scaleX = scaleX; c.scaleY = scaleY; c.scaleZ = scaleZ;
             c.alpha = alpha; c.color = color;
             c.visible = visible;
-            c.billboard = billboard; c.lighting = lighting;
+            c.billboard = billboard; c.lighting = lighting; c.renderMode = renderMode;
             c.seeThrough = seeThrough; c.antialiasing = antialiasing;
             c.texturePath = texturePath; c.text = text; c.textSize = textSize;
             c.characterDef = characterDef; c.width = width; c.height = height;
@@ -287,6 +288,7 @@ public final class FreeCamObjects {
         h = fp(h, o.width); h = fp(h, o.height); h = fp(h, o.borderSize);
         h = fp(h, o.color); h = fp(h, o.borderColor); h = fp(h, o.textSize); h = fp(h, o.fps);
         h = fp(h, o.visible); h = fp(h, o.billboard); h = fp(h, o.lighting);
+        h = fp(h, o.renderMode);
         h = fp(h, o.seeThrough); h = fp(h, o.antialiasing); h = fp(h, o.italic); h = fp(h, o.loop);
         return h;
     }
@@ -610,6 +612,18 @@ public final class FreeCamObjects {
     /** X/Y/Z axis lock; shift makes it a plane lock (all axes but this one), not for rotate. */
     public void setAxis(int a, boolean shift) {
         if (!isTransforming()) return;
+        if (mode == Mode.ROTATE) {
+            // Axis constraints are alternate views of the same unfinished rotation,
+            // not consecutive rotations. Restore the pre-R state before recalculating
+            // on the new axis so X -> Y cannot leave the X preview behind.
+            Obj object = selected();
+            if (object != null) {
+                object.rotX = bRotX;
+                object.rotY = bRotY;
+                object.rotZ = bRotZ;
+            }
+            trackball = false;
+        }
         boolean wantPlane = shift && mode != Mode.ROTATE;
         if (axis == a && plane == wantPlane) { axis = 0; plane = false; }
         else { axis = a; plane = wantPlane; }
@@ -773,7 +787,15 @@ public final class FreeCamObjects {
     }
 
     public void toggleBillboard() { Obj o = selected(); if (o != null) { pushUndo(); o.billboard = !o.billboard; } }
-    public void toggleLighting() { Obj o = selected(); if (o != null) { pushUndo(); o.lighting = !o.lighting; } }
+    public void toggleLighting() { Obj o = selected(); if (o != null) { pushUndo();
+        o.lighting = !o.lighting; o.renderMode = "auto"; } }
+    public void cycleRenderMode() { Obj o = selected(); if (o != null) { pushUndo();
+        LuaWorldObject.RenderMode current = renderMode(o);
+        o.renderMode = switch (current) {
+            case LIT -> "flat"; case FLAT -> "emissive"; case EMISSIVE -> "lit";
+        };
+        o.lighting = "lit".equals(o.renderMode);
+    } }
     public void toggleSeeThrough() { Obj o = selected(); if (o != null) { pushUndo(); o.seeThrough = !o.seeThrough; } }
     public void toggleAntialiasing() {
         Obj o = selected();
@@ -1114,7 +1136,7 @@ public final class FreeCamObjects {
                     sb.append("setProperty('").append(t).append(".scale.y', ").append(n(o.scaleY * baseY)).append(")\n");
                 }
                 if (!o.billboard) sb.append("setProperty('").append(t).append(".billboard', false)\n");
-                if (!o.lighting) sb.append("setProperty('").append(t).append(".lighting', false)\n");
+                appendRenderMode(sb, o, t);
                 if (o.seeThrough) sb.append("setProperty('").append(t).append(".seeThrough', true)\n");
                 if (!o.antialiasing) sb.append("setProperty('").append(t).append(".antialiasing', false)\n");
                 if (o.alpha < 1) sb.append("setProperty('").append(t).append(".alpha', ").append(n(o.alpha)).append(")\n");
@@ -1254,7 +1276,13 @@ public final class FreeCamObjects {
                         if (target(args, sourceTag)) o.billboard = bool(args, 1, true);
                     }
                     case "setWorldSpriteLighting" -> {
-                        if (target(args, sourceTag)) o.lighting = bool(args, 1, true);
+                        if (target(args, sourceTag)) { o.lighting = bool(args, 1, true); o.renderMode = "auto"; }
+                    }
+                    case "setObjectRenderMode", "setWorldSpriteRenderMode", "setObjectShaderMode" -> {
+                        if (target(args, sourceTag)) {
+                            o.renderMode = normalizeRenderMode(arg(args, 1));
+                            if (!"auto".equals(o.renderMode)) o.lighting = "lit".equals(o.renderMode);
+                        }
                     }
                     case "setObjectSeeThrough" -> {
                         if (target(args, sourceTag)) o.seeThrough = bool(args, 1, true);
@@ -1299,7 +1327,11 @@ public final class FreeCamObjects {
                             case "alpha" -> o.alpha = bounded(number(args, 1, o.alpha), 0, 1);
                             case "color" -> o.color = color(arg(args, 1), o.color);
                             case "billboard" -> o.billboard = bool(args, 1, o.billboard);
-                            case "lighting" -> o.lighting = bool(args, 1, o.lighting);
+                            case "lighting" -> { o.lighting = bool(args, 1, o.lighting); o.renderMode = "auto"; }
+                            case "renderMode", "worldRenderMode", "shaderMode" -> {
+                                o.renderMode = normalizeRenderMode(arg(args, 1));
+                                if (!"auto".equals(o.renderMode)) o.lighting = "lit".equals(o.renderMode);
+                            }
                             case "seeThrough" -> o.seeThrough = bool(args, 1, o.seeThrough);
                             case "antialiasing" -> o.antialiasing = bool(args, 1, o.antialiasing);
                             default -> { }
@@ -1490,6 +1522,26 @@ public final class FreeCamObjects {
         } catch (Exception ignored) { return fallback; }
     }
 
+    private static String normalizeRenderMode(String value) {
+        if (value == null || value.isBlank() || value.equalsIgnoreCase("auto")) return "auto";
+        return LuaWorldObject.RenderMode.resolve(value, true).luaName();
+    }
+
+    private static LuaWorldObject.RenderMode renderMode(Obj object) {
+        String explicit = "auto".equalsIgnoreCase(object.renderMode) ? null : object.renderMode;
+        return LuaWorldObject.RenderMode.resolve(explicit, object.lighting);
+    }
+
+    private static void appendRenderMode(StringBuilder out, Obj object, String escapedTag) {
+        String mode = normalizeRenderMode(object.renderMode);
+        if (!"auto".equals(mode)) {
+            out.append("setObjectRenderMode('").append(escapedTag).append("', '")
+                    .append(mode).append("')\n");
+        } else if (!object.lighting) {
+            out.append("setWorldSpriteLighting('").append(escapedTag).append("', false)\n");
+        }
+    }
+
     private void appendCommon(StringBuilder sb, Obj o, String t, String q, boolean rot, boolean scale) {
         if (rot && (o.rotX != 0 || o.rotY != 0 || o.rotZ != 0)) {
             sb.append("setObjectRotation(").append(q).append(", ")
@@ -1499,7 +1551,7 @@ public final class FreeCamObjects {
             sb.append("scaleObject(").append(q).append(", ").append(n(o.scaleX)).append(", ").append(n(o.scaleY)).append(")\n");
         }
         if (!o.billboard) sb.append("setWorldSpriteBillboard(").append(q).append(", false)\n");
-        if (!o.lighting) sb.append("setWorldSpriteLighting(").append(q).append(", false)\n");
+        appendRenderMode(sb, o, t);
         if (o.seeThrough) sb.append("setObjectSeeThrough(").append(q).append(", true)\n");
         if (!o.antialiasing) sb.append("setObjectAntialiasing(").append(q).append(", false)\n");
         if (o.alpha < 1) sb.append("setProperty('").append(t).append(".alpha', ").append(n(o.alpha)).append(")\n");
@@ -1706,7 +1758,7 @@ public final class FreeCamObjects {
                         rf, off[0], off[1],
                         o.x, o.y, o.z, o.width, o.height, o.worldChar.refW(), o.worldChar.refH(),
                         sx, sy, o.alpha * o.worldChar.alpha(), o.rotZ, o.rotX, o.rotY,
-                        o.worldChar.color(), o.billboard, o.lighting, o.seeThrough);
+                        o.worldChar.color(), o.billboard, o.lighting, renderMode(o), o.seeThrough);
             }
         }
         // A loaded spritesheet renders its current animation frame.
@@ -1721,7 +1773,7 @@ public final class FreeCamObjects {
                         rf, off[0], off[1],
                         o.x, o.y, o.z, o.width, o.height, o.character.refW(), o.character.refH(),
                         o.scaleX, o.scaleY, o.alpha, o.rotZ, o.rotX, o.rotY,
-                        0xFFFFFF, o.billboard, o.lighting, o.seeThrough);
+                        0xFFFFFF, o.billboard, o.lighting, renderMode(o), o.seeThrough);
             }
         }
         boolean hasImage = o.textureId != null && o.type != Type.TEXT;
@@ -1743,7 +1795,7 @@ public final class FreeCamObjects {
                 tex, tw, th, null, 0, 0,
                 o.x, o.y, o.z, o.width, o.height, o.width, o.height,
                 o.scaleX, o.scaleY, alpha, o.rotZ, o.rotX, o.rotY,
-                color, o.billboard, o.lighting, o.seeThrough);
+                color, o.billboard, o.lighting, renderMode(o), o.seeThrough);
     }
 
     private LuaWorldObject text(Obj o) {
@@ -1753,8 +1805,8 @@ public final class FreeCamObjects {
                 Minecraft.getInstance().font, o.text == null ? "" : o.text,
                 o.x, o.y, o.z, 0, o.textSize,
                 o.scaleX, o.scaleY, o.alpha, o.rotZ, o.rotX, o.rotY,
-                o.color, o.billboard, o.lighting, o.seeThrough,
-                bSize, o.borderColor, bStyle, o.textAlign, o.italic);
+                o.color, o.billboard, o.lighting, renderMode(o), o.seeThrough,
+                bSize, o.borderColor, bStyle, o.textAlign, o.italic, 0, 0, false, false);
     }
 
     /** A faint translucent highlight over the object; the outline/cube are line gizmos. */
@@ -1767,7 +1819,7 @@ public final class FreeCamObjects {
                 WHITE, 16, 16, null, 0, 0,
                 o.x, o.y, o.z, hw, hh, hw, hh,
                 1, 1, 0.15, o.rotZ, o.rotX, o.rotY,
-                0xFFE24A, o.billboard, false, true));
+                0xFFE24A, o.billboard, false, LuaWorldObject.RenderMode.FLAT, true));
     }
 
     // --- coordinate helpers (mirror LuaWorldObjectRenderer's mapping) ---
