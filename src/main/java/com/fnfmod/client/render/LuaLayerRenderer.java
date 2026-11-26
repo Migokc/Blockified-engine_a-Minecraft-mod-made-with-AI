@@ -2,6 +2,7 @@ package com.fnfmod.client.render;
 
 import com.fnfmod.FnfMod;
 import com.fnfmod.client.lua.LuaLayerEffects;
+import com.fnfmod.client.lua.LuaMaskMapping;
 import com.mojang.blaze3d.pipeline.*;
 import com.mojang.blaze3d.platform.GlStateManager;
 import com.mojang.blaze3d.systems.RenderSystem;
@@ -101,7 +102,7 @@ public final class LuaLayerRenderer implements AutoCloseable {
 
     /** Size is raster resolution, independent of the object's logical/local dimensions. */
     public Surface paint(String id, int width, int height, Object fingerprint, LuaTable data,
-                         Surface mask, Consumer<GuiGraphics> painter) {
+                         Surface mask, LuaMaskMapping maskMapping, Consumer<GuiGraphics> painter) {
         if (effectShader == null || drawShader == null) return null;
         int requestedWidth = Math.max(1, width), requestedHeight = Math.max(1, height);
         int max = Math.min(4096, RenderSystem.maxSupportedTextureSize());
@@ -129,7 +130,8 @@ public final class LuaLayerRenderer implements AutoCloseable {
             for (String key : LuaLayerEffects.NUMBERS.keySet()) properties.append(LuaLayerEffects.value(data, key)).append('|');
             for (String key : LuaLayerEffects.STRINGS.keySet()) properties.append(LuaLayerEffects.value(data, key)).append('|');
             for (String key : LuaLayerEffects.BOOLEANS.keySet()) properties.append(LuaLayerEffects.value(data, key)).append('|');
-            Object signature = List.of(fingerprint, properties.toString(), mask == null ? -1L : mask.revision);
+            Object signature = List.of(fingerprint, properties.toString(), mask == null ? -1L : mask.revision,
+                    maskMapping == null ? "missing" : maskMapping);
             surface.blend = LuaLayerEffects.value(data, "blendMode").tojstring();
             if (signature.equals(surface.signature) && surface.generation == shaderGeneration) return surface;
             RenderSystem.disableScissor(); RenderSystem.colorMask(true, true, true, true);
@@ -148,11 +150,14 @@ public final class LuaLayerRenderer implements AutoCloseable {
             RenderSystem.colorMask(true, true, true, true);
             effectShader.setSampler("Source", surface.raw.getColorTextureId());
             effectShader.setSampler("Mask", mask == null ? surface.raw.getColorTextureId() : mask.output.getColorTextureId());
-            uniform(effectShader, "HasMask", data.get("mask").optjstring("").isBlank() ? 0 : mask == null ? 2 : 1);
+            uniform(effectShader, "HasMask", data.get("mask").optjstring("").isBlank()
+                    ? 0 : mask == null || maskMapping == null ? 2 : 1);
             uniform(effectShader, "MaskLuma", data.get("maskMode").optjstring("alpha").equals("luminance") ? 1 : 0);
             uniform(effectShader, "MaskInvert", data.get("maskInvert").optboolean(false) ? 1 : 0);
-            uniform(effectShader, "MaskTransform", n(data,"maskX"), n(data,"maskY"), n(data,"maskScaleX"), n(data,"maskScaleY"));
-            uniform(effectShader, "MaskStyle", n(data,"maskAngle"), n(data,"maskSoftness"), 0, 0);
+            LuaMaskMapping mapping = maskMapping == null
+                    ? new LuaMaskMapping(1, 0, 0, 1, 0, 0) : maskMapping;
+            uniform(effectShader, "MaskTransform", mapping.xx(), mapping.xy(), mapping.yx(), mapping.yy());
+            uniform(effectShader, "MaskStyle", mapping.tx(), mapping.ty(), n(data,"maskSoftness"), 0);
             uniform(effectShader, "GradientType", switch (data.get("gradientType").optjstring("none")) {
                 case "linear" -> 1; case "radial" -> 2; case "angular" -> 3; default -> 0;
             });

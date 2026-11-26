@@ -75,6 +75,21 @@ public final class LuaLayerEffectsChecks {
         globals.load("setObjectParent('image','fade',true)").call();
         close(parentHost.transform("image").m31(),30,"keep position attachment");
         check(globals.get("getObjectParent").call(LuaValue.valueOf("image")).tojstring().equals("fade"),"parent getter");
+
+        LuaMaskMapping same = LuaMaskMapping.between(new Matrix4f(), 100, 200,
+                new Matrix4f(), 100, 200, 0, 0, 1, 1, 0);
+        check(same != null, "same-space mask mapping");
+        close(same.xx(), 1, "mask keeps target X pixels"); close(same.xy(), 0, "mask X/Y independence");
+        close(same.yx(), 0, "mask Y/X independence"); close(same.yy(), 1, "mask keeps target Y pixels");
+        close(same.tx(), 0, "same-position mask X"); close(same.ty(), 0, "same-position mask Y");
+        LuaMaskMapping moved = LuaMaskMapping.between(new Matrix4f(), 100, 100,
+                new Matrix4f().translation(25, 0, 0), 100, 100, 0, 0, 1, 1, 0);
+        close(moved.xx(), 1, "moving mask does not resize target");
+        close(moved.tx(), -.25, "independent mask position");
+        LuaMaskMapping enlarged = LuaMaskMapping.between(new Matrix4f(), 100, 100,
+                new Matrix4f().scale(2, 2, 1), 100, 100, 0, 0, 1, 1, 0);
+        close(enlarged.xx(), .5, "mask object scale controls mask bounds");
+        close(enlarged.tx(), .25, "scaled mask remains centered");
         System.out.println("Lua layer API and parenting checks passed.");
         if(Arrays.asList(args).contains("--gpu")) LuaLayerShaderChecks.run();
     }

@@ -11,8 +11,13 @@ import net.minecraft.client.renderer.texture.DynamicTexture;
 import net.minecraft.resources.ResourceLocation;
 
 import java.nio.file.Path;
+import java.lang.reflect.Array;
+import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.IdentityHashMap;
+import java.util.List;
 import java.util.Set;
 
 /**
@@ -21,6 +26,8 @@ import java.util.Set;
  * otherwise a built-in procedurally generated arrow is drawn.
  */
 public final class NoteStyle {
+    /** Visual baseline: an authored scale of 1.0 renders at the former 1.05 size. */
+    private static final float NOTE_PART_BASE_SCALE = 1.05f;
     /** Neutral hold-cover placement, derived from the previously required skin.json workaround. */
     private static final float HOLD_COVER_BASE_SCALE = 1.7f;
     private static final float HOLD_COVER_BASE_Y = 35f;
@@ -87,6 +94,10 @@ public final class NoteStyle {
     /** the note skin folder ships its own per-lane holdCover files */
     private static boolean skinOwnHoldCover;
     private static NoteSkinConfig skinConfig = NoteSkinConfig.DEFAULT;
+
+    private static float renderedScale(NoteSkinConfig.Part part) {
+        return NOTE_PART_BASE_SCALE * part.scale();
+    }
     private static java.nio.file.Path skinConfigFile;
     private static SkinFiles activeSkinFiles;
     // The current song's arrowSkin (chart noteTexture), fed in so the "default"
@@ -98,10 +109,175 @@ public final class NoteStyle {
     private static boolean songSkinActive;
     /** Legacy compatibility state retained for callers loading old Psych charts. */
     private static boolean songRgbAllowed = true;
+    private static boolean selectedSkinDisabled;
     /** external alpha multiplier for everything drawn (middlescroll opponent fade) */
     private static float extAlpha = 1f;
     private static float drawAlpha = 1f;
     private static boolean loaded;
+    /** Empty for the regular client style; unique for a remote multiplayer participant. */
+    private static String textureNamespace = "";
+
+    /**
+     * A retained renderer state lets both duet sides keep independent atlases,
+     * RGB textures, and skin transforms without reloading textures per frame.
+     */
+    public static final class RenderContext {
+        private final Object[] values;
+        private boolean disposed;
+
+        private RenderContext(Object[] values) { this.values = values; }
+    }
+
+    private static final List<Field> CONTEXT_FIELDS = contextFields();
+
+    private static List<Field> contextFields() {
+        List<Field> fields = new ArrayList<>();
+        for (Field field : NoteStyle.class.getDeclaredFields()) {
+            int modifiers = field.getModifiers();
+            if (!Modifier.isStatic(modifiers)) continue;
+            if (field.getName().equals("arrowTexture") || field.getName().equals("arrowOutlineTexture")
+                    || field.getName().equals("LANE_COLORS") || field.getName().equals("LANE_ROTATION")) continue;
+            if (Modifier.isFinal(modifiers) && !field.getType().isArray()) continue;
+            field.setAccessible(true);
+            fields.add(field);
+        }
+        return List.copyOf(fields);
+    }
+
+    /** Snapshot the active style after its assets have been loaded. */
+    public static synchronized RenderContext captureRenderContext() {
+        load();
+        return captureContextValues();
+    }
+
+    /** Switches the shared renderer to a previously retained style context. */
+    public static synchronized void activateRenderContext(RenderContext context) {
+        if (context != null && !context.disposed) restoreContextValues(context);
+    }
+
+    /**
+     * Builds a second style without closing the currently active assets. The
+     * caller temporarily applies the other player's cosmetic preferences before
+     * invoking the initializer, then this method restores the original renderer.
+     */
+    public static synchronized RenderContext createRenderContext(String namespace, Runnable initializer) {
+        RenderContext previous = captureRenderContext();
+        resetContextValues();
+        textureNamespace = safeNamespace(namespace);
+        try {
+            if (initializer != null) initializer.run();
+            load();
+            RenderContext created = captureContextValues();
+            restoreContextValues(previous);
+            return created;
+        } catch (RuntimeException | Error failure) {
+            closeLoadedResources();
+            resetContextValues();
+            restoreContextValues(previous);
+            throw failure;
+        }
+    }
+
+    /** Releases the GPU/atlas resources retained by a secondary style context. */
+    public static synchronized void disposeRenderContext(RenderContext context) {
+        if (context == null || context.disposed) return;
+        RenderContext previous = captureRenderContext();
+        restoreContextValues(context);
+        closeLoadedResources();
+        context.disposed = true;
+        resetContextValues();
+        restoreContextValues(previous);
+    }
+
+    private static RenderContext captureContextValues() {
+        Object[] values = new Object[CONTEXT_FIELDS.size()];
+        try {
+            for (int i = 0; i < CONTEXT_FIELDS.size(); i++) {
+                values[i] = copyArray(CONTEXT_FIELDS.get(i).get(null));
+            }
+        } catch (IllegalAccessException error) {
+            throw new IllegalStateException("Could not snapshot note renderer state", error);
+        }
+        return new RenderContext(values);
+    }
+
+    private static void restoreContextValues(RenderContext context) {
+        try {
+            for (int i = 0; i < CONTEXT_FIELDS.size(); i++) {
+                Field field = CONTEXT_FIELDS.get(i);
+                Object value = copyArray(context.values[i]);
+                if (Modifier.isFinal(field.getModifiers())) {
+                    Object target = field.get(null);
+                    if (target != null && value != null) {
+                        System.arraycopy(value, 0, target, 0, Math.min(Array.getLength(value), Array.getLength(target)));
+                    }
+                } else {
+                    field.set(null, value);
+                }
+            }
+        } catch (IllegalAccessException error) {
+            throw new IllegalStateException("Could not activate note renderer state", error);
+        }
+    }
+
+    private static Object copyArray(Object value) {
+        if (value == null || !value.getClass().isArray()) return value;
+        int length = Array.getLength(value);
+        Object copy = Array.newInstance(value.getClass().getComponentType(), length);
+        System.arraycopy(value, 0, copy, 0, length);
+        return copy;
+    }
+
+    private static void resetContextValues() {
+        try {
+            for (Field field : CONTEXT_FIELDS) {
+                if (Modifier.isFinal(field.getModifiers())) {
+                    Object target = field.get(null);
+                    if (target != null) {
+                        Object empty = Array.newInstance(field.getType().getComponentType(), Array.getLength(target));
+                        System.arraycopy(empty, 0, target, 0, Array.getLength(target));
+                    }
+                } else if (field.getType().isPrimitive()) {
+                    // Do not use a mixed numeric ternary here: Java promotes
+                    // its branches to one common numeric type, so even a
+                    // float field can receive a boxed Double through Field.set.
+                    Class<?> type = field.getType();
+                    if (type == boolean.class) field.setBoolean(null, false);
+                    else if (type == byte.class) field.setByte(null, (byte) 0);
+                    else if (type == short.class) field.setShort(null, (short) 0);
+                    else if (type == char.class) field.setChar(null, '\0');
+                    else if (type == int.class) field.setInt(null, 0);
+                    else if (type == long.class) field.setLong(null, 0L);
+                    else if (type == float.class) field.setFloat(null, 0f);
+                    else if (type == double.class) field.setDouble(null, 0d);
+                } else {
+                    field.set(null, null);
+                }
+            }
+        } catch (IllegalAccessException error) {
+            throw new IllegalStateException("Could not clear note renderer state", error);
+        }
+        // A context without a selected skin (for example, the partner's
+        // procedural/disabled skin in multiplayer) still needs valid part
+        // transforms when the renderer draws its fallback receptors.
+        skinConfig = NoteSkinConfig.DEFAULT;
+        textureNamespace = "";
+        extAlpha = 1f;
+        drawAlpha = 1f;
+        missedFactor = 1f;
+        loaded = false;
+    }
+
+    private static String safeNamespace(String value) {
+        if (value == null || value.isBlank()) return "";
+        String normalized = value.toLowerCase(java.util.Locale.ROOT).replaceAll("[^a-z0-9_./-]", "_");
+        while (normalized.startsWith("/")) normalized = normalized.substring(1);
+        return normalized.isBlank() ? "" : normalized + "/";
+    }
+
+    private static ResourceLocation rgbTextureId(String path) {
+        return FnfMod.id("gen/rgb/" + textureNamespace + path);
+    }
 
     /** External fade (e.g. middlescroll opponent); combines with per-skin alphas. */
     public static void setDrawAlpha(float alpha) {
@@ -950,6 +1126,18 @@ public final class NoteStyle {
         return songSkinActive;
     }
 
+    /** True when the selected skin has note frames of its own (including a chart's default skin). */
+    public static boolean hasLoadedNoteSkin() {
+        load();
+        return noteAtlas != null;
+    }
+
+    /** Whether the user explicitly selected the procedural/no-skin option. */
+    public static boolean noteSkinDisabled() {
+        load();
+        return selectedSkinDisabled;
+    }
+
     /** Legacy Psych chart value; skin.json's rgb property is authoritative for rendering. */
     public static void setSongRgbAllowed(boolean allowed) {
         songRgbAllowed = allowed;
@@ -1239,6 +1427,10 @@ public final class NoteStyle {
     }
 
     private static void load() {
+        // Some skin choices intentionally return early before reading a JSON
+        // config. Keep the config invariant valid across those paths and when
+        // activating a retained multiplayer render context.
+        if (skinConfig == null) skinConfig = NoteSkinConfig.DEFAULT;
         if (loaded) return;
         loaded = true;
         songSkinActive = false;
@@ -1250,6 +1442,8 @@ public final class NoteStyle {
         if (selected == null || selected.isBlank()) {
             selected = com.fnfmod.client.ClientOptions.NOTE_SKIN_DEFAULT;
         }
+        selectedSkinDisabled = selected.equalsIgnoreCase(
+                com.fnfmod.client.ClientOptions.NOTE_SKIN_NONE);
         if (selected.equalsIgnoreCase(com.fnfmod.client.ClientOptions.NOTE_SKIN_NONE)) {
             loadProceduralSplashFallback();
             return; // procedural arrows, no chart skin
@@ -1470,7 +1664,7 @@ public final class NoteStyle {
         set.template = templateOverride != null ? templateOverride : detectTemplate(src);
         if (set.template) {
             for (int lane = 0; lane < 4; lane++) {
-                set.id[lane] = FnfMod.id("gen/rgb/" + name + "/" + lane);
+                set.id[lane] = rgbTextureId(name + "/" + lane);
                 remapLane(set, lane);
             }
         }
@@ -1484,7 +1678,7 @@ public final class NoteStyle {
         RGBSet set = new RGBSet();
         set.src = src;
         set.template = true;
-        set.id[0] = FnfMod.id("gen/rgb/" + name);
+        set.id[0] = rgbTextureId(name);
         remapColors(set, 0, base, highlight, outline);
         return set;
     }
@@ -1960,7 +2154,7 @@ public final class NoteStyle {
         NoteSkinConfig.Part config = skinConfig.holdCover();
         applyAlpha(config.alpha());
         float guiScale = receptorSize / 104f;
-        float pixelScale = 0.7f * guiScale * HOLD_COVER_BASE_SCALE * config.scale();
+        float pixelScale = 0.7f * guiScale * HOLD_COVER_BASE_SCALE * renderedScale(config);
         holdSplashAtlas.drawScaled(gui, frame,
                 x - 12f * guiScale + config.x() * pixelScale,
                 y + 15.4f * guiScale + (HOLD_COVER_BASE_Y + config.y()) * pixelScale,
@@ -1980,7 +2174,7 @@ public final class NoteStyle {
         NoteSkinConfig.Part config = skinConfig.holdCover();
         applyAlpha(config.alpha());
         float g = receptorSize / 104f;
-        float pixelScale = 0.7f * g * HOLD_COVER_BASE_SCALE * config.scale();
+        float pixelScale = 0.7f * g * HOLD_COVER_BASE_SCALE * renderedScale(config);
         coverAtlases[lane].drawScaled(gui, f,
                 receptorX - 12f * g + config.x() * pixelScale,
                 receptorY + 15.4f * g + (HOLD_COVER_BASE_Y + config.y()) * pixelScale,
@@ -2007,7 +2201,7 @@ public final class NoteStyle {
         NoteSkinConfig.Part config = skinConfig.splash();
         applyAlpha(config.alpha());
         SparrowAtlas.Frame f = frames.get(frameIndex);
-        float pixelScale = size * config.scale() / Math.max(1, Math.max(f.frameW, f.frameH));
+        float pixelScale = size * renderedScale(config) / Math.max(1, Math.max(f.frameW, f.frameH));
         splashAtlas.drawScaled(gui, f,
                 centerX + config.x() * pixelScale, centerY + config.y() * pixelScale,
                 pixelScale, laneTex(splashRGB, lane));
@@ -2076,16 +2270,16 @@ public final class NoteStyle {
         NoteSkinConfig.Part config = skinConfig.note();
         applyAlpha(config.alpha());
         if (noteAtlas != null && noteAnims[lane] != null) {
-            float pixelScale = size * config.scale() / noteRefPx;
+            float pixelScale = size * renderedScale(config) / noteRefPx;
             noteAtlas.drawScaled(gui, noteAtlas.frame(noteAnims[lane], 0),
                     centerX + config.x() * pixelScale, centerY + config.y() * pixelScale,
                     pixelScale, laneTex(noteRGB, lane));
             return;
         }
-        float pixelScale = size * config.scale() / 32f;
+        float pixelScale = size * renderedScale(config) / 32f;
         drawArrow(gui, arrowTexture, lane,
                 centerX + config.x() * pixelScale, centerY + config.y() * pixelScale,
-                size * config.scale(),
+                size * renderedScale(config),
                 missedTint ? 0xFF808080 : LANE_COLORS[lane]);
     }
 
@@ -2103,7 +2297,7 @@ public final class NoteStyle {
             if (anim != null) {
                 // Psych applies the RGB palette to press/confirm but leaves the static frame raw
                 ResourceLocation rgb = state == 0 ? null : laneTex(strumRGB, lane);
-                float pixelScale = size * config.scale() / noteRefPx;
+                float pixelScale = size * renderedScale(config) / noteRefPx;
                 strumAtlas.drawScaled(gui, strumAtlas.frame(anim, state == 0 ? 0 : 1),
                         centerX + config.x() * pixelScale, centerY + config.y() * pixelScale,
                         pixelScale, rgb);
@@ -2115,10 +2309,10 @@ public final class NoteStyle {
             case 2 -> LANE_COLORS[lane];
             default -> 0xFFB0B0B0;
         };
-        float arrowScale = size * (state == 2 ? 1.1f : 1f) / 32f;
+        float arrowScale = size * (state == 2 ? 1.1f : 1f) * renderedScale(config) / 32f;
         drawArrow(gui, state == 0 ? arrowOutlineTexture : arrowTexture, lane,
                 centerX + config.x() * arrowScale, centerY + config.y() * arrowScale,
-                size * (state == 2 ? 1.1f : 1f), color);
+                size * (state == 2 ? 1.1f : 1f) * renderedScale(config), color);
     }
 
     /** Gameplay sustain receptor: loops the confirm atlas, holding each frame for two renders. */
@@ -2141,7 +2335,7 @@ public final class NoteStyle {
                         ? (int) Math.floorMod(animationFrame, (long) frames.size())
                         : (int) Math.min(Math.max(0, animationFrame), frames.size() - 1L);
                 var frame = frames.get(index);
-                float pixelScale = size * config.scale() / noteRefPx;
+                float pixelScale = size * renderedScale(config) / noteRefPx;
                 strumAtlas.drawScaled(gui, frame,
                         centerX + config.x() * pixelScale,
                         centerY + config.y() * pixelScale,
@@ -2162,7 +2356,7 @@ public final class NoteStyle {
 
         HoldSprite piece = holdPieces[lane];
         if (piece == null) {
-            float w = size * 0.36f * config.scale();
+            float w = size * 0.36f * renderedScale(config);
             float pixelScale = size / Math.max(1f, noteRefPx);
             centerX += config.x() * pixelScale;
             yTop += config.y() * pixelScale;
@@ -2179,7 +2373,7 @@ public final class NoteStyle {
         HoldSprite end = holdEnds[lane];
         // Sustain body and end use the exact same gui-units-per-source-pixel scale as the
         // note head. Width, tile length and cap height therefore come from their own frames.
-        float pixelScale = size * config.scale() / Math.max(1f, noteRefPx);
+        float pixelScale = size * renderedScale(config) / Math.max(1f, noteRefPx);
         float pieceW = Math.max(1f, piece.w() * pixelScale);
         float endW = end == null ? 0f : Math.max(1f, end.w() * pixelScale);
         centerX += config.x() * pixelScale;

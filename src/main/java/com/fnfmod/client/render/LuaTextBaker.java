@@ -54,13 +54,64 @@ public final class LuaTextBaker {
      */
     public static final int PADDING = 16;
 
-    private static final Map<Key, Baked> CACHE = new LinkedHashMap<>();
+    private static final Map<Key, Baked> CACHE = new LinkedHashMap<>(16, 0.75f, true);
     private static final AtomicInteger NEXT_ID = new AtomicInteger();
     /** Text blocks are small, but each owns a GPU texture, so the cache stays short. */
     private static final int MAX_CACHED = 48;
-    private static final int MAX_SIDE = 2048;
+    private static final int MAX_SIDE = 4096;
+    private static final long MAX_BAKE_PIXELS = 2L * 1024L * 1024L;
+    /** Upsampled outlines must not leave an unbounded collection of GPU textures behind. */
+    private static final long MAX_CACHED_PIXELS = 8L * 1024L * 1024L;
+    private static final int MAX_RASTER_SCALE = 8;
 
     private LuaTextBaker() {}
+
+    /**
+     * The text painter uses local font pixels, but the canvas and the GUI can enlarge them
+     * considerably before they reach the monitor. Rasterize outlined 2D text close to that
+     * final density so enabling a border does not turn an oversampled font into a small bitmap.
+     * Integer levels keep a zoom tween from invalidating the cached texture every frame.
+     */
+    public static int rasterScale(GuiGraphics gui, int logicalWidth, int logicalHeight) {
+        Matrix4f matrix = gui.pose().last().pose();
+        double guiScale = Minecraft.getInstance().getWindow().getGuiScale();
+        double xScale = Math.hypot(matrix.m00(), matrix.m10()) * guiScale;
+        double yScale = Math.hypot(matrix.m01(), matrix.m11()) * guiScale;
+        double desired = Math.max(xScale, yScale);
+        int upper = Double.isFinite(desired)
+                ? Math.clamp((int) Math.ceil(desired - 0.001), 1, MAX_RASTER_SCALE) : 1;
+        long width = Math.max(1, logicalWidth);
+        long height = Math.max(1, logicalHeight);
+        for (int raster = upper; raster > 1; raster--) {
+            if (width * raster <= MAX_SIDE && height * raster <= MAX_SIDE
+                    && width * height * raster * raster <= MAX_BAKE_PIXELS) {
+                return raster;
+            }
+        }
+        return 1;
+    }
+
+    /** Local text coordinates occupied by one fixed Psych-canvas pixel on each axis. */
+    public static double[] psychPixelInLocal(GuiGraphics gui) {
+        Matrix4f matrix = gui.pose().last().pose();
+        var window = Minecraft.getInstance().getWindow();
+        double guiScale = window.getGuiScale();
+        double xScale = Math.hypot(matrix.m00(), matrix.m10()) * guiScale;
+        double yScale = Math.hypot(matrix.m01(), matrix.m11()) * guiScale;
+        double psychPixel = Math.min(
+                PsychResolutionController.pixelWidth(window) / (double) PsychCanvas.WIDTH,
+                PsychResolutionController.pixelHeight(window) / (double) PsychCanvas.HEIGHT);
+        return new double[]{stableOutlineStep(psychPixel / Math.max(0.0001, xScale)),
+                stableOutlineStep(psychPixel / Math.max(0.0001, yScale))};
+    }
+
+    private static double stableOutlineStep(double value) {
+        // The camera can zoom every frame. A few percent of border-width tolerance avoids
+        // rebaking a large text block for every tiny matrix change during that tween.
+        if (!Double.isFinite(value) || value <= 0) return 1.0;
+        double quantum = 1.08;
+        return Math.pow(quantum, Math.rint(Math.log(value) / Math.log(quantum)));
+    }
 
     /**
      * Returns the texture holding this text, painting it first if the cache has no copy. The
@@ -86,6 +137,14 @@ public final class LuaTextBaker {
      */
     public static Baked bakeLayers(Key key, Consumer<GuiGraphics> underPainter, int underArgb,
                                    Consumer<GuiGraphics> foregroundPainter, int foregroundArgb) {
+        return bakeLayers(key, underPainter, underArgb, foregroundPainter, foregroundArgb, false);
+    }
+
+    /** Smooth filtering preserves custom TrueType/OTF glyph edges when a large text still
+     * exceeds the bounded bake size and its cached texture needs a little magnification. */
+    public static Baked bakeLayers(Key key, Consumer<GuiGraphics> underPainter, int underArgb,
+                                   Consumer<GuiGraphics> foregroundPainter, int foregroundArgb,
+                                   boolean smooth) {
         if (!valid(key)) return null;
         Baked cached = CACHE.get(key);
         if (cached != null) return cached;
@@ -120,7 +179,7 @@ public final class LuaTextBaker {
             foreground.close();
         }
 
-        Baked baked = register(under);
+        Baked baked = register(under, smooth);
         if (baked == null) return null;
         CACHE.put(key, baked);
         trim();
@@ -141,26 +200,30 @@ public final class LuaTextBaker {
     }
 
     private static void trim() {
-        while (CACHE.size() > MAX_CACHED) {
+        long pixels = 0;
+        for (Key key : CACHE.keySet()) pixels += (long) key.width() * key.height();
+        while (CACHE.size() > MAX_CACHED || pixels > MAX_CACHED_PIXELS) {
             var oldest = CACHE.entrySet().iterator();
             if (!oldest.hasNext()) return;
             var entry = oldest.next();
             oldest.remove();
+            pixels -= (long) entry.getKey().width() * entry.getKey().height();
             release(entry.getValue());
         }
     }
 
     private static Baked paint(Key key, Consumer<GuiGraphics> painter) {
         NativeImage image = paintImage(key, painter);
-        return image == null ? null : register(image);
+        return image == null ? null : register(image, false);
     }
 
-    private static Baked register(NativeImage image) {
+    private static Baked register(NativeImage image, boolean smooth) {
         Minecraft minecraft = Minecraft.getInstance();
         DynamicTexture texture = null;
         ResourceLocation id = null;
         try {
             texture = new DynamicTexture(image);
+            texture.setFilter(smooth, false);
             id = FnfMod.id("lua_text_bake/" + NEXT_ID.incrementAndGet());
             minecraft.getTextureManager().register(id, texture);
             return new Baked(id, texture);

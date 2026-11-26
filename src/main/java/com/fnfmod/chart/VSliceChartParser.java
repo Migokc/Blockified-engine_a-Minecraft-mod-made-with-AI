@@ -83,6 +83,12 @@ public final class VSliceChartParser {
                         chart.player3 = LegacyChartParser.optString(ch, "girlfriend", "gf");
                     }
                 }
+                chart.player1Type = SongChart.normalizePerformerType(LegacyChartParser.optString(meta,
+                        "blockifiedPlayerType", LegacyChartParser.optString(chartRoot,
+                                "blockifiedPlayerType", "")));
+                chart.player2Type = SongChart.normalizePerformerType(LegacyChartParser.optString(meta,
+                        "blockifiedOpponentType", LegacyChartParser.optString(chartRoot,
+                                "blockifiedOpponentType", "")));
                 if (meta.has("offsets") && meta.get("offsets").isJsonObject()) {
                     chart.offsetMs = LegacyChartParser.optDouble(meta.getAsJsonObject("offsets"), "instrumental", 0);
                 }

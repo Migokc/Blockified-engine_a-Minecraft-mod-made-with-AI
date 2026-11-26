@@ -37,7 +37,8 @@ final class LuaLayerShaderChecks {
             glViewport(0,0,32,32);glDisable(GL_BLEND);glUseProgram(effect);
             glActiveTexture(GL_TEXTURE0);glBindTexture(GL_TEXTURE_2D,source);integer(effect,"Source",0);
             glActiveTexture(GL_TEXTURE1);glBindTexture(GL_TEXTURE_2D,mask);integer(effect,"Mask",1);
-            vector(effect,"MaskTransform",0,0,1,1);vector(effect,"ClipStyle",.1f,0,1f/32,1f/32);
+            vector(effect,"MaskTransform",1,0,0,1);vector(effect,"MaskStyle",0,0,0,0);
+            vector(effect,"ClipStyle",.1f,0,1f/32,1f/32);
             integer(effect,"HasMask",1);integer(effect,"MaskLuma",0);
             render();check(pixel(16,16,3)==255,"opaque black alpha mask must reveal");
             integer(effect,"MaskLuma",1);render();check(pixel(16,16,3)==0,"black luminance mask must hide");

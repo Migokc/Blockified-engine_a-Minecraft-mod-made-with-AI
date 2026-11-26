@@ -2,6 +2,7 @@ package com.fnfmod.client.gameplay;
 
 import com.fnfmod.client.anim.CharacterAnimations;
 import com.fnfmod.client.render.PerformerRotation;
+import com.fnfmod.gameplay.PerformerCollisions;
 import com.mojang.authlib.GameProfile;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.player.RemotePlayer;
@@ -23,11 +24,12 @@ public final class OpponentBotCharacter {
     private static final AtomicInteger NEXT_ID = new AtomicInteger(-40000);
 
     private final RemotePlayer entity;
-    private final String set;
+    private String set;
     private final String role;
     private final CharacterAnimations.SkinChoice skinChoice;
     private long lastSingMs;
     private long lastStatePlayMs;
+    private String specialAnimation;
 
     private OpponentBotCharacter(RemotePlayer entity, String set, String role,
                                  CharacterAnimations.SkinChoice skinChoice) {
@@ -48,13 +50,16 @@ public final class OpponentBotCharacter {
         String name = "Bot_" + role;
         RemotePlayer player = new RemotePlayer(level, new GameProfile(id, name.length() > 16 ? name.substring(0, 16) : name));
         player.setId(NEXT_ID.getAndDecrement());
-        player.noPhysics = true;
+        player.noPhysics = false;
+        player.setNoGravity(false);
+        PerformerCollisions.setEnabled(player.getId(), false);
         player.setInvulnerable(true);
         player.setPos(stand.getX(), stand.getY(), stand.getZ());
         level.addEntity(player);
         // Apply the BBS form. If the character/animation name has no form, bail so the
         // caller falls back to the plain armor stand.
         if (!CharacterAnimations.prepare(player, set, role, skinChoice)) {
+            PerformerCollisions.setEnabled(player.getId(), true);
             level.removeEntity(player.getId(), Entity.RemovalReason.DISCARDED);
             return null;
         }
@@ -82,7 +87,15 @@ public final class OpponentBotCharacter {
 
     /** Plays an action while preserving its character.json camera nudge. */
     public float[] playWithCameraOffset(String action) {
+        specialAnimation = null;
         return playStateWithCameraOffset(action, true);
+    }
+
+    /** Play Animation event variant: idle waits for the BBS state itself to finish. */
+    public float[] playSpecialWithCameraOffset(String action) {
+        float[] result = playStateWithCameraOffset(action, true);
+        specialAnimation = result == null ? null : action;
+        return result;
     }
 
     /** Replays a sustain sing at the same bounded cadence used by the local performer. */
@@ -96,6 +109,10 @@ public final class OpponentBotCharacter {
      * wins until its normal one-beat sing duration expires.
      */
     public void idle(int beat, double singHoldMs) {
+        if (specialAnimation != null) {
+            if (CharacterAnimations.isActionPlaying(entity, set, role, specialAnimation)) return;
+            specialAnimation = null;
+        }
         if (CharacterAnimations.loopIdle(set, role)
                 || System.currentTimeMillis() - lastSingMs <= singHoldMs) return;
         boolean hasSecondIdle = CharacterAnimations.hasAction(set, role, "idle2");
@@ -121,6 +138,17 @@ public final class OpponentBotCharacter {
         return role;
     }
 
+    /** Reuses the existing client entity and BBS morph provider for repeated swaps. */
+    public boolean changeSet(String replacement) {
+        if (replacement == null || CharacterAnimations.isDisabled(replacement)) return false;
+        if (!CharacterAnimations.prepare(entity, replacement, role, skinChoice)) return false;
+        set = replacement;
+        specialAnimation = null;
+        lastSingMs = 0;
+        lastStatePlayMs = 0;
+        return true;
+    }
+
     /** Client-side player carrying the visible BBS form. */
     public RemotePlayer player() {
         return entity;
@@ -130,6 +158,7 @@ public final class OpponentBotCharacter {
     public void remove(Entity stand) {
         if (stand != null) stand.setInvisible(false);
         PerformerRotation.clear(entity);
+        PerformerCollisions.setEnabled(entity.getId(), true);
         CharacterAnimations.release(entity);
         if (entity.level() instanceof ClientLevel level && level.getEntity(entity.getId()) != null) {
             level.removeEntity(entity.getId(), Entity.RemovalReason.DISCARDED);

@@ -43,7 +43,7 @@ setObjectMask('photo', 'fade', 'alpha', false, true)
 
 Images, animated sprites, text, graphs, standalone gradients, and compositing groups can be mask sources. The source defaults to `maskOnly = true`: it remains available to the mask renderer without drawing as a visible layer. `removeObjectMask(target)` unlinks the target; set the source's `maskOnly = false` separately to show it again.
 
-Masks fit the target's local rectangle and stay attached as it moves/rotates. `maskX/Y` offset the source in normalized target units; `maskScaleX/Y` default to 1; `maskAngle` is degrees. `maskSoftness` adds a small normalized sampling radius. There is no screen-projected mask mode in this implementation.
+Masks keep the source object's own position, pixel dimensions, rotation, and scale in the shared camera/space. Applying one never moves, resizes, or rotates the target, and target and mask can move independently. Parent one object to the other with `setObjectParent` only when they should travel together. `maskX/Y`, `maskScaleX/Y`, and `maskAngle` are optional sampling adjustments in the mask's normalized local space; `maskSoftness` adds a small normalized sampling radius. Target and source must use the same 2D camera or both use world space.
 
 Menu widgets can opt into `maskHitTest = true` to ignore near-transparent pixels. Picking uses a cached 64×64 alpha map, not one GPU read per mouse move. Animated pixel-perfect picking adds work; leave it off for ordinary rectangular buttons.
 

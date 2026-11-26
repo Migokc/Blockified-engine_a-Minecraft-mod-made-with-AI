@@ -1,0 +1,8 @@
+.git/**
+.gitignore
+node_modules/**
+.npm-cache/**
+scripts/**
+data/psych_1.0.json
+package-lock.json
+*.vsix

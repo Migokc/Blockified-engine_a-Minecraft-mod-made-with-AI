@@ -5,6 +5,7 @@ import com.fnfmod.client.math.Easing;
 import com.fnfmod.gameplay.PlaybackMode;
 import net.minecraft.client.CameraType;
 import net.minecraft.client.Minecraft;
+import net.minecraft.core.Direction;
 import net.minecraft.world.phys.Vec3;
 import org.joml.Vector3f;
 
@@ -23,7 +24,15 @@ import java.util.function.Supplier;
 public final class GameplayCamera {
 
     public static final String[] EASES = Easing.BASES;
+    /** Focus-only modes include Psych's continuous follow, which is not a timed easing curve. */
+    public static final String[] FOCUS_EASES = {
+            "psych", "smooth", "sine", "cubic", "quint", "circ", "elastic",
+            "quad", "quart", "expo", "back", "bounce", "linear", "constant"
+    };
     private static final float DEFAULT_CAMERA_SPEED = 1f;
+    private static final String DEFAULT_CAMERA_EASE = "psych";
+    /** PsychCamera: followLerp 0.04 at 60 FPS = an exponential rate of 2.4/s. */
+    private static final double PSYCH_FOLLOW_RATE = 2.4;
 
     private static boolean active;
     private static PlaybackMode playbackMode = PlaybackMode.MINECRAFT;
@@ -36,6 +45,7 @@ public final class GameplayCamera {
     private static Supplier<Vec3> customFocusPos;
     private static float customFocusBaseX, customFocusBaseY;
     private static float playerBaseX, playerBaseY, oppBaseX, oppBaseY;
+    private static boolean playerFrameCenterFocus, opponentFrameCenterFocus;
 
     private static boolean focusPlayer = true;
     private static Vec3 fromOffset = Vec3.ZERO;
@@ -95,7 +105,15 @@ public final class GameplayCamera {
     private static double eventZoomDurationMs = EVENT_ZOOM_DURATION_MS;
     private static long lastFrameNano;
     private static float cameraSpeed = DEFAULT_CAMERA_SPEED;
-    private static String cameraEase = "smooth";
+    private static String cameraEase = DEFAULT_CAMERA_EASE;
+    private static float playbackRate = 1f;
+    /** Four-second hold-to-leave effect; independent of chart/Lua camera state. */
+    private static float exitHoldProgress;
+    private static int exitHoldDirection = 1;
+    /** Lua camMC offsets use the same stage-local block axes as performer x/y/z. */
+    private static double luaOffsetX, luaOffsetY, luaOffsetZ;
+    private static float luaPitch, luaYaw, luaRoll;
+    private static Vec3 luaBasePosition;
     private static boolean animationCameraOffsetsEnabled = true;
 
     // Free camera (editor playtest): a spectator-style override. Position is kept
@@ -104,8 +122,16 @@ public final class GameplayCamera {
     // pitch/yaw/roll offset from the stage view, matching Camera Rotation 3D.
     private static boolean freeCamEngaged;
     private static boolean freeCamInitialized;
+    private static boolean freeCamGameplayView;
+    private static int freeViewBaseFov = 70;
+    private static boolean editorCameraModified;
+    private static FreeCamPose editorBasePose;
+    private static FreeCamPose editorAuthoredPose;
+    private static LiveCameraPose editorBaseLivePose;
+    private static LiveCameraPose liveGameplayPose;
     private static double freeX, freeY, freeZ;
     private static double freePitch, freeYaw, freeRoll;
+    private static float freeViewBaseYaw, freeViewBasePitch, freeViewBaseRoll;
     /** Free-camera zoom offset, matching a Camera Zoom event's amount (-1..0.9). */
     private static double freeZoom;
     // Player position in the same stage frame as the free offset, captured at
@@ -140,7 +166,7 @@ public final class GameplayCamera {
     private static boolean orbitFocusPivotInitialized, orbitFocusTransitionPending;
     private static long orbitFocusTransitionStart;
     private static double orbitFocusTransitionDurationMs = 500;
-    private static String orbitFocusTransitionEase = "smooth";
+    private static String orbitFocusTransitionEase = DEFAULT_CAMERA_EASE;
     private static Vec3 orbitStartOffset = Vec3.ZERO;
     private static Vec3 orbitRightWorld = new Vec3(1, 0, 0);
     private static Vec3 orbitUpWorld = new Vec3(0, 1, 0);
@@ -151,14 +177,35 @@ public final class GameplayCamera {
     /** Absolute pose consumed by CameraMixin while an authored orbit owns the view. */
     public record OrbitPose(Vec3 position, float yaw, float pitch, float roll) {}
 
+    /** Complete editor-camera state.  Free Cam keeps one pose for the authored
+     * gameplay camera and another for the Blender-style navigation viewport. */
+    public record FreeCamPose(double x, double y, double z,
+                              double pitch, double yaw, double roll, double zoom) {}
+
+    /** Normal song camera sampled before the independent Free View is applied. */
+    public record LiveCameraPose(Vec3 position, float yaw, float pitch, float roll) {}
+
     public static void beginFreeCam() {
         freeCamEngaged = true;
         freeCamInitialized = false;
+        freeCamGameplayView = false;
+        freeViewBaseFov = Minecraft.getInstance().options.fov().get();
+        editorCameraModified = false;
+        editorBasePose = null;
+        editorAuthoredPose = null;
+        editorBaseLivePose = null;
+        liveGameplayPose = null;
     }
 
     public static void endFreeCam() {
         freeCamEngaged = false;
         freeCamInitialized = false;
+        freeCamGameplayView = false;
+        editorCameraModified = false;
+        editorBasePose = null;
+        editorAuthoredPose = null;
+        editorBaseLivePose = null;
+        liveGameplayPose = null;
     }
 
     public static boolean isFreeCamEngaged() { return freeCamEngaged; }
@@ -202,9 +249,67 @@ public final class GameplayCamera {
         freePitch = combinedRotation.x;
         freeYaw = combinedRotation.y;
         freeRoll = combinedRotation.z;
+        freeViewBaseYaw = yaw - (float) freeYaw;
+        freeViewBasePitch = pitch - (float) freePitch;
+        freeViewBaseRoll = roll - (float) freeRoll;
         updateEventZoom(GameplayClock.now());
         freeZoom = eventZoom;
+        editorBasePose = snapshotFreeCamPose();
+        editorAuthoredPose = editorBasePose;
         freeCamInitialized = true;
+    }
+
+    public static void setFreeCamGameplayView(boolean gameplayView) {
+        freeCamGameplayView = gameplayView;
+    }
+
+    public static boolean isFreeCamGameplayView() { return freeCamGameplayView; }
+
+    public static void setEditorAuthoredPose(FreeCamPose pose, boolean modified) {
+        if (!freeCamEngaged || pose == null) return;
+        editorAuthoredPose = pose;
+        editorCameraModified = modified;
+    }
+
+    /** A pristine marker tracks the song camera. Start any later edit from its
+     * current location, not the pose where Free Cam was first opened. */
+    public static void rebaseEditorCamera(FreeCamPose pose) {
+        if (!freeCamEngaged || pose == null || liveGameplayPose == null) return;
+        editorBasePose = pose;
+        editorAuthoredPose = pose;
+        editorBaseLivePose = liveGameplayPose;
+        editorCameraModified = false;
+    }
+
+    public static double songZoom() {
+        updateEventZoom(GameplayClock.now());
+        return eventZoom;
+    }
+
+    public static boolean editorCameraModified() { return editorCameraModified; }
+
+    public static LiveCameraPose liveGameplayPose() { return liveGameplayPose; }
+
+    public static void captureLiveGameplayPose(Vec3 position, float yaw, float pitch, float roll) {
+        if (!freeCamEngaged || position == null) return;
+        liveGameplayPose = new LiveCameraPose(position, yaw, pitch, roll);
+        if (editorBaseLivePose == null) editorBaseLivePose = liveGameplayPose;
+    }
+
+    /** Applies only the authored displacement to the live song camera. Events,
+     * Lua, orbit and focus continue to animate underneath that displacement. */
+    public static LiveCameraPose editorGameplayViewPose() {
+        LiveCameraPose live = liveGameplayPose;
+        if (live == null || !editorCameraModified || editorAuthoredPose == null
+                || editorBasePose == null || editorBaseLivePose == null) return live;
+        Vec3 liveDelta = live.position().subtract(editorBaseLivePose.position());
+        return new LiveCameraPose(freeCamWorldPos(editorAuthoredPose).add(liveDelta),
+                freeViewBaseYaw + (float) editorAuthoredPose.yaw()
+                        + live.yaw() - editorBaseLivePose.yaw(),
+                freeViewBasePitch + (float) editorAuthoredPose.pitch()
+                        + live.pitch() - editorBaseLivePose.pitch(),
+                freeViewBaseRoll + (float) editorAuthoredPose.roll()
+                        + live.roll() - editorBaseLivePose.roll());
     }
 
     /** Moves the free camera by a stage-frame block delta (X right, Y up, Z forward). */
@@ -232,6 +337,13 @@ public final class GameplayCamera {
                 .add(stageForwardWorld.scale(freeZ));
     }
 
+    public static Vec3 freeCamWorldPos(FreeCamPose pose) {
+        if (pose == null) return freeCamWorldPos();
+        return anchor.add(stageRightWorld.scale(pose.x()))
+                .add(stageUpWorld.scale(pose.y()))
+                .add(stageForwardWorld.scale(pose.z()));
+    }
+
     /** Resolves stage-local X/Y/Z from an arbitrary world-space origin. */
     public static Vec3 stageOffsetFrom(Vec3 origin, double x, double y, double z) {
         Vec3 base = origin == null ? anchor : origin;
@@ -252,6 +364,25 @@ public final class GameplayCamera {
         double basePitch = currentCameraPitch - freePitch;
         freeYaw = wrapDegrees(desiredYaw - baseYaw);
         freePitch = Math.max(-89.9, Math.min(89.9, desiredPitch - basePitch));
+    }
+
+    /** Aims the edited camera's visible live+authored composite. Aiming from
+     * the raw authored pose would drift whenever a song event moved the view. */
+    public static void aimEditorGameplayViewAt(Vec3 target) {
+        if (!freeCamEngaged || target == null || liveGameplayPose == null
+                || editorBaseLivePose == null) return;
+        Vec3 visiblePosition = freeCamWorldPos().add(
+                liveGameplayPose.position().subtract(editorBaseLivePose.position()));
+        Vec3 direction = target.subtract(visiblePosition);
+        if (direction.lengthSqr() < 1.0e-12) return;
+        direction = direction.normalize();
+        double desiredYaw = Math.toDegrees(Math.atan2(-direction.x, direction.z));
+        double desiredPitch = Math.toDegrees(-Math.asin(Math.max(-1.0, Math.min(1.0, direction.y))));
+        freeYaw = desiredYaw - freeViewBaseYaw
+                - liveGameplayPose.yaw() + editorBaseLivePose.yaw();
+        freePitch = Math.max(-89.9, Math.min(89.9,
+                desiredPitch - freeViewBasePitch
+                        - liveGameplayPose.pitch() + editorBaseLivePose.pitch()));
     }
 
     private static double wrapDegrees(double angle) {
@@ -278,7 +409,15 @@ public final class GameplayCamera {
      */
     public static double[] followPosValues(boolean override, boolean cameraFrame,
                                            Vector3f camLeft, Vector3f camUp, Vector3f camLook) {
-        Vec3 cam = freeCamWorldPos();
+        return followPosValues(snapshotFreeCamPose(), override, cameraFrame,
+                camLeft, camUp, camLook);
+    }
+
+    /** Camera Follow Pos values for a stored authored pose while another editor
+     * viewport pose is currently driving the real Minecraft camera. */
+    public static double[] followPosValues(FreeCamPose pose, boolean override, boolean cameraFrame,
+                                           Vector3f camLeft, Vector3f camUp, Vector3f camLook) {
+        Vec3 cam = freeCamWorldPos(pose);
         // Camera Follow Pos playback starts from Minecraft's detached third-person
         // baseline. Include it in the origin so copied XYZ describe only the event
         // offset needed to reach the current absolute free-camera position.
@@ -375,10 +514,28 @@ public final class GameplayCamera {
     public static double freeYaw() { return freeYaw; }
     public static double freePitch() { return freePitch; }
     public static double freeRoll() { return freeRoll; }
+    public static float freeViewBaseYaw() { return freeViewBaseYaw; }
+    public static float freeViewBasePitch() { return freeViewBasePitch; }
+    public static float freeViewBaseRoll() { return freeViewBaseRoll; }
     public static double freeZoom() { return freeZoom; }
     public static double freeX() { return freeX; }
     public static double freeY() { return freeY; }
     public static double freeZ() { return freeZ; }
+
+    public static FreeCamPose snapshotFreeCamPose() {
+        return new FreeCamPose(freeX, freeY, freeZ, freePitch, freeYaw, freeRoll, freeZoom);
+    }
+
+    public static void applyFreeCamPose(FreeCamPose pose) {
+        if (!freeCamEngaged || pose == null) return;
+        freeX = pose.x();
+        freeY = pose.y();
+        freeZ = pose.z();
+        freePitch = Math.max(-89.9, Math.min(89.9, pose.pitch()));
+        freeYaw = pose.yaw();
+        freeRoll = pose.roll();
+        freeZoom = Math.max(-1.0, Math.min(0.9, pose.zoom()));
+    }
 
     /**
      * Enables pivot-orbit mode. Follow uses Camera Focus + XYZ stage-local
@@ -402,6 +559,10 @@ public final class GameplayCamera {
                 orbitFocusPivotFrom = orbitFocusPivot;
                 orbitFocusTransitionPending = false;
                 orbitFocusTransitionStart = 0;
+            } else if (isPsychFollow(normalized)) {
+                // Psych follow is continuous and has no fixed-duration transition.
+                orbitFocusTransitionPending = false;
+                orbitFocusTransitionStart = 0;
             } else {
                 orbitFocusPivotFrom = orbitFocusPivot;
                 orbitFocusTransitionPending = true;
@@ -423,14 +584,25 @@ public final class GameplayCamera {
     }
 
     public static boolean isOrbitCapturePending() {
-        return orbitActive && orbitCapturePending && !freeCamEngaged;
+        return isOrbitCapturePending(false);
+    }
+
+    public static boolean isOrbitCapturePending(boolean sampleGameplay) {
+        return orbitActive && orbitCapturePending && (!freeCamEngaged || sampleGameplay);
     }
 
     /** Captures the post-Follow-Pos pose on the first rendered orbit frame. */
     public static void captureOrbitStart(Vec3 cameraPosition, float yaw, float pitch, float roll,
                                          Vector3f stageLeft, Vector3f stageUp,
                                          Vector3f stageForward) {
-        if (!isOrbitCapturePending() || cameraPosition == null) return;
+        captureOrbitStart(cameraPosition, yaw, pitch, roll, stageLeft, stageUp,
+                stageForward, false);
+    }
+
+    public static void captureOrbitStart(Vec3 cameraPosition, float yaw, float pitch, float roll,
+                                         Vector3f stageLeft, Vector3f stageUp,
+                                         Vector3f stageForward, boolean sampleGameplay) {
+        if (!isOrbitCapturePending(sampleGameplay) || cameraPosition == null) return;
         Vec3 right = new Vec3(stageLeft).scale(-1).normalize();
         Vec3 up = new Vec3(stageUp).normalize();
         Vec3 forward = new Vec3(stageForward).normalize();
@@ -462,7 +634,11 @@ public final class GameplayCamera {
 
     /** Current absolute orbit pose, or null while normal/free camera owns the view. */
     public static OrbitPose orbitPose() {
-        if (!orbitActive || orbitCapturePending || freeCamEngaged) return null;
+        return orbitPose(false);
+    }
+
+    public static OrbitPose orbitPose(boolean sampleGameplay) {
+        if (!orbitActive || orbitCapturePending || freeCamEngaged && !sampleGameplay) return null;
         // Orbit bypasses worldOffset(), but beat zoom and sing nudges still need
         // their normal per-frame decay or each beat accumulates indefinitely.
         double dt = frameDeltaSeconds();
@@ -497,7 +673,7 @@ public final class GameplayCamera {
     }
 
     /**
-     * Smooths a live Camera Focus target exactly as the normal Minecraft/Legacy
+     * Smooths a live Camera Focus target exactly as the normal Minecraft
      * camera does. Camera Behavior decides whether sing/idle camera nudges are
      * included in the live pivot.
      */
@@ -520,8 +696,7 @@ public final class GameplayCamera {
                     Easing.apply(orbitFocusTransitionEase, Math.max(0, t)));
         } else {
             orbitFocusTransitionStart = 0;
-            float follow = "constant".equals(cameraEase) ? 1f
-                    : (float) Math.min(1, dt * 6 * cameraSpeed);
+            float follow = focusFollowFactor(dt, orbitFocusTransitionEase);
             orbitFocusPivot = orbitFocusPivot.lerp(target, follow);
         }
         return orbitFocusPivot;
@@ -552,6 +727,9 @@ public final class GameplayCamera {
         String normalized = Easing.normalize(orbitFocusTransitionEase);
         if (normalized.equals("constant") || normalized.equals("snap")) {
             orbitFocusPivot = orbitFocusTarget();
+            orbitFocusTransitionPending = false;
+            orbitFocusTransitionStart = 0;
+        } else if (isPsychFollow(normalized)) {
             orbitFocusTransitionPending = false;
             orbitFocusTransitionStart = 0;
         } else {
@@ -593,8 +771,9 @@ public final class GameplayCamera {
     private GameplayCamera() {}
 
     public static void begin(Vec3 anchorPos, float fixedStageYaw, Supplier<Vec3> cameraEntity,
-                             Supplier<Vec3> playerSide, Supplier<Vec3> opponentSide,
-                             float[] playerBase, float[] opponentBase, PlaybackMode mode) {
+                              Supplier<Vec3> playerSide, Supplier<Vec3> opponentSide,
+                              float[] playerBase, float[] opponentBase, PlaybackMode mode,
+                              boolean playerFrameCenter, boolean opponentFrameCenter) {
         anchor = anchorPos;
         stageViewYaw = fixedStageYaw;
         cameraEntityPos = cameraEntity;
@@ -607,6 +786,8 @@ public final class GameplayCamera {
         playerBaseY = playerBase[1];
         oppBaseX = opponentBase[0];
         oppBaseY = opponentBase[1];
+        playerFrameCenterFocus = playerFrameCenter;
+        opponentFrameCenterFocus = opponentFrameCenter;
         focusPlayer = true;
         pNudgeX = pNudgeY = oNudgeX = oNudgeY = 0;
         beatZoom = 0;
@@ -641,7 +822,10 @@ public final class GameplayCamera {
         transPendingFirstSample = false;
         lastFrameNano = System.nanoTime();
         cameraSpeed = DEFAULT_CAMERA_SPEED;
-        cameraEase = "smooth";
+        cameraEase = DEFAULT_CAMERA_EASE;
+        playbackRate = 1f;
+        exitHoldProgress = 0f;
+        resetLuaCamera();
         animationCameraOffsetsEnabled = true;
         stopOrbit();
         active = true;
@@ -655,6 +839,8 @@ public final class GameplayCamera {
 
     public static void end() {
         if (!active) return;
+        exitHoldProgress = 0f;
+        resetLuaCamera();
         stopOrbit();
         active = false;
         if (cameraTypeChanged) {
@@ -705,7 +891,8 @@ public final class GameplayCamera {
         transPendingFirstSample = false;
         lastFrameNano = System.nanoTime();
         cameraSpeed = DEFAULT_CAMERA_SPEED;
-        cameraEase = "smooth";
+        cameraEase = DEFAULT_CAMERA_EASE;
+        playbackRate = 1f;
         animationCameraOffsetsEnabled = true;
         stopOrbit();
     }
@@ -736,7 +923,8 @@ public final class GameplayCamera {
 
     private static void beginFocusTransition(String easeName, double durationMs) {
         beginOrbitFocusTransition(easeName, durationMs);
-        if (playbackMode == PlaybackMode.FNF) {
+        ease = normalizeCameraEase(easeName == null ? DEFAULT_CAMERA_EASE : easeName);
+        if (playbackMode == PlaybackMode.FNF || isPsychFollow(ease)) {
             // Psych changes the target immediately and lets followLerp perform
             // the entire transition instead of starting a separate fixed tween.
             transStart = 0;
@@ -744,7 +932,6 @@ public final class GameplayCamera {
             return;
         }
         fromOffset = curOffset;
-        ease = easeName == null ? "smooth" : easeName;
         transDurMs = Math.max(50, durationMs);
         // The focus change happens after the world camera was rendered for the
         // current frame. Starting the clock here makes the next rendered sample
@@ -761,7 +948,7 @@ public final class GameplayCamera {
         focus(player, cameraEase, defaultDurationMs / Math.max(0.01f, cameraSpeed));
     }
 
-    /** Legacy/Minecraft only. Empty values restore normal behavior and animation offsets. */
+    /** Minecraft only. Empty values restore normal behavior and animation offsets. */
     public static void setCameraBehavior(String speedValue, String easeValue, String offsetsValue) {
         if (!active || playbackMode == PlaybackMode.FNF) return;
         String rawSpeed = speedValue == null ? "" : speedValue.trim();
@@ -769,7 +956,7 @@ public final class GameplayCamera {
         String rawOffsets = offsetsValue == null ? "" : offsetsValue.trim();
         if (rawSpeed.isEmpty() && rawEase.isEmpty() && rawOffsets.isEmpty()) {
             cameraSpeed = DEFAULT_CAMERA_SPEED;
-            cameraEase = "smooth";
+            cameraEase = DEFAULT_CAMERA_EASE;
             animationCameraOffsetsEnabled = true;
         } else {
             float parsed = DEFAULT_CAMERA_SPEED;
@@ -787,17 +974,41 @@ public final class GameplayCamera {
         fromOffset = curOffset;
         ease = cameraEase;
         transDurMs = Math.max(1, 500.0 / cameraSpeed);
-        transStart = GameplayClock.now();
+        transPendingFirstSample = false;
+        transStart = isPsychFollow(cameraEase) ? 0 : GameplayClock.now();
     }
 
     public static String normalizeCameraEase(String value) {
         if (value == null || value.isBlank()) return "smooth";
+        if (value.equalsIgnoreCase("psych") || value.equalsIgnoreCase("fnf")
+                || value.equalsIgnoreCase("follow")) return "psych";
         if (value.equalsIgnoreCase("snap")) return "constant"; // old chart alias
         String normalized = Easing.normalize(value);
         for (String candidate : EASES) {
             if (normalized.startsWith(candidate)) return value.trim();
         }
         return "smooth";
+    }
+
+    /** Keeps Psych-style focus independent from general fixed-duration tween easings. */
+    private static boolean isPsychFollow(String value) {
+        return "psych".equals(Easing.normalize(value));
+    }
+
+    private static float psychFollowFactor(double dt) {
+        double rate = PSYCH_FOLLOW_RATE * cameraSpeed * Math.max(0.01f, playbackRate);
+        return (float) (1.0 - Math.exp(-Math.max(0, dt) * rate));
+    }
+
+    private static float focusFollowFactor(double dt, String transitionEase) {
+        if (playbackMode == PlaybackMode.FNF || isPsychFollow(transitionEase)
+                || isPsychFollow(cameraEase)) return psychFollowFactor(dt);
+        if ("constant".equals(Easing.normalize(cameraEase))) return 1f;
+        return (float) Math.min(1, dt * 6 * cameraSpeed);
+    }
+
+    public static void setPlaybackRate(float rate) {
+        playbackRate = Float.isFinite(rate) ? Math.max(0.01f, rate) : 1f;
     }
 
     /** Nudge a side's camera center for the animation that just played. */
@@ -822,6 +1033,12 @@ public final class GameplayCamera {
             oppBaseX = offset[0];
             oppBaseY = offset[1];
         }
+    }
+
+    /** Keep the selected frame midpoint under the view's centre, regardless of eye height or pitch. */
+    public static void setFrameCenterFocus(boolean playerSide, boolean enabled) {
+        if (playerSide) playerFrameCenterFocus = enabled;
+        else opponentFrameCenterFocus = enabled;
     }
 
     /** FNF-style beat zoom bump; decays over the following beats. */
@@ -943,8 +1160,12 @@ public final class GameplayCamera {
 
     /** Additive pitch/yaw/roll applied by CameraMixin after vanilla setup. */
     public static Vec3 rotationOffset() {
+        return rotationOffset(false);
+    }
+
+    public static Vec3 rotationOffset(boolean sampleGameplay) {
         if (!active) return Vec3.ZERO;
-        if (freeCamEngaged && freeCamInitialized) {
+        if (freeCamEngaged && freeCamInitialized && !sampleGameplay) {
             return new Vec3(freePitch, freeYaw, freeRoll);
         }
         long now = GameplayClock.now();
@@ -1064,16 +1285,69 @@ public final class GameplayCamera {
     public static float fovScale() {
         if (!active) return 1f;
         updateEventZoom(GameplayClock.now());
-        float zoom = freeCamEngaged && freeCamInitialized ? (float) freeZoom : eventZoom;
-        return Math.max(0.1f, Math.min(2f, 1f - beatZoom - zoom));
+        if (freeCamEngaged && freeCamInitialized && !freeCamGameplayView) {
+            // Navigation must not inherit the song's beat bop, event zoom or Lua zoom.
+            float baseFovRatio = freeViewBaseFov
+                    / (float) Math.max(1, Minecraft.getInstance().options.fov().get());
+            return Math.max(0.1f, Math.min(2f,
+                    baseFovRatio * (1f - (float) freeZoom)));
+        }
+        float authoredZoom = freeCamEngaged && freeCamGameplayView && editorCameraModified
+                && editorAuthoredPose != null && editorBasePose != null
+                ? (float) (editorAuthoredPose.zoom() - editorBasePose.zoom()) : 0f;
+        return Math.max(0.1f, Math.min(2f,
+                (1f - beatZoom - eventZoom - authoredZoom) * (1f + 0.18f * exitHoldProgress)));
+    }
+
+    public static void setExitHoldEffect(float progress, int direction) {
+        exitHoldProgress = Math.max(0f, Math.min(1f, progress));
+        exitHoldDirection = direction < 0 ? -1 : 1;
+    }
+
+    public static float exitHoldRollDegrees() {
+        return exitHoldDirection * 8f * exitHoldProgress;
+    }
+
+    private static void resetLuaCamera() {
+        luaOffsetX = luaOffsetY = luaOffsetZ = 0;
+        luaPitch = luaYaw = luaRoll = 0;
+        luaBasePosition = null;
+    }
+
+    public static double luaOffsetX() { return luaOffsetX; }
+    public static double luaOffsetY() { return luaOffsetY; }
+    public static double luaOffsetZ() { return luaOffsetZ; }
+    public static float luaPitch() { return luaPitch; }
+    public static float luaYaw() { return luaYaw; }
+    public static float luaRoll() { return luaRoll; }
+
+    public static void setLuaOffsetX(double value) { if (Double.isFinite(value)) luaOffsetX = Math.max(-4096, Math.min(4096, value)); }
+    public static void setLuaOffsetY(double value) { if (Double.isFinite(value)) luaOffsetY = Math.max(-4096, Math.min(4096, value)); }
+    public static void setLuaOffsetZ(double value) { if (Double.isFinite(value)) luaOffsetZ = Math.max(-4096, Math.min(4096, value)); }
+    public static void setLuaPitch(double value) { if (Double.isFinite(value)) luaPitch = (float) value; }
+    public static void setLuaYaw(double value) { if (Double.isFinite(value)) luaYaw = (float) value; }
+    public static void setLuaRoll(double value) { if (Double.isFinite(value)) luaRoll = (float) value; }
+
+    /** Snapshot the unmodified song camera before camMC is applied each frame. */
+    public static void captureLuaBasePosition(Vec3 base) { luaBasePosition = base; }
+    public static Vec3 luaBasePosition() { return luaBasePosition == null ? anchor : luaBasePosition; }
+
+    public static Vec3 luaWorldOffset(Direction facing) {
+        Direction forward = facing == null ? Direction.NORTH : facing;
+        Direction right = forward.getCounterClockWise();
+        return new Vec3(right.getStepX() * luaOffsetX + forward.getStepX() * luaOffsetZ,
+                luaOffsetY,
+                right.getStepZ() * luaOffsetX + forward.getStepZ() * luaOffsetZ);
     }
 
     /** Psych-compatible logical camGame zoom exposed to Lua and 2D game sprites. */
     public static float gameZoom() {
         if (!active) return 1f;
         updateEventZoom(GameplayClock.now());
-        float zoom = freeCamEngaged && freeCamInitialized ? (float) freeZoom : eventZoom;
-        return Math.max(0.1f, baseGameZoom + beatZoom + zoom);
+        float authoredZoom = freeCamEngaged && freeCamGameplayView && editorCameraModified
+                && editorAuthoredPose != null && editorBasePose != null
+                ? (float) (editorAuthoredPose.zoom() - editorBasePose.zoom()) : 0f;
+        return Math.max(0.1f, baseGameZoom + beatZoom + eventZoom + authoredZoom);
     }
 
     public static void setBaseGameZoom(float zoom) {
@@ -1087,7 +1361,7 @@ public final class GameplayCamera {
         zoomTo(zoom - baseGameZoom, "snap");
     }
 
-    /** Psych-compatible camHUD zoom, also used by Legacy and Minecraft HUDs. */
+    /** Psych-compatible camHUD zoom, also used by the Minecraft HUD. */
     public static float hudZoom() {
         return hudZoom(true);
     }
@@ -1140,15 +1414,24 @@ public final class GameplayCamera {
      * to add to the camera position. Character tracking uses all three world
      * axes; configured camera offsets and animation nudges use screen right/up.
      */
-    public static Vec3 worldOffset(Vector3f leftVec, Vector3f upVec, Vector3f forwardVec,
+    public static Vec3 worldOffset(Vec3 baseCameraPosition,
+                                    Vector3f leftVec, Vector3f upVec, Vector3f forwardVec,
                                    Vector3f stageLeftVec, Vector3f stageUpVec, Vector3f stageForwardVec) {
+        return worldOffset(baseCameraPosition, leftVec, upVec, forwardVec,
+                stageLeftVec, stageUpVec, stageForwardVec, false);
+    }
+
+    public static Vec3 worldOffset(Vec3 baseCameraPosition,
+                                    Vector3f leftVec, Vector3f upVec, Vector3f forwardVec,
+                                    Vector3f stageLeftVec, Vector3f stageUpVec, Vector3f stageForwardVec,
+                                    boolean sampleGameplay) {
         if (!active) return null;
 
         double dt = frameDeltaSeconds();
 
         // Free camera fully overrides the follow: sit at anchor + the stage-frame
         // offset (exactly like a Camera Follow Pos override), ignoring tracking.
-        if (freeCamEngaged && freeCamInitialized) {
+        if (freeCamEngaged && freeCamInitialized && !sampleGameplay) {
             Vector3f sLeft = stageLeftVec == null ? leftVec : stageLeftVec;
             Vector3f sUp = stageUpVec == null ? upVec : stageUpVec;
             Vector3f sForward = stageForwardVec == null ? forwardVec : stageForwardVec;
@@ -1190,7 +1473,19 @@ public final class GameplayCamera {
 
         // Minecraft's base camera already follows cameraBase. Subtracting its
         // current position prevents local movement from being counted twice.
-        Vec3 characterDelta = focusPos.subtract(cameraBase);
+        boolean frameCenter = customFocusPos == null
+                && (focusPlayer ? playerFrameCenterFocus : opponentFrameCenterFocus);
+        Vec3 characterDelta;
+        if (frameCenter && baseCameraPosition != null) {
+            // Minecraft's detached camera starts at eye height and may be pitched.
+            // Move only across its screen plane so its sight line intersects the
+            // sprite's attached centre while keeping its normal viewing distance.
+            Vec3 sight = new Vec3(forwardVec.x(), forwardVec.y(), forwardVec.z()).normalize();
+            Vec3 toCenter = focusPos.subtract(baseCameraPosition);
+            characterDelta = toCenter.subtract(sight.scale(toCenter.dot(sight)));
+        } else {
+            characterDelta = focusPos.subtract(cameraBase);
+        }
         float frameX = forcedFrame ? forcedFrameX : customFocusPos != null ? customFocusBaseX
                 : focusPlayer ? playerBaseX + (animationCameraOffsetsEnabled ? pNudgeX : 0)
                 : oppBaseX + (animationCameraOffsetsEnabled ? oNudgeX : 0);
@@ -1243,10 +1538,7 @@ public final class GameplayCamera {
             curOffset = fromOffset.lerp(targetOffset, f);
         } else {
             // FNF-style continuous follow once the focus transition is done
-            float follow = playbackMode == PlaybackMode.FNF
-                    ? (float) (1.0 - Math.exp(-dt * 2.45))
-                    : "constant".equals(cameraEase) ? 1f
-                    : (float) Math.min(1, dt * 6 * cameraSpeed);
+            float follow = focusFollowFactor(dt, ease);
             curOffset = curOffset.lerp(targetOffset, follow);
         }
 

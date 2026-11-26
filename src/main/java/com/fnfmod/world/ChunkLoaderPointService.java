@@ -27,6 +27,8 @@ public final class ChunkLoaderPointService {
 
     private static final Map<Level, Map<BlockPos, ChunkLoaderPointBlockEntity>> LOADED =
             new WeakHashMap<>();
+    /** Shutdown unloads can load block entities again; never renew tickets then. */
+    private static volatile boolean stopping;
 
     public static final TicketController TICKETS = new TicketController(
             FnfMod.id("chunk_loader_points"), (level, helper) -> {
@@ -43,6 +45,22 @@ public final class ChunkLoaderPointService {
 
     public static void registerTicketController(RegisterTicketControllersEvent event) {
         event.register(TICKETS);
+    }
+
+    public static void onServerStarting() {
+        stopping = false;
+    }
+
+    /** Release forced tickets before Minecraft waits for its chunk-work queue to empty. */
+    public static void onServerStopping(Iterable<ServerLevel> levels) {
+        stopping = true;
+        for (ServerLevel level : levels) {
+            for (var entry : ChunkLoaderPointData.get(level).points().entrySet()) {
+                if (entry.getValue().enabled()) {
+                    forceRadius(level, entry.getKey(), entry.getValue().radius(), false);
+                }
+            }
+        }
     }
 
     public static int clampRadius(int radius) {
@@ -87,7 +105,7 @@ public final class ChunkLoaderPointService {
         point.ensureDefaultTag();
         ChunkLoaderPointData.get(level).put(point.getBlockPos(), point.pointTag(),
                 point.radius(), point.enabled());
-        if (point.enabled()) forceRadius(level, point.getBlockPos(), point.radius(), true);
+        if (point.enabled() && !stopping) forceRadius(level, point.getBlockPos(), point.radius(), true);
     }
 
     public static void onRemoved(ServerLevel level, BlockPos pos, int radius, boolean enabled) {
@@ -112,6 +130,7 @@ public final class ChunkLoaderPointService {
 
     private static void forceRadius(ServerLevel level, BlockPos owner, int radius, boolean add) {
         if (level.getServer().isDedicatedServer()) return;
+        if (add && stopping) return;
         int centerX = owner.getX() >> 4;
         int centerZ = owner.getZ() >> 4;
         int clamped = clampRadius(radius);

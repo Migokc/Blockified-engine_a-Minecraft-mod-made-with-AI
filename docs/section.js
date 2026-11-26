@@ -11,7 +11,7 @@ const searchEntries = [
   ['Charting workflow', 'Guide', './guide.html#charting', 'notes sustains events waveform metronome offset save playtest'],
   ['Complete pack layout', 'Guide', './guide.html#complete-pack', 'mods scripts stages characters machines weeks worlds'],
   ['Songs and chart formats', 'Wiki', './wiki.html#songs', 'psych v-slice codename difficulties events audio original directory'],
-  ['Presentation modes', 'Wiki', './wiki.html#modes', 'minecraft fnf legacy look mode'],
+  ['Presentation modes', 'Wiki', './wiki.html#modes', 'minecraft fnf look mode'],
   ['Characters and visuals', 'Wiki', './wiki.html#characters', 'bbs psych sprites forms outlines icons camera offsets'],
   ['Creator tools', 'Wiki', './wiki.html#editors', 'chart character free camera note settings editor'],
   ['Machines and worlds', 'Wiki', './wiki.html#machines', 'designer hitbox chunk loader bundled world lua menu'],

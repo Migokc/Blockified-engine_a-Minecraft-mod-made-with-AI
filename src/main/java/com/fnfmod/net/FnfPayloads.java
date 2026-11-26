@@ -1,6 +1,7 @@
 package com.fnfmod.net;
 
 import com.fnfmod.FnfMod;
+import com.fnfmod.client.render.NoteSkinConfig;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.network.codec.StreamCodec;
@@ -16,10 +17,6 @@ import java.util.function.Function;
 /** All custom payloads for the mod. */
 public final class FnfPayloads {
 
-    public static final int MAX_MANIFEST_FILES = 4096;
-    public static final int MAX_FILE_NAME_LENGTH = 512;
-    public static final int MAX_CHUNK_BYTES = 400 * 1024;
-
     private FnfPayloads() {}
 
     private static <T> List<T> readBoundedList(FriendlyByteBuf buf, int maximum,
@@ -31,6 +28,92 @@ public final class FnfPayloads {
         List<T> values = new ArrayList<>(size);
         for (int i = 0; i < size; i++) values.add(reader.apply(buf));
         return values;
+    }
+
+    /** Compact note-display preferences. Asset files never cross the network. */
+    public record NoteVisuals(String noteSkin, String noteSkinSource,
+                              String splashSkin, String splashSkinSource,
+                              String holdSplashSkin, String holdSplashSkinSource,
+                              boolean downscroll, int[] base, int[] highlight, int[] outline,
+                              NoteSkinConfig skinConfig) {
+        private static final int[] DEFAULT_BASE = {0xC24B99, 0x00FFFF, 0x12FA05, 0xF9393F};
+        private static final int[] DEFAULT_HIGHLIGHT = {0xFFFFFF, 0xFFFFFF, 0xFFFFFF, 0xFFFFFF};
+        private static final int[] DEFAULT_OUTLINE = {0x3C1F56, 0x1542B7, 0x0A4447, 0x651038};
+        public static final NoteVisuals DEFAULT = new NoteVisuals("default", "auto", "", "auto",
+                "default", "auto", false, DEFAULT_BASE, DEFAULT_HIGHLIGHT, DEFAULT_OUTLINE,
+                NoteSkinConfig.DEFAULT);
+
+        public NoteVisuals(String noteSkin, String noteSkinSource,
+                           String splashSkin, String splashSkinSource,
+                           String holdSplashSkin, String holdSplashSkinSource,
+                           boolean downscroll, int[] base, int[] highlight, int[] outline) {
+            this(noteSkin, noteSkinSource, splashSkin, splashSkinSource,
+                    holdSplashSkin, holdSplashSkinSource, downscroll, base, highlight, outline,
+                    NoteSkinConfig.DEFAULT);
+        }
+
+        public NoteVisuals {
+            noteSkin = bounded(noteSkin, "default", 128);
+            noteSkinSource = bounded(noteSkinSource, "auto", 16);
+            splashSkin = bounded(splashSkin, "", 128);
+            splashSkinSource = bounded(splashSkinSource, "auto", 16);
+            holdSplashSkin = bounded(holdSplashSkin, "default", 128);
+            holdSplashSkinSource = bounded(holdSplashSkinSource, "auto", 16);
+            base = colors(base, DEFAULT_BASE);
+            highlight = colors(highlight, DEFAULT_HIGHLIGHT);
+            outline = colors(outline, DEFAULT_OUTLINE);
+            skinConfig = normalizeSkinConfig(skinConfig);
+        }
+
+        @Override public int[] base() { return base.clone(); }
+        @Override public int[] highlight() { return highlight.clone(); }
+        @Override public int[] outline() { return outline.clone(); }
+
+        private static int[] colors(int[] values, int[] fallback) {
+            int[] result = fallback.clone();
+            if (values != null) for (int i = 0; i < Math.min(4, values.length); i++) {
+                result[i] = values[i] & 0xFFFFFF;
+            }
+            return result;
+        }
+
+        private static NoteSkinConfig normalizeSkinConfig(NoteSkinConfig value) {
+            if (value == null) return NoteSkinConfig.DEFAULT;
+            return new NoteSkinConfig(value.rgb(),
+                    part(value.note(), NoteSkinConfig.DEFAULT.note()),
+                    part(value.receptor(), NoteSkinConfig.DEFAULT.receptor()),
+                    part(value.sustain(), NoteSkinConfig.DEFAULT.sustain()),
+                    part(value.splash(), NoteSkinConfig.DEFAULT.splash()),
+                    part(value.holdCover(), NoteSkinConfig.DEFAULT.holdCover()));
+        }
+
+        private static NoteSkinConfig.Part part(NoteSkinConfig.Part value,
+                                                NoteSkinConfig.Part fallback) {
+            if (value == null) return fallback;
+            float scale = Float.isFinite(value.scale())
+                    ? Math.max(0.05f, Math.min(20f, value.scale())) : fallback.scale();
+            float alpha = Float.isFinite(value.alpha())
+                    ? Math.max(0f, Math.min(1f, value.alpha())) : fallback.alpha();
+            float x = Float.isFinite(value.x())
+                    ? Math.max(-4096f, Math.min(4096f, value.x())) : fallback.x();
+            float y = Float.isFinite(value.y())
+                    ? Math.max(-4096f, Math.min(4096f, value.y())) : fallback.y();
+            return new NoteSkinConfig.Part(scale, alpha, x, y);
+        }
+
+        private static String bounded(String value, String fallback, int max) {
+            if (value == null) return fallback;
+            String normalized = value.trim();
+            return normalized.length() > max ? normalized.substring(0, max) : normalized;
+        }
+    }
+
+    private static void writeNoteVisuals(FriendlyByteBuf buf, NoteVisuals visuals) {
+        NoteVisualsCodec.CODEC.encode(buf, visuals);
+    }
+
+    private static NoteVisuals readNoteVisuals(FriendlyByteBuf buf) {
+        return NoteVisualsCodec.CODEC.decode(buf);
     }
 
     public record SongInfo(String id, String name, List<String> difficulties, String opponentIcon, String opponentIconPath) {
@@ -45,18 +128,6 @@ public final class FnfPayloads {
         static SongInfo read(FriendlyByteBuf buf) {
             return new SongInfo(buf.readUtf(), buf.readUtf(), buf.readList(FriendlyByteBuf::readUtf),
                     buf.readUtf(), buf.readUtf());
-        }
-    }
-
-    public record FileMeta(String name, long size, String sha1) {
-        static void write(FriendlyByteBuf buf, FileMeta v) {
-            buf.writeUtf(v.name, MAX_FILE_NAME_LENGTH);
-            buf.writeVarLong(v.size);
-            buf.writeUtf(v.sha1, 40);
-        }
-
-        static FileMeta read(FriendlyByteBuf buf) {
-            return new FileMeta(buf.readUtf(MAX_FILE_NAME_LENGTH), buf.readVarLong(), buf.readUtf(40));
         }
     }
 
@@ -98,13 +169,32 @@ public final class FnfPayloads {
         public Type<? extends CustomPacketPayload> type() { return TYPE; }
     }
 
-    public record FileManifestS2C(BlockPos pos, String songId, String difficulty, boolean duet,
-                                  boolean opponentSide, byte playbackMode, boolean songAssets,
-                                  boolean luaAllowed,
-                                  List<FileMeta> files)
+    /** A short-lived world marker for the open second-player stage spot. */
+    public record JoinGuideS2C(BlockPos machinePos, double x, double y, double z)
             implements CustomPacketPayload {
-        public static final Type<FileManifestS2C> TYPE = new Type<>(FnfMod.id("file_manifest"));
-        public static final StreamCodec<FriendlyByteBuf, FileManifestS2C> CODEC = StreamCodec.of(
+        public static final Type<JoinGuideS2C> TYPE = new Type<>(FnfMod.id("join_guide"));
+        public static final StreamCodec<FriendlyByteBuf, JoinGuideS2C> CODEC = StreamCodec.of(
+                (buf, value) -> {
+                    buf.writeBlockPos(value.machinePos);
+                    buf.writeDouble(value.x);
+                    buf.writeDouble(value.y);
+                    buf.writeDouble(value.z);
+                },
+                buf -> new JoinGuideS2C(buf.readBlockPos(), buf.readDouble(),
+                        buf.readDouble(), buf.readDouble()));
+
+        @Override
+        public Type<? extends CustomPacketPayload> type() { return TYPE; }
+    }
+
+    /** Compatibility fingerprint only. No chart, audio, image, or script bytes are sent. */
+    public record SongCompatibilityS2C(BlockPos pos, String songId, String difficulty, boolean duet,
+                                       boolean opponentSide, byte playbackMode, boolean songAssets,
+                                       boolean luaAllowed, int fileCount, long totalBytes,
+                                       String contentSha256, String modUrl)
+            implements CustomPacketPayload {
+        public static final Type<SongCompatibilityS2C> TYPE = new Type<>(FnfMod.id("song_compatibility"));
+        public static final StreamCodec<FriendlyByteBuf, SongCompatibilityS2C> CODEC = StreamCodec.of(
                 (buf, v) -> {
                     buf.writeBlockPos(v.pos);
                     buf.writeUtf(v.songId);
@@ -114,37 +204,55 @@ public final class FnfPayloads {
                     buf.writeByte(v.playbackMode);
                     buf.writeBoolean(v.songAssets);
                     buf.writeBoolean(v.luaAllowed);
-                    buf.writeCollection(v.files, FileMeta::write);
+                    buf.writeVarInt(v.fileCount);
+                    buf.writeVarLong(v.totalBytes);
+                    buf.writeUtf(v.contentSha256, 64);
+                    buf.writeUtf(v.modUrl, 2048);
                 },
-                buf -> new FileManifestS2C(buf.readBlockPos(), buf.readUtf(), buf.readUtf(), buf.readBoolean(),
+                buf -> new SongCompatibilityS2C(buf.readBlockPos(), buf.readUtf(), buf.readUtf(), buf.readBoolean(),
                         buf.readBoolean(), buf.readByte(), buf.readBoolean(), buf.readBoolean(),
-                        readBoundedList(buf, MAX_MANIFEST_FILES, FileMeta::read)));
+                        buf.readVarInt(), buf.readVarLong(), buf.readUtf(64), buf.readUtf(2048)));
 
         @Override
         public Type<? extends CustomPacketPayload> type() { return TYPE; }
     }
 
-    public record FileChunkS2C(String songId, String fileName, int chunkIndex, int totalChunks, byte[] data)
-            implements CustomPacketPayload {
-        public static final Type<FileChunkS2C> TYPE = new Type<>(FnfMod.id("file_chunk"));
-        public static final StreamCodec<FriendlyByteBuf, FileChunkS2C> CODEC = StreamCodec.of(
-                (buf, v) -> {
-                    buf.writeUtf(v.songId);
-                    buf.writeUtf(v.fileName, MAX_FILE_NAME_LENGTH);
-                    buf.writeVarInt(v.chunkIndex);
-                    buf.writeVarInt(v.totalChunks);
-                    buf.writeByteArray(v.data);
-                },
-                buf -> new FileChunkS2C(buf.readUtf(), buf.readUtf(MAX_FILE_NAME_LENGTH),
-                        buf.readVarInt(), buf.readVarInt(), buf.readByteArray(MAX_CHUNK_BYTES)));
+    /** Small, file-free manifest supplied by the player who chose the song. */
+    public record SongSelectionMeta(int fileCount, long totalBytes, String contentSha256,
+                                    String modUrl, boolean songAssets, boolean luaAllowed) {
+        public SongSelectionMeta {
+            contentSha256 = contentSha256 == null ? "" : contentSha256;
+            modUrl = modUrl == null ? "" : modUrl;
+        }
 
-        @Override
-        public Type<? extends CustomPacketPayload> type() { return TYPE; }
+        public boolean valid() {
+            return fileCount >= 0 && fileCount <= 100_000
+                    && totalBytes >= 0 && totalBytes <= 100L * 1024 * 1024 * 1024
+                    && contentSha256.matches("(?i)[0-9a-f]{64}")
+                    && modUrl.length() <= 2048
+                    && modUrl.chars().noneMatch(c -> c < 32);
+        }
+
+        static void write(FriendlyByteBuf buf, SongSelectionMeta value) {
+            buf.writeVarInt(value.fileCount());
+            buf.writeVarLong(value.totalBytes());
+            buf.writeUtf(value.contentSha256(), 64);
+            buf.writeUtf(value.modUrl(), 2048);
+            buf.writeBoolean(value.songAssets());
+            buf.writeBoolean(value.luaAllowed());
+        }
+
+        static SongSelectionMeta read(FriendlyByteBuf buf) {
+            return new SongSelectionMeta(buf.readVarInt(), buf.readVarLong(), buf.readUtf(64),
+                    buf.readUtf(2048), buf.readBoolean(), buf.readBoolean());
+        }
     }
 
     public record StartSongS2C(BlockPos pos, String songId, String difficulty, boolean playerSide,
                                Optional<UUID> partnerId, String partnerName, String partnerAnimSet,
-                               int botEntityId, long startDelayMs)
+                               String partnerAnimType, boolean partnerAnimFlipped,
+                               boolean partnerDirectionsFlipped, boolean partnerFrameCenterCamera,
+                               NoteVisuals partnerNoteVisuals, int botEntityId, long startDelayMs)
             implements CustomPacketPayload {
         public static final Type<StartSongS2C> TYPE = new Type<>(FnfMod.id("start_song"));
         public static final StreamCodec<FriendlyByteBuf, StartSongS2C> CODEC = StreamCodec.of(
@@ -156,15 +264,108 @@ public final class FnfPayloads {
                     buf.writeOptional(v.partnerId, (b, u) -> b.writeUUID(u));
                     buf.writeUtf(v.partnerName);
                     buf.writeUtf(v.partnerAnimSet);
+                    buf.writeUtf(v.partnerAnimType);
+                    buf.writeBoolean(v.partnerAnimFlipped);
+                    buf.writeBoolean(v.partnerDirectionsFlipped);
+                    buf.writeBoolean(v.partnerFrameCenterCamera);
+                    writeNoteVisuals(buf, v.partnerNoteVisuals == null ? NoteVisuals.DEFAULT : v.partnerNoteVisuals);
                     buf.writeVarInt(v.botEntityId + 1);
                     buf.writeLong(v.startDelayMs);
                 },
                 buf -> new StartSongS2C(buf.readBlockPos(), buf.readUtf(), buf.readUtf(), buf.readBoolean(),
                         buf.readOptional(b -> b.readUUID()), buf.readUtf(), buf.readUtf(),
-                        buf.readVarInt() - 1, buf.readLong()));
+                        buf.readUtf(), buf.readBoolean(), buf.readBoolean(), buf.readBoolean(),
+                        readNoteVisuals(buf), buf.readVarInt() - 1, buf.readLong()));
 
         @Override
         public Type<? extends CustomPacketPayload> type() { return TYPE; }
+    }
+
+    /** Starts the synchronized countdown only after every gameplay screen rendered once. */
+    public record BeginSongS2C(BlockPos pos, long startDelayMs) implements CustomPacketPayload {
+        public static final Type<BeginSongS2C> TYPE = new Type<>(FnfMod.id("begin_song"));
+        public static final StreamCodec<FriendlyByteBuf, BeginSongS2C> CODEC = StreamCodec.of(
+                (buf, value) -> {
+                    buf.writeBlockPos(value.pos);
+                    buf.writeLong(value.startDelayMs);
+                },
+                buf -> new BeginSongS2C(buf.readBlockPos(), buf.readLong()));
+
+        @Override
+        public Type<? extends CustomPacketPayload> type() { return TYPE; }
+    }
+
+    /** Metadata and a clock sample only: nearby listeners load their own local audio. */
+    public record NearbyPerformer(UUID id, String animationSet, String animationType,
+                                  boolean flipped, boolean directionsFlipped, boolean playerSide) {}
+
+    public record NearbySongS2C(UUID sessionId, BlockPos pos, String songId, String difficulty,
+                                double songMs, boolean paused, List<NearbyPerformer> performers)
+            implements CustomPacketPayload {
+        public static final Type<NearbySongS2C> TYPE = new Type<>(FnfMod.id("nearby_song"));
+        public static final StreamCodec<FriendlyByteBuf, NearbySongS2C> CODEC = StreamCodec.of(
+                (buf, value) -> {
+                    buf.writeUUID(value.sessionId());
+                    buf.writeBlockPos(value.pos());
+                    buf.writeUtf(value.songId(), 256);
+                    buf.writeUtf(value.difficulty(), 64);
+                    buf.writeDouble(value.songMs());
+                    buf.writeBoolean(value.paused());
+                    buf.writeVarInt(value.performers().size());
+                    for (NearbyPerformer performer : value.performers()) {
+                        buf.writeUUID(performer.id());
+                        buf.writeUtf(performer.animationSet(), 256);
+                        buf.writeUtf(performer.animationType(), 16);
+                        buf.writeBoolean(performer.flipped());
+                        buf.writeBoolean(performer.directionsFlipped());
+                        buf.writeBoolean(performer.playerSide());
+                    }
+                },
+                buf -> {
+                    UUID sessionId = buf.readUUID();
+                    BlockPos pos = buf.readBlockPos();
+                    String songId = buf.readUtf(256);
+                    String difficulty = buf.readUtf(64);
+                    double songMs = buf.readDouble();
+                    boolean paused = buf.readBoolean();
+                    int count = buf.readVarInt();
+                    if (count < 0 || count > 2) throw new IllegalArgumentException("Too many nearby performers");
+                    List<NearbyPerformer> performers = new java.util.ArrayList<>(count);
+                    for (int i = 0; i < count; i++) performers.add(new NearbyPerformer(
+                            buf.readUUID(), buf.readUtf(256), buf.readUtf(16),
+                            buf.readBoolean(), buf.readBoolean(), buf.readBoolean()));
+                    return new NearbySongS2C(sessionId, pos, songId, difficulty,
+                            songMs, paused, List.copyOf(performers));
+                });
+        @Override public Type<? extends CustomPacketPayload> type() { return TYPE; }
+    }
+
+    public record NearbyNoteS2C(UUID sessionId, UUID performerId, int lane, boolean miss)
+            implements CustomPacketPayload {
+        public static final Type<NearbyNoteS2C> TYPE = new Type<>(FnfMod.id("nearby_note"));
+        public static final StreamCodec<FriendlyByteBuf, NearbyNoteS2C> CODEC = StreamCodec.of(
+                (buf, value) -> {
+                    buf.writeUUID(value.sessionId());
+                    buf.writeUUID(value.performerId());
+                    buf.writeVarInt(value.lane());
+                    buf.writeBoolean(value.miss());
+                },
+                buf -> new NearbyNoteS2C(buf.readUUID(), buf.readUUID(), buf.readVarInt(), buf.readBoolean()));
+        @Override public Type<? extends CustomPacketPayload> type() { return TYPE; }
+    }
+
+    /** The active performer supplies the audio clock; the server relays no audio bytes. */
+    public record SongClockC2S(BlockPos pos, double songMs, boolean paused)
+            implements CustomPacketPayload {
+        public static final Type<SongClockC2S> TYPE = new Type<>(FnfMod.id("song_clock"));
+        public static final StreamCodec<FriendlyByteBuf, SongClockC2S> CODEC = StreamCodec.of(
+                (buf, value) -> {
+                    buf.writeBlockPos(value.pos());
+                    buf.writeDouble(value.songMs());
+                    buf.writeBoolean(value.paused());
+                },
+                buf -> new SongClockC2S(buf.readBlockPos(), buf.readDouble(), buf.readBoolean()));
+        @Override public Type<? extends CustomPacketPayload> type() { return TYPE; }
     }
 
     /** Confirms that the server restored a solo session and the client may rebuild gameplay. */
@@ -183,7 +384,7 @@ public final class FnfPayloads {
         public Type<? extends CustomPacketPayload> type() { return TYPE; }
     }
 
-    /** judgement: 0=sick 1=good 2=bad 3=shit 4=miss */
+    /** judgement: 0=sick 1=good 2=bad 3=shit 4=miss 5=Hurt Note */
     public record PartnerNoteS2C(int lane, byte judgement, int combo, int score) implements CustomPacketPayload {
         public static final Type<PartnerNoteS2C> TYPE = new Type<>(FnfMod.id("partner_note"));
         public static final StreamCodec<FriendlyByteBuf, PartnerNoteS2C> CODEC = StreamCodec.of(
@@ -209,6 +410,23 @@ public final class FnfPayloads {
                     buf.writeBoolean(v.failed);
                 },
                 buf -> new PartnerEndS2C(buf.readVarInt(), buf.readVarInt(), buf.readFloat(), buf.readBoolean()));
+
+        @Override
+        public Type<? extends CustomPacketPayload> type() { return TYPE; }
+    }
+
+    /** Detaches one duet participant without cancelling the other player's song. */
+    public record PartnerLeftS2C(BlockPos pos, int botEntityId, String name)
+            implements CustomPacketPayload {
+        public static final Type<PartnerLeftS2C> TYPE = new Type<>(FnfMod.id("partner_left"));
+        public static final StreamCodec<FriendlyByteBuf, PartnerLeftS2C> CODEC = StreamCodec.of(
+                (buf, value) -> {
+                    buf.writeBlockPos(value.pos);
+                    buf.writeVarInt(value.botEntityId + 1);
+                    buf.writeUtf(value.name, 64);
+                },
+                buf -> new PartnerLeftS2C(buf.readBlockPos(), buf.readVarInt() - 1,
+                        buf.readUtf(64)));
 
         @Override
         public Type<? extends CustomPacketPayload> type() { return TYPE; }
@@ -307,15 +525,17 @@ public final class FnfPayloads {
     }
 
     /** Active bundled-mod scope handshake for integrated/LAN clients. Empty ID means no mod assets. */
-    public record ModScopeS2C(String modId, String packVersion, boolean automaticMenu) implements CustomPacketPayload {
+    public record ModScopeS2C(String modId, String packVersion, boolean automaticMenu,
+                              boolean gameplayLuaAllowed) implements CustomPacketPayload {
         public static final Type<ModScopeS2C> TYPE = new Type<>(FnfMod.id("mod_scope"));
         public static final StreamCodec<FriendlyByteBuf, ModScopeS2C> CODEC = StreamCodec.of(
                 (buf, value) -> {
                     buf.writeUtf(value.modId(), 128);
                     buf.writeUtf(value.packVersion(), 128);
                     buf.writeBoolean(value.automaticMenu());
+                    buf.writeBoolean(value.gameplayLuaAllowed());
                 },
-                buf -> new ModScopeS2C(buf.readUtf(128), buf.readUtf(128), buf.readBoolean()));
+                buf -> new ModScopeS2C(buf.readUtf(128), buf.readUtf(128), buf.readBoolean(), buf.readBoolean()));
 
         @Override
         public Type<? extends CustomPacketPayload> type() { return TYPE; }
@@ -407,7 +627,7 @@ public final class FnfPayloads {
 
     /** playSide (solo only): 0 = player, 1 = opponent, 2 = both. */
     public record SelectSongC2S(BlockPos pos, String songId, String difficulty, boolean duet,
-                                byte playSide, byte playbackMode)
+                                byte playSide, byte playbackMode, SongSelectionMeta meta)
             implements CustomPacketPayload {
         public static final Type<SelectSongC2S> TYPE = new Type<>(FnfMod.id("select_song"));
         public static final StreamCodec<FriendlyByteBuf, SelectSongC2S> CODEC = StreamCodec.of(
@@ -418,44 +638,48 @@ public final class FnfPayloads {
                     buf.writeBoolean(v.duet);
                     buf.writeByte(v.playSide);
                     buf.writeByte(v.playbackMode);
+                    SongSelectionMeta.write(buf, v.meta);
                 },
                 buf -> new SelectSongC2S(buf.readBlockPos(), buf.readUtf(), buf.readUtf(), buf.readBoolean(),
-                        buf.readByte(), buf.readByte()));
+                        buf.readByte(), buf.readByte(), SongSelectionMeta.read(buf)));
 
         @Override
         public Type<? extends CustomPacketPayload> type() { return TYPE; }
     }
 
-    public record RequestFilesC2S(BlockPos pos, String songId, List<String> fileNames) implements CustomPacketPayload {
-        public static final Type<RequestFilesC2S> TYPE = new Type<>(FnfMod.id("request_files"));
-        public static final StreamCodec<FriendlyByteBuf, RequestFilesC2S> CODEC = StreamCodec.of(
-                (buf, v) -> {
-                    buf.writeBlockPos(v.pos);
-                    buf.writeUtf(v.songId);
-                    buf.writeCollection(v.fileNames, FriendlyByteBuf::writeUtf);
-                },
-                buf -> new RequestFilesC2S(buf.readBlockPos(), buf.readUtf(),
-                        readBoundedList(buf, MAX_MANIFEST_FILES,
-                                value -> value.readUtf(MAX_FILE_NAME_LENGTH))));
-
-        @Override
-        public Type<? extends CustomPacketPayload> type() { return TYPE; }
-    }
-
-    public record ReadyC2S(BlockPos pos, String animSet, double offsetX, double offsetY,
-                           double offsetZ, float rotationOffset) implements CustomPacketPayload {
+    public record ReadyC2S(BlockPos pos, String animSet, String animType, boolean animFlipped,
+                           boolean directionsFlipped, boolean frameCenterCamera,
+                           double offsetX, double offsetY,
+                           double offsetZ, float rotationOffset, NoteVisuals noteVisuals) implements CustomPacketPayload {
         public static final Type<ReadyC2S> TYPE = new Type<>(FnfMod.id("ready"));
         public static final StreamCodec<FriendlyByteBuf, ReadyC2S> CODEC = StreamCodec.of(
                 (buf, v) -> {
                     buf.writeBlockPos(v.pos);
                     buf.writeUtf(v.animSet);
+                    buf.writeUtf(v.animType);
+                    buf.writeBoolean(v.animFlipped);
+                    buf.writeBoolean(v.directionsFlipped);
+                    buf.writeBoolean(v.frameCenterCamera);
                     buf.writeDouble(v.offsetX);
                     buf.writeDouble(v.offsetY);
                     buf.writeDouble(v.offsetZ);
                     buf.writeFloat(v.rotationOffset);
+                    writeNoteVisuals(buf, v.noteVisuals == null ? NoteVisuals.DEFAULT : v.noteVisuals);
                 },
-                buf -> new ReadyC2S(buf.readBlockPos(), buf.readUtf(), buf.readDouble(),
-                        buf.readDouble(), buf.readDouble(), buf.readFloat()));
+                buf -> new ReadyC2S(buf.readBlockPos(), buf.readUtf(), buf.readUtf(), buf.readBoolean(),
+                        buf.readBoolean(), buf.readBoolean(), buf.readDouble(),
+                        buf.readDouble(), buf.readDouble(), buf.readFloat(), readNoteVisuals(buf)));
+
+        @Override
+        public Type<? extends CustomPacketPayload> type() { return TYPE; }
+    }
+
+    /** Confirms that PlayState finished initialization and produced a complete frame. */
+    public record GameplayReadyC2S(BlockPos pos) implements CustomPacketPayload {
+        public static final Type<GameplayReadyC2S> TYPE = new Type<>(FnfMod.id("gameplay_ready"));
+        public static final StreamCodec<FriendlyByteBuf, GameplayReadyC2S> CODEC = StreamCodec.of(
+                (buf, value) -> buf.writeBlockPos(value.pos),
+                buf -> new GameplayReadyC2S(buf.readBlockPos()));
 
         @Override
         public Type<? extends CustomPacketPayload> type() { return TYPE; }
@@ -683,7 +907,8 @@ public final class FnfPayloads {
 
     /** Direct launch requested by a sandboxed custom machine menu. */
     public record MachineDirectPlayC2S(BlockPos pos, String songId, String difficulty,
-                                       boolean duet, byte playSide, byte playbackMode)
+                                       boolean duet, byte playSide, byte playbackMode,
+                                       SongSelectionMeta meta)
             implements CustomPacketPayload {
         public static final Type<MachineDirectPlayC2S> TYPE = new Type<>(FnfMod.id("machine_direct_play"));
         public static final StreamCodec<FriendlyByteBuf, MachineDirectPlayC2S> CODEC = StreamCodec.of(
@@ -694,9 +919,11 @@ public final class FnfPayloads {
                     buf.writeBoolean(value.duet());
                     buf.writeByte(value.playSide());
                     buf.writeByte(value.playbackMode());
+                    SongSelectionMeta.write(buf, value.meta());
                 },
                 buf -> new MachineDirectPlayC2S(buf.readBlockPos(), buf.readUtf(256),
-                        buf.readUtf(128), buf.readBoolean(), buf.readByte(), buf.readByte()));
+                        buf.readUtf(128), buf.readBoolean(), buf.readByte(), buf.readByte(),
+                        SongSelectionMeta.read(buf)));
 
         @Override public Type<? extends CustomPacketPayload> type() { return TYPE; }
     }
@@ -719,7 +946,8 @@ public final class FnfPayloads {
 
     /** Tagged stage launch: menu origin is authorization/return context, not the target stage. */
     public record MachineTaggedPlayC2S(BlockPos menuPos, String machineTag, String songId,
-                                       String difficulty, boolean duet, byte playSide, byte playbackMode)
+                                       String difficulty, boolean duet, byte playSide, byte playbackMode,
+                                       SongSelectionMeta meta)
             implements CustomPacketPayload {
         public static final Type<MachineTaggedPlayC2S> TYPE = new Type<>(FnfMod.id("machine_tagged_play"));
         public static final StreamCodec<FriendlyByteBuf, MachineTaggedPlayC2S> CODEC = StreamCodec.of(
@@ -731,9 +959,11 @@ public final class FnfPayloads {
                     buf.writeBoolean(value.duet());
                     buf.writeByte(value.playSide());
                     buf.writeByte(value.playbackMode());
+                    SongSelectionMeta.write(buf, value.meta());
                 },
                 buf -> new MachineTaggedPlayC2S(buf.readBlockPos(), buf.readUtf(64), buf.readUtf(256),
-                        buf.readUtf(128), buf.readBoolean(), buf.readByte(), buf.readByte()));
+                        buf.readUtf(128), buf.readBoolean(), buf.readByte(), buf.readByte(),
+                        SongSelectionMeta.read(buf)));
         @Override public Type<? extends CustomPacketPayload> type() { return TYPE; }
     }
 

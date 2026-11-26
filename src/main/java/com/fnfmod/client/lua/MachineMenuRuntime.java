@@ -7,6 +7,7 @@ import com.fnfmod.client.render.MachineTextureCache;
 import com.fnfmod.client.render.MissingAssetTexture;
 import com.fnfmod.client.render.PsychCanvas;
 import com.fnfmod.client.render.SparrowAtlas;
+import com.fnfmod.client.render.LuaTextBaker;
 import com.fnfmod.gameplay.PlaybackMode;
 import com.fnfmod.machine.MachineDefinition;
 import com.fnfmod.machine.MachineLibrary;
@@ -181,6 +182,12 @@ public final class MachineMenuRuntime implements AutoCloseable {
     private final Globals globals;
     private final BudgetDebugLib budget = new BudgetDebugLib();
     private final List<Widget> widgets = new ArrayList<>();
+    private record DebugLine(String text, int color, long bornMs) {}
+    private static final long DEBUG_LINE_LIFETIME_MS = 6000;
+    private static final long DEBUG_LINE_FADE_MS = 1000;
+    private static final int DEBUG_LINE_MAX = 20;
+    private final List<DebugLine> debugLines = new ArrayList<>();
+    private boolean textQualityWarned;
     private final Map<String, AnimatedState> animatedStates = new LinkedHashMap<>();
     private final Map<String, Tween> tweens = new LinkedHashMap<>();
     private final List<EditorTween> editorTweens = new ArrayList<>();
@@ -942,6 +949,7 @@ public final class MachineMenuRuntime implements AutoCloseable {
         installWorldFields(table);
         table.set("x", 0.5); table.set("y", 0.5); table.set("width", kind.equals("label") ? 0 : 180);
         table.set("height", kind.equals("label") ? 10 : 48); table.set("angle", 0);
+        installOriginFields(table);
         if (kind.equals("image") || kind.equals("animatedSprite")) {
             table.set("path", "images/menu_assets/image.png"); installSpriteFields(table);
         }
@@ -968,10 +976,10 @@ public final class MachineMenuRuntime implements AutoCloseable {
 
     private static final java.util.Set<String> EDITOR_NUMBER_FIELDS = effectFields(java.util.Set.of(
             "x", "y", "z", "width", "height", "alpha", "angle", "rotationX", "rotationY",
-            "fontScale", "fontQuality", "order", "color", "fps", "borderSize", "borderColor",
+            "fontScale", "order", "color", "fps", "borderSize", "borderColor",
             "lineSpacing", "letterSpacing", "backgroundColor", "hoverColor", "parentWidth", "parentHeight"), LuaLayerEffects.NUMBERS.keySet());
     private static final java.util.Set<String> EDITOR_STRING_FIELDS = effectFields(java.util.Set.of(
-            "space", "coordinates", "text", "path", "xml", "font", "shape", "alignment",
+            "space", "coordinates", "text", "path", "xml", "font", "fontMode", "shape", "alignment",
             "borderStyle", "renderMode"), LuaLayerEffects.STRINGS.keySet());
     private static final java.util.Set<String> EDITOR_BOOLEAN_FIELDS = effectFields(java.util.Set.of(
             "visible", "billboard", "lighting", "seeThrough", "shadow", "antialiasing", "loop", "italic"), LuaLayerEffects.BOOLEANS.keySet());
@@ -1160,7 +1168,6 @@ public final class MachineMenuRuntime implements AutoCloseable {
             case "width" -> kind.equals("label") ? 0 : 1;
             case "height" -> kind.equals("label") ? 10 : 1;
             case "alpha", "fontScale" -> 1;
-            case "fontQuality" -> LuaFontLoader.DEFAULT_OVERSAMPLE;
             case "color" -> kind.equals("panel") ? 0xAA111111L : 0xFFFFFF;
             case "backgroundColor" -> 0x333333;
             case "hoverColor" -> 0x555555;
@@ -1180,6 +1187,7 @@ public final class MachineMenuRuntime implements AutoCloseable {
             case "space" -> "screen";
             case "coordinates" -> "relative";
             case "font" -> "";
+            case "fontMode" -> "smooth";
             case "alignment" -> "center";
             case "borderStyle" -> "outline";
             case "renderMode" -> "auto";
@@ -1346,7 +1354,7 @@ public final class MachineMenuRuntime implements AutoCloseable {
                 default -> { }
             }
             String font = data.get("font").optjstring("").trim();
-            double quality = data.get("fontQuality").optdouble(LuaFontLoader.DEFAULT_OVERSAMPLE);
+            double quality = effectiveFontQuality(data);
             if (!font.isEmpty()) mainPreload.add(() -> fontLoader.get(font, quality));
         }
 
@@ -1474,9 +1482,13 @@ public final class MachineMenuRuntime implements AutoCloseable {
             else matrix.rotateY((float)Math.toRadians(-facing.toYRot()));
         } else matrix.translate(coordinate(d.get("x").optdouble(.5),PsychCanvas.WIDTH),
                 coordinate(d.get("y").optdouble(.5),PsychCanvas.HEIGHT),0);
-        return matrix.rotateXYZ((float)Math.toRadians(isWorld(d)?d.get("rotationX").optdouble(0):0),
+        matrix.rotateXYZ((float)Math.toRadians(isWorld(d)?d.get("rotationX").optdouble(0):0),
                 (float)Math.toRadians(isWorld(d)?d.get("rotationY").optdouble(0):0),
                 (float)Math.toRadians(d.get("angle").optdouble(0)));
+        double unit = isWorld(d) ? 64.0 : 1.0;
+        matrix.translate((float)((effectiveWidth(w) * 0.5 - widgetOriginX(d, effectiveWidth(w))) / unit),
+                (float)((effectiveHeight(w) * 0.5 - widgetOriginY(d, effectiveHeight(w))) / unit), 0);
+        return matrix;
     }
 
     private static String widgetFingerprint(Widget w) {
@@ -1497,13 +1509,21 @@ public final class MachineMenuRuntime implements AutoCloseable {
             LuaTable d=w.data(); int width=effectiveWidth(w),height=effectiveHeight(w);
             Widget maskWidget=widget(d.get("mask").optjstring(""));
             var mask=maskWidget==null ? null : menuSurface(maskWidget,font);
+            LuaMaskMapping maskMapping = maskWidget != null && mask != null
+                    && isWorld(d) == isWorld(maskWidget.data())
+                    ? LuaMaskMapping.between(menuTransform(w, new java.util.HashSet<>()), width, height,
+                    menuTransform(maskWidget, new java.util.HashSet<>()),
+                    effectiveWidth(maskWidget), effectiveHeight(maskWidget),
+                    LuaLayerEffects.number(d, "maskX"), LuaLayerEffects.number(d, "maskY"),
+                    LuaLayerEffects.number(d, "maskScaleX"), LuaLayerEffects.number(d, "maskScaleY"),
+                    LuaLayerEffects.number(d, "maskAngle")) : null;
             List<Widget> children=w.kind().equals("group") ? orderedWidgets().stream()
                     .filter(c->c.data().get("group").optjstring("").equals(w.id())).toList() : List.of();
             String signature=widgetFingerprint(w)+children.stream().map(MachineMenuRuntime::widgetFingerprint).toList();
             if(w.kind().equals("group")) signature+=widgets.stream().map(MachineMenuRuntime::widgetFingerprint).toList();
             double raster=Math.max(1,Minecraft.getInstance().getWindow().getHeight()/(double)PsychCanvas.HEIGHT);
             int rw=Math.max(1,(int)Math.ceil(width*raster)),rh=Math.max(1,(int)Math.ceil(height*raster));
-            return layerRenderer.paint(w.id(),rw,rh,signature,d,mask,gui->{
+            return layerRenderer.paint(w.id(),rw,rh,signature,d,mask,maskMapping,gui->{
                 gui.pose().scale((float)(rw/(double)width),(float)(rh/(double)height),1);
                 if(w.kind().equals("group")) {
                     gui.pose().scale(width/1280f,height/720f,1);
@@ -1642,7 +1662,19 @@ public final class MachineMenuRuntime implements AutoCloseable {
             if (value == null) return LuaValue.FALSE;
             value.data().set("font", args.arg(2).optjstring("")); return LuaValue.TRUE;
         }));
+        globals.set("setTextFontMode", function(args -> {
+            Widget value = widget(args.arg(1).optjstring(""));
+            if (value == null) return LuaValue.FALSE;
+            value.data().set("fontMode", normalizeFontMode(args.arg(2).optjstring("smooth")));
+            return LuaValue.TRUE;
+        }));
+        globals.set("getTextFontMode", function(args -> {
+            Widget value = widget(args.arg(1).optjstring(""));
+            return LuaValue.valueOf(value == null ? "smooth"
+                    : normalizeFontMode(value.data().get("fontMode").optjstring("smooth")));
+        }));
         globals.set("setTextQuality", function(args -> {
+            warnDeprecatedTextQuality();
             Widget value = widget(args.arg(1).optjstring(""));
             if (value == null) return LuaValue.FALSE;
             value.data().set("fontQuality", LuaFontLoader.clampOversample(
@@ -1650,9 +1682,18 @@ public final class MachineMenuRuntime implements AutoCloseable {
             return LuaValue.TRUE;
         }));
         globals.set("getTextQuality", function(args -> {
+            warnDeprecatedTextQuality();
             Widget value = widget(args.arg(1).optjstring(""));
             return LuaValue.valueOf(value == null ? LuaFontLoader.DEFAULT_OVERSAMPLE
-                    : value.data().get("fontQuality").optdouble(LuaFontLoader.DEFAULT_OVERSAMPLE));
+                    : effectiveFontQuality(value.data()));
+        }));
+        globals.set("debugPrint", function(args -> {
+            String message = args.arg(1).optjstring("");
+            LuaValue colorValue = args.arg(2);
+            int color = colorValue.isnil() ? 0xFFFFFFFF
+                    : colorValue.isnumber() ? colorValue.toint() : PsychColor.parse(colorValue.tojstring());
+            addDebugLine(message, color);
+            return LuaValue.NIL;
         }));
         globals.set("setTextAlignment", function(args -> {
             Widget value = widget(args.arg(1).optjstring(""));
@@ -1752,6 +1793,7 @@ public final class MachineMenuRuntime implements AutoCloseable {
             table.set("borderColor", 0xFFFFFF);
             table.set("thickness", 1.0);
             setGeometry(table, args, geometryAt, 64, 64);
+            installOriginFields(table);
             widgets.add(new Widget("graph", id, table));
             return table;
         });
@@ -1811,6 +1853,7 @@ public final class MachineMenuRuntime implements AutoCloseable {
                 table.set("min", 0.0);
                 table.set("max", 1.0);
             }
+            installOriginFields(table);
             widgets.add(new Widget(kind, id, table));
             return table;
         });
@@ -1825,7 +1868,7 @@ public final class MachineMenuRuntime implements AutoCloseable {
 
     private static void installTextFields(LuaTable table) {
         table.set("font", ""); table.set("fontScale", 1.0);
-        table.set("fontQuality", LuaFontLoader.DEFAULT_OVERSAMPLE); table.set("shadow", LuaValue.TRUE);
+        table.set("fontMode", "smooth"); table.set("shadow", LuaValue.TRUE);
         table.set("alignment", "center"); table.set("borderSize", 0.0); table.set("borderColor", 0);
         table.set("borderStyle", "outline"); table.set("italic", LuaValue.FALSE);
         table.set("lineSpacing", 0.0); table.set("letterSpacing", 0.0);
@@ -1847,6 +1890,31 @@ public final class MachineMenuRuntime implements AutoCloseable {
         table.set("lighting", LuaValue.FALSE);
         table.set("renderMode", "auto");
         table.set("seeThrough", LuaValue.FALSE);
+    }
+
+    private void installOriginFields(LuaTable table) {
+        double width = table.get("width").optdouble(0);
+        double height = table.get("height").optdouble(0);
+        LuaTable origin = new LuaTable();
+        // Unset coordinates follow the widget's *current* size. Storing half of
+        // the creation size made older menus shift when they resized a button or
+        // image later (including width/height tweens). Explicit origin.x/y still
+        // override the dynamic centre independently.
+        LuaTable meta = new LuaTable();
+        meta.set("__index", function(args -> {
+            Widget widget = widget(table.get("id").optjstring(""));
+            return switch (args.arg(2).optjstring("")) {
+            case "x" -> LuaValue.valueOf((widget == null
+                    ? table.get("width").optdouble(0) : effectiveWidth(widget)) * 0.5);
+            case "y" -> LuaValue.valueOf((widget == null
+                    ? table.get("height").optdouble(0) : effectiveHeight(widget)) * 0.5);
+            default -> LuaValue.NIL;
+            };
+        }));
+        origin.setmetatable(meta);
+        table.set("origin", origin);
+        table.set("frameWidth", width);
+        table.set("frameHeight", height);
     }
 
     private static String inferXml(String png) {
@@ -2197,6 +2265,40 @@ public final class MachineMenuRuntime implements AutoCloseable {
         installTweenFunction("doTweenWidth", "width");
         installTweenFunction("doTweenHeight", "height");
         installTweenFunction("doTweenFontScale", "fontScale");
+        globals.set("doTweenText", function(args -> {
+            String tag = args.arg(1).checkjstring();
+            String widgetId = args.arg(2).checkjstring();
+            Widget widget = widget(widgetId);
+            if (widget == null || widget.data().get("text").isnil()) return LuaValue.FALSE;
+            String requested;
+            double duration;
+            String easing;
+            // Preferred form: (tag, target, amount, duration, easing, property).
+            // Five arguments remain useful for concise one-second text tweens.
+            if (args.arg(4).isnumber()) {
+                duration = args.arg(4).optdouble(1);
+                easing = args.arg(5).optjstring("linear");
+                requested = args.arg(6).optjstring("");
+            } else {
+                duration = 1;
+                easing = args.arg(4).optjstring("linear");
+                requested = args.arg(5).optjstring("");
+            }
+            String property = textTweenProperty(requested);
+            if (property == null) return LuaValue.FALSE;
+            double amount = args.arg(3).optdouble(0);
+            double from;
+            if (property.equals("fontScale")) {
+                // TextSize is expressed in the same pixels as setTextSize. Menu
+                // widgets store it as a scale relative to the 16px Lua baseline.
+                from = widget.data().get("fontScale").optdouble(1);
+                amount = Math.max(0.1, amount / 16.0);
+            } else {
+                from = widget.data().get(property).optdouble(0);
+            }
+            startTween(tag, widgetId, property, from, amount, duration, easing, false);
+            return LuaValue.TRUE;
+        }));
         globals.set("doTweenColor", function(args -> {
             String tag = args.arg(1).checkjstring();
             String widgetId = args.arg(2).checkjstring();
@@ -2388,6 +2490,18 @@ public final class MachineMenuRuntime implements AutoCloseable {
                     args.arg(4).optdouble(1), args.arg(5).optjstring("linear"), false);
             return LuaValue.TRUE;
         }));
+    }
+
+    private static String textTweenProperty(String raw) {
+        String property = raw == null ? "" : raw.trim().toLowerCase(Locale.ROOT)
+                .replace("_", "").replace("-", "").replace(" ", "");
+        return switch (property) {
+            case "linespacing", "linegap" -> "lineSpacing";
+            case "letterspacing", "tracking" -> "letterSpacing";
+            case "bordersize", "border" -> "borderSize";
+            case "textsize", "fontsize", "size", "fontscale" -> "fontScale";
+            default -> null;
+        };
     }
 
     private void startTween(String tag, String widgetId, String property, double from, double to,
@@ -2625,6 +2739,62 @@ public final class MachineMenuRuntime implements AutoCloseable {
         } finally {
             PsychCanvas.pop(gui);
         }
+    }
+
+    private void addDebugLine(String message, int color) {
+        if ((color & 0xFF000000) == 0) color |= 0xFF000000;
+        // Top-level Lua runs before the menu finishes preloading. Start its trace
+        // lifetime only when the overlay first becomes visible.
+        debugLines.add(new DebugLine(message, color, opened ? System.currentTimeMillis() : -1));
+        while (debugLines.size() > DEBUG_LINE_MAX) debugLines.remove(0);
+        FnfMod.LOGGER.info("[Menu Lua] {}", message);
+    }
+
+    private void warnDeprecatedTextQuality() {
+        if (textQualityWarned) return;
+        textQualityWarned = true;
+        String message = "Text quality is deprecated; use fontMode = 'smooth'/'pixel' or setTextFontMode.";
+        addDebugLine(message, 0xFFFFAA00);
+        FnfMod.LOGGER.warn("[Menu Lua] {}", message);
+    }
+
+    public void renderDebugOverlay(GuiGraphics gui) {
+        if (debugLines.isEmpty()) return;
+        long now = System.currentTimeMillis();
+        for (int i = 0; i < debugLines.size(); i++) {
+            DebugLine line = debugLines.get(i);
+            if (line.bornMs() < 0) debugLines.set(i, new DebugLine(line.text(), line.color(), now));
+        }
+        debugLines.removeIf(line -> now - line.bornMs() > DEBUG_LINE_LIFETIME_MS);
+        if (debugLines.isEmpty()) return;
+        Font font = Minecraft.getInstance().font;
+        gui.flush();
+        gui.pose().pushPose();
+        gui.pose().translate(0, 0, 1000);
+        int y = 10;
+        for (DebugLine line : debugLines) {
+            long age = now - line.bornMs();
+            int alpha = age > DEBUG_LINE_LIFETIME_MS - DEBUG_LINE_FADE_MS
+                    ? Math.max(4, Math.round((DEBUG_LINE_LIFETIME_MS - age)
+                    * 255f / DEBUG_LINE_FADE_MS)) : 255;
+            gui.drawString(font, font.plainSubstrByWidth(line.text(), Math.max(20, gui.guiWidth() - 20)),
+                    10, y, alpha << 24 | line.color() & 0xFFFFFF, true);
+            y += font.lineHeight + 2;
+        }
+        gui.flush();
+        gui.pose().popPose();
+    }
+
+    private static String normalizeFontMode(String mode) {
+        return "pixel".equalsIgnoreCase(mode) || "pixelated".equalsIgnoreCase(mode)
+                ? "pixel" : "smooth";
+    }
+
+    private static double effectiveFontQuality(LuaTable data) {
+        LuaValue legacy = data.get("fontQuality");
+        return legacy.isnumber() ? LuaFontLoader.clampOversample(legacy.todouble())
+                : normalizeFontMode(data.get("fontMode").optjstring("smooth")).equals("pixel")
+                ? 1 : LuaFontLoader.DEFAULT_OVERSAMPLE;
     }
 
     /** Editor preview: fits the same 1280x720 menu canvas inside a reserved rectangle. */
@@ -2870,8 +3040,8 @@ public final class MachineMenuRuntime implements AutoCloseable {
         int height = effectiveHeight(widget);
         int centerX = coordinate(data.get("x").optdouble(0.5), PsychCanvas.WIDTH);
         int centerY = coordinate(data.get("y").optdouble(0.5), PsychCanvas.HEIGHT);
-        int x = centerX - width / 2;
-        int y = centerY - height / 2;
+        int x = (int) Math.round(centerX - widgetOriginX(data, width));
+        int y = (int) Math.round(centerY - widgetOriginY(data, height));
         int color = color(data);
         Font textFont = widgetFont(data, font);
         float fontScale = (float) Math.max(0.1, Math.min(16.0,
@@ -2992,7 +3162,7 @@ public final class MachineMenuRuntime implements AutoCloseable {
             }
 
             switch (widget.kind()) {
-                case "label" -> out.add(new MenuWorldObject(forward, worldText(data, x, y, z, width, alpha, angle,
+                case "label" -> out.add(new MenuWorldObject(forward, worldText(data, x, y, z, width, height, alpha, angle,
                         rotationX, rotationY, color, billboard, lighting, renderMode,
                         seeThrough, false)));
                 case "image", "sprite" -> {
@@ -3000,7 +3170,8 @@ public final class MachineMenuRuntime implements AutoCloseable {
                     ResourceLocation texture = MachineTextureCache.get(file);
                     MachineTextureCache.Size size = MachineTextureCache.size(file);
                     out.add(new MenuWorldObject(forward, worldSprite(texture, size.width(), size.height(), null, x, y, z,
-                            width, height, width, height, alpha, angle, rotationX, rotationY,
+                            width, height, width, height, widgetOriginX(data, width), widgetOriginY(data, height),
+                            alpha, angle, rotationX, rotationY,
                             color, billboard, lighting, renderMode, seeThrough)));
                 }
                 case "animatedSprite" -> {
@@ -3014,7 +3185,9 @@ public final class MachineMenuRuntime implements AutoCloseable {
                         var worldFrame = new com.fnfmod.client.render.LuaWorldObject.Frame(
                                 frame.x, frame.y, frame.w, frame.h, frame.frameX, frame.frameY, frame.rotated);
                         out.add(new MenuWorldObject(forward, worldSprite(atlas.texture(), atlas.width(), atlas.height(), worldFrame,
-                                x, y, z, width, height, frame.frameW, frame.frameH, alpha, angle,
+                                x, y, z, width, height, frame.frameW, frame.frameH,
+                                widgetOriginX(data, width) * frame.frameW / Math.max(1, width),
+                                widgetOriginY(data, height) * frame.frameH / Math.max(1, height), alpha, angle,
                                 rotationX, rotationY, color, billboard, lighting, renderMode,
                                 seeThrough)));
                     }
@@ -3031,10 +3204,11 @@ public final class MachineMenuRuntime implements AutoCloseable {
                         default -> color;
                     };
                     out.add(new MenuWorldObject(forward, worldSprite(null, 1, 1, null, x, y, z, width, height,
-                            width, height, alpha, angle, rotationX, rotationY, background,
+                            width, height, widgetOriginX(data, width), widgetOriginY(data, height),
+                            alpha, angle, rotationX, rotationY, background,
                             billboard, lighting, renderMode, seeThrough)));
                     if (!widget.kind().equals("panel") && !widget.kind().equals("graph")) {
-                        out.add(new MenuWorldObject(forward, worldText(data, x, y, z, width, alpha, angle,
+                        out.add(new MenuWorldObject(forward, worldText(data, x, y, z, width, height, alpha, angle,
                                 rotationX, rotationY, color, billboard, lighting, renderMode, seeThrough,
                                 textControl)));
                     }
@@ -3170,7 +3344,7 @@ public final class MachineMenuRuntime implements AutoCloseable {
     }
 
     private com.fnfmod.client.render.LuaWorldObject.Text worldText(
-            LuaTable data, double x, double y, double z, double width, double alpha,
+            LuaTable data, double x, double y, double z, double width, double height, double alpha,
             double angle, double rotationX, double rotationY, int color,
             boolean billboard, boolean lighting,
             com.fnfmod.client.render.LuaWorldObject.RenderMode renderMode, boolean seeThrough,
@@ -3178,7 +3352,9 @@ public final class MachineMenuRuntime implements AutoCloseable {
         float fontScale = (float) Math.max(0.1, Math.min(16, data.get("fontScale").optdouble(1)));
         return new com.fnfmod.client.render.LuaWorldObject.Text(
                 widgetFont(data, Minecraft.getInstance().font), data.get("text").optjstring(""),
-                x, y, z, width, Math.max(1, Math.round(9 * fontScale)), 1, 1, alpha,
+                x, y, z, width, width, height, widgetOriginX(data, width),
+                widgetOriginY(data, height),
+                Math.max(1, Math.round(9 * fontScale)), 1, 1, alpha,
                 angle, rotationX, rotationY, color, billboard, lighting, renderMode, seeThrough,
                 data.get("borderSize").optdouble(0), data.get("borderColor").optint(0),
                 data.get("borderStyle").optjstring("outline"),
@@ -3191,14 +3367,26 @@ public final class MachineMenuRuntime implements AutoCloseable {
             ResourceLocation texture, int textureWidth, int textureHeight,
             com.fnfmod.client.render.LuaWorldObject.Frame frame,
             double x, double y, double z, double width, double height,
-            double graphicWidth, double graphicHeight, double alpha, double angle,
+            double graphicWidth, double graphicHeight, double originX, double originY,
+            double alpha, double angle,
             double rotationX, double rotationY, int color,
             boolean billboard, boolean lighting,
             com.fnfmod.client.render.LuaWorldObject.RenderMode renderMode, boolean seeThrough) {
         return new com.fnfmod.client.render.LuaWorldObject.Sprite(texture, textureWidth, textureHeight,
                 frame, 0, 0, x, y, z, width, height, graphicWidth, graphicHeight,
+                originX, originY,
                 1, 1, alpha, angle, rotationX, rotationY, color,
                 billboard, lighting, renderMode, seeThrough);
+    }
+
+    private static double widgetOriginX(LuaTable data, double fallbackWidth) {
+        LuaValue origin = data.get("origin");
+        return origin.istable() ? origin.get("x").optdouble(fallbackWidth * 0.5) : fallbackWidth * 0.5;
+    }
+
+    private static double widgetOriginY(LuaTable data, double fallbackHeight) {
+        LuaValue origin = data.get("origin");
+        return origin.istable() ? origin.get("y").optdouble(fallbackHeight * 0.5) : fallbackHeight * 0.5;
     }
 
     private static com.fnfmod.client.render.LuaWorldObject.RenderMode worldRenderMode(LuaTable data) {
@@ -3266,6 +3454,8 @@ public final class MachineMenuRuntime implements AutoCloseable {
             gui.pose().translate(centerX, centerY, 0);
             gui.pose().mulPose(com.mojang.math.Axis.ZP.rotationDegrees(
                     (float) data.get("angle").optdouble(0)));
+            gui.pose().translate(width * 0.5 - widgetOriginX(data, width),
+                    height * 0.5 - widgetOriginY(data, height), 0);
             switch (shape) {
                 case "circle", "ellipse", "oval" -> {
                     if (borderSize > 0) drawEllipse(gui, width, height, border);
@@ -3413,8 +3603,8 @@ public final class MachineMenuRuntime implements AutoCloseable {
     private Font widgetFont(LuaTable data, Font fallback) {
         String name = data.get("font").optjstring("").trim();
         if (name.isEmpty()) return fallback;
-        Font selected = fontLoader.get(name,
-                data.get("fontQuality").optdouble(LuaFontLoader.DEFAULT_OVERSAMPLE));
+        if (data.get("fontQuality").isnumber()) warnDeprecatedTextQuality();
+        Font selected = fontLoader.get(name, effectiveFontQuality(data));
         return selected == null ? fallback : selected;
     }
 
@@ -3432,11 +3622,20 @@ public final class MachineMenuRuntime implements AutoCloseable {
         gui.pose().pushPose();
         try {
             gui.pose().translate(centerX, centerY, 0);
+            gui.pose().translate(boxWidth * 0.5 - widgetOriginX(data, boxWidth),
+                    boxHeight * 0.5 - widgetOriginY(data, boxHeight), 0);
             gui.pose().scale(scale, scale, 1);
             double step = Math.max(1, font.lineHeight + lineSpacing);
             double totalHeight = font.lineHeight + Math.max(0, lines.length - 1) * step;
             double localWidth = boxWidth / Math.max(0.1, scale);
             int y = (int) Math.round(-totalHeight / 2.0);
+            boolean customFont = !data.get("font").optjstring("").isBlank()
+                    && !normalizeFontMode(data.get("fontMode").optjstring("smooth")).equals("pixel");
+            double[] outlinePixel = customFont ? LuaTextBaker.psychPixelInLocal(gui)
+                    : new double[]{1.0, 1.0};
+            if (border > 0 && drawBakedStyledText(gui, font, data, lines,
+                    alignment, italic, letterSpacing, border, borderColor,
+                    borderStyle, localWidth, y, step, color, customFont, outlinePixel)) return;
             for (String line : lines) {
                 double measured = textWidth(font, line, letterSpacing, italic);
                 int x = switch (alignment) {
@@ -3445,7 +3644,8 @@ public final class MachineMenuRuntime implements AutoCloseable {
                     default -> (int) Math.round(-measured / 2.0);
                 };
                 drawStyledLine(gui, font, line, x, y, color, shadow, italic,
-                        letterSpacing, border, borderColor, borderStyle);
+                        letterSpacing, border, borderColor, borderStyle,
+                        customFont, outlinePixel);
                 y += (int) Math.round(step);
             }
         } finally {
@@ -3453,20 +3653,123 @@ public final class MachineMenuRuntime implements AutoCloseable {
         }
     }
 
+    /** Opaque and translucent outlined menu text share one clipped-safe bake. */
+    private boolean drawBakedStyledText(GuiGraphics gui, Font font, LuaTable data,
+                                        String[] lines, String alignment, boolean italic,
+                                        double letterSpacing, int border, int borderColor,
+                                        String borderStyle, double localWidth, int firstY,
+                                        double step, int color, boolean customFont,
+                                        double[] outlinePixel) {
+        int[] xs = new int[lines.length];
+        int[] ys = new int[lines.length];
+        int minX = Integer.MAX_VALUE, maxX = Integer.MIN_VALUE;
+        int minY = Integer.MAX_VALUE, maxY = Integer.MIN_VALUE;
+        int y = firstY;
+        for (int i = 0; i < lines.length; i++) {
+            double measured = textWidth(font, lines[i], letterSpacing, italic);
+            int x = switch (alignment) {
+                case "left" -> (int) Math.round(-localWidth / 2.0);
+                case "right" -> (int) Math.round(localWidth / 2.0 - measured);
+                default -> (int) Math.round(-measured / 2.0);
+            };
+            xs[i] = x;
+            ys[i] = y;
+            minX = Math.min(minX, x);
+            maxX = Math.max(maxX, (int) Math.ceil(x + measured));
+            minY = Math.min(minY, y);
+            maxY = Math.max(maxY, y + font.lineHeight);
+            y += (int) Math.round(step);
+        }
+        int margin = (int) Math.ceil(border * Math.max(outlinePixel[0], outlinePixel[1]))
+                + LuaTextBaker.PADDING;
+        int width = Math.max(1, maxX - minX) + margin * 2;
+        int height = Math.max(1, maxY - minY) + margin * 2;
+        int raster = LuaTextBaker.rasterScale(gui, width, height);
+        int paintX = minX - margin, paintY = minY - margin;
+        int opaqueFill = color & 0xFFFFFF | 0xFF000000;
+        int opaqueBorder = borderColor & 0xFFFFFF | 0xFF000000;
+        String signature = String.join("|", "menu", data.get("text").optjstring(""),
+                data.get("font").optjstring(""),
+                data.get("fontMode").optjstring("smooth"), String.valueOf(effectiveFontQuality(data)),
+                String.valueOf(System.identityHashCode(font)), alignment,
+                String.valueOf(italic), String.valueOf(letterSpacing),
+                String.valueOf(data.get("lineSpacing").optdouble(0)),
+                String.valueOf(localWidth), String.valueOf(border), borderStyle,
+                Integer.toHexString(opaqueFill), Integer.toHexString(opaqueBorder),
+                "raster=" + raster, "smooth=" + customFont,
+                "outlinePixel=" + outlinePixel[0] + "," + outlinePixel[1]);
+        var baked = LuaTextBaker.bakeLayers(new LuaTextBaker.Key(signature,
+                        width * raster, height * raster),
+                target -> {
+                    target.pose().pushPose();
+                    target.pose().scale(raster, raster, 1f);
+                    for (int i = 0; i < lines.length; i++) {
+                        drawStyledBorder(target, font, lines[i], xs[i] - paintX,
+                                ys[i] - paintY, italic, letterSpacing, border,
+                                opaqueBorder, borderStyle, customFont, outlinePixel);
+                    }
+                    target.pose().popPose();
+                }, opaqueBorder, target -> {
+                    target.pose().pushPose();
+                    target.pose().scale(raster, raster, 1f);
+                    for (int i = 0; i < lines.length; i++) {
+                        drawSpacedLine(target, font, lines[i], xs[i] - paintX,
+                                ys[i] - paintY, opaqueFill, false, italic, letterSpacing);
+                    }
+                    target.pose().popPose();
+                }, opaqueFill, customFont);
+        if (baked == null) return false;
+        gui.flush();
+        LuaTextBaker.draw(gui.pose().last().pose(), baked, paintX, paintY,
+                width, height, (color >>> 24) / 255f);
+        return true;
+    }
+
     private static void drawStyledLine(GuiGraphics gui, Font font, String text, int x, int y,
                                        int color, boolean shadow, boolean italic, double spacing,
-                                       int border, int borderColor, String borderStyle) {
+                                       int border, int borderColor, String borderStyle,
+                                       boolean customFont, double[] outlinePixel) {
+        drawStyledBorder(gui, font, text, x, y, italic, spacing, border, borderColor,
+                borderStyle, customFont, outlinePixel);
+        drawSpacedLine(gui, font, text, x, y, color, shadow && border == 0, italic, spacing);
+    }
+
+    private static void drawStyledBorder(GuiGraphics gui, Font font, String text, int x, int y,
+                                         boolean italic, double spacing, int border,
+                                         int borderColor, String borderStyle,
+                                         boolean customFont, double[] outlinePixel) {
         if (border > 0) {
             if (borderStyle.equalsIgnoreCase("shadow")) {
-                drawSpacedLine(gui, font, text, x + border, y + border, borderColor, false, italic, spacing);
+                if (customFont) {
+                    gui.pose().pushPose();
+                    gui.pose().translate(border * outlinePixel[0], border * outlinePixel[1], 0);
+                    drawSpacedLine(gui, font, text, x, y, borderColor, false, italic, spacing);
+                    gui.pose().popPose();
+                } else {
+                    drawSpacedLine(gui, font, text, x + border, y + border,
+                            borderColor, false, italic, spacing);
+                }
             } else if (!borderStyle.equalsIgnoreCase("none")) {
+                if (customFont) {
+                    double sampleStep = Math.max(0.5, border / 12.0);
+                    for (double ox = -border; ox <= border; ox += sampleStep) {
+                        for (double oy = -border; oy <= border; oy += sampleStep) {
+                            if (ox * ox + oy * oy > border * border + 0.001) continue;
+                            gui.pose().pushPose();
+                            gui.pose().translate(ox * outlinePixel[0], oy * outlinePixel[1], 0);
+                            drawSpacedLine(gui, font, text, x, y, borderColor,
+                                    false, italic, spacing);
+                            gui.pose().popPose();
+                        }
+                    }
+                    return;
+                }
                 for (int ox = -border; ox <= border; ox++) for (int oy = -border; oy <= border; oy++) {
                     if (ox == 0 && oy == 0 || ox * ox + oy * oy > border * border + 1) continue;
                     drawSpacedLine(gui, font, text, x + ox, y + oy, borderColor, false, italic, spacing);
                 }
             }
         }
-        drawSpacedLine(gui, font, text, x, y, color, shadow && border == 0, italic, spacing);
     }
 
     private static void drawSpacedLine(GuiGraphics gui, Font font, String text, double x, int y,
@@ -3546,6 +3849,8 @@ public final class MachineMenuRuntime implements AutoCloseable {
                 gui.pose().translate(centerX, centerY, 0);
                 gui.pose().mulPose(com.mojang.math.Axis.ZP.rotationDegrees(
                         (float) data.get("angle").optdouble(0)));
+                gui.pose().translate(width * 0.5 - widgetOriginX(data, width),
+                        height * 0.5 - widgetOriginY(data, height), 0);
                 gui.pose().scale(data.get("flipX").optboolean(false) ? -1 : 1,
                         data.get("flipY").optboolean(false) ? -1 : 1, 1);
                 gui.blit(texture, -width / 2, -height / 2, 0, 0,
@@ -3587,6 +3892,8 @@ public final class MachineMenuRuntime implements AutoCloseable {
             gui.pose().translate(centerX, centerY, 0);
             gui.pose().mulPose(com.mojang.math.Axis.ZP.rotationDegrees(
                     (float) data.get("angle").optdouble(0)));
+            gui.pose().translate(width * 0.5 - widgetOriginX(data, width),
+                    height * 0.5 - widgetOriginY(data, height), 0);
             gui.pose().scale(data.get("flipX").optboolean(false) ? -1 : 1,
                     data.get("flipY").optboolean(false) ? -1 : 1, 1);
             atlas.drawScaled(gui, frame, 0, 0, scale);
@@ -3609,6 +3916,8 @@ public final class MachineMenuRuntime implements AutoCloseable {
             gui.pose().translate(centerX, centerY, 0);
             gui.pose().mulPose(com.mojang.math.Axis.ZP.rotationDegrees(
                     (float) data.get("angle").optdouble(0)));
+            gui.pose().translate(width * 0.5 - widgetOriginX(data, width),
+                    height * 0.5 - widgetOriginY(data, height), 0);
             gui.pose().scale(data.get("flipX").optboolean(false) ? -1 : 1,
                     data.get("flipY").optboolean(false) ? -1 : 1, 1);
             gui.blit(MissingAssetTexture.texture(), -width / 2, -height / 2,

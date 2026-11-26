@@ -2,6 +2,7 @@ package com.fnfmod.mixin;
 
 import com.fnfmod.gameplay.PerformerShadows;
 import com.fnfmod.client.render.ObjectBorderRegistry;
+import com.fnfmod.client.render.PerformerRenderVisibility;
 import com.mojang.blaze3d.vertex.PoseStack;
 import net.minecraft.client.renderer.MultiBufferSource;
 import net.minecraft.client.renderer.entity.EntityRenderDispatcher;
@@ -20,6 +21,15 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  */
 @Mixin(EntityRenderDispatcher.class)
 public abstract class EntityShadowMixin {
+
+    /** Hide the whole performer render, not just its base model: armor and layers go too. */
+    @Inject(method = "render", at = @At("HEAD"), cancellable = true)
+    private void fnfmod$hideReplacedPerformer(Entity entity, double x, double y, double z,
+                                              float yaw, float partialTick, PoseStack poseStack,
+                                              MultiBufferSource buffers, int packedLight,
+                                              CallbackInfo ci) {
+        if (PerformerRenderVisibility.hidden(entity)) ci.cancel();
+    }
 
     /** Prevents one outlined entity's buffer/color state leaking into the next render. */
     @Inject(method = "render", at = @At("RETURN"))

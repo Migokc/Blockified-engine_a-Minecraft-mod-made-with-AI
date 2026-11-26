@@ -58,60 +58,95 @@ public abstract class CameraMixin {
             }
             return;
         }
-        Vec3 rotation = GameplayCamera.rotationOffset();
+        boolean editorCamera = GameplayCamera.isFreeCamEngaged();
+        // Sample the real song camera even while Free View owns the rendered
+        // viewport. The editor marker and Gameplay Camera view both need this
+        // continuing focus/event/Lua/orbit pose; only the navigation view is isolated.
+        Vec3 rotation = GameplayCamera.rotationOffset(editorCamera);
         // Snapshot the stage-facing basis before Camera Rotation 3D tilts it, so
         // Camera Follow Pos can keep its offsets aligned to the machine facing.
         Vector3f stageLeft = new Vector3f(getLeftVector());
         Vector3f stageUp = new Vector3f(getUpVector());
         Vector3f stageLook = new Vector3f(getLookVector());
-        GameplayCamera.OrbitPose orbit = GameplayCamera.orbitPose();
+        GameplayCamera.OrbitPose orbit = GameplayCamera.orbitPose(editorCamera);
         if (orbit != null) {
             setRotation(orbit.yaw(), orbit.pitch(), orbit.roll());
             Vec3 pos = orbit.position();
             setPosition(pos.x, pos.y, pos.z);
-            return;
-        }
-        if (!rotation.equals(Vec3.ZERO)) {
-            setRotation(getYRot() + (float) rotation.y,
-                    getXRot() + (float) rotation.x,
-                    getRoll() + (float) rotation.z);
-        }
+        } else {
+            if (!rotation.equals(Vec3.ZERO)) {
+                setRotation(getYRot() + (float) rotation.y,
+                        getXRot() + (float) rotation.x,
+                        getRoll() + (float) rotation.z);
+            }
+            Vec3 offset = GameplayCamera.worldOffset(getPosition(),
+                    getLeftVector(), getUpVector(), getLookVector(),
+                    stageLeft, stageUp, stageLook, editorCamera);
+            if (offset != null) {
+                Vec3 pos = getPosition();
+                setPosition(pos.x + offset.x, pos.y + offset.y, pos.z + offset.z);
+            }
 
-        // Free-cam X/Y/Z already describe the camera's absolute world position
-        // relative to the stage anchor. Do not add that position to Minecraft's
-        // detached third-person offset; doing so shifts view-selected away from
-        // the object's origin even when the look direction is mathematically exact.
-        if (GameplayCamera.isFreeCamEngaged() && GameplayCamera.isFreeCamInitialized()) {
-            Vec3 pos = GameplayCamera.freeCamWorldPos();
-            setPosition(pos.x, pos.y, pos.z);
-            return;
-        }
-
-        Vec3 offset = GameplayCamera.worldOffset(getLeftVector(), getUpVector(), getLookVector(),
-                stageLeft, stageUp, stageLook);
-        if (offset == null) return;
-        Vec3 pos = getPosition();
-        setPosition(pos.x + offset.x, pos.y + offset.y, pos.z + offset.z);
-
-        // Camera Follow Pos and Rotation events at the same timestamp establish
-        // the exact start pose before orbit takes ownership.
-        if (GameplayCamera.isOrbitCapturePending()) {
-            GameplayCamera.captureOrbitStart(getPosition(), getYRot(), getXRot(), getRoll(),
-                    stageLeft, stageUp, stageLook);
-            GameplayCamera.OrbitPose captured = GameplayCamera.orbitPose();
-            if (captured != null) {
-                setRotation(captured.yaw(), captured.pitch(), captured.roll());
-                Vec3 orbitPos = captured.position();
-                setPosition(orbitPos.x, orbitPos.y, orbitPos.z);
+            // Follow Pos and Rotation at the same timestamp establish the exact
+            // start pose before orbit takes ownership, including during preview.
+            if (GameplayCamera.isOrbitCapturePending(editorCamera)) {
+                GameplayCamera.captureOrbitStart(getPosition(), getYRot(), getXRot(), getRoll(),
+                        stageLeft, stageUp, stageLook, editorCamera);
+                GameplayCamera.OrbitPose captured = GameplayCamera.orbitPose(editorCamera);
+                if (captured != null) {
+                    setRotation(captured.yaw(), captured.pitch(), captured.roll());
+                    Vec3 orbitPos = captured.position();
+                    setPosition(orbitPos.x, orbitPos.y, orbitPos.z);
+                }
             }
         }
 
-        // On the first free-camera frame the normal follow pose above is the exact
-        // starting point; capture it (using the un-rotated stage basis) so the
-        // free camera takes over without a visible jump.
-        if (GameplayCamera.isFreeCamEngaged() && !GameplayCamera.isFreeCamInitialized()) {
-            GameplayCamera.captureFreeCamStart(getPosition(), getYRot(), getXRot(), getRoll(),
-                    stageLeft, stageUp, stageLook);
+        if (GameplayCamera.isActive()) {
+            GameplayCamera.captureLuaBasePosition(getPosition());
+            Vec3 luaOffset = GameplayCamera.luaWorldOffset(
+                    com.fnfmod.client.gameplay.StageOrientation.facing());
+            if (!luaOffset.equals(Vec3.ZERO)) {
+                Vec3 base = getPosition();
+                setPosition(base.x + luaOffset.x, base.y + luaOffset.y, base.z + luaOffset.z);
+            }
+            if (GameplayCamera.luaPitch() != 0f || GameplayCamera.luaYaw() != 0f
+                    || GameplayCamera.luaRoll() != 0f) {
+                setRotation(getYRot() + GameplayCamera.luaYaw(),
+                        getXRot() + GameplayCamera.luaPitch(),
+                        getRoll() + GameplayCamera.luaRoll());
+            }
+        }
+
+        if (editorCamera) {
+            // Record before applying the editor viewport. Free View must never
+            // feed its position/rotation back into the song camera simulation.
+            GameplayCamera.captureLiveGameplayPose(getPosition(), getYRot(), getXRot(), getRoll());
+            if (!GameplayCamera.isFreeCamInitialized()) {
+                GameplayCamera.captureFreeCamStart(getPosition(), getYRot(), getXRot(), getRoll(),
+                        stageLeft, stageUp, stageLook);
+            }
+            if (GameplayCamera.isFreeCamInitialized()) {
+                if (GameplayCamera.isFreeCamGameplayView()) {
+                    GameplayCamera.LiveCameraPose gameplay = GameplayCamera.editorGameplayViewPose();
+                    if (gameplay != null) {
+                        setRotation(gameplay.yaw(), gameplay.pitch(), gameplay.roll());
+                        Vec3 pos = gameplay.position();
+                        setPosition(pos.x, pos.y, pos.z);
+                    }
+                } else {
+                    // Navigation is a separate camera: no focus, shake, orbit,
+                    // chart event or Lua rotation may leak into this viewport.
+                    setRotation(GameplayCamera.freeViewBaseYaw() + (float) GameplayCamera.freeYaw(),
+                            GameplayCamera.freeViewBasePitch() + (float) GameplayCamera.freePitch(),
+                            GameplayCamera.freeViewBaseRoll() + (float) GameplayCamera.freeRoll());
+                    Vec3 pos = GameplayCamera.freeCamWorldPos();
+                    setPosition(pos.x, pos.y, pos.z);
+                }
+            }
+        }
+        if (GameplayCamera.isActive() && (!editorCamera || GameplayCamera.isFreeCamGameplayView())) {
+            float exitRoll = GameplayCamera.exitHoldRollDegrees();
+            if (exitRoll != 0f) setRotation(getYRot(), getXRot(), getRoll() + exitRoll);
         }
     }
 }

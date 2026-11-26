@@ -8,6 +8,7 @@ import com.fnfmod.client.gui.MasterVolumeOverlay;
 import com.fnfmod.client.gui.editor.ChartEditorScreen;
 import com.fnfmod.client.render.IconLibrary;
 import com.fnfmod.client.render.NoteStyle;
+import com.fnfmod.client.render.PerformerRenderVisibility;
 import com.fnfmod.net.FnfPayloads;
 import com.fnfmod.machine.MachineLibrary;
 import com.fnfmod.song.SongLibrary;
@@ -55,7 +56,7 @@ public final class FnfClient {
             event.enqueueWork(() -> {
                 ModContentScope.clear();
                 SongLibrary.ensureFolders();
-                SongLibrary.pruneCache(30); // drop server downloads unused for a month
+                SongLibrary.pruneCache(30); // drop legacy server downloads unused for a month
                 SongLibrary.rescan();
                 MachineLibrary.rescan();
                 com.fnfmod.client.render.IconLibrary.rescan();
@@ -133,9 +134,11 @@ public final class FnfClient {
             ClientOptions.applyWorldOverrides(null);
             com.fnfmod.client.render.PsychResolutionController.refresh();
             com.fnfmod.client.render.MachineHitboxPreview.clear();
+            com.fnfmod.client.render.SongJoinGuide.clear();
             com.fnfmod.client.render.MachineAtlasCache.clear();
             com.fnfmod.client.render.MachineTextureCache.clear();
             com.fnfmod.client.render.SpriteAtlasCache.clear();
+            com.fnfmod.client.render.AnimateAtlasCache.clear();
             com.fnfmod.client.render.SpriteImageCache.clear();
             com.fnfmod.client.render.ObjectBorderRegistry.clearAll();
             ModContentScope.clear();
@@ -155,32 +158,6 @@ public final class FnfClient {
                                         new com.fnfmod.client.gui.ModWorldSelectScreen(select)))
                         .bounds(6, 6, 90, 20).build());
             }
-            if (isVideoSettings(event.getScreen())) {
-                var screen = event.getScreen();
-                event.addListener(net.minecraft.client.gui.components.Button.builder(
-                                psychResolutionLabel(), button -> {
-                                    com.fnfmod.client.render.PsychResolutionController.toggle();
-                                    button.setMessage(psychResolutionLabel());
-                                })
-                        .tooltip(net.minecraft.client.gui.components.Tooltip.create(Component.literal(
-                                "Keep a Psych Engine-style 16:9 canvas at the display's native resolution. "
-                                        + "Anything outside the game rectangle is black.")))
-                        .bounds(Math.max(6, screen.width - 176), 6, 170, 20).build());
-            }
-        }
-
-        private static Component psychResolutionLabel() {
-            return Component.literal("Psych 1280x720: "
-                    + (com.fnfmod.client.render.PsychResolutionController.enabled() ? "ON" : "OFF"));
-        }
-
-        /** Vanilla, Sodium's full replacement, and Iris video/shader option screens. */
-        private static boolean isVideoSettings(net.minecraft.client.gui.screens.Screen screen) {
-            if (screen instanceof net.minecraft.client.gui.screens.options.VideoSettingsScreen) return true;
-            String name = screen.getClass().getName().toLowerCase(java.util.Locale.ROOT);
-            return (name.contains("sodium") && (name.contains("optionsgui") || name.contains("videosettings")))
-                    || (name.contains("iris") && (name.contains("video") || name.contains("option")
-                    || name.contains("shaderpackscreen")));
         }
 
         /** FNF-style, rebindable master volume available globally, including pause screens. */
@@ -214,6 +191,7 @@ public final class FnfClient {
         public static void onScreenRender(ScreenEvent.Render.Post event) {
             MasterVolumeOverlay.render(event.getGuiGraphics(), event.getMouseX(), event.getMouseY(), event.getScreen());
             com.fnfmod.client.render.PsychResolutionController.renderLetterbox(event.getGuiGraphics());
+            ModDownloadManager.renderOverlay(event.getGuiGraphics());
         }
 
         @SubscribeEvent
@@ -224,13 +202,15 @@ public final class FnfClient {
                 MasterVolumeOverlay.render(event.getGuiGraphics(), Integer.MIN_VALUE, Integer.MIN_VALUE, null);
             }
             com.fnfmod.client.render.PsychResolutionController.renderLetterbox(event.getGuiGraphics());
+            if (mc.screen == null) ModDownloadManager.renderOverlay(event.getGuiGraphics());
         }
 
         /** Custom machine scenes and their editor own the whole view, including the hand layer. */
         @SubscribeEvent
         public static void onRenderHand(RenderHandEvent event) {
             var screen = Minecraft.getInstance().screen;
-            if (screen instanceof com.fnfmod.client.gui.machine.MachineMenuEditorScreen
+            if (PerformerRenderVisibility.hidden(Minecraft.getInstance().player)
+                    || screen instanceof com.fnfmod.client.gui.machine.MachineMenuEditorScreen
                     || screen instanceof com.fnfmod.client.gui.machine.MachineMenuScreen menu
                     && menu.usesCustomCamera()) {
                 event.setCanceled(true);
@@ -242,7 +222,9 @@ public final class FnfClient {
         public static void onRenderPlayer(RenderPlayerEvent.Pre event) {
             Minecraft minecraft = Minecraft.getInstance();
             var screen = minecraft.screen;
-            if (event.getEntity() == minecraft.player
+            if (PerformerRenderVisibility.hidden(event.getEntity())
+                    || com.fnfmod.client.audio.NearbySongAudio.replaces(event.getEntity())
+                    || event.getEntity() == minecraft.player
                     && (screen instanceof com.fnfmod.client.gui.machine.MachineMenuEditorScreen
                     || screen instanceof com.fnfmod.client.gui.machine.MachineMenuScreen menu
                     && menu.usesCustomCamera())) {
@@ -337,6 +319,7 @@ public final class FnfClient {
             }
             if (event.getStage() != RenderLevelStageEvent.Stage.AFTER_PARTICLES) return;
             com.fnfmod.client.render.MachineHitboxPreview.render(event.getPoseStack(), event.getCamera());
+            com.fnfmod.client.render.SongJoinGuide.render(event.getPoseStack(), event.getCamera());
             if (Minecraft.getInstance().screen instanceof GameplayScreen gameplay) {
                 gameplay.renderLuaWorld(event.getPoseStack(), event.getCamera());
             } else if (Minecraft.getInstance().screen
@@ -351,10 +334,8 @@ public final class FnfClient {
         @SubscribeEvent
         public static void onRegisterClientCommands(RegisterClientCommandsEvent event) {
             event.getDispatcher().register(literal("fnf")
-                    // Client commands must follow the same authority rule as
-                    // vanilla cheat commands: cheats in singleplayer, OP on a server.
-                    .requires(source -> source.hasPermission(2))
                     .then(literal("editor")
+                            .requires(source -> source.hasPermission(2))
                             .executes(ctx -> {
                                 openEditor(null);
                                 return 1;
@@ -365,8 +346,9 @@ public final class FnfClient {
                                         return 1;
                                     })))
                     .then(literal("world")
+                            .requires(source -> source.hasPermission(2))
                             .then(literal("export")
-                                    .then(argument("pack", StringArgumentType.word())
+                                    .then(argument("pack", StringArgumentType.greedyString())
                                             .suggests((ctx, builder) -> {
                                                 com.fnfmod.client.world.WorldImportCutscene.exportTargets()
                                                         .forEach(builder::suggest);
@@ -377,6 +359,7 @@ public final class FnfClient {
                             .then(literal("import")
                                     .executes(ctx -> importWorld(ctx.getSource()))))
                     .then(literal("reload")
+                            .requires(source -> source.hasPermission(2))
                             .executes(ctx -> reloadAll(ctx.getSource()))
                             .then(literal("all").executes(ctx -> reloadAll(ctx.getSource())))
                             .then(literal("songs").executes(ctx -> reloadSongs(ctx.getSource())))
@@ -415,16 +398,22 @@ public final class FnfClient {
                                 ScoreStore.reload();
                                 feedback(ctx.getSource(), "Reloaded scores.");
                                 return 1;
-                            }))));
+                            })))
+                    .then(literal("download")
+                            .then(literal("cancel").executes(ctx -> ModDownloadManager.command("cancel")))
+                            .then(literal("pause").executes(ctx -> ModDownloadManager.command("pause")))
+                            .then(literal("resume").executes(ctx -> ModDownloadManager.command("resume")))
+                            .then(literal("details").executes(ctx -> ModDownloadManager.command("details")))));
         }
 
         private static int exportWorld(CommandSourceStack source, String pack) {
-            String error = com.fnfmod.client.world.WorldImportCutscene.startExport(pack);
+            String targetPack = com.fnfmod.client.world.WorldImportCutscene.resolveExportPackName(pack);
+            String error = com.fnfmod.client.world.WorldImportCutscene.startExport(targetPack);
             if (error != null) {
                 feedback(source, error);
                 return 0;
             }
-            feedback(source, "Exporting this world into '" + pack + "'...");
+            feedback(source, "Exporting this world into '" + targetPack + "'...");
             return 1;
         }
 
@@ -440,6 +429,7 @@ public final class FnfClient {
 
         @SubscribeEvent
         public static void onClientTick(net.neoforged.neoforge.client.event.ClientTickEvent.Post event) {
+            com.fnfmod.client.audio.NearbySongAudio.tick();
             com.fnfmod.client.world.WorldImportCutscene.tick();
             AutoWorldMenuClient.tick();
             com.fnfmod.client.render.PsychResolutionController.update();

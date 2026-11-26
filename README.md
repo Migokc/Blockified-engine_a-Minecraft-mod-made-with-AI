@@ -2,7 +2,7 @@
 
 A feature-full Friday Night Funkin' engine inside of Minecraft — **NeoForge 1.21.1**.
 
-Current release: **2.5.0bbs**.
+Current release: **2.6.0bbs**.
 
 Documentation: **[Blockified Engine Docs](https://migokc.github.io/Blockified-engine_a-Minecraft-mod-made-with-AI/)**.
 
@@ -10,33 +10,28 @@ Documentation: **[Blockified Engine Docs](https://migokc.github.io/Blockified-en
 > endorsed by Mojang Studios, Microsoft, The Funkin' Crew, or Friday Night
 > Funkin'. All referenced names and trademarks belong to their respective owners.
 
-### 2.5.0bbs highlights
+### 2.6.0bbs highlights
 
-- Machine-menu Lua now supports projected 3D widgets, an authored Minecraft camera
-  and FOV, multiple Lua screens with shared audio/data, keyboard and scroll input,
-  tagged virtual-machine song launches, and direct world exit. Menus that never
-  control the camera retain Minecraft's first-person HUD and hand presentation.
-- The Menu Lua Editor is a full 2D/3D authoring viewport with clickable and
-  multi-selectable objects, draggable layers, grid snapping, local/global transforms,
-  free and authored camera modes, undo/redo, property copy/paste, and tween/keyframe
-  editing. It saves ordinary Lua inside a marked generated block and preserves
-  handwritten callbacks outside that block.
-- Gameplay and menu Lua share gradients, alpha/luminance masks, clipping, nine blend
-  modes, compositing groups, object parenting, effect tweens, font-quality controls,
-  and shader-facing lit/flat/emissive world rendering. See
-  [Lua layer effects](docs/lua-layer-effects.md) for signatures and limits.
-- Funkin' Designer now owns chunk-loader and hitbox-less virtual-machine placement;
-  the separate Chunk Loader item is gone. Blue/orange crosshair outlines guide
-  placement, virtual machines have unique Lua-addressable tags, and chunk points
-  remain invisible outside Designer authoring.
-- Note Settings and the Creator Tools NoteSkin Editor now separate everyday choices
-  from asset authoring. Pack/global pickers preview note skins, splashes, and hold
-  covers; Psych-style normal/pixel layouts, per-skin RGB behavior, hurt-note sustains,
-  export destinations, and live chart/audio previews share the gameplay renderer.
-- The optional Psych-shaped display keeps a native-resolution centered 16:9 game
-  canvas with black letterboxing. Gameplay/playtest rollback now also restores
-  weather changed by song commands, alongside player, block, time, and game-mode
-  state.
+- Multiplayer now keeps each participant's local song/mod assets and transmits
+  gameplay choices needed by the other side, including each player's complete note
+  visual configuration (RGB, alpha, position, and scale). Nearby song playback and
+  character/input presentation are handled as separate, client-local experiences.
+- The Mods settings include a GameBanana browser and in-game downloads, support for
+  common archive formats, and per-mod Minecraft/FNF visual filters. Installed mods,
+  external folders, and downloaded packs can be managed independently.
+- Freeplay can group songs by mod and week, including base-game songs whose extra
+  difficulties come from V-Slice packs. Song-menu selection state and the active tab
+  persist across opening the menu and returning from gameplay.
+- Character routing now supports 2D characters alongside BBS forms, including
+  song-defined defaults, player/opponent placement, facing options, frame-based
+  atlases, and preloading to reduce character-change hitches.
+- Gameplay HUD and text rendering gained configurable ratings, per-side rating
+  palettes and scroll directions, smoother song-time presentation, and improved
+  text baking. Regression checks cover networking payloads, character routing,
+  music muting, downloads, and UI scrolling.
+- The 2.5.0bbs additions remain included: the Menu Lua Editor, projected 3D widgets,
+  camera/FOV controls, layer effects, Funkin' Designer placement tools, and note
+  asset editing. See [Lua layer effects](docs/lua-layer-effects.md) for details.
 
 ### 2.3.4bbs highlights
 
@@ -86,8 +81,9 @@ Documentation: **[Blockified Engine Docs](https://migokc.github.io/Blockified-en
   from its BBS form, the real player skin, or a chosen file.
 - Performers, BBS models, entities, and world sprites can carry colored screen-space
   outlines controlled from Lua.
-- Dedicated servers no longer cap per-song transfer size; songs of any size transfer,
-  while the file-count, name, SHA-1, and overflow checks stay in place.
+- Multiplayer no longer transfers song or asset files. Every participant must install
+  the same song/mod version locally; a compact SHA-256 compatibility fingerprint is
+  exchanged before loading.
 - Note Settings timeline dragging supports Shift precision mode. Its free-camera
   editor now keeps existing runtime objects synchronized with the selection gizmo
   at mouse/render rate, including paused main BBS performers.
@@ -98,10 +94,8 @@ Documentation: **[Blockified Engine Docs](https://migokc.github.io/Blockified-en
 ### 2.2.9bbs highlights
 
 - Gameplay Lua is sandboxed from process shutdown and environment access, and
-  every callback has an execution budget. Dedicated servers transfer only chart,
-  event, and audio data with a 100 MiB per-song limit, bounded chunks, manifest
-  validation, SHA-1 checks, and no gameplay Lua; singleplayer and LAN retain local
-  scripting and complete mod assets.
+  every callback has an execution budget. Dedicated servers run no gameplay Lua;
+  clients use their own matching local chart, event, audio, and visual assets.
 - The Mods settings page detects either complete mod folders or containers of
   isolated Psych-style packs, reads `pack.json`/`pack.png`, shows compact paths and
   shows selected-pack details and scrollable per-source/per-pack permissions.
@@ -110,9 +104,9 @@ Documentation: **[Blockified Engine Docs](https://migokc.github.io/Blockified-en
   while Camera Rotation 3D's normal layer animates around it. Its independent Camera
   View layer can rotate the view without changing the orbit. Focus changes tween the pivot through
   Camera Behavior, animation offsets can be disabled, and extra characters plus
-  Minecraft/Legacy GF replacements participate in camera and character routing.
+  Minecraft-mode GF replacements participate in camera and character routing.
 - Gameplay world sprites and 2D world characters use client-side entity hosts with
-  optional gravity, collision, Minecraft blob shadows, and independently toggleable
+  gravity enabled by default, toggleable character pushing, Minecraft blob shadows, and independently toggleable
   IRLights projected shadows. Compatible BBS player forms gain author-controlled
   skin-choice permissions without texture keyframes covering the chosen skin.
 - The Directional Shading event independently flattens block/fluid and mob/entity
@@ -381,8 +375,8 @@ Documentation: **[Blockified Engine Docs](https://migokc.github.io/Blockified-en
   orientation, and performer pinning, all restored or released after play.
 - Configurable pre-song warnings for expensive render-distance changes and
   author-provided warning files.
-- Background, cancellable server song-file streaming to avoid freezing the
-  world tick while transferring large packs.
+- Historical server song-file streaming was moved off the world tick. Current
+  multiplayer no longer streams files and instead verifies matching local packs.
 
 ### 2.0.2bbs highlights
 
@@ -443,12 +437,14 @@ they are part of the supported installation, not optional extras.
 - **Note and volume keybinds** — Left, Down, Up, Right default to `D F J K`;
   Volume Up/Down default to `+` and `-`. All are rebindable in
   *Options → Controls → Blockified Engine*.
-- **Multiplayer**: the first player to click the machine picks the song ("Play VS"), the second player to click joins as the opponent side. On servers, only songs installed **on the server** are playable — the server streams the chart + audio to players who don't have them (cached in `config/fnfmod/cache/`).
-- **Dedicated-server safety**: remote sessions transfer only chart JSON, event
-  JSON, and audio. Gameplay Lua and rich executable/mod assets are disabled;
-  each song is limited to 100 MiB and every downloaded file is checked against
-  its manifest size and SHA-1 before entering the cache. Singleplayer and LAN
-  retain local Lua/mod behavior.
+- **Multiplayer**: the first player to click the machine picks the song ("Play VS"),
+  and the second joins as the opponent side. The server never distributes charts,
+  audio, images, fonts, models, or scripts. Server and clients independently hash
+  their local required files; play starts only when their SHA-256 fingerprints match.
+- **Dedicated-server safety**: gameplay Lua remains disabled. Charts, events,
+  audio, character art, note skins, fonts, and other allowed resources must already
+  be installed locally in the same version. Runtime packets carry session choices,
+  character settings, note judgements, score state, and other small gameplay data—not assets.
 - **Chart editor**: `/fnf editor [song]` or the button in the song menu. Saves Psych Engine format.
 - **Character editor**: open it from the song menu to create/edit named character
   JSONs such as `bf.json` and optional `bf-opp.json`, choose BBS forms and states, preview animations, and
@@ -484,11 +480,14 @@ After selecting a song, the **Look** button chooses its presentation profile:
 
 - **Minecraft** is the default and uses the Minecraft presentation. Complete
   packs installed in `config/fnfmod/mods/` may use rich resources from their own
-  mod folder. It does not use the shared engine-assets fallback. Packs selected
-  through external **Directories** remain restricted to charts, audio, events,
-  and Lua/config code in this mode. Any chart whose selected file is under
-  `config/fnfmod/songs/` exposes no rich song assets in Minecraft mode, even if
-  `original_directory.txt` points to a complete pack.
+  mod folder. External mods remain limited to charts, audio, events, and Lua,
+  except that each mod's Minecraft-visuals switch can additionally allow its
+  images and fonts. The switch defaults off for external mods and for installed
+  mods with `mod_url.txt`; installed mods without that file default on. A bundled
+  mod world forces its own filters on. The shared
+  engine-assets fallback remains off. Lightweight songs have no rich asset
+  namespace; chart overrides with `original_directory.txt` inherit their
+  installed source pack.
 - **FNF** uses a fixed 1280x720 game canvas, Psych character JSON/Sparrow
   animations, Lua stage foreground/background insertion, the FNF HUD, Psych-style
   section focus, camera follow, separate game/HUD zoom, and time-signature-aware
@@ -497,11 +496,18 @@ After selecting a song, the **Look** button chooses its presentation profile:
   girlfriend/speakers; the chart's `gfVersion` selects the third performer. Static
   stage JSON objects and stage Lua from Psych's `stages/`, global `scripts/`, and
   song data/audio folders are loaded in stage order.
-- **Legacy** preserves the original Blockified Engine presentation and loading.
 
-The host's choice is authoritative in multiplayer and is sent with the song manifest.
-Downloaded cache entries are isolated by exact song id, difficulty, presentation mode,
-and asset policy, so files left by another chart or mode cannot affect chart selection.
+The host's choice is authoritative in multiplayer and is sent with a compact content
+fingerprint. Song assets are never transferred from the server. When a required mod is
+missing and its `mod_url.txt` contains a supported HTTPS GameBanana, Google Drive,
+MediaFire, or MEGA file link, the client can explicitly download it in-game. For
+non-GameBanana links the player must acknowledge an external-source warning first.
+  ZIP, 7z, and RAR archives are accepted up to 1.5 GB compressed; unsafe paths,
+executables, and oversized expanded archives are rejected. Downloading and extraction
+run in the background. Closing the details dialog collapses progress to the top right;
+`/fnf download pause`, `resume`, `cancel`, and `details` manage the job. The newly
+installed files must still match the server fingerprint, so rejoin the song after
+installation.
 
 Psych resource lookup uses active song/mod first. A bundled mod world exposes only
 its owning pack. Ordinary singleplayer/LAN worlds and dedicated servers expose the
@@ -757,9 +763,10 @@ A bundled world's `blockified-options.json` may use:
 }
 ```
 
-Escape on any custom Lua menu page opens Minecraft's pause menu directly, without
-a Blockified exit dialog. Returning restores the same Lua page and shared audio;
-Escape does not navigate from a secondary page to `menu.lua`. Lua can call
+When a bundled world enables `autoOpenMenu`, Escape opens Minecraft's pause menu
+without tearing down Lua; returning restores the same page and shared audio.
+Ordinary physical, hitbox, and virtual-machine menus instead close normally when
+Escape is pressed. Escape never navigates a secondary page to `menu.lua`. Lua can call
 `machine.exitWorld()` to leave the world immediately without a confirmation prompt.
 This uses the normal disconnect/save lifecycle (including the world's existing
 save rules), not a forced game shutdown. It returns false in the Menu Editor,
@@ -806,13 +813,15 @@ Graphics support normal `x`, `y`, `width`, `height`, `color`, `alpha`, `angle`,
 and line `thickness` are mutable.
 
 Text widgets (`label`, `button`, `toggle`, and `slider`) support custom TTF/OTF
-fonts through mutable `font` and `fontScale` fields. Set mutable `shadow` to
+fonts through mutable `font`, `fontScale`, and `fontMode` (`smooth` or `pixel`)
+fields. Set mutable `shadow` to
 `false` to disable Minecraft's default text shadow:
 
 ```lua
 local title = ui.label('title', 'Earrings Machine', 0.5, 0.15)
 title.font = 'VCR_OSD_MONO.ttf'
 title.fontScale = 2.0
+title.fontMode = 'pixel' -- optional; smooth by default
 title.shadow = false
 ```
 
@@ -838,7 +847,10 @@ end
 
 Available calls: `doTweenX`, `doTweenY`, `doTweenAlpha`, `doTweenAngle`,
 `doTweenWidth`, `doTweenHeight`, `doTweenFontScale`, `doTweenColor`, and
-`cancelTween`. Starting another tween with the same tag replaces it. Completion
+`doTweenText`, and `cancelTween`. `doTweenText(tag, target, amount, duration,
+easing, property)` animates `LineSpacing`, `LetterSpacing`, `BorderSize`, or
+`TextSize`; the five-argument `(tag, target, amount, easing, property)` form uses
+a one-second duration. Starting another tween with the same tag replaces it. Completion
 calls global `onTweenCompleted(tag)` and optional widget method
 `function cover:onTweenCompleted(tag)`.
 
@@ -886,7 +898,7 @@ if machine.hasSong('earrings') then
   machine.playSong('earrings', 'normal', {
     duet = false,
     playAs = 'player', -- player, opponent, both
-    look = 'minecraft' -- minecraft, fnf, legacy
+    look = 'minecraft' -- minecraft or fnf
   })
 end
 ```
@@ -1133,11 +1145,13 @@ and X/Y/Z/angle tweens recognize the custom tag.
 Definition names use the active mod by default; prefix one with `global:` to use
 a user definition from `config/fnfmod/mods/animations` explicitly.
 
-Each external path in **Settings > Directories** has its own checklist for Charts,
+Each external path in **Settings > Mods** has its own checklist for Charts,
 Song Audio, Events, Lua, Images, Icons, Characters, and Fonts. Existing paths start
 with every category enabled. The choices are stored in
-`config/fnfmod/external_folder_filters.json`; disabling Charts or Song Audio removes
-that path's songs from the playable library.
+`config/fnfmod/external_folder_filters.json`, together with each mod's Minecraft
+images/fonts switch under `minecraftVisuals`. Disabling Charts or Song Audio removes
+that path's songs from the playable library. An older standalone
+`mod_minecraft_visuals.json` is migrated into this file and archived on first load.
 
 Directory scans use a persistent metadata index at
 `config/fnfmod/cache/song-library-index-v1.json`. Blockified fingerprints relevant
@@ -1194,7 +1208,7 @@ Charts saved from another directory keep `original_directory.txt` and use that
 exact source pack for unsaved difficulties, audio, events, Lua, images, icons,
 characters, stages, sounds, fonts, and animations. The locally saved chart takes
 priority, and a local `events.json` replaces the source event file. This exception
-applies to Legacy and FNF presentation. Minecraft presentation treats every chart
+applies to FNF presentation. Minecraft presentation treats every chart
 stored under `config/fnfmod/songs/<song>` as asset-restricted; ordinary lightweight
 entries remain limited to their basic files in every mode.
 
@@ -1279,7 +1293,9 @@ nearest/pixel filtering and `false` uses smooth filtering. The direct
 FNF character properties can be read, written, and tweened through `boyfriend`,
 `dad`, and `gf`, plus Psych's `boyfriendGroup`, `dadGroup`, and `gfGroup` aliases.
 Supported visual fields include `x`, `y`, `alpha`, `angle`, `visible`, `flipX`,
-`color`, `scale.x`, `scale.y`, and `antialiasing`. Fractional character alpha is
+`color`, `scale.x`, `scale.y`, `antialiasing`, writable `origin.x`/`origin.y`, and
+read-only current `frameWidth`/`frameHeight`. The same pivot fields work on Lua
+sprites, text, extra 2D world characters, and menu-Lua widgets. Fractional character alpha is
 preserved; `doTweenX/Y/Alpha/Angle` target the same live character properties.
 `scaleObject`, `setGraphicSize`, and the sprite-antialiasing helpers also recognize
 character and character-group names rather than creating dummy Lua sprites.
@@ -1381,11 +1397,20 @@ config/fnfmod/mods/<pack>/fonts/
 config/fnfmod/mods/fonts/            <- global fonts
 ```
 
-Pack/song fonts are transferred with songs in multiplayer. Each Lua text object
-can select a different font. Missing or invalid files fall back to Minecraft's
+Pack/song fonts must be installed locally on every multiplayer client. Each Lua text
+object can select a different font. Missing or invalid files fall back to Minecraft's
 default font and are reported in the log. `setTextWidth` also wraps Lua text at
-the requested width. Custom fonts use 8x glyph oversampling so large FNF text
-has more raster detail while retaining Minecraft's normal texture filtering.
+the requested width. `makeLuaText(tag, text, width, x, y, 'smooth')` is the default
+for custom fonts: anti-aliased glyphs with outlines measured in Psych-canvas pixels.
+Use `'pixel'` for crisp custom fonts with outlines measured in font pixels. The
+Minecraft default font stays pixelated in either mode. Existing
+`setTextQuality(tag, quality)`/`getTextQuality(tag)` calls still work but show a
+one-time deprecation debug message; use font mode for new scripts.
+
+```lua
+doTweenText('spreadTitle', 'title', 6, 0.5, 'expoOut', 'LetterSpacing')
+doTweenText('openLines', 'credits', 4, 'quadInOut', 'LineSpacing') -- 1 second
+```
 Lua sprites and text use Psych Engine's fixed 1280x720 canvas. The complete
 canvas scales uniformly and stays centered when the window resolution or
 Minecraft GUI scale changes, so scripted positions remain stable.
@@ -1510,6 +1535,10 @@ are independent from Minecraft's blob shadow.
 setProperty('worldSign.gravity', true)
 setProperty('worldSign.collision', true)
 setProperty('worldSign.shadow', true)
+
+-- Characters accept either spelling; gravity starts enabled:
+setProperty('dad.grav', false)
+setProperty('dad.gravity', true)
 
 -- Equivalent convenience functions:
 setWorldSpriteGravity('worldSign', true)
@@ -1805,7 +1834,7 @@ During a song the camera follows the focused character in full 3D while retainin
 FNF-style screen-space animation nudges. Focus follows the chart:
 `mustHitSection` = camera on the player side,
 otherwise the opponent side (in solo the machine block stands in for the opponent).
-Legacy and Minecraft modes use the **Camera Behavior** event to change Must-Hit
+Minecraft mode uses the **Camera Behavior** event to change Must-Hit
 camera movement. Value 1 is a speed multiplier; Value 2 is an easing curve.
 Constant snaps directly to the current target. An event
 with both values empty restores normal speed and smooth easing. This event does
@@ -1838,7 +1867,7 @@ restored afterwards.
 - **Camera Focus** events override Must Hit focus using Value 1 (`player`,
   `opponent`, or `gf`) and Value 2 easing. A later Camera Focus with both values empty
   restores normal Must Hit section tracking.
-- **Camera Behavior** events change Legacy/Minecraft Must-Hit camera speed and
+- **Camera Behavior** events change Minecraft Must-Hit camera speed and
   easing. Leave both values empty to reset the behavior.
 - **Camera Follow Pos** remains Psych-compatible when only Values 1 and 2 are
   used. Value 3 enables Minecraft 3D movement (`X = camera-right`, `Y = up`,
@@ -1868,7 +1897,7 @@ restored afterwards.
   **Alt Idle Animation**, **Screen Shake**, **Change Character**,
   **Change Scroll Speed**, **Set Property**, and **Play Sound**. `Set GF Speed`
   is FNF-profile-only, matching Psych. Other events use Psych semantics in FNF
-  mode and Minecraft-aware camera/body variants in Minecraft and Legacy modes.
+  mode and Minecraft-aware camera/body variants in Minecraft mode.
   **Hey!** uses the mapped BBS `hey` state outside the Psych scene as well.
   **Camera Zoom** remains Blockified Engine's persistent,
   eased zoom; **Add Camera Zoom** is Psych's temporary game/HUD impulse.
@@ -1879,7 +1908,9 @@ restored afterwards.
   and chart alignment. It is stored in `options.json`, never in the chart; only
   the Song offset affects saved charts and gameplay. Under **Edit**, use
   **Choose Saving Folder...** to remember an output folder for the current song
-  name. Ctrl+S then overwrites that folder's chart JSON and `events.json`. Mappings
+  name. Ctrl+S then overwrites that folder's chart JSON and `events.json`. When a
+  mod root is selected, charts/events go to `data/<song>` while imported OGG
+  stems go to the loadable Psych-compatible `songs/<song>` directory. Mappings
   for every chart live together in `config/fnfmod/chart_editor_save_folders.json`.
   With no mapping, Ctrl+S writes the normal song-name folder (and
   `original_directory.txt` when required) without opening a dialog. **Save As**
@@ -1938,8 +1969,9 @@ The source keeps reusable behavior outside GUI screens where possible:
   complete-pack folder layout.
 - `song/ExternalDirectoryConfig.java` owns the ordered directory list and its
   per-directory resource filters.
-- `song/SongCache.java` owns downloaded-song cache size, pruning, touching, and
-  deletion. `SongLibrary` retains compatibility methods that delegate to it.
+- `song/SongCache.java` owns local prepared-song cache size, pruning, touching,
+  and deletion, including cleanup of caches left by older versions. `SongLibrary`
+  retains compatibility methods that delegate to it.
 - `client/render/NoteSkinConfig.java` is the immutable, validated representation
   of `skin.json`; `NoteStyle` only consumes the resulting values.
 - `client/render/PsychHudState.java` owns mutable Psych-compatible native HUD

@@ -1,0 +1,1293 @@
+{
+  "functions": {
+    "ui.animatedSprite": {
+      "args": "id:string, png:string, xml:string?, x:number, y:number, width:number, height:number",
+      "documentation": "Create a sprite-sheet widget. The XML path defaults to the PNG basename with `.xml`; the returned widget has animation controls.",
+      "parameters": {
+        "id": "Unique widget ID.",
+        "png": "Sprite-sheet PNG path.",
+        "xml": "Matching Sparrow XML path; omitted uses the PNG basename.",
+        "x": "Horizontal center on the fixed canvas.",
+        "y": "Vertical center on the fixed canvas.",
+        "width": "Displayed width in canvas pixels.",
+        "height": "Displayed height in canvas pixels."
+      },
+      "returns": "any"
+    },
+    "ui.button": {
+      "args": "id:string, text:string, x:number, y:number, width:number, height:number",
+      "documentation": "Create a button and return its widget table. Its `backgroundColor` and `hoverColor` fields control the fill; define `function button:onClick()` or global `onClick(id)` for interaction.",
+      "parameters": {
+        "id": "Unique widget ID.",
+        "text": "Text displayed on the button.",
+        "x": "Horizontal center; 0–1 is proportional to the 1280-pixel canvas.",
+        "y": "Vertical center; 0–1 is proportional to the 720-pixel canvas.",
+        "width": "Width in canvas pixels.",
+        "height": "Height in canvas pixels."
+      },
+      "returns": "any"
+    },
+    "ui.clear": {
+      "args": "",
+      "documentation": "Remove all widgets, animated states, and active widget tweens from this menu screen.",
+      "returns": "any"
+    },
+    "ui.get": {
+      "args": "id:string",
+      "documentation": "Get an existing widget by ID.",
+      "returns": "any"
+    },
+    "ui.gradient": {
+      "args": "tag:string, x:number, y:number, width:number, height:number, type:string?, colors:table?, angle:number?",
+      "documentation": "Create an independent gradient object; it can also be used as a mask source.",
+      "parameters": {
+        "tag": "Unique gradient tag.",
+        "x": "Object X position.",
+        "y": "Object Y position.",
+        "width": "Object width.",
+        "height": "Object height.",
+        "type": "`linear`, `radial`, or `angular`.",
+        "colors": "Table of 2–16 color stops; entries can contain `at`, `color`, and `alpha`.",
+        "angle": "Gradient angle in degrees."
+      },
+      "returns": "any"
+    },
+    "ui.graph": {
+      "args": "id:string, shape:string?, x:number, y:number, width:number, height:number, color:string?",
+      "documentation": "Create a colored graph widget. If shape is omitted, geometry begins immediately after the ID and the shape defaults to rectangle.",
+      "parameters": {
+        "id": "Unique widget ID.",
+        "shape": "Optional shape name, such as `rectangle`.",
+        "x": "Horizontal center.",
+        "y": "Vertical center.",
+        "width": "Graph width.",
+        "height": "Graph height.",
+        "color": "Hex fill color."
+      },
+      "returns": "any"
+    },
+    "ui.graphic": {
+      "args": "id:string, shape:string?, x:number, y:number, width:number, height:number, color:string?",
+      "documentation": "Create a colored graph widget. If shape is omitted, geometry begins immediately after the ID and the shape defaults to rectangle.",
+      "parameters": {
+        "id": "Unique widget ID.",
+        "shape": "Optional shape name, such as `rectangle`.",
+        "x": "Horizontal center.",
+        "y": "Vertical center.",
+        "width": "Graph width.",
+        "height": "Graph height.",
+        "color": "Hex fill color."
+      },
+      "returns": "any"
+    },
+    "ui.group": {
+      "args": "tag:string, x:number, y:number, width:number, height:number",
+      "documentation": "Create a Blockified compositing group.",
+      "returns": "any"
+    },
+    "ui.image": {
+      "args": "id:string, image:string, x:number, y:number, width:number, height:number",
+      "documentation": "Create a static image widget. The image path is resolved from the current mod/assets roots. Use `ui.world` to move it into 3D space.",
+      "parameters": {
+        "id": "Unique widget ID.",
+        "image": "Relative image asset path, such as `images/cover.png`.",
+        "x": "Horizontal center.",
+        "y": "Vertical center.",
+        "width": "Displayed width.",
+        "height": "Displayed height."
+      },
+      "returns": "any"
+    },
+    "ui.label": {
+      "args": "id:string, text:string, x:number, y:number, width:number?, height:number?",
+      "documentation": "Create a text label and return its widget table. Set its font, shadow, alignment, border, scale, and order on the table or through text helper functions.",
+      "parameters": {
+        "id": "Unique widget ID.",
+        "text": "Initial label text.",
+        "x": "Horizontal center; 0–1 is proportional to the fixed 1280-pixel canvas.",
+        "y": "Vertical center; 0–1 is proportional to the fixed 720-pixel canvas.",
+        "width": "Optional wrapping width; zero uses text size.",
+        "height": "Optional label height."
+      },
+      "returns": "any"
+    },
+    "ui.panel": {
+      "args": "id:string, text:string, x:number, y:number, width:number, height:number",
+      "documentation": "Create a background panel. The text argument is retained for the shared constructor layout but is not rendered on a panel.",
+      "parameters": {
+        "id": "Unique widget ID.",
+        "text": "Unused panel text slot; pass an empty string.",
+        "x": "Horizontal center.",
+        "y": "Vertical center.",
+        "width": "Panel width.",
+        "height": "Panel height."
+      },
+      "returns": "any"
+    },
+    "ui.remove": {
+      "args": "id:string",
+      "documentation": "Remove an existing widget.",
+      "returns": "any"
+    },
+    "ui.slider": {
+      "args": "id:string, text:string, x:number, y:number, width:number, height:number",
+      "documentation": "Create a slider widget. Configure the returned table’s `min`, `max`, and `value` fields; defaults are 0, 1, and 0.",
+      "parameters": {
+        "id": "Unique widget ID.",
+        "text": "Slider text.",
+        "x": "Horizontal center.",
+        "y": "Vertical center.",
+        "width": "Slider width.",
+        "height": "Slider height."
+      },
+      "returns": "any"
+    },
+    "ui.sprite": {
+      "args": "id:string, image:string, x:number, y:number, width:number, height:number",
+      "documentation": "Create a static sprite widget with the same geometry as `ui.image`.",
+      "parameters": {
+        "id": "Unique widget ID.",
+        "image": "Relative sprite image path.",
+        "x": "Horizontal center.",
+        "y": "Vertical center.",
+        "width": "Displayed width.",
+        "height": "Displayed height."
+      },
+      "returns": "any"
+    },
+    "ui.toggle": {
+      "args": "id:string, text:string, x:number, y:number, width:number, height:number",
+      "documentation": "Create a toggle widget and return its table. Its `value` field starts false and changes when clicked.",
+      "parameters": {
+        "id": "Unique widget ID.",
+        "text": "Displayed toggle label.",
+        "x": "Horizontal center.",
+        "y": "Vertical center.",
+        "width": "Toggle width.",
+        "height": "Toggle height."
+      },
+      "returns": "any"
+    },
+    "ui.world": {
+      "args": "widget:table, x:number, y:number, z:number",
+      "documentation": "Move a widget into 3D space using block offsets from the current machine origin. Returns the same widget.",
+      "parameters": {
+        "widget": "Widget table returned by a `ui` constructor, or its ID.",
+        "x": "Machine-relative Minecraft X offset.",
+        "y": "Machine-relative Y offset.",
+        "z": "Machine-relative Z offset."
+      },
+      "returns": "any"
+    },
+    "ui.worldAbsolute": {
+      "args": "widget:table, x:number, y:number, z:number",
+      "documentation": "Move a widget to an absolute Minecraft world position, independent of machine facing/location.",
+      "parameters": {
+        "widget": "Widget table returned by a `ui` constructor, or its ID.",
+        "x": "World X coordinate.",
+        "y": "World Y coordinate.",
+        "z": "World Z coordinate."
+      },
+      "returns": "any"
+    },
+    "machine.close": {
+      "args": "",
+      "documentation": "Close the custom menu and save machine data.",
+      "returns": "any"
+    },
+    "machine.exitWorld": {
+      "args": "",
+      "documentation": "Leave the Minecraft world immediately, without an extra custom-menu prompt.",
+      "returns": "any"
+    },
+    "machine.getScreen": {
+      "args": "",
+      "documentation": "Return the name of the current menu screen.",
+      "returns": "string"
+    },
+    "machine.getScreens": {
+      "args": "",
+      "documentation": "Return names of available scripts in this machine’s screens folder.",
+      "returns": "table"
+    },
+    "machine.getSong": {
+      "args": "id:string",
+      "documentation": "Return one song-data table or nil if the ID is unavailable.",
+      "parameters": {
+        "id": "Song ID."
+      },
+      "returns": "table?"
+    },
+    "machine.getSongExitTarget": {
+      "args": "",
+      "documentation": "Read the current song-exit destination (`menu`, `world`, or `selector`).",
+      "returns": "string"
+    },
+    "machine.getSongs": {
+      "args": "",
+      "documentation": "Return a Lua array of available songs. Each song has an ID, display name, opponent icon, and difficulties.",
+      "returns": "table"
+    },
+    "machine.getWeek": {
+      "args": "id:string",
+      "documentation": "Return one week-data table or nil if the week is unavailable.",
+      "parameters": {
+        "id": "Week ID."
+      },
+      "returns": "table?"
+    },
+    "machine.getWeeks": {
+      "args": "",
+      "documentation": "Return a Lua array of available week-data tables.",
+      "returns": "table"
+    },
+    "machine.hasSong": {
+      "args": "id:string",
+      "documentation": "Check whether a song is available.",
+      "parameters": {
+        "id": "Song ID."
+      },
+      "returns": "boolean"
+    },
+    "machine.hasWeek": {
+      "args": "id:string",
+      "documentation": "Check whether a week is available.",
+      "parameters": {
+        "id": "Week ID."
+      },
+      "returns": "boolean"
+    },
+    "machine.join": {
+      "args": "returnTo:string?",
+      "documentation": "Open Blockified’s built-in song selector.",
+      "parameters": {
+        "returnTo": "Where quitting/finishing should go after the selected song."
+      },
+      "returns": "any"
+    },
+    "machine.openCharacterEditor": {
+      "args": "",
+      "documentation": "Open Blockified’s character editor and save machine data first.",
+      "returns": "any"
+    },
+    "machine.openChartEditor": {
+      "args": "song:string?, difficulty:string?",
+      "documentation": "Open the chart editor, optionally preselecting a song and difficulty.",
+      "parameters": {
+        "song": "Song ID; blank or omitted lets the editor choose.",
+        "difficulty": "Difficulty name."
+      },
+      "returns": "any"
+    },
+    "machine.openOptions": {
+      "args": "",
+      "documentation": "Open Blockified settings.",
+      "returns": "any"
+    },
+    "machine.openScreen": {
+      "args": "name:string",
+      "documentation": "Open a second Lua screen from this machine’s `screens/<name>.lua` folder.",
+      "parameters": {
+        "name": "Screen script basename, without `.lua`."
+      },
+      "returns": "any"
+    },
+    "machine.openSettings": {
+      "args": "",
+      "documentation": "Open Blockified settings.",
+      "returns": "any"
+    },
+    "machine.openSongDetails": {
+      "args": "id:string",
+      "documentation": "Open built-in details for an available song.",
+      "parameters": {
+        "id": "Song ID."
+      },
+      "returns": "boolean"
+    },
+    "machine.openSongSelect": {
+      "args": "returnTo:string?",
+      "documentation": "Open Blockified’s built-in song selector.",
+      "parameters": {
+        "returnTo": "Where quitting/finishing should go after the selected song."
+      },
+      "returns": "any"
+    },
+    "machine.playSong": {
+      "args": "song:string, difficulty:string?, options:table?",
+      "documentation": "Start a song directly. Use `options.machine` to select a hitbox-less virtual machine by tag; `options.returnTo = \"menu\"` returns to its menu after the song. The other options include `duet`, `playAs`, and `look`.",
+      "parameters": {
+        "song": "Song ID from the current available songs.",
+        "difficulty": "Difficulty name; omitted uses the song default.",
+        "options": "Lua table: `machine`, `returnTo`/`onExit`, `duet`, `playAs`, and `look`."
+      },
+      "returns": "any"
+    },
+    "machine.saveData": {
+      "args": "",
+      "documentation": "Persist changes made to `machineData`.",
+      "returns": "any"
+    },
+    "machine.setSongExitTarget": {
+      "args": "target:string",
+      "documentation": "Change where a song returns after finishing or quitting.",
+      "parameters": {
+        "target": "`menu`, `world`, or `selector`."
+      },
+      "returns": "string"
+    },
+    "camera.getFOV": {
+      "args": "",
+      "documentation": "Read the custom menu camera’s field of view in degrees.",
+      "returns": "number"
+    },
+    "camera.getPitch": {
+      "args": "",
+      "documentation": "Read the custom menu camera’s pitch.",
+      "returns": "number"
+    },
+    "camera.getRoll": {
+      "args": "",
+      "documentation": "Read the custom menu camera’s roll.",
+      "returns": "number"
+    },
+    "camera.getX": {
+      "args": "",
+      "documentation": "Read the custom menu camera’s world X position.",
+      "returns": "number"
+    },
+    "camera.getY": {
+      "args": "",
+      "documentation": "Read the custom menu camera’s world Y position.",
+      "returns": "number"
+    },
+    "camera.getYaw": {
+      "args": "",
+      "documentation": "Read the custom menu camera’s yaw.",
+      "returns": "number"
+    },
+    "camera.getZ": {
+      "args": "",
+      "documentation": "Read the custom menu camera’s world Z position.",
+      "returns": "number"
+    },
+    "camera.getZoom": {
+      "args": "",
+      "documentation": "Read the custom menu camera’s zoom.",
+      "returns": "number"
+    },
+    "camera.lookAt": {
+      "args": "x:number, y:number, z:number",
+      "documentation": "Point the menu camera at world coordinates.",
+      "returns": "any"
+    },
+    "camera.reset": {
+      "args": "",
+      "documentation": "Reset the custom machine-menu camera to its original position, rotation, zoom, and FOV.",
+      "returns": "any"
+    },
+    "camera.setFOV": {
+      "args": "degrees:number",
+      "documentation": "Set field of view, independently of the camera zoom property.",
+      "parameters": {
+        "degrees": "Camera field-of-view angle in degrees."
+      },
+      "returns": "any"
+    },
+    "camera.setPosition": {
+      "args": "x:number, y:number, z:number",
+      "documentation": "Set the machine-menu camera position in Minecraft coordinates. This opts into the custom menu camera behavior.",
+      "parameters": {
+        "x": "World X coordinate.",
+        "y": "World Y coordinate.",
+        "z": "World Z coordinate."
+      },
+      "returns": "any"
+    },
+    "camera.setRotation": {
+      "args": "pitch:number, yaw:number, roll:number",
+      "documentation": "Set the menu camera orientation immediately.",
+      "parameters": {
+        "pitch": "Up/down angle.",
+        "yaw": "Left/right heading.",
+        "roll": "Camera roll."
+      },
+      "returns": "any"
+    },
+    "camera.setZoom": {
+      "args": "zoom:number",
+      "documentation": "Set the menu camera zoom.",
+      "returns": "any"
+    },
+    "addToGroup": {
+      "args": "group:string, child:string",
+      "documentation": "Put a widget into a compositing group, which controls its combined rendering.",
+      "parameters": {
+        "group": "Existing group ID.",
+        "child": "Widget to add."
+      },
+      "returns": "any"
+    },
+    "cancelTimer": {
+      "args": "tag:string",
+      "documentation": "Cancel an active menu timer.",
+      "parameters": {
+        "tag": "Timer ID."
+      },
+      "returns": "boolean"
+    },
+    "cancelTween": {
+      "args": "tag:string",
+      "documentation": "Cancel a widget, camera, or blur tween by tag.",
+      "parameters": {
+        "tag": "Tween ID."
+      },
+      "returns": "boolean"
+    },
+    "debugPrint": {
+      "args": "text:string, color:string|number?",
+      "documentation": "Show a temporary debug line above the menu and write it to the log. The optional color accepts a hex/name string or an integer color value.",
+      "parameters": {
+        "text": "Message to display.",
+        "color": "Optional text color; defaults to white."
+      },
+      "returns": "void"
+    },
+    "disableMenuBlur": {
+      "args": "",
+      "documentation": "Set the current menu’s background blur to zero.",
+      "returns": "any"
+    },
+    "doTweenAlpha": {
+      "args": "tag:string, target:string, amount:number, duration:number, easing:string?",
+      "documentation": "Tween a widget’s opacity. The completion callback receives the tween tag.",
+      "parameters": {
+        "tag": "Unique tween ID.",
+        "target": "Existing widget ID.",
+        "amount": "Target opacity.",
+        "duration": "Duration in seconds.",
+        "easing": "Easing name, such as `linear` or `expoOut`."
+      },
+      "returns": "any"
+    },
+    "doTweenAngle": {
+      "args": "tag:string, target:string, amount:number, duration:number, easing:string?",
+      "documentation": "Tween a widget’s 2D angle. The completion callback receives the tween tag.",
+      "parameters": {
+        "tag": "Unique tween ID.",
+        "target": "Existing widget ID.",
+        "amount": "Target 2D angle.",
+        "duration": "Duration in seconds.",
+        "easing": "Easing name, such as `linear` or `expoOut`."
+      },
+      "returns": "any"
+    },
+    "doTweenCamRotationX": {
+      "args": "tag:string, amount:number, duration:number, easing:string?",
+      "documentation": "Tween the menu camera’s pitch; completion calls onTweenCompleted(tag).",
+      "parameters": {
+        "tag": "Unique camera tween ID.",
+        "amount": "Target pitch.",
+        "duration": "Duration in seconds.",
+        "easing": "Easing name, default linear."
+      },
+      "returns": "any"
+    },
+    "doTweenCamRotationY": {
+      "args": "tag:string, amount:number, duration:number, easing:string?",
+      "documentation": "Tween the menu camera’s yaw; completion calls onTweenCompleted(tag).",
+      "parameters": {
+        "tag": "Unique camera tween ID.",
+        "amount": "Target yaw.",
+        "duration": "Duration in seconds.",
+        "easing": "Easing name, default linear."
+      },
+      "returns": "any"
+    },
+    "doTweenCamRotationZ": {
+      "args": "tag:string, amount:number, duration:number, easing:string?",
+      "documentation": "Tween the menu camera’s roll; completion calls onTweenCompleted(tag).",
+      "parameters": {
+        "tag": "Unique camera tween ID.",
+        "amount": "Target roll.",
+        "duration": "Duration in seconds.",
+        "easing": "Easing name, default linear."
+      },
+      "returns": "any"
+    },
+    "doTweenCamX": {
+      "args": "tag:string, amount:number, duration:number, easing:string?",
+      "documentation": "Tween the menu camera’s world X position; completion calls onTweenCompleted(tag).",
+      "parameters": {
+        "tag": "Unique camera tween ID.",
+        "amount": "Target world X position.",
+        "duration": "Duration in seconds.",
+        "easing": "Easing name, default linear."
+      },
+      "returns": "any"
+    },
+    "doTweenCamY": {
+      "args": "tag:string, amount:number, duration:number, easing:string?",
+      "documentation": "Tween the menu camera’s world Y position; completion calls onTweenCompleted(tag).",
+      "parameters": {
+        "tag": "Unique camera tween ID.",
+        "amount": "Target world Y position.",
+        "duration": "Duration in seconds.",
+        "easing": "Easing name, default linear."
+      },
+      "returns": "any"
+    },
+    "doTweenCamZ": {
+      "args": "tag:string, amount:number, duration:number, easing:string?",
+      "documentation": "Tween the menu camera’s world Z position; completion calls onTweenCompleted(tag).",
+      "parameters": {
+        "tag": "Unique camera tween ID.",
+        "amount": "Target world Z position.",
+        "duration": "Duration in seconds.",
+        "easing": "Easing name, default linear."
+      },
+      "returns": "any"
+    },
+    "doTweenCamZoom": {
+      "args": "tag:string, amount:number, duration:number, easing:string?",
+      "documentation": "Tween the menu camera’s zoom; completion calls onTweenCompleted(tag).",
+      "parameters": {
+        "tag": "Unique camera tween ID.",
+        "amount": "Target zoom.",
+        "duration": "Duration in seconds.",
+        "easing": "Easing name, default linear."
+      },
+      "returns": "any"
+    },
+    "doTweenColor": {
+      "args": "tag:string, target:string, color:string, duration:number, easing:string?",
+      "documentation": "Tween a widget’s color from its current value to a hex color.",
+      "parameters": {
+        "tag": "Unique tween ID.",
+        "target": "Existing widget ID.",
+        "color": "Target hex color or packed RGB number.",
+        "duration": "Duration in seconds.",
+        "easing": "Easing name."
+      },
+      "returns": "any"
+    },
+    "doTweenEffect": {
+      "args": "tag:string, target:string, property:string, amount:number, duration:number, easing:string?",
+      "documentation": "Tween a numeric gradient, mask, or clip effect property.",
+      "parameters": {
+        "tag": "Unique tween ID.",
+        "target": "Existing widget ID.",
+        "property": "Numeric effect field such as `maskX`, `gradientAngle`, or `clipWidth`.",
+        "amount": "Target numeric value.",
+        "duration": "Duration in seconds.",
+        "easing": "Easing name."
+      },
+      "returns": "any"
+    },
+    "doTweenFontScale": {
+      "args": "tag:string, target:string, amount:number, duration:number, easing:string?",
+      "documentation": "Tween a widget’s font scale. The completion callback receives the tween tag.",
+      "parameters": {
+        "tag": "Unique tween ID.",
+        "target": "Existing widget ID.",
+        "amount": "Target font scale.",
+        "duration": "Duration in seconds.",
+        "easing": "Easing name, such as `linear` or `expoOut`."
+      },
+      "returns": "any"
+    },
+    "doTweenHeight": {
+      "args": "tag:string, target:string, amount:number, duration:number, easing:string?",
+      "documentation": "Tween a widget’s height. The completion callback receives the tween tag.",
+      "parameters": {
+        "tag": "Unique tween ID.",
+        "target": "Existing widget ID.",
+        "amount": "Target height.",
+        "duration": "Duration in seconds.",
+        "easing": "Easing name, such as `linear` or `expoOut`."
+      },
+      "returns": "any"
+    },
+    "doTweenMenuBlur": {
+      "args": "tag:string, radius:number, duration:number, easing:string?",
+      "documentation": "Tween the current menu blur radius. The tween controls blur until resetMenuBlur is called.",
+      "parameters": {
+        "tag": "Unique tween ID.",
+        "radius": "Target blur radius.",
+        "duration": "Duration in seconds.",
+        "easing": "Easing name; defaults to linear."
+      },
+      "returns": "any"
+    },
+    "doTweenRotationX": {
+      "args": "tag:string, target:string, amount:number, duration:number, easing:string?",
+      "documentation": "Tween a widget’s 3D X rotation. The completion callback receives the tween tag.",
+      "parameters": {
+        "tag": "Unique tween ID.",
+        "target": "Existing widget ID.",
+        "amount": "Target 3D X rotation.",
+        "duration": "Duration in seconds.",
+        "easing": "Easing name, such as `linear` or `expoOut`."
+      },
+      "returns": "any"
+    },
+    "doTweenRotationY": {
+      "args": "tag:string, target:string, amount:number, duration:number, easing:string?",
+      "documentation": "Tween a widget’s 3D Y rotation. The completion callback receives the tween tag.",
+      "parameters": {
+        "tag": "Unique tween ID.",
+        "target": "Existing widget ID.",
+        "amount": "Target 3D Y rotation.",
+        "duration": "Duration in seconds.",
+        "easing": "Easing name, such as `linear` or `expoOut`."
+      },
+      "returns": "any"
+    },
+    "doTweenText": {
+      "args": "tag:string, target:string, amount:number, duration:number, easing:string, property:string",
+      "documentation": "Tween supported menu text properties, including line spacing, letter spacing, border size, and font scale.",
+      "parameters": {
+        "tag": "Unique tween ID.",
+        "target": "Existing label or button ID.",
+        "amount": "Final numeric value.",
+        "duration": "Tween duration in seconds.",
+        "easing": "Easing name.",
+        "property": "`LineSpacing`, `LetterSpacing`, `BorderSize`, or `TextSize`/`FontScale`."
+      },
+      "returns": "any"
+    },
+    "doTweenWidth": {
+      "args": "tag:string, target:string, amount:number, duration:number, easing:string?",
+      "documentation": "Tween a widget’s width. The completion callback receives the tween tag.",
+      "parameters": {
+        "tag": "Unique tween ID.",
+        "target": "Existing widget ID.",
+        "amount": "Target width.",
+        "duration": "Duration in seconds.",
+        "easing": "Easing name, such as `linear` or `expoOut`."
+      },
+      "returns": "any"
+    },
+    "doTweenX": {
+      "args": "tag:string, target:string, amount:number, duration:number, easing:string?",
+      "documentation": "Tween a widget’s X position. The completion callback receives the tween tag.",
+      "parameters": {
+        "tag": "Unique tween ID.",
+        "target": "Existing widget ID.",
+        "amount": "Target X position.",
+        "duration": "Duration in seconds.",
+        "easing": "Easing name, such as `linear` or `expoOut`."
+      },
+      "returns": "any"
+    },
+    "doTweenY": {
+      "args": "tag:string, target:string, amount:number, duration:number, easing:string?",
+      "documentation": "Tween a widget’s Y position. The completion callback receives the tween tag.",
+      "parameters": {
+        "tag": "Unique tween ID.",
+        "target": "Existing widget ID.",
+        "amount": "Target Y position.",
+        "duration": "Duration in seconds.",
+        "easing": "Easing name, such as `linear` or `expoOut`."
+      },
+      "returns": "any"
+    },
+    "doTweenZ": {
+      "args": "tag:string, target:string, amount:number, duration:number, easing:string?",
+      "documentation": "Tween a widget’s world Z position. The completion callback receives the tween tag.",
+      "parameters": {
+        "tag": "Unique tween ID.",
+        "target": "Existing widget ID.",
+        "amount": "Target world Z position.",
+        "duration": "Duration in seconds.",
+        "easing": "Easing name, such as `linear` or `expoOut`."
+      },
+      "returns": "any"
+    },
+    "enableMenuBlur": {
+      "args": "radius:number?",
+      "documentation": "Enable menu-background blur; omitted uses the configured blur radius or at least 1.",
+      "parameters": {
+        "radius": "Optional blur radius."
+      },
+      "returns": "any"
+    },
+    "getFOV": {
+      "args": "",
+      "documentation": "Get menu camera field of view.",
+      "returns": "number"
+    },
+    "getHoveredObject": {
+      "args": "",
+      "documentation": "Return the topmost visible widget ID beneath the cursor, or an empty string.",
+      "returns": "string"
+    },
+    "getMenuBlur": {
+      "args": "",
+      "documentation": "Read the active blur radius, or the user’s configured radius when this menu is not overriding it.",
+      "returns": "number"
+    },
+    "getMouseX": {
+      "args": "",
+      "documentation": "Get mouse X on the fixed menu canvas.",
+      "returns": "number"
+    },
+    "getMouseY": {
+      "args": "",
+      "documentation": "Get mouse Y on the fixed menu canvas.",
+      "returns": "number"
+    },
+    "getObjectParent": {
+      "args": "child:string",
+      "documentation": "Get the current parent widget ID.",
+      "parameters": {
+        "child": "Widget ID."
+      },
+      "returns": "string"
+    },
+    "getSoundPitch": {
+      "args": "tag:string",
+      "documentation": "Read a tagged menu sound’s pitch multiplier.",
+      "parameters": {
+        "tag": "Sound instance ID."
+      },
+      "returns": "number"
+    },
+    "getSoundTime": {
+      "args": "tag:string",
+      "documentation": "Read a tagged menu sound’s time in milliseconds.",
+      "parameters": {
+        "tag": "Sound instance ID."
+      },
+      "returns": "number"
+    },
+    "getSoundVolume": {
+      "args": "tag:string",
+      "documentation": "Read a tagged menu sound’s volume level.",
+      "parameters": {
+        "tag": "Sound instance ID."
+      },
+      "returns": "number"
+    },
+    "getTextFontMode": {
+      "args": "tag:string",
+      "documentation": "Read the selected rendering mode of a menu text widget.",
+      "parameters": {
+        "tag": "Text widget ID."
+      },
+      "returns": "string"
+    },
+    "getTextQuality": {
+      "args": "id:string",
+      "documentation": "Get the current font oversampling factor of a menu text widget.",
+      "parameters": {
+        "id": "Text widget ID."
+      },
+      "returns": "number"
+    },
+    "getTextString": {
+      "args": "id:string",
+      "documentation": "Read the current text of a label or button.",
+      "parameters": {
+        "id": "Text widget ID."
+      },
+      "returns": "string"
+    },
+    "isMouseDown": {
+      "args": "button:number?",
+      "documentation": "Check whether a mouse button is held. Defaults to the left button.",
+      "parameters": {
+        "button": "Mouse button index; 0 is left."
+      },
+      "returns": "boolean"
+    },
+    "keyboardJustPressed": {
+      "args": "key:string",
+      "documentation": "True on the first frame of a key press.",
+      "returns": "boolean"
+    },
+    "keyboardPressed": {
+      "args": "key:string",
+      "documentation": "True while the key is held.",
+      "returns": "boolean"
+    },
+    "keyboardReleased": {
+      "args": "key:string",
+      "documentation": "True when the key is released.",
+      "returns": "boolean"
+    },
+    "makeLuaGradient": {
+      "args": "tag:string, x:number, y:number, width:number, height:number, type:string?, colors:table?, angle:number?",
+      "documentation": "Create an independent gradient object; it can also be used as a mask source.",
+      "parameters": {
+        "tag": "Unique gradient tag.",
+        "x": "Object X position.",
+        "y": "Object Y position.",
+        "width": "Object width.",
+        "height": "Object height.",
+        "type": "`linear`, `radial`, or `angular`.",
+        "colors": "Table of 2–16 color stops; entries can contain `at`, `color`, and `alpha`.",
+        "angle": "Gradient angle in degrees."
+      },
+      "returns": "any"
+    },
+    "makeLuaGroup": {
+      "args": "tag:string, x:number, y:number, width:number, height:number",
+      "documentation": "Create a Blockified compositing group.",
+      "returns": "any"
+    },
+    "mouseInside": {
+      "args": "x:number, y:number, width:number, height:number",
+      "documentation": "Test whether the cursor is inside a rectangle centered at X/Y on the fixed menu canvas.",
+      "parameters": {
+        "x": "Rectangle center X.",
+        "y": "Rectangle center Y.",
+        "width": "Width in canvas pixels.",
+        "height": "Height in canvas pixels."
+      },
+      "returns": "boolean"
+    },
+    "mouseOver": {
+      "args": "id:string",
+      "documentation": "Test whether the cursor is over a visible widget, including 3D widgets.",
+      "parameters": {
+        "id": "Widget ID."
+      },
+      "returns": "boolean"
+    },
+    "pauseSound": {
+      "args": "tag:string",
+      "documentation": "Pause a tagged menu sound.",
+      "parameters": {
+        "tag": "Sound instance ID."
+      },
+      "returns": "any"
+    },
+    "playSound": {
+      "args": "tag:string, sound:string, volume:number?, loop:boolean?",
+      "documentation": "Play a menu sound. An empty tag creates a fire-and-forget sound; tagged sounds can later be paused, stopped, or adjusted.",
+      "parameters": {
+        "tag": "Sound instance ID, or empty string for fire-and-forget.",
+        "sound": "Audio asset name/path.",
+        "volume": "Playback volume, default 1.",
+        "loop": "True repeats until stopped; default false."
+      },
+      "returns": "boolean"
+    },
+    "precacheSound": {
+      "args": "sound:string",
+      "documentation": "Pre-decode audio to avoid a pause when playback begins.",
+      "parameters": {
+        "sound": "Audio asset name/path."
+      },
+      "returns": "boolean"
+    },
+    "removeFromGroup": {
+      "args": "child:string",
+      "documentation": "Remove a widget from its compositing group.",
+      "parameters": {
+        "child": "Widget ID."
+      },
+      "returns": "any"
+    },
+    "removeObjectGradient": {
+      "args": "id:string",
+      "documentation": "Disable the gradient on a widget without deleting the widget.",
+      "parameters": {
+        "id": "Widget ID."
+      },
+      "returns": "any"
+    },
+    "removeObjectMask": {
+      "args": "id:string",
+      "documentation": "Clear the mask assigned to a widget.",
+      "parameters": {
+        "id": "Widget ID."
+      },
+      "returns": "any"
+    },
+    "removeObjectParent": {
+      "args": "child:string, keepPosition:boolean?",
+      "documentation": "Detach a widget from its parent. The default retains the child’s world transform.",
+      "parameters": {
+        "child": "Widget ID.",
+        "keepPosition": "True preserves world position; default true."
+      },
+      "returns": "any"
+    },
+    "resetMenuBlur": {
+      "args": "",
+      "documentation": "Stop overriding blur and return to the player’s configured menu blur.",
+      "returns": "any"
+    },
+    "resumeSound": {
+      "args": "tag:string",
+      "documentation": "Resume a tagged menu sound.",
+      "parameters": {
+        "tag": "Sound instance ID."
+      },
+      "returns": "any"
+    },
+    "runTimer": {
+      "args": "tag:string, seconds:number, loops:number?",
+      "documentation": "Start a menu timer; completion calls `onTimerCompleted`.",
+      "returns": "any"
+    },
+    "setBlendMode": {
+      "args": "tag:string, mode:string",
+      "documentation": "Change how this object blends with pixels behind it.",
+      "parameters": {
+        "tag": "Existing object tag.",
+        "mode": "`normal`, `add`, `multiply`, `screen`, `subtract`, `lighten`, `darken`, `difference`, or `overlay`."
+      },
+      "returns": "any"
+    },
+    "setFOV": {
+      "args": "degrees:number",
+      "documentation": "Set menu camera field of view.",
+      "returns": "any"
+    },
+    "setMenuBlur": {
+      "args": "radius:number",
+      "documentation": "Take control of Minecraft’s menu-background blur for this menu. Values below 1 disable it.",
+      "parameters": {
+        "radius": "Blur radius; 0 disables blur."
+      },
+      "returns": "any"
+    },
+    "setObjectClip": {
+      "args": "id:string, type:string, x:number?, y:number?, width:number?, height:number?, radius:number?, softness:number?",
+      "documentation": "Clip a widget locally to a rectangle, circle, or rounded shape.",
+      "parameters": {
+        "id": "Widget ID.",
+        "type": "`none`, `rect`, `circle`, or `rounded`.",
+        "x": "Clip center X in local coordinates.",
+        "y": "Clip center Y in local coordinates.",
+        "width": "Local clip width.",
+        "height": "Local clip height.",
+        "radius": "Corner/circle radius.",
+        "softness": "Soft-edge amount."
+      },
+      "returns": "any"
+    },
+    "setObjectGradient": {
+      "args": "tag:string, type:string, colors:table, angle:number?",
+      "documentation": "Apply a local-space gradient to an existing object.",
+      "parameters": {
+        "tag": "Existing object tag.",
+        "type": "`linear`, `radial`, or `angular`.",
+        "colors": "Table of 2–16 stops; each stop may have `at`, `color`, and `alpha`.",
+        "angle": "Gradient angle in degrees."
+      },
+      "returns": "any"
+    },
+    "setObjectMask": {
+      "args": "target:string, mask:string, mode:string?, invert:boolean?, maskOnly:boolean?",
+      "documentation": "Mask one menu widget with another. This changes visibility, not transforms; parenting is separate.",
+      "parameters": {
+        "target": "Widget being masked.",
+        "mask": "Existing mask-source widget.",
+        "mode": "`alpha` or `luminance`.",
+        "invert": "Invert the mask.",
+        "maskOnly": "Hide the source outside masking; defaults to true."
+      },
+      "returns": "any"
+    },
+    "setObjectOrder": {
+      "args": "id:string, order:number",
+      "documentation": "Set widget layer order; larger values draw later.",
+      "returns": "any"
+    },
+    "setObjectParent": {
+      "args": "child:string, parent:string, keepPosition:boolean?",
+      "documentation": "Attach a widget to another; by default the child’s local position resets to 0,0,0.",
+      "parameters": {
+        "child": "Child widget ID.",
+        "parent": "Parent widget ID.",
+        "keepPosition": "True keeps the child’s world transform."
+      },
+      "returns": "any"
+    },
+    "setObjectRenderMode": {
+      "args": "id:string, mode:string",
+      "documentation": "Choose 3D rendering behavior for a menu widget.",
+      "parameters": {
+        "id": "Widget ID.",
+        "mode": "`auto`, `lit`, `flat`/`unlit`, or `emissive`."
+      },
+      "returns": "any"
+    },
+    "setObjectShaderMode": {
+      "args": "id:string, mode:string",
+      "documentation": "Choose 3D rendering behavior for a menu widget.",
+      "parameters": {
+        "id": "Widget ID.",
+        "mode": "`auto`, `lit`, `flat`/`unlit`, or `emissive`."
+      },
+      "returns": "any"
+    },
+    "setSoundPitch": {
+      "args": "tag:string, pitch:number",
+      "documentation": "Change pitch of a tagged menu sound.",
+      "parameters": {
+        "tag": "Sound instance ID.",
+        "pitch": "Playback pitch multiplier."
+      },
+      "returns": "any"
+    },
+    "setSoundTime": {
+      "args": "tag:string, milliseconds:number",
+      "documentation": "Seek a tagged menu sound to a time in milliseconds.",
+      "parameters": {
+        "tag": "Sound instance ID.",
+        "milliseconds": "Target audio time, not seconds."
+      },
+      "returns": "any"
+    },
+    "setSoundVolume": {
+      "args": "tag:string, volume:number",
+      "documentation": "Change volume of a tagged menu sound.",
+      "parameters": {
+        "tag": "Sound instance ID.",
+        "volume": "Target volume level."
+      },
+      "returns": "any"
+    },
+    "setTextAlignment": {
+      "args": "id:string, alignment:string",
+      "documentation": "Align menu label/button text.",
+      "parameters": {
+        "id": "Text widget ID.",
+        "alignment": "`left`, `center`, or `right`."
+      },
+      "returns": "any"
+    },
+    "setTextBorder": {
+      "args": "id:string, size:number, color:string, style:string?",
+      "documentation": "Draw an outline/border around menu text.",
+      "parameters": {
+        "id": "Text widget ID.",
+        "size": "Border thickness.",
+        "color": "Hex border color.",
+        "style": "Border style, default `outline`."
+      },
+      "returns": "any"
+    },
+    "setTextColor": {
+      "args": "id:string, color:string",
+      "documentation": "Set menu text color.",
+      "parameters": {
+        "id": "Text widget ID.",
+        "color": "Hex color or packed RGB number."
+      },
+      "returns": "any"
+    },
+    "setTextFont": {
+      "args": "id:string, font:string",
+      "documentation": "Use a font asset resolved from the current mod’s font roots.",
+      "parameters": {
+        "id": "Text widget ID.",
+        "font": "Font path, such as `fonts/custom.ttf`."
+      },
+      "returns": "any"
+    },
+    "setTextFontMode": {
+      "args": "tag:string, mode:string",
+      "documentation": "Choose smooth or pixel rendering for a menu text widget.",
+      "parameters": {
+        "tag": "Text widget ID.",
+        "mode": "`smooth` or `pixel`."
+      },
+      "returns": "boolean"
+    },
+    "setTextItalic": {
+      "args": "id:string, enabled:boolean",
+      "documentation": "Toggle italic styling for menu text.",
+      "parameters": {
+        "id": "Text widget ID.",
+        "enabled": "True enables italic text."
+      },
+      "returns": "any"
+    },
+    "setTextLetterSpacing": {
+      "args": "id:string, spacing:number",
+      "documentation": "Set extra space between letters for menu text.",
+      "parameters": {
+        "id": "Text widget ID.",
+        "spacing": "Extra space between glyphs."
+      },
+      "returns": "any"
+    },
+    "setTextLineSpacing": {
+      "args": "id:string, spacing:number",
+      "documentation": "Set extra line spacing for menu text.",
+      "parameters": {
+        "id": "Text widget ID.",
+        "spacing": "Extra spacing between text lines."
+      },
+      "returns": "any"
+    },
+    "setTextQuality": {
+      "args": "id:string, quality:number",
+      "documentation": "Change font oversampling for a menu label/button.",
+      "parameters": {
+        "id": "Text widget ID.",
+        "quality": "Font rasterization quality/oversample factor."
+      },
+      "returns": "any"
+    },
+    "setTextShadow": {
+      "args": "id:string, enabled:boolean",
+      "documentation": "Show or hide the Minecraft-style shadow behind menu text.",
+      "parameters": {
+        "id": "Text widget ID.",
+        "enabled": "True shows shadow; false hides it."
+      },
+      "returns": "any"
+    },
+    "setTextSize": {
+      "args": "id:string, pixels:number",
+      "documentation": "Set text size in pixels relative to the 16-pixel Lua baseline.",
+      "parameters": {
+        "id": "Text widget ID.",
+        "pixels": "Desired text size in menu canvas pixels."
+      },
+      "returns": "any"
+    },
+    "setTextString": {
+      "args": "id:string, text:string",
+      "documentation": "Change the text displayed by a label or button.",
+      "parameters": {
+        "id": "Text widget ID.",
+        "text": "New displayed text."
+      },
+      "returns": "any"
+    },
+    "setWorldSpriteLighting": {
+      "args": "id:string, enabled:boolean",
+      "documentation": "Enable or disable world lighting for a 3D menu widget and restore its render mode to auto.",
+      "parameters": {
+        "id": "3D widget ID.",
+        "enabled": "True respects world lighting; false uses flat rendering."
+      },
+      "returns": "any"
+    },
+    "setWorldSpriteRenderMode": {
+      "args": "id:string, mode:string",
+      "documentation": "Choose 3D rendering behavior for a menu widget.",
+      "parameters": {
+        "id": "Widget ID.",
+        "mode": "`auto`, `lit`, `flat`/`unlit`, or `emissive`."
+      },
+      "returns": "any"
+    },
+    "soundExists": {
+      "args": "tag:string",
+      "documentation": "Check whether a tagged menu sound exists.",
+      "parameters": {
+        "tag": "Sound instance ID."
+      },
+      "returns": "boolean"
+    },
+    "stopSound": {
+      "args": "tag:string",
+      "documentation": "Stop a tagged menu sound.",
+      "parameters": {
+        "tag": "Sound instance ID."
+      },
+      "returns": "any"
+    }
+  },
+  "events": {
+    "onOpen": {
+      "args": "",
+      "documentation": "Machine-menu callback. Widget methods such as `function play:onClick()` can be used where applicable.",
+      "returns": "any"
+    },
+    "onClose": {
+      "args": "",
+      "documentation": "Machine-menu callback. Widget methods such as `function play:onClick()` can be used where applicable.",
+      "returns": "any"
+    },
+    "onUpdate": {
+      "args": "dt:number",
+      "documentation": "Machine-menu callback. Widget methods such as `function play:onClick()` can be used where applicable.",
+      "returns": "any"
+    },
+    "onTimerCompleted": {
+      "args": "tag:string",
+      "documentation": "Machine-menu callback. Widget methods such as `function play:onClick()` can be used where applicable.",
+      "returns": "any"
+    },
+    "onTweenCompleted": {
+      "args": "tag:string",
+      "documentation": "Machine-menu callback. Widget methods such as `function play:onClick()` can be used where applicable.",
+      "returns": "any"
+    },
+    "onSoundFinished": {
+      "args": "",
+      "documentation": "Machine-menu callback. Widget methods such as `function play:onClick()` can be used where applicable.",
+      "returns": "any"
+    },
+    "onMouseDown": {
+      "args": "",
+      "documentation": "Machine-menu callback. Widget methods such as `function play:onClick()` can be used where applicable.",
+      "returns": "any"
+    },
+    "onMouseUp": {
+      "args": "",
+      "documentation": "Machine-menu callback. Widget methods such as `function play:onClick()` can be used where applicable.",
+      "returns": "any"
+    },
+    "onClick": {
+      "args": "id:string",
+      "documentation": "Machine-menu callback. Widget methods such as `function play:onClick()` can be used where applicable.",
+      "returns": "any"
+    },
+    "onHover": {
+      "args": "id:string",
+      "documentation": "Machine-menu callback. Widget methods such as `function play:onClick()` can be used where applicable.",
+      "returns": "any"
+    },
+    "onHoverExit": {
+      "args": "id:string",
+      "documentation": "Machine-menu callback. Widget methods such as `function play:onClick()` can be used where applicable.",
+      "returns": "any"
+    },
+    "onKeyPress": {
+      "args": "key:string",
+      "documentation": "Machine-menu callback. Widget methods such as `function play:onClick()` can be used where applicable.",
+      "returns": "any"
+    },
+    "onKeyRelease": {
+      "args": "key:string",
+      "documentation": "Machine-menu callback. Widget methods such as `function play:onClick()` can be used where applicable.",
+      "returns": "any"
+    },
+    "onScroll": {
+      "args": "dy:number, dx:number",
+      "documentation": "Machine-menu callback. Widget methods such as `function play:onClick()` can be used where applicable.",
+      "returns": "any"
+    }
+  },
+  "variables": {
+    "screenWidth": {
+      "documentation": "Fixed menu canvas width (1280), independent of Minecraft window size."
+    },
+    "screenHeight": {
+      "documentation": "Fixed menu canvas height (720), independent of Minecraft window size."
+    },
+    "machineData": {
+      "documentation": "Persistent data table for the current machine."
+    },
+    "machine.id": {
+      "documentation": "ID/tag of the current virtual or physical machine."
+    },
+    "machine.tag": {
+      "documentation": "Tag of the current machine."
+    },
+    "machine.profileId": {
+      "documentation": "Machine profile ID."
+    }
+  }
+}

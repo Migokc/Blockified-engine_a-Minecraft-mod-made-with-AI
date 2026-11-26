@@ -18,18 +18,28 @@ public final class FnfNetworking {
 
     @SubscribeEvent
     public static void register(RegisterPayloadHandlersEvent event) {
-        PayloadRegistrar registrar = event.registrar("4");
+        // Song selection shares per-side note-skin transforms in the ready/start
+        // payloads; reject older layouts cleanly instead of misreading trailing data.
+        PayloadRegistrar registrar = event.registrar("12");
 
         // client-bound
         registrar.playToClient(FnfPayloads.OpenMenuS2C.TYPE, FnfPayloads.OpenMenuS2C.CODEC, FnfNetworking::client);
         registrar.playToClient(FnfPayloads.SessionStateS2C.TYPE, FnfPayloads.SessionStateS2C.CODEC, FnfNetworking::client);
-        registrar.playToClient(FnfPayloads.FileManifestS2C.TYPE, FnfPayloads.FileManifestS2C.CODEC, FnfNetworking::client);
-        registrar.playToClient(FnfPayloads.FileChunkS2C.TYPE, FnfPayloads.FileChunkS2C.CODEC, FnfNetworking::client);
+        registrar.playToClient(FnfPayloads.JoinGuideS2C.TYPE, FnfPayloads.JoinGuideS2C.CODEC, FnfNetworking::client);
+        registrar.playToClient(FnfPayloads.SongCompatibilityS2C.TYPE,
+                FnfPayloads.SongCompatibilityS2C.CODEC, FnfNetworking::client);
         registrar.playToClient(FnfPayloads.StartSongS2C.TYPE, FnfPayloads.StartSongS2C.CODEC, FnfNetworking::client);
+        registrar.playToClient(FnfPayloads.BeginSongS2C.TYPE, FnfPayloads.BeginSongS2C.CODEC,
+                FnfNetworking::client);
+        registrar.playToClient(FnfPayloads.NearbySongS2C.TYPE, FnfPayloads.NearbySongS2C.CODEC,
+                FnfNetworking::client);
+        registrar.playToClient(FnfPayloads.NearbyNoteS2C.TYPE, FnfPayloads.NearbyNoteS2C.CODEC,
+                FnfNetworking::client);
         registrar.playToClient(FnfPayloads.RestartSongS2C.TYPE, FnfPayloads.RestartSongS2C.CODEC,
                 FnfNetworking::client);
         registrar.playToClient(FnfPayloads.PartnerNoteS2C.TYPE, FnfPayloads.PartnerNoteS2C.CODEC, FnfNetworking::client);
         registrar.playToClient(FnfPayloads.PartnerEndS2C.TYPE, FnfPayloads.PartnerEndS2C.CODEC, FnfNetworking::client);
+        registrar.playToClient(FnfPayloads.PartnerLeftS2C.TYPE, FnfPayloads.PartnerLeftS2C.CODEC, FnfNetworking::client);
         registrar.playToClient(FnfPayloads.SessionCancelS2C.TYPE, FnfPayloads.SessionCancelS2C.CODEC, FnfNetworking::client);
         registrar.playToClient(FnfPayloads.RollbackCompleteS2C.TYPE, FnfPayloads.RollbackCompleteS2C.CODEC,
                 FnfNetworking::client);
@@ -57,13 +67,17 @@ public final class FnfNetworking {
                 (payload, ctx) -> ctx.enqueueWork(() -> {
                     if (ctx.player() instanceof ServerPlayer sp) SessionManager.onSelectSong(sp, payload);
                 }));
-        registrar.playToServer(FnfPayloads.RequestFilesC2S.TYPE, FnfPayloads.RequestFilesC2S.CODEC,
-                (payload, ctx) -> ctx.enqueueWork(() -> {
-                    if (ctx.player() instanceof ServerPlayer sp) SessionManager.onRequestFiles(sp, payload);
-                }));
         registrar.playToServer(FnfPayloads.ReadyC2S.TYPE, FnfPayloads.ReadyC2S.CODEC,
                 (payload, ctx) -> ctx.enqueueWork(() -> {
                     if (ctx.player() instanceof ServerPlayer sp) SessionManager.onReady(sp, payload);
+                }));
+        registrar.playToServer(FnfPayloads.GameplayReadyC2S.TYPE, FnfPayloads.GameplayReadyC2S.CODEC,
+                (payload, ctx) -> ctx.enqueueWork(() -> {
+                    if (ctx.player() instanceof ServerPlayer sp) SessionManager.onGameplayReady(sp, payload);
+                }));
+        registrar.playToServer(FnfPayloads.SongClockC2S.TYPE, FnfPayloads.SongClockC2S.CODEC,
+                (payload, ctx) -> ctx.enqueueWork(() -> {
+                    if (ctx.player() instanceof ServerPlayer sp) SessionManager.onSongClock(sp, payload);
                 }));
         registrar.playToServer(FnfPayloads.RestartSongC2S.TYPE, FnfPayloads.RestartSongC2S.CODEC,
                 (payload, ctx) -> ctx.enqueueWork(() -> {

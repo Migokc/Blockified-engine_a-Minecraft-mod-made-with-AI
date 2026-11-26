@@ -88,11 +88,9 @@ public class SongDetailScreen extends Screen {
 
     private void startSong(boolean duet) {
         byte playSide = duet ? 0 : (byte) (ClientOptions.get().playAs % 3);
-        ClientSession.pendingPlaySide = playSide;
-        ClientSession.pendingPlaybackMode = playbackMode;
-        PacketDistributor.sendToServer(new FnfPayloads.SelectSongC2S(pos, song.id(), difficulty(), duet,
-                playSide, playbackMode.networkId()));
-        minecraft.setScreen(new WaitingScreen(Component.literal(duet ? "Waiting for player 2..." : "Loading...")));
+        ClientSession.prepareSongSelection(pos, song.id(), difficulty(), duet, playSide, playbackMode,
+                true, null, meta -> PacketDistributor.sendToServer(new FnfPayloads.SelectSongC2S(
+                        pos, song.id(), difficulty(), duet, playSide, playbackMode.networkId(), meta)));
     }
 
     @Override

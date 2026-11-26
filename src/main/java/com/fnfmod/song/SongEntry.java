@@ -94,7 +94,8 @@ public class SongEntry {
     }
 
     public boolean allows(SongLibrary.ExternalContent content) {
-        return externalContent == null || externalContent.contains(content);
+        return com.fnfmod.world.ModContentScope.isModWorld()
+                || externalContent == null || externalContent.contains(content);
     }
 
     /** Rich resources belong to a complete mod, never a lightweight songs/&lt;song&gt; folder. */
@@ -163,12 +164,12 @@ public class SongEntry {
         return voicesOpponentFile;
     }
 
-    /** Files a client needs to play one specific difficulty. */
+    /** Files included in the compatibility fingerprint for one difficulty. */
     public List<Path> transferFiles(String difficulty) {
-        return transferFiles(difficulty, PlaybackPolicy.resolve(PlaybackMode.LEGACY, this));
+        return transferFiles(difficulty, PlaybackPolicy.resolve(PlaybackMode.FNF, this));
     }
 
-    /** Files allowed by the selected presentation/resource policy. */
+    /** Fingerprinted files allowed by the selected presentation/resource policy. */
     public List<Path> transferFiles(String difficulty, PlaybackPolicy policy) {
         List<Path> out = new ArrayList<>();
         Path override = chartOverrideFor(difficulty);
@@ -238,7 +239,7 @@ public class SongEntry {
         return out;
     }
 
-    /** Transfers chart-selected note atlases even when the whole image tree is not packaged. */
+    /** Includes chart-selected note atlases even when the whole image tree is not fingerprinted. */
     private void addChartNoteTextureFiles(List<Path> out, String difficulty, Path runtimeRoot) {
         try {
             SongChart chart = SongLibrary.loadChart(this, difficulty);
@@ -278,7 +279,7 @@ public class SongEntry {
         }
     }
 
-    /** Stable transfer path: local imported resources keep their folder hierarchy. */
+    /** Stable logical path: local imported resources keep their folder hierarchy. */
     public String transferName(Path file) {
         Path runtimeRoot = runtimeRoot();
         if (runtimeRoot != null && file != null) {
@@ -294,9 +295,9 @@ public class SongEntry {
         return file == null ? "" : file.getFileName().toString();
     }
 
-    /** All files across every difficulty (used when a whole song must be transferred). */
+    /** All fingerprinted files across every difficulty. */
     public List<Path> allTransferFiles() {
-        return allTransferFiles(PlaybackPolicy.resolve(PlaybackMode.LEGACY, this));
+        return allTransferFiles(PlaybackPolicy.resolve(PlaybackMode.FNF, this));
     }
 
     public List<Path> allTransferFiles(PlaybackPolicy policy) {

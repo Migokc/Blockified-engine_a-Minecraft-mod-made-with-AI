@@ -330,8 +330,10 @@ public final class MachineMenuEditorScreen extends Screen implements MachineMenu
                 y += 22;
                 addPair(x, y, w, "Text scale", runtime.editorNumber(widget.id(), "fontScale", 1), "fontScale",
                         "Border", runtime.editorNumber(widget.id(), "borderSize", 0), "borderSize"); y += 22;
-                addField(x, y, w, "Font quality", runtime.editorNumber(widget.id(), "fontQuality", 8),
-                        "fontQuality"); y += 22;
+                addRenderableWidget(Button.builder(Component.literal("Font mode: "
+                                + runtime.editorString(widget.id(), "fontMode")), ignored -> {
+                    cycleTextString(selectedId, "fontMode", new String[]{"smooth", "pixel"});
+                }).bounds(x, y, w, 20).build()); y += 22;
                 addColorPair(x, y, w, "Text color", (int) runtime.editorNumber(widget.id(), "color", 0xFFFFFF), "color",
                         "Border color", (int) runtime.editorNumber(widget.id(), "borderColor", 0), "borderColor"); y += 22;
                 if (widget.kind().equals("button")) {
@@ -1187,12 +1189,20 @@ public final class MachineMenuEditorScreen extends Screen implements MachineMenu
             if (gridEnabled && transform == Transform.MOVE) {
                 gridDragRemainderX += cx;
                 gridDragRemainderY += cy;
-                double snappedX = Math.rint(gridDragRemainderX / gridSize) * gridSize;
-                double snappedY = Math.rint(gridDragRemainderY / gridSize) * gridSize;
-                gridDragRemainderX -= snappedX;
-                gridDragRemainderY -= snappedY;
-                cx = snappedX;
-                cy = snappedY;
+                var bounds = runtime.editorBounds(selectedId,
+                        actualPreviewX(), actualPreviewY(), previewW(), previewH());
+                if (bounds != null) {
+                    double canvasLeft = actualPreviewX() + (previewW() - 1280 * scale) * 0.5;
+                    double canvasTop = actualPreviewY() + (previewH() - 720 * scale) * 0.5;
+                    double canvasX = (bounds.left() + bounds.right()) * 0.5 - canvasLeft;
+                    double canvasY = (bounds.top() + bounds.bottom()) * 0.5 - canvasTop;
+                    canvasX /= scale;
+                    canvasY /= scale;
+                    cx = snapGrid(canvasX + gridDragRemainderX, 640, gridSize) - canvasX;
+                    cy = snapGrid(canvasY + gridDragRemainderY, 360, gridSize) - canvasY;
+                    gridDragRemainderX -= cx;
+                    gridDragRemainderY -= cy;
+                }
             }
             switch (transform) {
                 case MOVE -> {
@@ -1641,10 +1651,10 @@ public final class MachineMenuEditorScreen extends Screen implements MachineMenu
         double y = baseY + (normalizedY ? dy / 720.0 : dy);
         if ((snap || gridEnabled) && !numeric) {
             double step = gridEnabled ? gridSize : 1.0;
-            x = normalizedX ? Math.rint(x * 1280.0 / step) * step / 1280.0
-                    : Math.rint(x / step) * step;
-            y = normalizedY ? Math.rint(y * 720.0 / step) * step / 720.0
-                    : Math.rint(y / step) * step;
+            x = normalizedX ? snapGrid(x * 1280.0, 640, step) / 1280.0
+                    : snapGrid(x, 640, step);
+            y = normalizedY ? snapGrid(y * 720.0, 360, step) / 720.0
+                    : snapGrid(y, 360, step);
         }
         runtime.editorSetNumber(selectedId, "x", round(x));
         runtime.editorSetNumber(selectedId, "y", round(y));
@@ -1772,6 +1782,9 @@ public final class MachineMenuEditorScreen extends Screen implements MachineMenu
     }
 
     private static double snap(double value, double step) { return Math.round(value / step) * step; }
+    private static double snapGrid(double value, double center, double step) {
+        return center + Math.rint((value - center) / step) * step;
+    }
     private static double round(double value) { return Math.round(value * 10000.0) / 10000.0; }
 
     private boolean insidePreview(double x, double y) {
@@ -1841,6 +1854,7 @@ public final class MachineMenuEditorScreen extends Screen implements MachineMenu
             String transformStatus = worldTransformStatus();
             gui.drawCenteredString(font, transformStatus, vx + vw / 2, vy + vh / 2 + 16, 0xFFFFEE66);
         }
+        if (runtime != null) runtime.renderDebugOverlay(gui);
     }
 
     private void draw2DGrid(GuiGraphics gui, int viewportX, int viewportY,
@@ -1853,12 +1867,16 @@ public final class MachineMenuEditorScreen extends Screen implements MachineMenu
         double spacing = Math.max(1, Math.min(640, gridSize));
         gui.enableScissor((int) Math.floor(left), (int) Math.floor(top), right, bottom);
         try {
-            for (double canvasX = 0; canvasX <= 1280.0001; canvasX += spacing) {
-                int x = (int) Math.round(left + canvasX * scale);
+            for (int column = (int) Math.ceil(-640 / spacing);
+                 column <= (int) Math.floor(640 / spacing); column++) {
+                if (column == 0) continue;
+                int x = (int) Math.round(left + (640 + column * spacing) * scale);
                 gui.fill(x, (int) Math.floor(top), x + 1, bottom, 0x35B82BFF);
             }
-            for (double canvasY = 0; canvasY <= 720.0001; canvasY += spacing) {
-                int y = (int) Math.round(top + canvasY * scale);
+            for (int row = (int) Math.ceil(-360 / spacing);
+                 row <= (int) Math.floor(360 / spacing); row++) {
+                if (row == 0) continue;
+                int y = (int) Math.round(top + (360 + row * spacing) * scale);
                 gui.fill((int) Math.floor(left), y, right, y + 1, 0x35B82BFF);
             }
             int centerX = (int) Math.round(left + 640 * scale);

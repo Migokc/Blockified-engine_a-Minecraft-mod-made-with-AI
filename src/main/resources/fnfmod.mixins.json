@@ -7,10 +7,12 @@
     "EntityPushMixin",
     "LevelMutationMixin",
     "ModWorldEntityStorageMixin",
+    "ModWorldChunkMapMixin",
     "ModWorldMinecraftServerMixin",
     "ModWorldPlayerListMixin",
     "ModWorldPrimaryLevelDataMixin",
     "ModWorldServerChunkCacheMixin",
+    "ModWorldSectionStorageMixin",
     "WeatherMutationMixin"
   ],
   "client": [
@@ -19,6 +21,7 @@
     "BbsFormObjectBorderShaderMixin",
     "BbsModelObjectBorderShaderMixin",
     "BbsMorphRendererMixin",
+    "BbsTexturePropertyTrackMixin",
     "DirectionalBlockShadingMixin",
     "EntityShadowMixin",
     "EntityObjectBorderMixin",

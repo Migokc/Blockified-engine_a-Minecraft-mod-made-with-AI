@@ -3,11 +3,13 @@ package com.fnfmod.client.gui;
 import com.fnfmod.client.ClientOptions;
 import com.fnfmod.client.anim.CharacterAnimations;
 import com.fnfmod.client.audio.HitsoundPlayer;
-import com.fnfmod.client.math.Easing;
 import com.fnfmod.client.render.NoteStyle;
 import com.fnfmod.client.render.IconLibrary;
 import com.fnfmod.song.ModPackInfo;
+import com.fnfmod.song.GameBananaInstalledMod;
+import com.fnfmod.song.ModMinecraftVisualSettings;
 import com.fnfmod.song.SongLibrary;
+import com.fnfmod.world.ModContentScope;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.EditBox;
@@ -15,6 +17,7 @@ import net.minecraft.client.gui.components.AbstractWidget;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.gui.screens.options.controls.KeyBindsScreen;
 import net.minecraft.network.chat.Component;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.util.Mth;
 
 import java.util.List;
@@ -32,6 +35,9 @@ import java.nio.file.Path;
  */
 public class FnfSettingsScreen extends Screen {
 
+    private static final ResourceLocation GAMEBANANA_LOGO = ResourceLocation.fromNamespaceAndPath(
+            "fnfmod", "textures/gui/gamebanana_logo.png");
+
     private final Screen parent;
     /** True when the Song Menu opened a section directly, bypassing the legacy category page. */
     private boolean directCategory;
@@ -41,18 +47,20 @@ public class FnfSettingsScreen extends Screen {
     private static final double[] SCROLL_SPEEDS = {0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0};
     private static final int FOLDER_ROW_H = 26;
     private static final long SCROLL_TWEEN_NANOS = 200_000_000L;
-    private double pageScrollPx;
-    private double pageScrollTargetPx;
-    private double pageScrollFromPx;
-    private long pageScrollTweenStart;
-    private boolean pageScrollTweenActive;
+    private final TweenedScroll pageScroll = new TweenedScroll(SCROLL_TWEEN_NANOS);
     private final Map<AbstractWidget, Integer> pageWidgetBaseY = new IdentityHashMap<>();
-    private double folderScrollPx;
-    private double folderScrollTargetPx;
-    private double folderScrollFromPx;
-    private long folderScrollTweenStart;
-    private boolean folderScrollTweenActive;
+    private final TweenedScroll folderScroll = new TweenedScroll(SCROLL_TWEEN_NANOS);
     private record FolderWidget(AbstractWidget widget, int baseY, String iconPath) {}
+    /**
+     * Stable class-level model for one row in the Mods source list.
+     *
+     * Do not make this a method-local record. ModLauncher/Connector can transform
+     * this screen before lazily resolving a synthetic local class such as
+     * {@code FnfSettingsScreen$1Source}, which intermittently caused a
+     * NoClassDefFoundError while opening the screen.
+     */
+    private record FolderSource(String key, Path path, String label, boolean installed,
+                                boolean direct, int externalIndex, List<ModPackInfo> packs) {}
     private final List<FolderWidget> folderWidgets = new ArrayList<>();
     private final Set<AbstractWidget> suppressedFolderWidgets = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
     private final Set<String> expandedSources = new HashSet<>();
@@ -62,15 +70,15 @@ public class FnfSettingsScreen extends Screen {
     private Path selectedPackRoot;
     private record PermissionWidget(Button button, SongLibrary.ExternalContent content, int baseY) {}
     private final List<PermissionWidget> permissionWidgets = new ArrayList<>();
+    private Button gameBananaArtButton;
     private final Set<SongLibrary.ExternalContent> permissionDragVisited =
             java.util.EnumSet.noneOf(SongLibrary.ExternalContent.class);
     private boolean draggingPermissions;
     private boolean permissionDragEnables;
     private String permissionTargetLabel = "";
     private ModPackInfo selectedPackInfo;
-    private double packScrollPx, packScrollTargetPx, packScrollFromPx;
-    private long packScrollTweenStart;
-    private boolean packScrollTweenActive, draggingPackThumb;
+    private final TweenedScroll packScroll = new TweenedScroll(SCROLL_TWEEN_NANOS);
+    private boolean draggingPackThumb;
     private int packContentHeight;
     // Directory edits rescan the whole library, which is heavy; defer that until
     // the user leaves the Directories page instead of running it per change.
@@ -105,6 +113,7 @@ public class FnfSettingsScreen extends Screen {
         folderWidgets.clear();
         suppressedFolderWidgets.clear();
         permissionWidgets.clear();
+        gameBananaArtButton = null;
         selectedPackInfo = null;
         packContentHeight = 0;
         if (category == null) {
@@ -137,8 +146,7 @@ public class FnfSettingsScreen extends Screen {
         }
         if ("colors".equals(category) && !"colors".equals(newCategory)) restoreColorPreview();
         category = newCategory;
-        pageScrollPx = pageScrollTargetPx = pageScrollFromPx = 0;
-        pageScrollTweenActive = false;
+        pageScroll.reset(0, pageMaxScroll());
         init();
     }
 
@@ -158,7 +166,7 @@ public class FnfSettingsScreen extends Screen {
     }
 
     private int rowY(int index) {
-        return 50 + index * 26 - (int) Math.round(pageScrollPx);
+        return 50 + index * 26 - (int) Math.round(pageScroll.position());
     }
 
     private int pageViewportTop() { return 44; }
@@ -170,7 +178,7 @@ public class FnfSettingsScreen extends Screen {
     private int pageContentBottom() {
         return switch (category == null ? "categories" : category) {
             case "categories" -> 50 + 5 * 26 + 20;
-            case "visuals" -> 50 + 6 * 26 + 20;
+            case "visuals" -> 50 + 8 * 26 + 20;
             case "gameplay" -> 50 + 9 * 26 + 20;
             case "colors" -> 50 + 4 * 26 + 78 + 28;
             default -> pageViewportBottom();
@@ -182,7 +190,7 @@ public class FnfSettingsScreen extends Screen {
     }
 
     private void capturePageWidgets() {
-        int offset = (int) Math.round(pageScrollPx);
+        int offset = (int) Math.round(pageScroll.position());
         for (var child : children()) {
             if (child instanceof AbstractWidget widget) {
                 pageWidgetBaseY.put(widget, widget.getY() + offset);
@@ -191,7 +199,7 @@ public class FnfSettingsScreen extends Screen {
     }
 
     private void applyPageWidgetScroll() {
-        int offset = (int) Math.round(pageScrollPx);
+        int offset = (int) Math.round(pageScroll.position());
         int top = pageViewportTop(), bottom = pageViewportBottom();
         for (var entry : pageWidgetBaseY.entrySet()) {
             AbstractWidget widget = entry.getKey();
@@ -202,33 +210,20 @@ public class FnfSettingsScreen extends Screen {
     }
 
     private void clampScrolls() {
-        pageScrollPx = Mth.clamp(pageScrollPx, 0, pageMaxScroll());
-        pageScrollTargetPx = Mth.clamp(pageScrollTargetPx, 0, pageMaxScroll());
+        pageScroll.clampTo(pageMaxScroll());
         double folderMax = folderMaxScrollPx(folderTotalRows);
-        folderScrollPx = Mth.clamp(folderScrollPx, 0, folderMax);
-        folderScrollTargetPx = Mth.clamp(folderScrollTargetPx, 0, folderMax);
+        folderScroll.clampTo(folderMax);
     }
 
     private void scrollPageTo(double target) {
-        updatePageScrollTween();
-        pageScrollFromPx = pageScrollPx;
-        pageScrollTargetPx = Mth.clamp(target, 0, pageMaxScroll());
-        pageScrollTweenStart = System.nanoTime();
-        pageScrollTweenActive = Math.abs(pageScrollTargetPx - pageScrollFromPx) > 0.01;
-        if (!pageScrollTweenActive) pageScrollPx = pageScrollTargetPx;
+        pageScroll.animateTo(target, pageMaxScroll());
     }
 
     private void updatePageScrollTween() {
-        if (!pageScrollTweenActive) return;
-        double progress = (System.nanoTime() - pageScrollTweenStart) / (double) SCROLL_TWEEN_NANOS;
-        if (progress >= 1) {
-            pageScrollPx = pageScrollTargetPx;
-            pageScrollTweenActive = false;
-        } else {
-            double eased = Easing.apply("expoOut", progress);
-            pageScrollPx = pageScrollFromPx + (pageScrollTargetPx - pageScrollFromPx) * eased;
-        }
-        applyPageWidgetScroll();
+        double before = pageScroll.position();
+        pageScroll.update();
+        pageScroll.clampTo(pageMaxScroll());
+        if (before != pageScroll.position()) applyPageWidgetScroll();
     }
 
     // ------------------------------------------------------------------ pages
@@ -484,20 +479,25 @@ public class FnfSettingsScreen extends Screen {
             if (scrollY == 0) return super.mouseScrolled(mouseX, mouseY, scrollX, scrollY);
             if (mouseX >= permissionPanelX() - 6
                     && mouseX < permissionPanelX() + permissionPanelWidth() + 6) {
-                scrollPackToPx(packScrollTargetPx - scrollY * 18.0);
+                scrollPackToPx(packScroll.target() - scrollY * 18.0);
             } else {
-                scrollFoldersToPx(folderScrollTargetPx - scrollY * (FOLDER_ROW_H / 2.0));
+                scrollFoldersToPx(folderScroll.target() - scrollY * (FOLDER_ROW_H / 2.0));
             }
             return true;
         }
         if (scrollY != 0 && pageMaxScroll() > 0) {
-            scrollPageTo(pageScrollTargetPx - scrollY * 13.0);
+            scrollPageTo(pageScroll.target() - scrollY * 13.0);
             return true;
         }
         return super.mouseScrolled(mouseX, mouseY, scrollX, scrollY);
     }
 
     private void initFolders() {
+        addRenderableWidget(Button.builder(Component.literal(""), b ->
+                minecraft.setScreen(new GameBananaBrowserScreen(this)))
+                .bounds(width - 35, 13, 20, 20)
+                .tooltip(net.minecraft.client.gui.components.Tooltip.create(
+                        Component.literal("Browse Friday Night Funkin' mods on GameBanana"))).build());
         int headerWidth = Math.min(170, folderListWidth());
         int headerX = folderListX() + (folderListWidth() - headerWidth) / 2;
         addRenderableWidget(Button.builder(Component.literal("Add Mods Folder..."), b -> pickFolder())
@@ -505,7 +505,7 @@ public class FnfSettingsScreen extends Screen {
 
         long cacheBytes = SongLibrary.cacheSizeBytes();
         addRenderableWidget(Button.builder(
-                Component.literal(String.format("Clear Download Cache (%.1f MB)", cacheBytes / 1048576.0)), b -> {
+                Component.literal(String.format("Clear Local Cache (%.1f MB)", cacheBytes / 1048576.0)), b -> {
                     SongLibrary.clearCache();
                     switchTo("folders");
                 }).bounds(headerX, height - 56, headerWidth, 20).build());
@@ -516,10 +516,8 @@ public class FnfSettingsScreen extends Screen {
             selectedFolder = null;
             selectedPackRoot = null;
         }
-        record Source(String key, Path path, String label, boolean installed, boolean direct,
-                      int externalIndex, List<ModPackInfo> packs) {}
-        List<Source> sources = new ArrayList<>();
-        sources.add(new Source("installed", SongLibrary.modsDir(), "Installed Mods", true, false, -1,
+        List<FolderSource> sources = new ArrayList<>();
+        sources.add(new FolderSource("installed", SongLibrary.modsDir(), "Installed Mods", true, false, -1,
                 SongLibrary.discoverModPacks(SongLibrary.modsDir())));
         for (int i = 0; i < folders.size(); i++) {
             try {
@@ -530,7 +528,7 @@ public class FnfSettingsScreen extends Screen {
                         && path.getFileName().toString().equalsIgnoreCase("assets");
                 String label = direct && !packs.isEmpty() && !namedAssets
                         ? packs.get(0).name() : displayPath(path);
-                sources.add(new Source("external:" + folders.get(i), path, label, false, direct, i, packs));
+                sources.add(new FolderSource("external:" + folders.get(i), path, label, false, direct, i, packs));
             } catch (Exception ignored) {}
         }
         if (selectedPackRoot != null) {
@@ -542,17 +540,16 @@ public class FnfSettingsScreen extends Screen {
             if (!stillPresent) selectedPackRoot = null;
         }
         folderTotalRows = sources.size();
-        for (Source source : sources) {
+        for (FolderSource source : sources) {
             if (!source.direct() && expandedSources.contains(source.key())) {
                 folderTotalRows += source.packs().size();
             }
         }
-        folderScrollPx = Mth.clamp(folderScrollPx, 0, folderMaxScrollPx(folderTotalRows));
-        folderScrollTargetPx = Mth.clamp(folderScrollTargetPx, 0, folderMaxScrollPx(folderTotalRows));
+        folderScroll.clampTo(folderMaxScrollPx(folderTotalRows));
         int listX = folderListX();
         int listW = folderListWidth();
         int row = 0;
-        for (Source source : sources) {
+        for (FolderSource source : sources) {
             int baseY = folderListTop() + row++ * FOLDER_ROW_H;
             boolean hasPacks = !source.direct() && !source.packs().isEmpty();
             int controls = source.installed() ? 0 : 63;
@@ -569,6 +566,9 @@ public class FnfSettingsScreen extends Screen {
                     && source.packs().get(0).icon() != null
                     ? source.packs().get(0).icon().toString() : null;
             String sourceLabel = shortenPath(source.label(), listW - controls - arrowWidth - 24);
+            if (source.direct() && GameBananaInstalledMod.isDownloaded(source.path())) {
+                sourceLabel = "[GB] " + sourceLabel;
+            }
             String sourceId = source.installed() ? installedSource : folders.get(source.externalIndex());
             Button pathButton = addRenderableWidget(Button.builder(Component.literal(
                     (sourceIcon == null ? "" : "    ") + sourceLabel), button -> {
@@ -616,7 +616,8 @@ public class FnfSettingsScreen extends Screen {
             if (!source.direct() && expandedSources.contains(source.key())) {
                 for (ModPackInfo pack : source.packs()) {
                     int packY = folderListTop() + row++ * FOLDER_ROW_H;
-                    String label = shortenPath(pack.name(), listW - 48);
+                    String label = shortenPath((GameBananaInstalledMod.isDownloaded(pack.root())
+                            ? "[GB] " : "") + pack.name(), listW - 48);
                     String icon = pack.icon() == null ? null : pack.icon().toString();
                     Button mod = addRenderableWidget(Button.builder(Component.literal(
                             (icon == null ? "" : "    ") + label),
@@ -643,6 +644,12 @@ public class FnfSettingsScreen extends Screen {
         return "..." + java.io.File.separator + path.subpath(count - 3, count);
     }
 
+    private Component gameBananaArtLabel(Path pack) {
+        boolean enabled = ModMinecraftVisualSettings.live().configuredEnabled(pack);
+        return Component.literal(enabled ? "Y" : "X")
+                .withStyle(style -> style.withColor(enabled ? 0x80C71F : 0xFF6B6B));
+    }
+
     private int permissionPanelX() { return 16; }
     private int permissionPanelWidth() { return Math.min(150, Math.max(108, width / 3)); }
     private int packViewportTop() { return 48; }
@@ -662,6 +669,10 @@ public class FnfSettingsScreen extends Screen {
     private List<net.minecraft.util.FormattedCharSequence> packMetadataLines() {
         if (selectedPackInfo == null) return List.of();
         List<net.minecraft.util.FormattedCharSequence> lines = new ArrayList<>();
+        if (GameBananaInstalledMod.isDownloaded(selectedPackInfo.root())) {
+            lines.addAll(font.split(Component.literal("Source: GameBanana download"),
+                    permissionPanelWidth() - 10));
+        }
         if (!selectedPackInfo.version().isBlank()) {
             lines.addAll(font.split(Component.literal("Version: " + selectedPackInfo.version()),
                     permissionPanelWidth() - 10));
@@ -682,7 +693,8 @@ public class FnfSettingsScreen extends Screen {
         return lines;
     }
     private int packPermissionsTitleY() {
-        return packMetadataY() + packMetadataLines().size() * (font.lineHeight + 1) + 5;
+        return packMetadataY() + packMetadataLines().size() * (font.lineHeight + 1)
+                + 5;
     }
     private int packPermissionTop() { return packPermissionsTitleY() + 14; }
 
@@ -696,6 +708,19 @@ public class FnfSettingsScreen extends Screen {
                 selectedPackRoot == null ? "Mod source containing one or more packs." : "No description provided.",
                 null, "", "", List.of());
         permissionTargetLabel = selectedPackInfo.name();
+        if (selectedPackRoot != null) {
+            Path pack = selectedPackRoot;
+            gameBananaArtButton = addRenderableWidget(Button.builder(gameBananaArtLabel(pack), b -> {
+                try {
+                    ModMinecraftVisualSettings.live().setEnabled(pack,
+                            !ModMinecraftVisualSettings.live().configuredEnabled(pack));
+                    b.setMessage(gameBananaArtLabel(pack));
+                } catch (java.io.IOException error) {
+                    com.fnfmod.FnfMod.LOGGER.warn("Could not save Minecraft visuals setting for {}", pack, error);
+                }
+            }).bounds(permissionPanelX() + 4, packViewportTop() + 4, 20, 20).build());
+            gameBananaArtButton.active = !ModContentScope.isModWorld();
+        }
         SongLibrary.ExternalContent[] types = SongLibrary.ExternalContent.values();
         int panelW = permissionPanelWidth();
         int columns = panelW >= 138 ? 2 : 1;
@@ -712,6 +737,7 @@ public class FnfSettingsScreen extends Screen {
                 setSelectedPermission(type, enable);
             }).bounds(x, y, buttonW, 20).build());
             button.setAlpha(selected.contains(type) ? 1.0f : 0.42f);
+            button.active = !ModContentScope.isModWorld();
             permissionWidgets.add(new PermissionWidget(button, type, y));
         }
         int rows = (types.length + columns - 1) / columns;
@@ -723,37 +749,24 @@ public class FnfSettingsScreen extends Screen {
         return Math.max(0, packContentHeight - (packViewportBottom() - packViewportTop()));
     }
     private void clampPackScroll() {
-        packScrollPx = Mth.clamp(packScrollPx, 0, packMaxScrollPx());
-        packScrollTargetPx = Mth.clamp(packScrollTargetPx, 0, packMaxScrollPx());
+        packScroll.clampTo(packMaxScrollPx());
         applyPackWidgetScroll();
     }
     private void resetPackScroll() {
-        packScrollPx = packScrollTargetPx = packScrollFromPx = 0;
-        packScrollTweenActive = false;
+        packScroll.reset(0, packMaxScrollPx());
         draggingPackThumb = false;
     }
     private void scrollPackToPx(double target) {
-        updatePackScrollTween();
-        packScrollFromPx = packScrollPx;
-        packScrollTargetPx = Mth.clamp(target, 0, packMaxScrollPx());
-        packScrollTweenStart = System.nanoTime();
-        packScrollTweenActive = Math.abs(packScrollTargetPx - packScrollFromPx) > 0.01;
-        if (!packScrollTweenActive) packScrollPx = packScrollTargetPx;
+        packScroll.animateTo(target, packMaxScrollPx());
     }
     private void updatePackScrollTween() {
-        if (!packScrollTweenActive) return;
-        double progress = (System.nanoTime() - packScrollTweenStart) / (double) SCROLL_TWEEN_NANOS;
-        if (progress >= 1) {
-            packScrollPx = packScrollTargetPx;
-            packScrollTweenActive = false;
-        } else {
-            packScrollPx = packScrollFromPx + (packScrollTargetPx - packScrollFromPx)
-                    * Easing.apply("expoOut", progress);
-        }
-        applyPackWidgetScroll();
+        double before = packScroll.position();
+        packScroll.update();
+        packScroll.clampTo(packMaxScrollPx());
+        if (before != packScroll.position()) applyPackWidgetScroll();
     }
     private void applyPackWidgetScroll() {
-        int offset = (int) Math.round(packScrollPx);
+        int offset = (int) Math.round(packScroll.position());
         int top = packViewportTop(), bottom = packViewportBottom();
         for (PermissionWidget permission : permissionWidgets) {
             int y = permission.baseY() - offset;
@@ -767,9 +780,7 @@ public class FnfSettingsScreen extends Screen {
         int top = packViewportTop(), height = packViewportBottom() - top;
         int thumb = Math.max(14, (int) (height * height / (double) Math.max(height, packContentHeight)));
         double fraction = (mouseY - top - thumb / 2.0) / Math.max(1, height - thumb);
-        packScrollPx = Mth.clamp(fraction, 0, 1) * max;
-        packScrollTargetPx = packScrollFromPx = packScrollPx;
-        packScrollTweenActive = false;
+        packScroll.reset(Mth.clamp(fraction, 0, 1) * max, max);
         applyPackWidgetScroll();
     }
     private boolean clickPackScrollbar(double mouseX, double mouseY) {
@@ -797,7 +808,7 @@ public class FnfSettingsScreen extends Screen {
     }
 
     private void setSelectedPermission(SongLibrary.ExternalContent type, boolean enabled) {
-        if (selectedFolder == null) return;
+        if (selectedFolder == null || ModContentScope.isModWorld()) return;
         if (selectedPackRoot == null) {
             SongLibrary.setExternalFolderContent(selectedFolder, type, enabled);
         } else {
@@ -848,11 +859,10 @@ public class FnfSettingsScreen extends Screen {
         double rowTop = next * (double) FOLDER_ROW_H;
         double rowBottom = rowTop + FOLDER_ROW_H;
         double viewport = folderVisibleRows() * (double) FOLDER_ROW_H;
-        if (rowTop < folderScrollTargetPx) folderScrollTargetPx = rowTop;
-        else if (rowBottom > folderScrollTargetPx + viewport) folderScrollTargetPx = rowBottom - viewport;
-        folderScrollTargetPx = Mth.clamp(folderScrollTargetPx, 0, folderMaxScrollPx(folderTotalRows));
-        folderScrollPx = folderScrollTargetPx;
-        folderScrollTweenActive = false;
+        double target = folderScroll.target();
+        if (rowTop < target) target = rowTop;
+        else if (rowBottom > target + viewport) target = rowBottom - viewport;
+        folderScroll.reset(target, folderMaxScrollPx(folderTotalRows));
         switchTo("folders");
     }
 
@@ -889,37 +899,23 @@ public class FnfSettingsScreen extends Screen {
         int trackH = folderListBottom() - top;
         int thumbH = folderThumbHeight(total);
         double fraction = (mouseY - top - thumbH / 2.0) / Math.max(1, trackH - thumbH);
-        folderScrollPx = Mth.clamp(fraction, 0, 1) * max;
-        folderScrollTargetPx = folderScrollFromPx = folderScrollPx;
-        folderScrollTweenActive = false;
+        folderScroll.reset(Mth.clamp(fraction, 0, 1) * max, max);
         applyFolderWidgetScroll();
     }
 
     private void scrollFoldersToPx(double target) {
-        updateFolderScrollTween();
-        folderScrollFromPx = folderScrollPx;
-        folderScrollTargetPx = Mth.clamp(target, 0,
-                folderMaxScrollPx(folderTotalRows));
-        folderScrollTweenStart = System.nanoTime();
-        folderScrollTweenActive = Math.abs(folderScrollTargetPx - folderScrollFromPx) > 0.01;
-        if (!folderScrollTweenActive) folderScrollPx = folderScrollTargetPx;
+        folderScroll.animateTo(target, folderMaxScrollPx(folderTotalRows));
     }
 
     private void updateFolderScrollTween() {
-        if (!folderScrollTweenActive) return;
-        double progress = (System.nanoTime() - folderScrollTweenStart) / (double) SCROLL_TWEEN_NANOS;
-        if (progress >= 1) {
-            folderScrollPx = folderScrollTargetPx;
-            folderScrollTweenActive = false;
-        } else {
-            double eased = Easing.apply("expoOut", progress);
-            folderScrollPx = folderScrollFromPx + (folderScrollTargetPx - folderScrollFromPx) * eased;
-        }
-        applyFolderWidgetScroll();
+        double before = folderScroll.position();
+        folderScroll.update();
+        folderScroll.clampTo(folderMaxScrollPx(folderTotalRows));
+        if (before != folderScroll.position()) applyFolderWidgetScroll();
     }
 
     private void applyFolderWidgetScroll() {
-        int offset = (int) Math.round(folderScrollPx);
+        int offset = (int) Math.round(folderScroll.position());
         int top = folderListTop(), bottom = folderListBottom();
         for (FolderWidget row : folderWidgets) {
             int y = row.baseY() - offset;
@@ -997,6 +993,26 @@ public class FnfSettingsScreen extends Screen {
         addRenderableWidget(Button.builder(Component.literal("Rating Position..."),
                 b -> minecraft.setScreen(new RatingPositionScreen(this)))
                 .bounds(x, rowY(5), w, 20).build());
+        addRenderableWidget(Button.builder(ratingStyleLabel(), b -> {
+            ClientOptions.get().ratingStyle = "old".equals(ClientOptions.get().ratingStyle) ? "new" : "old";
+            ClientOptions.save();
+            b.setMessage(ratingStyleLabel());
+        }).bounds(x, rowY(6), w, 20).build());
+        addRenderableWidget(Button.builder(ratingTimingLabel(), b -> {
+            ClientOptions.get().ratingShowMs = !ClientOptions.get().ratingShowMs;
+            ClientOptions.save();
+            b.setMessage(ratingTimingLabel());
+        }).bounds(x, rowY(7), w, 20).build());
+    }
+
+    private Component ratingStyleLabel() {
+        return Component.literal("Rating Style: "
+                + ("old".equals(ClientOptions.get().ratingStyle) ? "Old" : "New"));
+    }
+
+    private Component ratingTimingLabel() {
+        return Component.literal("Show Rating Timing: "
+                + (ClientOptions.get().ratingShowMs ? "On" : "Off"));
     }
 
     private Component iconLabel(boolean player) {
@@ -1249,9 +1265,13 @@ public class FnfSettingsScreen extends Screen {
     private Component animsLabel(boolean opponent) {
         String selected = opponent ? ClientOptions.get().opponentAnimationSet
                 : ClientOptions.get().animationSet;
+        String type = opponent ? ClientOptions.get().opponentAnimationSetType
+                : ClientOptions.get().animationSetType;
+        boolean character2D = ClientOptions.PERFORMER_TYPE_2D.equals(
+                ClientOptions.normalizePerformerType(type));
         String shown = CharacterAnimations.NONE_SET.equalsIgnoreCase(selected) ? "None"
                 : CharacterAnimations.DEFAULT_SET.equalsIgnoreCase(selected) ? "Default (song)"
-                : selected + ".json";
+                : selected + (character2D ? " (2D)" : ".json");
         return Component.literal((opponent ? "Opponent Anims: " : "Player Anims: ") + shown);
     }
 
@@ -1279,6 +1299,7 @@ public class FnfSettingsScreen extends Screen {
             // buttons/text to paint over the filter controls.
             for (FolderWidget row : folderWidgets) row.widget().visible = false;
             for (PermissionWidget permission : permissionWidgets) permission.button().visible = false;
+            if (gameBananaArtButton != null) gameBananaArtButton.visible = false;
         } else {
             // Render scrolling page controls ourselves under one scissor. Merely
             // hiding controls whose origins left the viewport allowed partially
@@ -1286,6 +1307,10 @@ public class FnfSettingsScreen extends Screen {
             for (AbstractWidget widget : pageWidgetBaseY.keySet()) widget.visible = false;
         }
         super.render(gui, mouseX, mouseY, partialTick);
+        if ("folders".equals(category)) {
+            gui.blit(GAMEBANANA_LOGO, width - 33, 15, 16, 16,
+                    0, 0, 16, 16, 16, 16);
+        }
         if ("folders".equals(category)) {
             renderFolderRows(gui, mouseX, mouseY, partialTick);
             renderPackPanelContent(gui, mouseX, mouseY, partialTick);
@@ -1315,7 +1340,7 @@ public class FnfSettingsScreen extends Screen {
                 int trackH = folderListBottom() - trackTop;
                 int thumbH = folderThumbHeight(folderTotalRows);
                 int thumbY = trackTop + (int) ((trackH - thumbH)
-                        * (folderScrollPx / folderMaxScrollPx(folderTotalRows)));
+                        * (folderScroll.position() / folderMaxScrollPx(folderTotalRows)));
                 gui.fill(trackX, trackTop, trackX + 5, folderListBottom(), 0x55000000);
                 gui.fill(trackX, thumbY, trackX + 5, thumbY + thumbH,
                         BlockifiedScreenStyle.ACCENT);
@@ -1325,7 +1350,7 @@ public class FnfSettingsScreen extends Screen {
             int trackH = bottom - top;
             int contentH = pageContentBottom() - pageViewportTop();
             int thumbH = Math.max(16, trackH * trackH / Math.max(trackH, contentH));
-            int thumbY = top + (int) ((trackH - thumbH) * (pageScrollPx / pageMaxScroll()));
+            int thumbY = top + (int) ((trackH - thumbH) * (pageScroll.position() / pageMaxScroll()));
             gui.fill(width - 7, top, width - 4, bottom, 0x55000000);
             gui.fill(width - 7, thumbY, width - 4, thumbY + thumbH,
                     BlockifiedScreenStyle.ACCENT);
@@ -1336,6 +1361,15 @@ public class FnfSettingsScreen extends Screen {
                     width / 2, hintY(1), 0xAAAAAA);
             gui.drawCenteredString(font, "All folders under config/fnfmod/",
                     width / 2, hintY(0), 0xAAAAAA);
+        }
+        if ("folders".equals(category) && gameBananaArtButton != null
+                && gameBananaArtButton.isMouseOver(mouseX, mouseY)) {
+            String help = ModContentScope.isModWorld()
+                    ? "This button shows the saved choice. In a mod world, images, fonts, "
+                    + "and filters are temporarily forced on; the saved choice returns afterward."
+                    : "Allow this mod's images and fonts in Minecraft look. Y = allowed; X = hidden. "
+                    + "FNF look uses the permissions below.";
+            gui.renderTooltip(font, font.split(Component.literal(help), 210), mouseX, mouseY);
         }
     }
 
@@ -1349,7 +1383,7 @@ public class FnfSettingsScreen extends Screen {
         int panelX = permissionPanelX(), panelW = permissionPanelWidth();
         int top = packViewportTop(), bottom = packViewportBottom();
         gui.enableScissor(panelX - 4, top, panelX + panelW + 5, bottom);
-        int offset = (int) Math.round(packScrollPx);
+        int offset = (int) Math.round(packScroll.position());
         if (selectedPackInfo == null) {
             gui.drawCenteredString(font, "Select a mod", panelX + panelW / 2, top + 10,
                     BlockifiedScreenStyle.TEXT_MUTED);
@@ -1397,10 +1431,14 @@ public class FnfSettingsScreen extends Screen {
         if (packMaxScrollPx() > 0) {
             int height = bottom - top;
             int thumb = Math.max(14, (int) (height * height / (double) Math.max(height, packContentHeight)));
-            int thumbY = top + (int) ((height - thumb) * (packScrollPx / packMaxScrollPx()));
+            int thumbY = top + (int) ((height - thumb) * (packScroll.position() / packMaxScrollPx()));
             int x = panelX + panelW + 1;
             gui.fill(x, top, x + 4, bottom, 0x55000000);
             gui.fill(x, thumbY, x + 4, thumbY + thumb, BlockifiedScreenStyle.ACCENT);
+        }
+        if (gameBananaArtButton != null) {
+            gameBananaArtButton.visible = true;
+            gameBananaArtButton.render(gui, mouseX, mouseY, partialTick);
         }
     }
 

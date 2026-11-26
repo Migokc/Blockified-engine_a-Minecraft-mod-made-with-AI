@@ -18,9 +18,16 @@ java {
 
 repositories {
     mavenCentral()
+    maven {
+        name = 'CaffeineMC'
+        url = 'https://maven.caffeinemc.net/releases'
+    }
 }
 
 dependencies {
+    // Sodium's built-in video-options page API. Optional at runtime: Blockified
+    // still loads normally without Sodium/Iris installed.
+    compileOnly('net.caffeinemc:sodium-neoforge-api:0.8.13+mc1.21.1')
     // Sandboxed Lua 5.x runtime for Psych Engine script compatibility.
     // Bundle it: players should only need this mod jar, not a separate Lua mod.
     jarJar(implementation("org.luaj:luaj-jse:3.0.1")) {
@@ -29,9 +36,22 @@ dependencies {
             prefer '3.0.1'
         }
     }
+    // Bounded ZIP/7z/RAR mod downloads. Bundle the readers so players do not
+    // need 7-Zip or WinRAR installed on their operating system.
+    // Minecraft 1.21.1 already ships Commons Compress 1.26.0.
+    compileOnly("org.apache.commons:commons-compress:1.26.0")
+    jarJar(implementation("org.tukaani:xz:1.10")) {
+        version { strictly '[1.10,2.0)'; prefer '1.10' }
+    }
+    jarJar(implementation("com.github.junrar:junrar:8.1.1") { transitive = false }) {
+        version { strictly '[8.1,9.0)'; prefer '8.1.1' }
+    }
     // Frame-rate-independent note input uses org.lwjgl.system.windows.User32
     // (GetAsyncKeyState) from LWJGL, which Minecraft already ships — no bundled
     // dependency, so nothing can clash on the module path.
+    // Minecraft also ships JNA/JNA Platform. Compile against it for the in-process
+    // Windows Explorer folder dialog; do not bundle a second copy in the mod jar.
+    compileOnly("net.java.dev.jna:jna-platform:5.14.0")
 }
 
 neoForge {
@@ -98,6 +118,12 @@ tasks.register('validateMenuInput', JavaExec) {
     mainClass = 'com.fnfmod.client.lua.MenuScrollInputChecks'
 }
 
+tasks.register('validateTweenedScroll', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.fnfmod.client.gui.TweenedScrollChecks'
+}
+
 tasks.register('validateVirtualMachines', JavaExec) {
     dependsOn testClasses
     classpath = sourceSets.test.runtimeClasspath
@@ -109,11 +135,61 @@ tasks.register('validateWeatherRollback', JavaExec) {
     classpath = sourceSets.test.runtimeClasspath
     mainClass = 'com.fnfmod.session.WeatherRollbackChecks'
 }
+
+tasks.register('validateBbsTextureKeyframes', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.fnfmod.client.anim.BbsTextureKeyframeCompatChecks'
+}
+tasks.register('validateCharacterSelectionRouting', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.fnfmod.client.gameplay.CharacterSelectionRoutingChecks'
+}
+
+tasks.register('validateGameplayMusicMute', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.fnfmod.client.audio.GameplayMusicMuteChecks'
+}
+
+tasks.register('validateNoteVisualsPacket', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.fnfmod.client.render.NoteVisualsPacketChecks'
+}
+
+tasks.register('validateGameBananaLinks', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.fnfmod.song.GameBananaModLinksChecks'
+}
+tasks.register('validateGameBananaMarkers', JavaExec) {
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.fnfmod.client.gui.GameBananaBrowserChecks'
+}
+tasks.register('validateGameBananaInstaller', JavaExec) {
+    dependsOn tasks.named('testClasses')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.fnfmod.song.GameBananaInstallerChecks'
+}
+tasks.register('validateGameBananaVisualPolicy', JavaExec) {
+    dependsOn tasks.named('testClasses')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'com.fnfmod.client.gameplay.GameBananaVisualPolicyChecks'
+}
 tasks.named('test', Test) {
     // The regression checks above have an executable main, not JUnit annotations.
     failOnNoDiscoveredTests = false
 }
 tasks.named('check') {
     dependsOn tasks.named('validateLuaLayers'), tasks.named('validateMenuInput'),
-            tasks.named('validateVirtualMachines'), tasks.named('validateWeatherRollback')
+            tasks.named('validateVirtualMachines'), tasks.named('validateWeatherRollback'),
+            tasks.named('validateBbsTextureKeyframes'), tasks.named('validateTweenedScroll'),
+            tasks.named('validateCharacterSelectionRouting'), tasks.named('validateGameplayMusicMute'),
+            tasks.named('validateNoteVisualsPacket'),
+            tasks.named('validateGameBananaLinks'),
+            tasks.named('validateGameBananaMarkers'), tasks.named('validateGameBananaInstaller'),
+            tasks.named('validateGameBananaVisualPolicy')
 }

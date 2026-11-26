@@ -56,6 +56,16 @@ final class LuaWorldTextRenderer {
         for (FormattedCharSequence line : lines) {
             blockWidth = Math.max(blockWidth, lineWidth(font, line, letterSpacing));
         }
+        // Text used to be centred on its world position. NaN preserves that default;
+        // an explicit origin uses the same unscaled-pixel convention as sprites.
+        float blockHeight = lines.size() * advance;
+        double frameWidth = text.frameWidth() > 0 ? text.frameWidth() : blockWidth * textScale;
+        double frameHeight = text.frameHeight() > 0 ? text.frameHeight() : blockHeight * textScale;
+        double shiftX = Double.isFinite(text.originX())
+                ? (frameWidth * 0.5 - text.originX()) / textScale : 0;
+        double shiftY = Double.isFinite(text.originY())
+                ? (frameHeight * 0.5 - text.originY()) / textScale : 0;
+        poseStack.translate(shiftX, shiftY, 0);
 
         // Bake every world text block once. Besides being much cheaper for outlined text, the
         // two-sided textured quad gives labels a stable mirrored back face. Attached button text

@@ -3,6 +3,11 @@ package com.fnfmod.client.gameplay;
 import com.fnfmod.FnfMod;
 import com.fnfmod.client.render.SparrowAtlas;
 import com.fnfmod.client.render.AnimateAtlas;
+import com.fnfmod.client.render.AnimateAtlasCache;
+import com.fnfmod.client.render.SpriteAtlasCache;
+import com.fnfmod.song.SongLibrary;
+import com.mojang.blaze3d.systems.RenderSystem;
+import net.minecraft.client.gui.GuiGraphics;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -31,6 +36,11 @@ import java.util.Map;
  */
 public final class WorldCharacter implements AutoCloseable {
 
+    /** JSON scale remains authoritative; world rendering applies this extra size multiplier. */
+    public static final double WORLD_RENDER_SCALE = 0.23;
+    /** Position coordinates still use Blockified's established 64-pixel world grid. */
+    public static final double WORLD_PIXELS_PER_BLOCK = 64.0;
+
     private record Animation(List<SparrowAtlas.Frame> frames, double fps, boolean loop,
                              double offsetX, double offsetY, String prefix, List<Integer> indices,
                              SparrowAtlas sheet) {}
@@ -44,10 +54,13 @@ public final class WorldCharacter implements AutoCloseable {
     private final Map<String, Animation> animations = new LinkedHashMap<>();
     private final List<String> order = new ArrayList<>();
     private double scaleX = 1, scaleY = 1;
+    private double initialScale = 1;
     private double alpha = 1;
     private int color = 0xFFFFFF;
     private boolean flipX;
     private boolean antialiasing = true;
+    private boolean initialFlipX;
+    private boolean initialAntialiasing = true;
     private boolean billboard = true;
     private boolean lighting = true;
     private String renderMode = "auto";
@@ -56,6 +69,7 @@ public final class WorldCharacter implements AutoCloseable {
     private int danceEvery = 2;
     private boolean danceFromSing;
     private int refW = 1, refH = 1;
+    private double originX = Double.NaN, originY = Double.NaN;
 
     private String animation = "idle";
     private String idleSuffix = "";
@@ -66,6 +80,7 @@ public final class WorldCharacter implements AutoCloseable {
     private boolean danced = true;
     private boolean specialAnim;
     private boolean animationFinished;
+    private boolean sustainActive;
 
     private WorldCharacter() {}
 
@@ -76,21 +91,14 @@ public final class WorldCharacter implements AutoCloseable {
             String image = str(data, "image");
             String assetPath = str(data, "assetPath");
             String renderType = str(data, "renderType").toLowerCase(Locale.ROOT);
-            boolean animate = renderType.contains("animateatlas") || !assetPath.isEmpty();
-            SparrowAtlas atlas;
-            if (animate) {
-                atlas = AnimateAtlas.load(AnimateAtlas.resolveFolder(json, assetPath));
-                image = assetPath;
-            } else {
-                if (image.isEmpty()) return null;
-                Path base = json.getParent();
-                while (base != null && !Files.isDirectory(base.resolve("images"))) base = base.getParent();
-                if (base == null) base = json.getParent();
-                Path png = base.resolve("images").resolve(image + ".png");
-                Path xml = base.resolve("images").resolve(image + ".xml");
-                atlas = SparrowAtlas.load(png, xml);
+            if (image.isEmpty()) image = assetPath;
+            SparrowAtlas atlas = loadAssetSheet(json, image, renderType,
+                    antialiasingFlag(data));
+            if (atlas == null) {
+                FnfMod.LOGGER.warn("Could not resolve {} character atlas '{}' for {}",
+                        renderType.isBlank() ? "2D" : renderType, image, json);
+                return null;
             }
-            if (atlas == null) return null;
 
             WorldCharacter c = new WorldCharacter();
             c.atlas = atlas;
@@ -98,6 +106,9 @@ public final class WorldCharacter implements AutoCloseable {
             c.scaleX = c.scaleY = num(data, "scale", 1);
             c.flipX = data.has("flipX") ? boolAttr(data, "flipX", false) : boolAttr(data, "flip_x", false);
             c.antialiasing = antialiasingFlag(data);
+            c.initialScale = c.scaleX;
+            c.initialFlipX = c.flipX;
+            c.initialAntialiasing = c.antialiasing;
             c.singDuration = Math.max(0.1, data.has("singTime")
                     ? num(data, "singTime", 4) : num(data, "sing_duration", 4));
             c.danceEvery = (int) (data.has("danceEvery")
@@ -123,7 +134,12 @@ public final class WorldCharacter implements AutoCloseable {
                 if (!animationAsset.isEmpty() && !animationAsset.equals(assetPath)) {
                     sheet = sheets.get(animationAsset);
                     if (sheet == null) {
-                        sheet = AnimateAtlas.load(AnimateAtlas.resolveFolder(json, animationAsset));
+                        // Multi-atlas V-Slice characters can freely mix Animate,
+                        // Sparrow, and Packer sheets. The animation's renderType,
+                        // when present, overrides the character's base type.
+                        String animationType = str(a, "renderType");
+                        sheet = loadAssetSheet(json, animationAsset, animationType,
+                                antialiasingFlag(data));
                         if (sheet != null) sheets.put(animationAsset, sheet);
                     }
                     if (sheet == null) continue;
@@ -133,12 +149,18 @@ public final class WorldCharacter implements AutoCloseable {
                         ? new ArrayList<>(sheet.framesBySymbol(prefix)) : frames(sheet, prefix, indices);
                 if (frames.isEmpty()) continue;
                 double[] off = pair(a, "offsets");
-                c.animations.put(trigger, new Animation(frames, num(a, "fps", 24) <= 0 ? 24 : num(a, "fps", 24),
+                double fps = a.has("fps") ? num(a, "fps", 24) : num(a, "frameRate", 24);
+                c.animations.put(trigger, new Animation(frames, fps <= 0 ? 24 : fps,
                         a.has("looped") ? boolAttr(a, "looped", false) : boolAttr(a, "loop", false),
                         off[0], off[1], prefix, indices, sheet));
                 c.order.add(trigger);
             }
-            if (c.animations.isEmpty()) { atlas.close(); return null; }
+            if (c.animations.isEmpty()) {
+                FnfMod.LOGGER.warn("Character {} loaded atlas '{}' but none of its animations resolved",
+                        json, image);
+                atlas.close();
+                return null;
+            }
             for (SparrowAtlas sheet : c.animationSheets()) sheet.setAntialiasing(c.antialiasing);
             if (c.danceEvery <= 0) c.danceEvery = has(c, "danceLeft") && has(c, "danceRight") ? 1 : 2;
 
@@ -148,7 +170,7 @@ public final class WorldCharacter implements AutoCloseable {
             c.refH = Math.max(1, f0.frameH);
             c.play(c.findExact(c, "idle") != null ? "idle" : c.order.get(0), true);
             return c;
-        } catch (Exception error) {
+        } catch (Throwable error) {
             FnfMod.LOGGER.warn("Failed to load world character {}: {}", json, error.toString());
             return null;
         }
@@ -165,6 +187,7 @@ public final class WorldCharacter implements AutoCloseable {
         frame = 0;
         elapsed = 0;
         animationFinished = false;
+        sustainActive = false;
         holdTimer = 0;
         specialAnim = special;
         if (danceFromSing) {
@@ -195,6 +218,26 @@ public final class WorldCharacter implements AutoCloseable {
     /** Psych-compatible alternate-idle suffix used by the Alt Idle Animation event. */
     public void setIdleSuffix(String suffix) {
         idleSuffix = suffix == null ? "" : suffix;
+    }
+
+    /** Restores JSON defaults before a cached character is assigned to a new role. */
+    public void resetForReuse() {
+        scaleX = scaleY = initialScale;
+        alpha = 1;
+        color = 0xFFFFFF;
+        flipX = initialFlipX;
+        billboard = true;
+        lighting = true;
+        renderMode = "auto";
+        seeThrough = false;
+        originX = originY = Double.NaN;
+        idleSuffix = "";
+        holdTimer = heyTimer = 0;
+        danced = true;
+        specialAnim = false;
+        sustainActive = false;
+        setAntialiasing(initialAntialiasing);
+        play(findExact(this, "idle") != null ? "idle" : order.get(0), true);
     }
 
     public void beat(int beat, int speed) {
@@ -231,7 +274,7 @@ public final class WorldCharacter implements AutoCloseable {
         if (animation.toLowerCase(Locale.ROOT).startsWith("sing")) {
             holdTimer += seconds * Math.max(0.01, playbackRate);
             double singSeconds = Math.max(0.001, stepMs) * 0.0011 * singDuration;
-            if (!specialAnim && holdTimer >= singSeconds) dance(true);
+            if (!specialAnim && !sustainActive && holdTimer >= singSeconds) dance(true);
         }
     }
 
@@ -241,10 +284,32 @@ public final class WorldCharacter implements AutoCloseable {
         double frameTime = 1.0 / current.fps();
         while (elapsed >= frameTime) {
             elapsed -= frameTime;
-            if (frame + 1 < current.frames().size()) frame++;
+            int frameLimit = sustainActive && animation.toLowerCase(Locale.ROOT).startsWith("sing")
+                    ? Math.min(2, current.frames().size()) : current.frames().size();
+            if (frame + 1 < frameLimit) frame++;
+            else if (sustainActive && frameLimit > 0) { frame = 0; animationFinished = false; }
             else if (current.loop()) frame = 0;
             else { animationFinished = true; break; }
         }
+    }
+
+    /** Starts/continues a held sing without restarting its clock every frame. */
+    public boolean hold(String requested) {
+        String match = find(requested);
+        if (match == null) return false;
+        if (!match.equals(animation)) play(match, true);
+        sustainActive = true;
+        holdTimer = 0;
+        return true;
+    }
+
+    public void endHold() {
+        if (!sustainActive) return;
+        sustainActive = false;
+        // A released sustain behaves like a freshly hit normal note: keep the
+        // sing pose, then let the ordinary sing-duration timer return to idle.
+        holdTimer = 0;
+        animationFinished = false;
     }
 
     public void playHey(double seconds) {
@@ -275,6 +340,16 @@ public final class WorldCharacter implements AutoCloseable {
     public int texHeight() { return currentSheet().height(); }
     public int refW() { return refW; }
     public int refH() { return refH; }
+    public double frameWidth() {
+        SparrowAtlas.Frame value = currentFrame();
+        return value == null ? refW : value.frameW;
+    }
+    public double frameHeight() {
+        SparrowAtlas.Frame value = currentFrame();
+        return value == null ? refH : value.frameH;
+    }
+    public double originX() { return Double.isFinite(originX) ? originX : refW * 0.5; }
+    public double originY() { return Double.isFinite(originY) ? originY : refH * 0.5; }
     public double scaleX() { return scaleX; }
     public double scaleY() { return scaleY; }
     public double alpha() { return alpha; }
@@ -292,6 +367,8 @@ public final class WorldCharacter implements AutoCloseable {
     public void setAlpha(double v) { alpha = Math.max(0, Math.min(1, v)); }
     public void setColor(int rgb) { color = rgb & 0xFFFFFF; }
     public void setFlipX(boolean v) { flipX = v; }
+    public void setOriginX(double v) { if (Double.isFinite(v)) originX = v; }
+    public void setOriginY(double v) { if (Double.isFinite(v)) originY = v; }
     public void setBillboard(boolean v) { billboard = v; }
     public void setLighting(boolean v) { lighting = v; renderMode = "auto"; }
     public void setRenderMode(String value) {
@@ -306,6 +383,52 @@ public final class WorldCharacter implements AutoCloseable {
     public String image() { return image; }
     public String current() { return animation; }
     public List<String> animationNames() { return order; }
+
+    /** Initial visible bottom relative to the sprite origin, converted to world blocks. */
+    public double initialBottomBlocks() {
+        Animation current = animations.get(animation);
+        SparrowAtlas.Frame value = currentFrame();
+        if (current == null || value == null) {
+            return refH * Math.abs(scaleY) * WORLD_RENDER_SCALE / (WORLD_PIXELS_PER_BLOCK * 2.0);
+        }
+        double top = -originY() - value.frameY - current.offsetY();
+        double visibleHeight = value.rotated ? value.w : value.h;
+        return (top + visibleHeight) * scaleY * WORLD_RENDER_SCALE / WORLD_PIXELS_PER_BLOCK;
+    }
+
+    /** Lightweight picker preview using the same current atlas/frame as gameplay. */
+    public void drawPreview(GuiGraphics gui, float centerX, float centerY, float scale) {
+        SparrowAtlas.Frame value = currentFrame();
+        if (value == null || gui == null) return;
+        float oldAlpha = SparrowAtlas.globalAlpha;
+        float oldR = SparrowAtlas.tintR, oldG = SparrowAtlas.tintG, oldB = SparrowAtlas.tintB;
+        float sx = Math.max(0.01f, scale * (float) Math.abs(scaleX));
+        float sy = Math.max(0.01f, scale * (float) Math.abs(scaleY));
+        gui.flush();
+        SparrowAtlas.globalAlpha = (float) alpha;
+        SparrowAtlas.tintR = ((color >> 16) & 255) / 255f;
+        SparrowAtlas.tintG = ((color >> 8) & 255) / 255f;
+        SparrowAtlas.tintB = (color & 255) / 255f;
+        double[] offset = currentOffset();
+        gui.pose().pushPose();
+        gui.pose().translate(centerX - offset[0] * sx, centerY - offset[1] * sy, 0);
+        gui.pose().scale(flipX ? -1f : 1f, sy / sx, 1f);
+        if (flipX) {
+            gui.flush();
+            RenderSystem.disableCull();
+        }
+        currentSheet().drawScaled(gui, value, 0, 0, sx, null);
+        if (flipX) {
+            gui.flush();
+            RenderSystem.enableCull();
+        }
+        gui.pose().popPose();
+        gui.flush();
+        SparrowAtlas.globalAlpha = oldAlpha;
+        SparrowAtlas.tintR = oldR;
+        SparrowAtlas.tintG = oldG;
+        SparrowAtlas.tintB = oldB;
+    }
 
     public void setAntialiasing(boolean enabled) {
         antialiasing = enabled;
@@ -367,12 +490,87 @@ public final class WorldCharacter implements AutoCloseable {
     }
 
     private static List<Integer> readIndices(JsonObject a) {
-        if (a.has("indices") && a.get("indices").isJsonArray() && a.getAsJsonArray("indices").size() > 0) {
+        String key = a.has("indices") ? "indices" : a.has("frameIndices") ? "frameIndices" : "";
+        if (!key.isEmpty() && a.get(key).isJsonArray() && a.getAsJsonArray(key).size() > 0) {
             List<Integer> list = new ArrayList<>();
-            for (JsonElement ix : a.getAsJsonArray("indices")) {
+            for (JsonElement ix : a.getAsJsonArray(key)) {
                 try { list.add(ix.getAsInt()); } catch (Exception ignored) {}
             }
             return list.isEmpty() ? null : list;
+        }
+        return null;
+    }
+
+    /** Resolves and loads every atlas format currently used by V-Slice character JSONs. */
+    private static SparrowAtlas loadAssetSheet(Path definitionJson, String raw, String renderType,
+                                                boolean antialiasing) {
+        if (raw == null || raw.isBlank()) return null;
+        String type = renderType == null ? "" : renderType.trim().toLowerCase(Locale.ROOT);
+        Path animateFolder = AnimateAtlas.resolveFolder(definitionJson, raw);
+        if (type.contains("animateatlas") || animateFolder != null) {
+            SparrowAtlas animate = AnimateAtlasCache.acquire(animateFolder, antialiasing);
+            if (animate != null || type.contains("animateatlas")) return animate;
+        }
+
+        Path png = resolveSparrowAsset(definitionJson, raw, ".png");
+        if (png == null) return null;
+        if (type.contains("packer")) {
+            Path txt = resolveSparrowAsset(definitionJson, raw, ".txt");
+            return SparrowAtlas.loadPacker(png, txt, antialiasing);
+        }
+        Path xml = resolveSparrowAsset(definitionJson, raw, ".xml");
+        if (xml != null) return SpriteAtlasCache.acquire(png, xml, antialiasing);
+        Path txt = resolveSparrowAsset(definitionJson, raw, ".txt");
+        return txt == null ? null : SparrowAtlas.loadPacker(png, txt, antialiasing);
+    }
+
+    /** Resolves Psych and V-Slice PNG/XML paths without assuming one engine layout. */
+    private static Path resolveSparrowAsset(Path definitionJson, String raw, String extension) {
+        if (definitionJson == null || raw == null || raw.isBlank()) return null;
+        String value = raw.trim().replace('\\', '/');
+        String library = "";
+        int colon = value.indexOf(':');
+        if (colon > 0) {
+            library = value.substring(0, colon);
+            value = value.substring(colon + 1);
+        }
+        while (value.startsWith("/")) value = value.substring(1);
+        if (value.toLowerCase(Locale.ROOT).endsWith(extension)) {
+            value = value.substring(0, value.length() - extension.length());
+        }
+        List<Path> candidates = new ArrayList<>();
+        Path ancestor = definitionJson.toAbsolutePath().normalize().getParent();
+        for (int depth = 0; ancestor != null && depth < 8;
+             depth++, ancestor = ancestor.getParent()) {
+            if (!library.isBlank()) {
+                candidates.add(ancestor.resolve(library).resolve("images").resolve(value + extension));
+                candidates.add(ancestor.resolve("assets").resolve(library)
+                        .resolve("images").resolve(value + extension));
+            }
+            candidates.add(ancestor.resolve("images").resolve(value + extension));
+            candidates.add(ancestor.resolve("shared/images").resolve(value + extension));
+            candidates.add(ancestor.resolve("assets/images").resolve(value + extension));
+            candidates.add(ancestor.resolve("assets/shared/images").resolve(value + extension));
+        }
+        // V-Slice mods may define a character locally while reusing its atlas
+        // from the selected base assets directory. Mirror Polymod's merged
+        // filesystem after exhausting the definition-local candidates.
+        for (Path root : SongLibrary.orderedPickerContentRoots(SongLibrary.ExternalContent.IMAGES)) {
+            if (root == null) continue;
+            if (!library.isBlank()) {
+                candidates.add(root.resolve(library).resolve("images").resolve(value + extension));
+                candidates.add(root.resolve("assets").resolve(library)
+                        .resolve("images").resolve(value + extension));
+            }
+            candidates.add(root.resolve("images").resolve(value + extension));
+            candidates.add(root.resolve("shared/images").resolve(value + extension));
+            candidates.add(root.resolve("assets/images").resolve(value + extension));
+            candidates.add(root.resolve("assets/shared/images").resolve(value + extension));
+            candidates.add(root.resolve(value + extension));
+        }
+        for (Path candidate : candidates) {
+            Path normalized = candidate.normalize();
+            if (Files.isRegularFile(normalized)) return normalized;
         }
         return null;
     }

@@ -66,6 +66,9 @@ public sealed interface LuaWorldObject permits LuaWorldObject.Sprite, LuaWorldOb
             double height,
             double graphicWidth,
             double graphicHeight,
+            /** Pivot in unscaled graphic/frame pixels. */
+            double originX,
+            double originY,
             double scaleX,
             double scaleY,
             double alpha,
@@ -86,6 +89,11 @@ public sealed interface LuaWorldObject permits LuaWorldObject.Sprite, LuaWorldOb
             double y,
             double z,
             double width,
+            double frameWidth,
+            double frameHeight,
+            /** Pivot in the rendered text block's unscaled pixels; NaN keeps its centre. */
+            double originX,
+            double originY,
             int textSize,
             double scaleX,
             double scaleY,

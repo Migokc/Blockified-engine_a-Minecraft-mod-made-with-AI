@@ -37,12 +37,84 @@ public class SongPlayer {
         double durationMs;
     }
 
+    /** Decoded away from the render thread; OpenAL objects are created only on that thread. */
+    public record PreparedTrack(Role role, short[] samples, int channels, int sampleRate) {}
+    public record Prepared(List<PreparedTrack> tracks) {}
+
+    public static Prepared prepare(Path instFile, Path voices, Path voicesPlayer,
+                                   Path voicesOpponent) throws IOException {
+        if (instFile == null) throw new IOException("Missing Inst.ogg");
+        List<PreparedTrack> result = new ArrayList<>();
+        result.add(decodeTrack(instFile, Role.INST));
+        if (voicesPlayer != null || voicesOpponent != null) {
+            if (voicesPlayer != null) result.add(decodeTrack(voicesPlayer, Role.VOICES_PLAYER));
+            if (voicesOpponent != null) result.add(decodeTrack(voicesOpponent, Role.VOICES_OPPONENT));
+        } else if (voices != null) result.add(decodeTrack(voices, Role.VOICES));
+        return new Prepared(List.copyOf(result));
+    }
+
+    private static PreparedTrack decodeTrack(Path path, Role role) throws IOException {
+        ByteBuffer fileData = null;
+        ShortBuffer pcm = null;
+        try (FileChannel fc = FileChannel.open(path, StandardOpenOption.READ)) {
+            long bytes = fc.size();
+            if (bytes <= 0 || bytes > Integer.MAX_VALUE) throw new IOException("Invalid OGG size: " + path);
+            fileData = MemoryUtil.memAlloc((int) bytes);
+            while (fileData.hasRemaining()) {
+                if (fc.read(fileData) < 0) throw new IOException("Truncated OGG: " + path);
+            }
+            fileData.flip();
+            try (MemoryStack stack = MemoryStack.stackPush()) {
+                IntBuffer channels = stack.mallocInt(1);
+                IntBuffer sampleRate = stack.mallocInt(1);
+                pcm = STBVorbis.stb_vorbis_decode_memory(fileData, channels, sampleRate);
+                if (pcm == null) throw new IOException("Failed to decode OGG: " + path);
+                short[] samples = new short[pcm.remaining()];
+                pcm.get(samples);
+                return new PreparedTrack(role, samples, channels.get(0), sampleRate.get(0));
+            }
+        } finally {
+            if (pcm != null) org.lwjgl.system.libc.LibCStdlib.free(pcm);
+            if (fileData != null) MemoryUtil.memFree(fileData);
+        }
+    }
+
+    public void loadPrepared(Prepared prepared) throws IOException {
+        if (disposed) throw new IOException("Song player is already disposed");
+        try {
+            for (PreparedTrack source : prepared.tracks()) {
+                ShortBuffer pcm = MemoryUtil.memAllocShort(source.samples().length);
+                try {
+                    pcm.put(source.samples()).flip();
+                    Track track = new Track();
+                    track.role = source.role();
+                    track.buffer = AL10.alGenBuffers();
+                    int format = source.channels() == 2 ? AL10.AL_FORMAT_STEREO16 : AL10.AL_FORMAT_MONO16;
+                    AL10.alBufferData(track.buffer, format, pcm, source.sampleRate());
+                    track.source = AL10.alGenSources();
+                    AL10.alSourcei(track.source, AL10.AL_BUFFER, track.buffer);
+                    AL10.alSourcei(track.source, AL10.AL_SOURCE_RELATIVE, AL10.AL_TRUE);
+                    AL10.alSource3f(track.source, AL10.AL_POSITION, 0, 0, 0);
+                    AL10.alSourcef(track.source, AL10.AL_ROLLOFF_FACTOR, 0);
+                    track.durationMs = (double) (source.samples().length / source.channels())
+                            / source.sampleRate() * 1000.0;
+                    tracks.add(track);
+                    if (track.role == Role.INST) inst = track;
+                } finally { MemoryUtil.memFree(pcm); }
+            }
+        } catch (Throwable error) {
+            dispose();
+            rethrowLoadFailure(error);
+        }
+    }
+
     private final List<Track> tracks = new ArrayList<>();
     private Track inst;
     private boolean started;
     private boolean paused;
     private boolean disposed;
     private float playbackRate = 1.0f;
+    private float outputGain = 1.0f;
 
     // position smoothing (AL updates in mixer-sized steps)
     private double lastRawMs = -1;
@@ -284,6 +356,12 @@ public class SongPlayer {
         return playbackRate;
     }
 
+    /** Additional gain for distance-attenuated nearby playback. */
+    public void setOutputGain(float gain) {
+        outputGain = Math.max(0f, Math.min(1f, gain));
+        applyVolumes();
+    }
+
     private void setRoleVolume(Role role, float volume) {
         for (Track t : tracks) {
             if (t.role == role) t.volume = volume;
@@ -298,7 +376,7 @@ public class SongPlayer {
         float global = options.getSoundSourceVolume(SoundSource.MASTER)
                 * options.getSoundSourceVolume(SoundSource.RECORDS);
         for (Track t : tracks) {
-            float gain = Math.max(0f, Math.min(1f, t.volume * global));
+            float gain = Math.max(0f, Math.min(1f, t.volume * global * outputGain));
             if (Float.compare(gain, t.appliedGain) == 0) continue;
             AL10.alSourcef(t.source, AL10.AL_GAIN, gain);
             t.appliedGain = gain;

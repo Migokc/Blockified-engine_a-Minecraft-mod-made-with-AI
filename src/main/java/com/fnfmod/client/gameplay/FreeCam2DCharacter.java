@@ -93,7 +93,8 @@ public final class FreeCam2DCharacter implements AutoCloseable {
                     }
                     if (sheet == null) continue;
                 }
-                double fps = a.has("fps") ? a.get("fps").getAsDouble() : 24;
+                double fps = a.has("fps") ? a.get("fps").getAsDouble()
+                        : a.has("frameRate") ? a.get("frameRate").getAsDouble() : 24;
                 boolean loop = a.has("looped") ? a.get("looped").getAsBoolean()
                         : a.has("loop") && a.get("loop").getAsBoolean();
                 double[] off = readOffsets(a);

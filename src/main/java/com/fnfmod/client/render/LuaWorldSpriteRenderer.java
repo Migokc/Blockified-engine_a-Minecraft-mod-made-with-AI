@@ -9,6 +9,10 @@ import net.minecraft.resources.ResourceLocation;
 
 /** Draws world-camera Lua sprites after their world transform has been applied. */
 final class LuaWorldSpriteRenderer {
+    record Bounds(float left, float top, float width, float height) {
+        float centerX() { return left + width * 0.5f; }
+        float centerY() { return top + height * 0.5f; }
+    }
     private static final ResourceLocation WHITE_TEXTURE =
             ResourceLocation.withDefaultNamespace("textures/misc/white.png");
 
@@ -33,7 +37,7 @@ final class LuaWorldSpriteRenderer {
         if (layer && !IrlightsShadowCompat.isBaking()) {
             if (buffers instanceof MultiBufferSource.BufferSource source) source.endBatch();
             LuaLayerRenderer.drawTexture(poseStack.last().pose(), texture,
-                    (float)-sprite.width()/2, (float)-sprite.height()/2,
+                    originLeft(sprite), originTop(sprite),
                     (float)sprite.width(), (float)sprite.height(), (float)sprite.alpha(), true, sprite.seeThrough());
             return;
         }
@@ -54,21 +58,16 @@ final class LuaWorldSpriteRenderer {
                 : base;
         VertexConsumer vertices = buffers.getBuffer(renderType);
 
-        float left = (float) (-sprite.width() * 0.5);
-        float top = (float) (-sprite.height() * 0.5);
-        float drawWidth = (float) sprite.width();
-        float drawHeight = (float) sprite.height();
+        Bounds bounds = visibleBounds(sprite);
+        float left = bounds.left();
+        float top = bounds.top();
+        float drawWidth = bounds.width();
+        float drawHeight = bounds.height();
         float u0 = 0, v0 = 0, u1 = 1, v1 = 1;
         if (layer) { v0 = 1; v1 = 0; }
         boolean rotated = false;
         if (sprite.frame() != null) {
             LuaWorldObject.Frame frame = sprite.frame();
-            float frameScaleX = (float) (sprite.width() / Math.max(1, sprite.graphicWidth()));
-            float frameScaleY = (float) (sprite.height() / Math.max(1, sprite.graphicHeight()));
-            left += (float) ((-frame.frameX() - sprite.animationOffsetX()) * frameScaleX);
-            top += (float) ((-frame.frameY() - sprite.animationOffsetY()) * frameScaleY);
-            drawWidth = (frame.rotated() ? frame.height() : frame.width()) * frameScaleX;
-            drawHeight = (frame.rotated() ? frame.width() : frame.height()) * frameScaleY;
             u0 = frame.x() / (float) Math.max(1, sprite.textureWidth());
             v0 = frame.y() / (float) Math.max(1, sprite.textureHeight());
             u1 = (frame.x() + frame.width()) / (float) Math.max(1, sprite.textureWidth());
@@ -97,6 +96,34 @@ final class LuaWorldSpriteRenderer {
             vertex(vertices, pose, left, top, u0, v0, red, green, blue, alpha, light, mode);
         }
         if (flush && buffers instanceof MultiBufferSource.BufferSource source) source.endBatch(renderType);
+    }
+
+    /** Vertex bounds before the shared world-sprite transform is applied. */
+    static Bounds visibleBounds(LuaWorldObject.Sprite sprite) {
+        float left = originLeft(sprite);
+        float top = originTop(sprite);
+        float width = (float) sprite.width();
+        float height = (float) sprite.height();
+        if (sprite.frame() != null) {
+            LuaWorldObject.Frame frame = sprite.frame();
+            float sx = (float) (sprite.width() / Math.max(1, sprite.graphicWidth()));
+            float sy = (float) (sprite.height() / Math.max(1, sprite.graphicHeight()));
+            left += (float) ((-frame.frameX() - sprite.animationOffsetX()) * sx);
+            top += (float) ((-frame.frameY() - sprite.animationOffsetY()) * sy);
+            width = (frame.rotated() ? frame.height() : frame.width()) * sx;
+            height = (frame.rotated() ? frame.width() : frame.height()) * sy;
+        }
+        return new Bounds(left, top, width, height);
+    }
+
+    private static float originLeft(LuaWorldObject.Sprite sprite) {
+        double sourceWidth = Math.max(1.0, sprite.graphicWidth());
+        return (float) (-sprite.originX() * sprite.width() / sourceWidth);
+    }
+
+    private static float originTop(LuaWorldObject.Sprite sprite) {
+        double sourceHeight = Math.max(1.0, sprite.graphicHeight());
+        return (float) (-sprite.originY() * sprite.height() / sourceHeight);
     }
 
     private static void vertex(VertexConsumer vertices, PoseStack.Pose pose, float x, float y,

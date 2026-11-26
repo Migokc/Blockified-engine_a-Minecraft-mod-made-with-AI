@@ -1,0 +1,48 @@
+{
+  "name": "blockified-lua-autocomplete",
+  "displayName": "Blockified Lua AutoComplete",
+  "description": "Offline Lua completion, hover, and signature help for Blockified gameplay and machine menus.",
+  "version": "0.2.1",
+  "publisher": "blockified-engine",
+  "license": "SEE LICENSE IN LICENSE",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Migokc/Blockified-engine_a-Minecraft-mod-made-with-AI.git",
+    "directory": "tools/blockified-script-autocomplete"
+  },
+  "engines": { "vscode": "^1.80.0" },
+  "categories": ["Programming Languages", "Snippets"],
+  "activationEvents": ["onLanguage:lua", "onCommand:blockifiedLua.selectContext"],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [{
+      "command": "blockifiedLua.selectContext",
+      "title": "Blockified Lua: Select Script API"
+    }],
+    "configuration": {
+      "title": "Blockified Lua AutoComplete",
+      "properties": {
+        "blockifiedLua.context": {
+          "type": "string",
+          "enum": ["auto", "gameplay", "menu"],
+          "default": "auto",
+          "scope": "resource",
+          "description": "Choose the Blockified Lua API for this workspace. Auto detects machine menu paths and an optional file header."
+        },
+        "blockifiedLua.requireMarker": {
+          "type": "boolean",
+          "default": false,
+          "scope": "resource",
+          "description": "Only offer Blockified completions in files with a ---@blockifiedGameplay or ---@blockifiedMenu header."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "generate-data": "node scripts/generate-data.js",
+    "test": "node scripts/test.js",
+    "package": "npm run test && vsce package --out blockified-lua-autocomplete.vsix"
+  },
+  "devDependencies": { "@vscode/vsce": "^3.6.0" }
+}

@@ -25,7 +25,7 @@ public final class PsychBuiltinEventHandler {
         void eventAltIdle(String target, String suffix);
         void eventScreenShake(double gameDuration, double gameIntensity,
                               double hudDuration, double hudIntensity);
-        void eventChangeCharacter(String target, String characterId);
+        void eventChangeCharacter(String target, String characterId, String performerType);
         void eventChangeScrollSpeed(double multiplier, double durationSeconds);
         void eventSetProperty(String property, Object value);
         void eventPlaySound(String sound, float volume);
@@ -101,7 +101,7 @@ public final class PsychBuiltinEventHandler {
             double[] hud = pair(value2);
             host.eventScreenShake(game[0], game[1], hud[0], hud[1]);
         } else if (ChartEventTypes.is(name, ChartEventTypes.CHANGE_CHARACTER)) {
-            host.eventChangeCharacter(characterTarget(value1), value2);
+            host.eventChangeCharacter(characterTarget(value1), value2, text(event.value3));
         } else if (ChartEventTypes.is(name, ChartEventTypes.CHANGE_SCROLL_SPEED)) {
             host.eventChangeScrollSpeed(number(value1, 1), Math.max(0, number(value2, 0)));
         } else if (ChartEventTypes.is(name, ChartEventTypes.SET_PROPERTY)) {

@@ -24,8 +24,8 @@ public record WeekDefinition(
     public record Song(String id, String icon, int color) {}
 
     public String displayName() {
-        if (storyName != null && !storyName.isBlank()) return storyName;
         if (weekName != null && !weekName.isBlank()) return weekName;
+        if (storyName != null && !storyName.isBlank()) return storyName;
         return id;
     }
 }

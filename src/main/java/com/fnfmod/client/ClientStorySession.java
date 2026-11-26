@@ -70,13 +70,11 @@ public final class ClientStorySession {
                         .filter(value -> value.equalsIgnoreCase("normal")).findFirst()
                         .orElse(song.difficulties().isEmpty() ? "normal" : song.difficulties().get(0)));
         byte playSide = (byte) (ClientOptions.get().playAs % 3);
-        ClientSession.pendingPlaySide = playSide;
-        ClientSession.pendingPlaybackMode = playbackMode;
         ClientSession.pendingSongExitTarget = FnfPayloads.LeaveC2S.RETURN_SELECTOR;
-        PacketDistributor.sendToServer(new FnfPayloads.MachineDirectPlayC2S(
-                pos, song.id(), chosen, false, playSide, playbackMode.networkId()));
-        Minecraft.getInstance().setScreen(new com.fnfmod.client.gui.WaitingScreen(Component.literal(
-                "Story Mode " + (index + 1) + "/" + songs.size() + " — Loading " + song.name() + "...")));
+        ClientSession.prepareSongSelection(pos, song.id(), chosen, false, playSide, playbackMode,
+                true, ignored -> clear(), meta -> PacketDistributor.sendToServer(
+                        new FnfPayloads.MachineDirectPlayC2S(pos, song.id(), chosen, false,
+                                playSide, playbackMode.networkId(), meta)));
         return true;
     }
 

@@ -183,6 +183,7 @@ public final class MachineMenuScreen extends Screen implements MachineMenuRuntim
             return;
         }
         if (runtime != null && runtime.loaded()) runtime.render(gui, font, mouseX, mouseY);
+        if (runtime != null) runtime.renderDebugOverlay(gui);
         if (launchError != null && System.nanoTime() < launchErrorUntil) {
             var lines = font.split(Component.literal(launchError), Math.max(80, width - 48));
             int y = Math.max(8, height - 20 - lines.size() * font.lineHeight);
@@ -300,22 +301,38 @@ public final class MachineMenuScreen extends Screen implements MachineMenuRuntim
             message(song == null ? "Song not found: " + songId : "Difficulty not found: " + difficulty);
             return false;
         }
-        ClientSession.activePos = pos;
-        ClientSession.pendingPlaySide = duet ? 0 : (byte) Math.max(0, Math.min(2, playSide));
-        ClientSession.pendingPlaybackMode = PlaybackMode.fromNetworkId(playbackMode);
         ClientSession.pendingSongExitTarget = FnfPayloads.LeaveC2S.normalizeReturnTarget(returnTarget);
+        byte selectedSide = duet ? 0 : (byte) Math.max(0, Math.min(2, playSide));
+        PlaybackMode selectedMode = PlaybackMode.fromNetworkId(playbackMode);
         if (targetMachine == null || targetMachine.isBlank()) {
-            PacketDistributor.sendToServer(new FnfPayloads.MachineDirectPlayC2S(pos, song.id(), difficulty,
-                    duet, ClientSession.pendingPlaySide, ClientSession.pendingPlaybackMode.networkId()));
+            return ClientSession.prepareSongSelection(pos, song.id(), difficulty, duet, selectedSide,
+                    selectedMode, false, error -> showLaunchError("Could not prepare song: " + error),
+                    meta -> PacketDistributor.sendToServer(new FnfPayloads.MachineDirectPlayC2S(
+                            pos, song.id(), difficulty, duet, selectedSide,
+                            selectedMode.networkId(), meta)));
         } else {
             launchError = null;
             taggedLaunchPending = true;
             ClientSession.expectTaggedPlay(this::onTaggedPlayResult);
-            PacketDistributor.sendToServer(new FnfPayloads.MachineTaggedPlayC2S(pos, targetMachine,
-                    song.id(), difficulty, duet, ClientSession.pendingPlaySide,
-                    ClientSession.pendingPlaybackMode.networkId()));
+            boolean preparing = ClientSession.prepareSongSelection(pos, song.id(), difficulty, duet,
+                    selectedSide, selectedMode, false, error -> {
+                        taggedLaunchPending = false;
+                        ClientSession.expectTaggedPlay(null);
+                        showLaunchError("Could not prepare song: " + error);
+                    }, meta -> PacketDistributor.sendToServer(new FnfPayloads.MachineTaggedPlayC2S(
+                            pos, targetMachine, song.id(), difficulty, duet, selectedSide,
+                            selectedMode.networkId(), meta)));
+            if (!preparing) {
+                taggedLaunchPending = false;
+                ClientSession.expectTaggedPlay(null);
+            }
+            return preparing;
         }
-        return true;
+    }
+
+    private void showLaunchError(String message) {
+        launchError = message;
+        launchErrorUntil = System.nanoTime() + 8_000_000_000L;
     }
 
     public boolean onTaggedPlayResult(FnfPayloads.MachineTaggedPlayResultS2C result) {
@@ -376,7 +393,11 @@ public final class MachineMenuScreen extends Screen implements MachineMenuRuntim
 
     @Override
     public void onClose() {
-        if (minecraft != null && minecraft.level != null) {
+        // Automatic world menus are locked open by blockified-options.json, so
+        // Escape must offer Minecraft's pause controls without tearing down Lua.
+        // An ordinary physical/virtual machine menu keeps normal Screen behavior:
+        // Escape closes it, saves its data, and releases chooser ownership.
+        if (lockedWorldMenu && minecraft != null && minecraft.level != null) {
             preserveRuntimeForChild = true;
             com.fnfmod.client.AutoWorldMenuClient.openPauseMenu(this, this::disposeRuntime);
             return;

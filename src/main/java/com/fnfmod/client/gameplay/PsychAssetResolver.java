@@ -33,6 +33,7 @@ public final class PsychAssetResolver {
 
     public List<Path> roots(SongLibrary.ExternalContent content) {
         if (policy == null) return List.of();
+        if (GameBananaVisualPolicy.blocks(entry, policy, content)) return List.of();
         // Auxiliary sounds are assets, not the chart's required Inst/Voices.
         if (content == SongLibrary.ExternalContent.AUDIO && !policy.songAssets()) return List.of();
         List<Path> roots = new ArrayList<>();
@@ -87,7 +88,7 @@ public final class PsychAssetResolver {
     /**
      * Roots used only for the built-in Hurt Note replacement atlas.
      *
-     * <p>The chart editor always previews with Legacy asset rules, while Minecraft
+     * <p>The chart editor always previews with FNF asset rules, while Minecraft
      * presentation can deliberately disable a song's arbitrary images. Hurt Note is
      * gameplay data rather than optional stage artwork, so it still needs its exact
      * atlas. Keep the owning song/mod first when its images are allowed, then search
@@ -224,9 +225,34 @@ public final class PsychAssetResolver {
 
     public Path character(String id) {
         if (id == null || id.isBlank()) return null;
-        return find(roots(SongLibrary.ExternalContent.CHARACTERS), withExtension(id, ".json"),
+        String file = withExtension(id, ".json");
+        Path owned = find(owningCharacterRoots(), file,
                 "characters", "shared/characters", "data/characters",
-                "assets/characters", "assets/shared/characters");
+                "assets/characters", "assets/shared/characters", "assets/data/characters");
+        if (owned != null) return owned;
+        return find(roots(SongLibrary.ExternalContent.CHARACTERS), file,
+                "characters", "shared/characters", "data/characters",
+                "assets/characters", "assets/shared/characters", "assets/data/characters");
+    }
+
+    /**
+     * Exact song-owner lookup used by chart-selected 2D performers. This stays
+     * ahead of configured directory priority, including in Minecraft look, but
+     * still respects the owning pack's Characters permission and root boundary.
+     */
+    private List<Path> owningCharacterRoots() {
+        if (entry != null && !entry.allows(SongLibrary.ExternalContent.CHARACTERS)) {
+            return List.of();
+        }
+        List<Path> roots = new ArrayList<>();
+        addSongRoot(roots, songFolder, SongLibrary.ExternalContent.CHARACTERS);
+        if (entry != null) {
+            addSongRoot(roots, entry.modRoot, SongLibrary.ExternalContent.CHARACTERS);
+            addSongRoot(roots, entry.folder, SongLibrary.ExternalContent.CHARACTERS);
+            addSongRoot(roots, entry.characterRoot, SongLibrary.ExternalContent.CHARACTERS);
+            addSongRoot(roots, entry.chartOriginRoot, SongLibrary.ExternalContent.CHARACTERS);
+        }
+        return roots;
     }
 
     public String characterIcon(String characterId) {

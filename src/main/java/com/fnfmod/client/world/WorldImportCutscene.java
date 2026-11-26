@@ -145,6 +145,41 @@ public final class WorldImportCutscene {
         }
     }
 
+    /** Accept common chat wrappers without changing a folder whose literal name includes one. */
+    public static String resolveExportPackName(String input) {
+        String name = input == null ? "" : input.trim();
+        for (int i = 0; i < 3; i++) {
+            if (isInstalledPackName(name)) return name;
+            if (name.length() < 2) break;
+            char first = name.charAt(0);
+            char last = name.charAt(name.length() - 1);
+            boolean wrapped = first == '\'' && last == '\''
+                    || first == '"' && last == '"'
+                    || first == '[' && last == ']'
+                    || first == '(' && last == ')'
+                    || first == '{' && last == '}';
+            if (!wrapped) break;
+            name = name.substring(1, name.length() - 1).trim();
+        }
+        return name;
+    }
+
+    private static boolean isInstalledPackName(String name) {
+        Path modRoot = installedPackPath(name);
+        return modRoot != null && Files.isDirectory(modRoot);
+    }
+
+    private static Path installedPackPath(String name) {
+        if (name == null || name.isBlank() || name.contains("/") || name.contains("\\")) return null;
+        try {
+            Path modsRoot = ModContentScope.modsRoot().toAbsolutePath().normalize();
+            Path modRoot = modsRoot.resolve(name).normalize();
+            return modsRoot.equals(modRoot.getParent()) ? modRoot : null;
+        } catch (java.nio.file.InvalidPathException error) {
+            return null;
+        }
+    }
+
     /**
      * Exports the current world into an installed pack's {@code worlds/} folder. Works from any
      * singleplayer world (an ordinary save or another pack's world). Returns an error message,
@@ -157,14 +192,12 @@ public final class WorldImportCutscene {
         if (server == null || !minecraft.hasSingleplayerServer()) {
             return "This only works from your own singleplayer world.";
         }
-        if (pack == null || pack.isBlank() || pack.contains("/") || pack.contains("\\")) {
-            return "Invalid pack name.";
-        }
+        Path modRoot = installedPackPath(pack);
+        if (modRoot == null) return "Invalid pack name.";
         if (ModContentScope.isModWorld() && ModContentScope.activeMod()
                 .map(m -> pack.equalsIgnoreCase(m.id())).orElse(false)) {
             return "This world is already in '" + pack + "'.";
         }
-        Path modRoot = ModContentScope.modsRoot().resolve(pack);
         if (!Files.isDirectory(modRoot)) return "No installed pack named '" + pack + "'.";
 
         Path worldRoot = server.getWorldPath(LevelResource.ROOT).toAbsolutePath().normalize();

@@ -4,19 +4,23 @@ import com.fnfmod.FnfMod;
 import com.fnfmod.block.FunkinMachineBlock;
 import com.fnfmod.character.CharacterTransform;
 import com.fnfmod.gameplay.PlaybackMode;
+import com.fnfmod.gameplay.PlaybackPolicy;
 import com.fnfmod.chart.SongChart;
 import com.fnfmod.client.anim.CharacterAnimations;
 import com.fnfmod.client.audio.SongPlayer;
 import com.fnfmod.client.gameplay.SongWarnings;
 import com.fnfmod.client.gameplay.GameplayAssetPreloader;
 import com.fnfmod.client.gui.GameplayScreen;
+import com.fnfmod.client.render.NoteStyle;
 import com.fnfmod.client.gui.WaitingScreen;
 import com.fnfmod.client.render.WarningFlag;
 import com.fnfmod.net.FnfPayloads;
-import com.fnfmod.session.SessionManager;
 import com.fnfmod.song.SongEntry;
+import com.fnfmod.song.SongCompatibility;
 import com.fnfmod.song.SongLibrary;
+import com.fnfmod.client.gameplay.CharacterSelectionRouting;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.network.chat.Component;
@@ -24,23 +28,15 @@ import net.minecraft.world.level.block.state.BlockState;
 import net.neoforged.neoforge.network.PacketDistributor;
 
 import java.io.IOException;
-import java.io.OutputStream;
-import java.nio.file.AtomicMoveNotSupportedException;
-import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.function.Consumer;
 
 /**
  * Client-side state for the current Funkin' Machine session:
- * manifest verification, file download assembly, chart + audio preloading.
+ * local compatibility verification plus chart/audio/graphics preloading.
+ * The server sends hashes only; song and asset bytes never cross the network.
  */
 public final class ClientSession {
 
@@ -60,6 +56,8 @@ public final class ClientSession {
     public static boolean songAssets = true;
     /** Dedicated servers disable gameplay Lua; integrated/LAN servers retain it. */
     public static boolean luaAllowed = true;
+    /** Policy announced by the connected server before a song is selected. */
+    public static boolean serverAllowsGameplayLua = true;
     /** The current chooser belongs to an automatic mod-world menu and cannot exit to world. */
     public static boolean lockedWorldMenu;
 
@@ -67,18 +65,12 @@ public final class ClientSession {
     public static SongPlayer preloadedPlayer;
     public static Path resolvedFolder;
 
-    private static List<FnfPayloads.FileMeta> manifest = List.of();
-    private static final Map<String, FnfPayloads.FileMeta> manifestByName = new HashMap<>();
-    private static final Map<String, IncomingFile> receiving = new HashMap<>();
-    private static List<String> missingFiles = new ArrayList<>();
-    /** Files requested but not yet atomically published. Keeps packet queues bounded. */
-    private static final Set<String> requestedFiles = new HashSet<>();
-    private static final int REQUEST_BATCH_FILES = 2;
-    private static final int MAX_CONCURRENT_FILES = REQUEST_BATCH_FILES;
     /** Invalidates asynchronous hash checks when a session changes or the client disconnects. */
     private static long generation;
+    private static boolean selectionPreparing;
     private static BlockPos taggedStagePos;
     private static Direction taggedStageFacing;
+    private static long readySentAtNanos;
     private static java.util.function.Consumer<FnfPayloads.MachineTaggedPlayResultS2C> taggedPlayListener;
 
     public static void expectTaggedPlay(java.util.function.Consumer<FnfPayloads.MachineTaggedPlayResultS2C> listener) {
@@ -104,6 +96,8 @@ public final class ClientSession {
 
     public static void reset() {
         generation++;
+        selectionPreparing = false;
+        readySentAtNanos = 0;
         taggedStagePos = null;
         taggedStageFacing = null;
         taggedPlayListener = null;
@@ -119,11 +113,6 @@ public final class ClientSession {
         lockedWorldMenu = false;
         chart = null;
         resolvedFolder = null;
-        manifest = List.of();
-        manifestByName.clear();
-        receiving.clear();
-        requestedFiles.clear();
-        missingFiles.clear();
         if (preloadedPlayer != null) {
             preloadedPlayer.dispose();
             preloadedPlayer = null;
@@ -138,9 +127,94 @@ public final class ClientSession {
         reset();
     }
 
+    /**
+     * Builds a compact local manifest off-thread, then submits the song choice.
+     * The server coordinates the session but never needs to have the song installed.
+     */
+    public static boolean prepareSongSelection(BlockPos pos, String requestedSongId,
+                                               String requestedDifficulty, boolean isDuet,
+                                               byte playSide, PlaybackMode mode,
+                                               boolean showWaitingScreen,
+                                               Consumer<String> failed,
+                                               Consumer<FnfPayloads.SongSelectionMeta> submit) {
+        if (pos == null || requestedSongId == null || requestedSongId.isBlank()
+                || requestedDifficulty == null || requestedDifficulty.isBlank()
+                || submit == null || selectionPreparing) return false;
+
+        Minecraft mc = Minecraft.getInstance();
+        Screen previous = mc.screen;
+        activePos = pos.immutable();
+        pendingPlaySide = isDuet ? 0 : (byte) Math.max(0, Math.min(2, playSide));
+        pendingPlaybackMode = mode == null ? PlaybackMode.MINECRAFT : mode;
+        duet = isDuet;
+        selectionPreparing = true;
+        long requestGeneration = ++generation;
+        if (showWaitingScreen) {
+            mc.setScreen(new WaitingScreen(Component.literal("Preparing local song files...")));
+        } else if (mc.player != null) {
+            mc.player.displayClientMessage(Component.literal("Preparing local song files..."), true);
+        }
+
+        String songId = requestedSongId.trim();
+        String difficulty = requestedDifficulty.trim();
+        PlaybackMode selectedMode = pendingPlaybackMode;
+        boolean allowLua = serverAllowsGameplayLua;
+        CompletableFuture.supplyAsync(() -> createSelectionMeta(songId, difficulty, selectedMode, allowLua))
+                .whenComplete((meta, error) -> mc.execute(() -> {
+                    if (requestGeneration != generation) return;
+                    selectionPreparing = false;
+                    if (error != null) {
+                        Throwable cause = error instanceof java.util.concurrent.CompletionException
+                                && error.getCause() != null ? error.getCause() : error;
+                        String message = cause.getMessage() == null ? cause.getClass().getSimpleName()
+                                : cause.getMessage();
+                        if (mc.player != null) mc.player.displayClientMessage(Component.literal(
+                                "Could not prepare local song: " + message), false);
+                        if (failed != null) failed.accept(message);
+                        if (showWaitingScreen) mc.setScreen(previous);
+                        return;
+                    }
+                    submit.accept(meta);
+                }));
+        return true;
+    }
+
+    private static FnfPayloads.SongSelectionMeta createSelectionMeta(String requestedSongId,
+                                                                      String requestedDifficulty,
+                                                                      PlaybackMode mode,
+                                                                      boolean allowLua) {
+        SongEntry found = SongLibrary.get(requestedSongId);
+        if (found == null) {
+            found = SongLibrary.getSongs().values().stream()
+                    .filter(value -> value.id.equalsIgnoreCase(requestedSongId))
+                    .findFirst().orElse(null);
+        }
+        final SongEntry entry = found;
+        if (entry == null) throw new IllegalStateException(
+                "Song '" + requestedSongId + "' is not installed in this player's song library");
+        String difficulty = entry.difficulties.stream()
+                .filter(value -> value.equalsIgnoreCase(requestedDifficulty)).findFirst()
+                .orElseThrow(() -> new IllegalStateException("Difficulty '" + requestedDifficulty
+                        + "' is not installed for " + entry.displayName));
+        PlaybackPolicy resolved = PlaybackPolicy.resolve(mode, entry);
+        PlaybackPolicy policy = new PlaybackPolicy(resolved.mode(), resolved.songAssets(), allowLua);
+        try {
+            SongCompatibility.Stamp stamp = SongCompatibility.stamp(entry, difficulty, policy);
+            FnfPayloads.SongSelectionMeta result = new FnfPayloads.SongSelectionMeta(
+                    stamp.fileCount(), stamp.totalBytes(), stamp.sha256(),
+                    com.fnfmod.song.GameBananaModLinks.songModUrl(entry),
+                    policy.songAssets(), policy.luaAllowed());
+            if (!result.valid()) throw new IllegalStateException("Local song manifest is invalid");
+            return result;
+        } catch (IOException error) {
+            throw new IllegalStateException("Could not fingerprint " + entry.displayName
+                    + ": " + error.getMessage(), error);
+        }
+    }
+
     // ------------------------------------------------------------------
 
-    public static void onManifest(FnfPayloads.FileManifestS2C payload) {
+    public static void onCompatibility(FnfPayloads.SongCompatibilityS2C payload) {
         activePos = payload.pos();
         if (!activePos.equals(taggedStagePos)) {
             taggedStagePos = null;
@@ -153,275 +227,103 @@ public final class ClientSession {
         playbackMode = PlaybackMode.fromNetworkId(payload.playbackMode());
         songAssets = payload.songAssets();
         luaAllowed = payload.luaAllowed();
-        List<FnfPayloads.FileMeta> checkedManifest = validateManifest(payload.files());
-        if (checkedManifest == null) {
-            fail("Server sent an invalid or oversized song manifest");
+        selectionPreparing = false;
+        SongCompatibility.Stamp expected = new SongCompatibility.Stamp(
+                payload.fileCount(), payload.totalBytes(), payload.contentSha256());
+        if (!expected.valid()) {
+            fail("Server sent an invalid song compatibility fingerprint");
             return;
         }
-        manifest = checkedManifest;
-        manifestByName.clear();
-        for (FnfPayloads.FileMeta meta : manifest) manifestByName.put(meta.name(), meta);
-        receiving.clear();
-        requestedFiles.clear();
         long requestGeneration = ++generation;
         String requestedSongId = songId;
         String requestedDifficulty = difficulty;
         PlaybackMode requestedMode = playbackMode;
         boolean requestedAssets = songAssets;
         boolean requestedLua = luaAllowed;
-        List<FnfPayloads.FileMeta> requestedManifest = List.copyOf(manifest);
-        Path requestedCacheDir = cacheVariantFolder(requestedSongId, requestedDifficulty,
-                requestedMode, requestedAssets, requestedLua);
 
-        Minecraft.getInstance().setScreen(new WaitingScreen(Component.literal("Loading song...")));
+        Minecraft.getInstance().setScreen(new WaitingScreen(Component.literal(
+                "Checking local song files...")));
 
-        // hash checking can be slow for big oggs -> background thread
+        // Hash checking can be slow for big OGGs, but only hashes/metadata are
+        // exchanged. Missing or changed files must be installed locally.
         CompletableFuture.supplyAsync(() -> checkLocalFiles(requestedSongId, requestedDifficulty,
-                requestedMode, requestedAssets, requestedLua, requestedManifest, requestedCacheDir)).whenComplete((result, err) -> {
+                requestedMode, requestedAssets, requestedLua, expected)).whenComplete((result, err) -> {
             Minecraft.getInstance().execute(() -> {
                 if (requestGeneration != generation) return;
                 if (err != null) {
                     fail("Error checking song files: " + err.getMessage());
                     return;
                 }
-                if (result.sourceEntry != null) {
-                    resolvedFolder = result.sourceEntry.folder;
-                    finishLoad(result.sourceEntry);
-                } else if (result.allLocal) {
-                    resolvedFolder = SongLibrary.songsDir().resolve(songId);
-                    finishLoad(null);
-                } else {
-                    resolvedFolder = requestedCacheDir;
-                    missingFiles = result.missingInCache;
-                    if (missingFiles.isEmpty()) {
-                        finishLoad(null);
-                    } else {
-                        Minecraft.getInstance().setScreen(new WaitingScreen(
-                                Component.literal("Downloading song from server...")));
-                        requestNextFileBatch();
-                    }
+                if (result.error != null) {
+                    var modLink = com.fnfmod.song.ModDownloadLinks.parse(payload.modUrl());
+                    if (modLink != null) {
+                        fail(result.error);
+                        Minecraft.getInstance().setScreen(
+                                new com.fnfmod.client.gui.MissingGameBananaModScreen(requestedSongId,
+                                        modLink.url()));
+                    } else if (isMissingLocalSong(result.error)) {
+                        fail(result.error);
+                        Minecraft.getInstance().setScreen(
+                                new com.fnfmod.client.gui.MissingGameBananaModScreen(requestedSongId, ""));
+                    } else fail(result.error);
+                    return;
                 }
+                resolvedFolder = result.sourceEntry.folder;
+                finishLoad(result.sourceEntry);
             });
         });
     }
 
-    /**
-     * Requests only a tiny window of files. The old all-at-once request let a server
-     * queue an entire mod pack behind Minecraft's keepalive packets, timing out both
-     * the downloading client and the duet partner. Completing the window acknowledges
-     * it implicitly and opens the next one.
-     */
-    private static void requestNextFileBatch() {
-        if (!requestedFiles.isEmpty() || missingFiles.isEmpty()) return;
-        List<String> batch = new ArrayList<>(REQUEST_BATCH_FILES);
-        for (String name : missingFiles) {
-            if (batch.size() >= REQUEST_BATCH_FILES) break;
-            batch.add(name);
-        }
-        if (batch.isEmpty()) return;
-        requestedFiles.addAll(batch);
-        PacketDistributor.sendToServer(new FnfPayloads.RequestFilesC2S(activePos, songId, batch));
+    private static boolean isMissingLocalSong(String error) {
+        return error != null && (error.startsWith("Missing local song ")
+                || error.startsWith("Missing local difficulty ")
+                || error.startsWith("Local song files do not match "));
     }
 
-    private record LocalCheck(SongEntry sourceEntry, boolean allLocal, List<String> missingInCache) {}
+    private record LocalCheck(SongEntry sourceEntry, String error) {}
 
     private static LocalCheck checkLocalFiles(String requestedSongId, String requestedDifficulty,
                                               PlaybackMode requestedMode, boolean requestedAssets,
                                               boolean requestedLua,
-                                              List<FnfPayloads.FileMeta> requestedManifest,
-                                              Path cacheDir) {
+                                              SongCompatibility.Stamp expected) {
         SongEntry sourceEntry = SongLibrary.get(requestedSongId);
-        if (sourceEntry != null && matchesEntry(sourceEntry, requestedDifficulty,
-                new com.fnfmod.gameplay.PlaybackPolicy(requestedMode, requestedAssets, requestedLua),
-                requestedManifest)) {
-            return new LocalCheck(sourceEntry, false, List.of());
+        if (sourceEntry == null) {
+            sourceEntry = SongLibrary.getSongs().values().stream()
+                    .filter(value -> value.id.equalsIgnoreCase(requestedSongId))
+                    .findFirst().orElse(null);
         }
-        Path songDir = SongLibrary.songsDir().resolve(requestedSongId);
-        boolean allLocal = true;
-        for (FnfPayloads.FileMeta meta : requestedManifest) {
-            if (!matches(manifestPath(songDir, meta.name()), meta)) {
-                allLocal = false;
-                break;
-            }
+        if (sourceEntry == null) {
+            return new LocalCheck(null, "Missing local song '" + requestedSongId
+                    + "'. Install its mod or song files locally to join.");
         }
-        if (allLocal) return new LocalCheck(null, true, List.of());
-
-        List<String> missing = new ArrayList<>();
-        for (FnfPayloads.FileMeta meta : requestedManifest) {
-            if (!matches(manifestPath(cacheDir, meta.name()), meta)) {
-                missing.add(meta.name());
-            }
+        if (sourceEntry.difficulties.stream().noneMatch(
+                value -> value.equalsIgnoreCase(requestedDifficulty))) {
+            return new LocalCheck(null, "Missing local difficulty '" + requestedDifficulty
+                    + "' for " + requestedSongId + ". Install a chart with this difficulty.");
         }
-        return new LocalCheck(null, false, missing);
-    }
-
-    private static boolean matchesEntry(SongEntry entry, String requestedDifficulty,
-                                        com.fnfmod.gameplay.PlaybackPolicy policy,
-                                        List<FnfPayloads.FileMeta> requestedManifest) {
-        Map<String, List<Path>> byName = new HashMap<>();
-        for (Path file : entry.transferFiles(requestedDifficulty, policy)) {
-            byName.computeIfAbsent(entry.transferName(file), ignored -> new ArrayList<>()).add(file);
-        }
-        for (FnfPayloads.FileMeta meta : requestedManifest) {
-            List<Path> candidates = byName.get(meta.name());
-            if (candidates == null || candidates.stream().noneMatch(path -> matches(path, meta))) return false;
-        }
-        return true;
-    }
-
-    private static Path cacheVariantFolder(String requestedSongId, String requestedDifficulty,
-                                           PlaybackMode requestedMode, boolean requestedAssets,
-                                           boolean requestedLua) {
-        String songKey = sanitize(requestedSongId) + "__" + Integer.toHexString(requestedSongId.hashCode());
-        String difficultyKey = sanitize(requestedDifficulty) + "__"
-                + Integer.toHexString(requestedDifficulty.hashCode());
-        String variant = difficultyKey + "__" + requestedMode.name().toLowerCase()
-                + (requestedAssets ? "__assets" : "__restricted")
-                + (requestedLua ? "__lua" : "__no_lua");
-        return SongLibrary.cacheDir().resolve(songKey).resolve(variant);
-    }
-
-    private static boolean matches(Path file, FnfPayloads.FileMeta meta) {
         try {
-            return file != null && Files.isRegularFile(file)
-                    && Files.size(file) == meta.size()
-                    && SessionManager.sha1(file).equalsIgnoreCase(meta.sha1());
-        } catch (IOException e) {
-            return false;
-        }
-    }
-
-    private static List<FnfPayloads.FileMeta> validateManifest(List<FnfPayloads.FileMeta> files) {
-        if (files == null || files.size() > FnfPayloads.MAX_MANIFEST_FILES) return null;
-        List<FnfPayloads.FileMeta> checked = new ArrayList<>(files.size());
-        java.util.HashSet<String> names = new java.util.HashSet<>();
-        long total = 0;
-        for (FnfPayloads.FileMeta meta : files) {
-            if (meta == null) return null;
-            String name = safeRelativeName(meta.name());
-            if (name == null || name.length() > FnfPayloads.MAX_FILE_NAME_LENGTH || !names.add(name)) return null;
-            if (meta.size() < 0) return null;
-            if (meta.sha1() == null || !meta.sha1().matches("(?i)[0-9a-f]{40}")) return null;
-            if (Long.MAX_VALUE - total < meta.size()) return null;
-            total += meta.size();
-            checked.add(new FnfPayloads.FileMeta(name, meta.size(), meta.sha1().toLowerCase(java.util.Locale.ROOT)));
-        }
-        return List.copyOf(checked);
-    }
-
-    private static final class IncomingFile {
-        final FnfPayloads.FileMeta meta;
-        final byte[][] chunks;
-
-        IncomingFile(FnfPayloads.FileMeta meta, int chunkCount) {
-            this.meta = meta;
-            this.chunks = new byte[chunkCount][];
-        }
-    }
-
-    public static void onChunk(FnfPayloads.FileChunkS2C payload) {
-        if (!payload.songId().equals(songId)) return;
-        String name = safeRelativeName(payload.fileName());
-        FnfPayloads.FileMeta meta = name == null ? null : manifestByName.get(name);
-        if (meta == null || !missingFiles.contains(name) || !requestedFiles.contains(name)) {
-            fail("Server sent a song resource that was not requested");
-            return;
-        }
-        int expectedChunks = (int) Math.max(1,
-                (meta.size() + FnfPayloads.MAX_CHUNK_BYTES - 1) / FnfPayloads.MAX_CHUNK_BYTES);
-        if (payload.totalChunks() != expectedChunks || payload.chunkIndex() < 0
-                || payload.chunkIndex() >= expectedChunks || payload.data() == null) {
-            fail("Server sent invalid song chunk metadata");
-            return;
-        }
-        long start = (long) payload.chunkIndex() * FnfPayloads.MAX_CHUNK_BYTES;
-        int expectedBytes = (int) Math.min(FnfPayloads.MAX_CHUNK_BYTES, Math.max(0, meta.size() - start));
-        if (payload.data().length != expectedBytes) {
-            fail("Server sent a song chunk with the wrong size");
-            return;
-        }
-        IncomingFile incoming = receiving.get(name);
-        if (incoming == null) {
-            if (receiving.size() >= MAX_CONCURRENT_FILES) {
-                fail("Server exceeded the concurrent song-file limit");
-                return;
+            SongCompatibility.Stamp local = SongCompatibility.stamp(sourceEntry, requestedDifficulty,
+                    new com.fnfmod.gameplay.PlaybackPolicy(
+                            requestedMode, requestedAssets, requestedLua));
+            if (local.fileCount() != expected.fileCount()
+                    || local.totalBytes() != expected.totalBytes()
+                    || !local.sha256().equalsIgnoreCase(expected.sha256())) {
+                return new LocalCheck(null, "Local song files do not match the server for '"
+                        + requestedSongId + "' (server: " + expected.fileCount() + " files, "
+                        + expected.totalBytes() + " bytes; local: " + local.fileCount()
+                        + " files, " + local.totalBytes()
+                        + " bytes). Both players need matching song resources, but may keep them in different local mods/folders.");
             }
-            incoming = new IncomingFile(meta, expectedChunks);
-            receiving.put(name, incoming);
+        } catch (IOException error) {
+            return new LocalCheck(null, "Could not verify local song '" + requestedSongId
+                    + "': " + error.getMessage());
         }
-        if (incoming.chunks.length != expectedChunks || incoming.chunks[payload.chunkIndex()] != null) {
-            fail("Server sent a duplicate or inconsistent song chunk");
-            return;
-        }
-        incoming.chunks[payload.chunkIndex()] = payload.data();
-
-        for (byte[] c : incoming.chunks) {
-            if (c == null) return; // still waiting
-        }
-        // Complete file: stream chunks into a temporary cache file, verify the
-        // manifest size and SHA-1, then publish it atomically.
-        Path temporary = null;
-        try {
-            Path target = manifestPath(resolvedFolder, name);
-            if (target == null) throw new IOException("unsafe resource path");
-            Files.createDirectories(target.getParent());
-            temporary = target.resolveSibling(target.getFileName() + ".part-" + UUID.randomUUID());
-            try (OutputStream output = Files.newOutputStream(temporary)) {
-                for (byte[] chunk : incoming.chunks) output.write(chunk);
-            }
-            if (Files.size(temporary) != meta.size()
-                    || !SessionManager.sha1(temporary).equalsIgnoreCase(meta.sha1())) {
-                throw new IOException("download failed size/hash verification");
-            }
-            try {
-                Files.move(temporary, target, StandardCopyOption.ATOMIC_MOVE,
-                        StandardCopyOption.REPLACE_EXISTING);
-            } catch (AtomicMoveNotSupportedException ignored) {
-                Files.move(temporary, target, StandardCopyOption.REPLACE_EXISTING);
-            }
-        } catch (IOException e) {
-            fail("Could not save downloaded file " + name + ": " + e.getMessage());
-            return;
-        } finally {
-            if (temporary != null) {
-                try { Files.deleteIfExists(temporary); }
-                catch (IOException ignored) {}
-            }
-        }
-        receiving.remove(name);
-        requestedFiles.remove(name);
-        missingFiles.remove(name);
-        if (missingFiles.isEmpty()) finishLoad(null);
-        else if (requestedFiles.isEmpty()) requestNextFileBatch();
-    }
-
-    private static String sanitize(String name) {
-        return name.replaceAll("[^a-zA-Z0-9 ._()\\[\\]-]", "_");
-    }
-
-    private static String safeRelativeName(String raw) {
-        if (raw == null) return null;
-        String value = raw.replace('\\', '/').trim();
-        if (value.isBlank() || value.startsWith("/") || value.contains(":") || value.contains("\u0000")) return null;
-        Path relative;
-        try { relative = Path.of(value).normalize(); }
-        catch (Exception ignored) { return null; }
-        if (relative.isAbsolute() || relative.startsWith("..")) return null;
-        return relative.toString().replace('\\', '/');
-    }
-
-    private static Path manifestPath(Path root, String raw) {
-        String relative = safeRelativeName(raw);
-        if (root == null || relative == null) return null;
-        Path normalizedRoot = root.toAbsolutePath().normalize();
-        Path path = normalizedRoot.resolve(relative).normalize();
-        return path.startsWith(normalizedRoot) ? path : null;
+        return new LocalCheck(sourceEntry, null);
     }
 
     private static void finishLoad(SongEntry directEntry) {
         try {
-            SongLibrary.touchCacheEntry(resolvedFolder); // keeps used songs safe from cache pruning
-            SongEntry entry = directEntry != null ? directEntry : SongLibrary.scanSongDir(resolvedFolder);
+            SongEntry entry = directEntry;
             if (entry == null) throw new IOException("Song folder is invalid");
             chart = SongLibrary.loadChart(entry, difficulty);
 
@@ -448,6 +350,12 @@ public final class ClientSession {
                                     preloadSongId, preloadError.toString());
                         } else if (plan != null) {
                             try {
+                                // Character-set resolution must be active before
+                                // the preload plan warms BBS forms referenced by
+                                // Change Character events.
+                                CharacterAnimations.useSongFolder(
+                                        preloadPolicy.songAssets() ? entry.animationRoot() : null,
+                                        preloadChart.player1, preloadChart.player2);
                                 plan.warm();
                             } catch (Throwable uploadError) {
                                 FnfMod.LOGGER.warn("Could not finish preloading gameplay graphics for {}: {}",
@@ -466,12 +374,30 @@ public final class ClientSession {
         try {
             Path animationRoot = songAssets ? entry.animationRoot() : null;
             CharacterAnimations.useSongFolder(animationRoot, chart.player1, chart.player2);
-            // Animation choices belong to the chart role, not to whichever human
-            // happens to control it. A player joining/choosing Dad therefore sends
-            // the Opponent Anims selection to the server.
-            String animationSet = opponentSide
-                    ? ClientOptions.get().opponentAnimationSet
-                    : ClientOptions.get().animationSet;
+            // Explicit Player characters and BBS animations follow the human onto
+            // Dad's side; Default (song) still uses the chart's character slots.
+            ClientOptions options = ClientOptions.get();
+            boolean useOpponentChoice = CharacterSelectionRouting.localUsesOpponentChoice(
+                    opponentSide, options);
+            String animationSet = useOpponentChoice
+                    ? options.opponentAnimationSet : options.animationSet;
+            String animationType = useOpponentChoice
+                    ? options.opponentAnimationSetType : options.animationSetType;
+            boolean usesSongDefault = CharacterAnimations.DEFAULT_SET.equalsIgnoreCase(animationSet);
+            if (usesSongDefault) {
+                String chartType = chart.performerType(!opponentSide);
+                if (!chartType.isBlank()) animationType = chartType;
+            }
+            boolean reversePlayer2D = opponentSide
+                    && CharacterSelectionRouting.player2DFollowsOpponentSide(options);
+            boolean animationFlipped = (useOpponentChoice
+                    ? options.opponentAnimationSetFlipped : options.animationSetFlipped) ^ reversePlayer2D;
+            boolean directionsFlipped = (useOpponentChoice
+                    ? options.opponentAnimationSetDirectionsFlipped : options.animationSetDirectionsFlipped)
+                    ^ reversePlayer2D;
+            boolean frameCenterCamera = useOpponentChoice
+                    ? options.opponentAnimationSetFrameCenterCamera
+                    : options.animationSetFrameCenterCamera;
             Direction facing = Direction.NORTH;
             if (Minecraft.getInstance().level != null) {
                 BlockState state = Minecraft.getInstance().level.getBlockState(activePos);
@@ -479,13 +405,17 @@ public final class ClientSession {
                     facing = state.getValue(FunkinMachineBlock.FACING);
                 }
             }
-            CharacterTransform transform = CharacterTransform.load(
-                    animationSet, animationRoot,
+            CharacterTransform transform = ClientOptions.PERFORMER_TYPE_2D.equals(
+                    ClientOptions.normalizePerformerType(animationType))
+                    ? CharacterTransform.DEFAULT
+                    : CharacterTransform.load(animationSet, animationRoot,
                     activePos.equals(taggedStagePos) ? taggedStageFacing : facing, opponentSide,
                     opponentSide ? chart.player2 : chart.player1);
             PacketDistributor.sendToServer(new FnfPayloads.ReadyC2S(activePos, animationSet,
+                    animationType, animationFlipped, directionsFlipped, frameCenterCamera,
                     transform.positionOffset().x, transform.positionOffset().y,
-                    transform.positionOffset().z, transform.rotationOffset()));
+                    transform.positionOffset().z, transform.rotationOffset(), noteVisuals()));
+            readySentAtNanos = System.nanoTime();
             Minecraft.getInstance().setScreen(new WaitingScreen(Component.literal(
                     duet ? "Waiting for the other player..." : "Get ready...")));
         } catch (Exception e) {
@@ -500,9 +430,10 @@ public final class ClientSession {
             return;
         }
         SongPlayer player = preloadedPlayer;
-        preloadedPlayer = null; // ownership moves to the screen
         UUID partner = payload.partnerId().orElse(null);
-        // server sends a relative delay; wall clocks across machines can't be trusted
+        // The server sends the real countdown only after this PlayState reports
+        // that its first complete frame has rendered. Keep a provisional value
+        // for construction; awaitServerStart() parks the clock before init runs.
         long startAt = System.currentTimeMillis() + payload.startDelayMs();
         GameplayScreen.PlayMode mode;
         if (partner != null) {
@@ -528,9 +459,41 @@ public final class ClientSession {
 
         if (payload.pos().equals(taggedStagePos))
             com.fnfmod.client.gameplay.StageOrientation.set(taggedStageFacing);
-        Minecraft.getInstance().setScreen(new GameplayScreen(
-                payload.pos(), chart, player, mode,
-                partner, payload.partnerName(), payload.partnerAnimSet(), payload.botEntityId(), startAt));
+        try {
+            GameplayScreen gameplay = new GameplayScreen(
+                    payload.pos(), chart, player, mode,
+                    partner, payload.partnerName(), payload.partnerAnimSet(), payload.partnerAnimType(),
+                    payload.partnerAnimFlipped(), payload.partnerDirectionsFlipped(),
+                    payload.partnerFrameCenterCamera(),
+                    payload.partnerNoteVisuals(),
+                    payload.botEntityId(), startAt);
+            gameplay.awaitServerStart();
+            Minecraft.getInstance().setScreen(gameplay);
+            preloadedPlayer = null; // ownership moves to the screen after it opens
+            readySentAtNanos = 0;
+        } catch (RuntimeException error) {
+            FnfMod.LOGGER.error("Failed to open gameplay for song {}", songId, error);
+            fail("Failed to open gameplay: " + error.getMessage());
+        }
+    }
+
+    private static FnfPayloads.NoteVisuals noteVisuals() {
+        ClientOptions options = ClientOptions.get();
+        return new FnfPayloads.NoteVisuals(options.noteSkin, options.noteSkinSource,
+                options.splashSkin, options.splashSkinSource,
+                options.holdSplashSkin, options.holdSplashSkinSource,
+                options.downscroll,
+                options.noteColorBase, options.noteColorHighlight, options.noteColorOutline,
+                NoteStyle.currentSkinConfig());
+    }
+
+    /** Give a failed ready handshake a visible outcome instead of waiting forever. */
+    public static void checkReadyTimeout() {
+        if (readySentAtNanos != 0 && !duet
+                && System.nanoTime() - readySentAtNanos > 30_000_000_000L) {
+            FnfMod.LOGGER.error("Timed out waiting for song start: {} at {}", songId, activePos);
+            fail("Song did not start within 30 seconds; check latest.log for the ready handshake");
+        }
     }
 
     public static void onCancel(FnfPayloads.SessionCancelS2C payload) {

@@ -33,7 +33,12 @@ public final class PsychResolutionController {
     }
 
     public static void toggle() {
-        ClientOptions.get().forcePsychResolution = !enabled();
+        setEnabled(!enabled());
+    }
+
+    public static void setEnabled(boolean enabled) {
+        if (enabled() == enabled) return;
+        ClientOptions.get().forcePsychResolution = enabled;
         ClientOptions.save();
         refresh();
     }

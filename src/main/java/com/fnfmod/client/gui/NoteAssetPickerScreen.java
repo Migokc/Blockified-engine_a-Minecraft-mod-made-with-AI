@@ -1,7 +1,6 @@
 package com.fnfmod.client.gui;
 
 import com.fnfmod.client.ClientOptions;
-import com.fnfmod.client.math.Easing;
 import com.fnfmod.client.render.NoteStyle;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.EditBox;
@@ -44,11 +43,8 @@ public final class NoteAssetPickerScreen extends Screen implements TextInputAwar
     private List<String> all = List.of();
     private List<String> visible = List.of();
     private int selectedIndex;
-    private double scrollPx;
-    private double scrollTargetPx;
-    private double scrollFromPx;
-    private long scrollTweenStart;
-    private boolean scrollTweenActive;
+    private final TweenedScroll scroll = new TweenedScroll(SCROLL_TWEEN_NANOS);
+    private boolean draggingScrollThumb;
 
     public NoteAssetPickerScreen(NoteSettingsScreen parent, Kind kind) {
         super(Component.literal(kind.title));
@@ -134,30 +130,11 @@ public final class NoteAssetPickerScreen extends Screen implements TextInputAwar
 
     private void resetScroll(boolean centerSelection) {
         double target = centerSelection ? selectedIndex * (double) ROW - (listHeight() - ROW) / 2.0 : 0;
-        scrollPx = scrollTargetPx = scrollFromPx = Mth.clamp(target, 0, maxScroll());
-        scrollTweenActive = false;
-    }
-
-    private void updateScrollTween() {
-        if (!scrollTweenActive) return;
-        double progress = (System.nanoTime() - scrollTweenStart) / (double) SCROLL_TWEEN_NANOS;
-        if (progress >= 1) {
-            scrollPx = scrollTargetPx;
-            scrollTweenActive = false;
-        } else {
-            double eased = Easing.apply("expoOut", progress);
-            scrollPx = scrollFromPx + (scrollTargetPx - scrollFromPx) * eased;
-        }
+        scroll.reset(target, maxScroll());
     }
 
     private void scrollTo(double target) {
-        target = Mth.clamp(target, 0, maxScroll());
-        if (Math.abs(target - scrollTargetPx) < 0.01) return;
-        updateScrollTween();
-        scrollFromPx = scrollPx;
-        scrollTargetPx = target;
-        scrollTweenStart = System.nanoTime();
-        scrollTweenActive = Math.abs(scrollTargetPx - scrollFromPx) > 0.01;
+        scroll.animateTo(target, maxScroll());
     }
 
     private void clampSelection() {
@@ -167,7 +144,7 @@ public final class NoteAssetPickerScreen extends Screen implements TextInputAwar
         }
         selectedIndex = Mth.clamp(selectedIndex, 0, visible.size() - 1);
         double top = selectedIndex * (double) ROW;
-        double target = scrollTargetPx;
+        double target = scroll.target();
         if (top < target) target = top;
         else if (top + ROW > target + listHeight()) target = top + ROW - listHeight();
         scrollTo(target);
@@ -202,11 +179,12 @@ public final class NoteAssetPickerScreen extends Screen implements TextInputAwar
         renderTab(gui, listX() + tabWidth + 4, tabY(), listWidth() - tabWidth - 4,
                 "Global", tab == Tab.GLOBAL, mouseX, mouseY);
 
-        updateScrollTween();
+        scroll.update();
+        scroll.clampTo(maxScroll());
         int top = listTop(), listH = listHeight();
         gui.enableScissor(listX(), top, listX() + listWidth(), top + listH);
-        int first = Math.max(0, (int) Math.floor(scrollPx / ROW));
-        double offset = scrollPx - first * (double) ROW;
+        int first = Math.max(0, (int) Math.floor(scroll.position() / ROW));
+        double offset = scroll.position() - first * (double) ROW;
         for (int row = 0; row < listH / ROW + 2; row++) {
             int index = first + row;
             if (index >= visible.size()) break;
@@ -285,9 +263,25 @@ public final class NoteAssetPickerScreen extends Screen implements TextInputAwar
         if (max <= 0) return;
         int x = listX() + listWidth() - 3;
         int thumbH = Math.max(12, (int) Math.round(listH * (listH / (visible.size() * (double) ROW))));
-        int thumbY = top + (int) Math.round((listH - thumbH) * (scrollPx / max));
+        int thumbY = top + (int) Math.round((listH - thumbH) * (scroll.position() / max));
         gui.fill(x, top, x + 2, top + listH, 0xFF252733);
         gui.fill(x, thumbY, x + 2, thumbY + thumbH, BlockifiedScreenStyle.ACCENT);
+    }
+
+    private int scrollbarX() { return listX() + listWidth() - 3; }
+
+    private int scrollbarThumbHeight() {
+        return Math.max(12, (int) Math.round(listHeight()
+                * (listHeight() / Math.max(1.0, visible.size() * (double) ROW))));
+    }
+
+    private void dragScrollbarTo(double mouseY) {
+        double max = maxScroll();
+        if (max <= 0) return;
+        int thumb = scrollbarThumbHeight();
+        double fraction = (mouseY - listTop() - thumb / 2.0)
+                / Math.max(1.0, listHeight() - thumb);
+        scroll.reset(Mth.clamp(fraction, 0, 1) * max, max);
     }
 
     private void renderButton(GuiGraphics gui, int x, int y, int w, String text, int mouseX, int mouseY) {
@@ -342,12 +336,18 @@ public final class NoteAssetPickerScreen extends Screen implements TextInputAwar
                 }
             }
             int top = listTop();
+            if (maxScroll() > 0 && mouseX >= scrollbarX() - 3 && mouseX <= scrollbarX() + 5
+                    && mouseY >= top && mouseY <= top + listHeight()) {
+                draggingScrollThumb = true;
+                dragScrollbarTo(mouseY);
+                return true;
+            }
             if (mouseX >= listX() && mouseX < listX() + listWidth()
                     && mouseY >= top && mouseY < top + listHeight()) {
                 search.setFocused(false);
                 setFocused(null);
-                updateScrollTween();
-                int index = (int) Math.floor((mouseY - top + scrollPx) / ROW);
+                scroll.update();
+                int index = (int) Math.floor((mouseY - top + scroll.position()) / ROW);
                 if (index >= 0 && index < visible.size()) {
                     selectedIndex = index;
                     previewSelection();
@@ -372,9 +372,24 @@ public final class NoteAssetPickerScreen extends Screen implements TextInputAwar
     }
 
     @Override
+    public boolean mouseDragged(double mouseX, double mouseY, int button, double dragX, double dragY) {
+        if (button == GLFW.GLFW_MOUSE_BUTTON_LEFT && draggingScrollThumb) {
+            dragScrollbarTo(mouseY);
+            return true;
+        }
+        return super.mouseDragged(mouseX, mouseY, button, dragX, dragY);
+    }
+
+    @Override
+    public boolean mouseReleased(double mouseX, double mouseY, int button) {
+        if (button == GLFW.GLFW_MOUSE_BUTTON_LEFT) draggingScrollThumb = false;
+        return super.mouseReleased(mouseX, mouseY, button);
+    }
+
+    @Override
     public boolean mouseScrolled(double mouseX, double mouseY, double scrollX, double scrollY) {
         if (scrollY != 0 && mouseX >= listX() && mouseX < listX() + listWidth()) {
-            scrollTo(scrollTargetPx - scrollY * ROW * 1.5);
+            scrollTo(scroll.target() - scrollY * ROW * 1.5);
             return true;
         }
         return super.mouseScrolled(mouseX, mouseY, scrollX, scrollY);

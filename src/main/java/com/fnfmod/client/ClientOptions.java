@@ -27,8 +27,12 @@ public class ClientOptions {
     public static final String SKIN_SOURCE_PLAYER = "player";
     public static final String SKIN_SOURCE_FILE = "file";
     public static final String SKIN_SOURCE_ACCOUNT = "account";
+    public static final String PERFORMER_TYPE_2D = "2d";
+    public static final String PERFORMER_TYPE_3D = "3d";
     /** Keep Blockified/Minecraft GUI coordinates at a Psych-style 1280x720 minimum canvas. */
     public boolean forcePsychResolution = false;
+    /** Optional Freeplay presentation grouped into mod tabs and week sections. */
+    public boolean freeplayByModAndWeek = false;
     public boolean downscroll = false;
     /** Your strumline centered, opponent notes split to the screen edges. */
     public boolean middlescroll = false;
@@ -42,10 +46,37 @@ public class ClientOptions {
     /** Rating popup position, as a fraction of the screen (-1 = use default). */
     public double ratingX = -1;
     public double ratingY = -1;
+    /** Multipliers for the Minecraft-font rating and combo popups (1 = original size). */
+    public double ratingSize = 1.0;
+    public double comboSize = 1.0;
+    /** Independent multiplier for the optional hit-timing label. */
+    public double ratingMsSize = 1.0;
+    /** New = animated/baked popup style; old = legacy simple text popups. */
+    public String ratingStyle = "new";
+    /** Show the hit timing difference beside each rating. */
+    public boolean ratingShowMs = false;
+    /** Combo position offsets relative to the rating anchor, in Psych-canvas pixels. */
+    public double comboOffsetX = 0;
+    public double comboOffsetY = 0;
+    /** Hit-timing position offsets relative to the rating label, in Psych-canvas pixels. */
+    public double ratingMsOffsetX = 8;
+    public double ratingMsOffsetY = 0;
     /** Local player: none = disabled; default = song-defined set; otherwise a named set. */
     public String animationSet = "none";
+    /** Explicitly identifies animationSet as a 2D character or BBS 3D animation. */
+    public String animationSetType = PERFORMER_TYPE_3D;
+    /** Mirrors a selected 2D character visually. */
+    public boolean animationSetFlipped = false;
+    /** Independently swaps LEFT/RIGHT animation names for a mirrored 2D character. */
+    public boolean animationSetDirectionsFlipped = false;
+    /** Focus a selected 2D character by its stable reference-frame centre instead of JSON camera_position. */
+    public boolean animationSetFrameCenterCamera = false;
     /** Solo opponent/bot selection. Null migrates old configs to animationSet. */
     public String opponentAnimationSet;
+    public String opponentAnimationSetType = PERFORMER_TYPE_3D;
+    public boolean opponentAnimationSetFlipped = false;
+    public boolean opponentAnimationSetDirectionsFlipped = false;
+    public boolean opponentAnimationSetFrameCenterCamera = false;
     /** Give the locally controlled performer your current skin on compatible BBS player forms. */
     public boolean playerUsePlayerSkin = false;
     /** Give the solo bot your current Minecraft skin when its BBS form supports player skins. */
@@ -191,9 +222,20 @@ public class ClientOptions {
         }
         if (o.songWarnings == null || o.songWarnings.isBlank()) o.songWarnings = "on";
         if (o.animationSet == null || o.animationSet.isBlank()) o.animationSet = "none";
+        if (com.fnfmod.client.gameplay.WorldCharacterLibrary.isSelection(o.animationSet)) {
+            o.animationSet = com.fnfmod.client.gameplay.WorldCharacterLibrary.idFromSelection(o.animationSet);
+            o.animationSetType = PERFORMER_TYPE_2D;
+        }
+        o.animationSetType = normalizePerformerType(o.animationSetType);
         if (o.opponentAnimationSet == null || o.opponentAnimationSet.isBlank()) {
             o.opponentAnimationSet = o.animationSet;
         }
+        if (com.fnfmod.client.gameplay.WorldCharacterLibrary.isSelection(o.opponentAnimationSet)) {
+            o.opponentAnimationSet = com.fnfmod.client.gameplay.WorldCharacterLibrary.idFromSelection(
+                    o.opponentAnimationSet);
+            o.opponentAnimationSetType = PERFORMER_TYPE_2D;
+        }
+        o.opponentAnimationSetType = normalizePerformerType(o.opponentAnimationSetType);
         // Old configs only had a boolean Form/Player choice. A missing source is
         // migrated without changing the user's existing selection.
         o.playerSkinSource = normalizeSkinSource(o.playerSkinSource, o.playerUsePlayerSkin);
@@ -214,6 +256,24 @@ public class ClientOptions {
             o.noteColorHighlight = defaultHighlight();
         }
         if (o.noteColorOutline == null || o.noteColorOutline.length != 4) o.noteColorOutline = defaultOutline();
+        o.ratingSize = normalizePopupSize(o.ratingSize);
+        o.comboSize = normalizePopupSize(o.comboSize);
+        o.ratingMsSize = normalizePopupSize(o.ratingMsSize);
+        if (!"old".equalsIgnoreCase(o.ratingStyle)) o.ratingStyle = "new";
+        o.comboOffsetX = normalizePopupOffset(o.comboOffsetX);
+        o.comboOffsetY = normalizePopupOffset(o.comboOffsetY);
+        o.ratingMsOffsetX = normalizePopupOffset(o.ratingMsOffsetX);
+        o.ratingMsOffsetY = normalizePopupOffset(o.ratingMsOffsetY);
+    }
+
+    private static double normalizePopupSize(double size) {
+        return Double.isFinite(size) && size > 0 ? Math.clamp(size, 0.25, 2.0) : 1.0;
+    }
+
+    private static double normalizePopupOffset(double offset) {
+        // Popup offsets are free placement coordinates, not a bounded slider.
+        // Keep user placements outside the old +/-640 range when reloading.
+        return Double.isFinite(offset) ? offset : 0.0;
     }
 
     private static String normalizeSkinSource(String source, boolean oldUsePlayerSkin) {
@@ -225,6 +285,11 @@ public class ClientOptions {
             case SKIN_SOURCE_PLAYER, SKIN_SOURCE_FILE, SKIN_SOURCE_ACCOUNT -> normalized;
             default -> SKIN_SOURCE_FORM;
         };
+    }
+
+    public static String normalizePerformerType(String type) {
+        return type != null && type.trim().equalsIgnoreCase(PERFORMER_TYPE_2D)
+                ? PERFORMER_TYPE_2D : PERFORMER_TYPE_3D;
     }
 
     private static String normalizeNoteAssetSource(String source) {
@@ -259,6 +324,23 @@ public class ClientOptions {
         // override either selector independently.
         if (override.has("animationSet") && !override.has("opponentAnimationSet")) {
             override.add("opponentAnimationSet", override.get("animationSet").deepCopy());
+        }
+        if (override.has("animationSetType") && !override.has("opponentAnimationSetType")) {
+            override.add("opponentAnimationSetType", override.get("animationSetType").deepCopy());
+        }
+        if (override.has("animationSetFlipped") && !override.has("opponentAnimationSetFlipped")) {
+            override.add("opponentAnimationSetFlipped",
+                    override.get("animationSetFlipped").deepCopy());
+        }
+        if (override.has("animationSetDirectionsFlipped")
+                && !override.has("opponentAnimationSetDirectionsFlipped")) {
+            override.add("opponentAnimationSetDirectionsFlipped",
+                    override.get("animationSetDirectionsFlipped").deepCopy());
+        }
+        if (override.has("animationSetFrameCenterCamera")
+                && !override.has("opponentAnimationSetFrameCenterCamera")) {
+            override.add("opponentAnimationSetFrameCenterCamera",
+                    override.get("animationSetFrameCenterCamera").deepCopy());
         }
         // Preserve old mod-world configs that only set the former two-way boolean.
         if (override.has("playerUsePlayerSkin") && !override.has("playerSkinSource")) {

@@ -30,8 +30,8 @@ import java.util.stream.Stream;
 
 /**
  * Scans lightweight config/fnfmod/songs entries and complete config/fnfmod/mods packs.
- * Each side (server, client) scans its own folder; in multiplayer the
- * server's library is authoritative and files are streamed to clients.
+ * Each side (server, client) scans its own folder. Multiplayer verifies that
+ * clients have matching local content; it does not stream song files.
  */
 public class SongLibrary {
 
@@ -204,6 +204,7 @@ public class SongLibrary {
     public static synchronized void rescan() {
         long started = System.nanoTime();
         ensureFolders();
+        GameBananaInstalledMod.migrateLegacyDownloads();
         // A mod world normally sees only its owning pack; a world that opted into external
         // content also scans installed packs and configured directories, like an ALL world.
         boolean modWorldExternal = ModContentScope.mode() == ModContentScope.Mode.MOD_WORLD
@@ -433,7 +434,7 @@ public class SongLibrary {
         }
     }
 
-    // ------------------------------------------------------------ download cache
+    // ------------------------------------------------------------ local scan / legacy download cache
 
     public static long cacheSizeBytes() {
         return SongCache.sizeBytes(cacheDir());
@@ -443,12 +444,12 @@ public class SongLibrary {
         SongCache.clear(cacheDir());
     }
 
-    /** Deletes cached songs that haven't been used for the given number of days. */
+    /** Deletes legacy cached song folders that haven't been used for the given number of days. */
     public static void pruneCache(int days) {
         SongCache.prune(cacheDir(), days);
     }
 
-    /** Refreshes a cached song's timestamp so pruning knows it's still in use. */
+    /** Refreshes a legacy cached song's timestamp so pruning knows it's still in use. */
     public static void touchCacheEntry(Path dir) {
         SongCache.touch(cacheDir(), dir);
     }
@@ -466,6 +467,7 @@ public class SongLibrary {
 
     /** Missing entries deliberately mean every category, preserving pre-checklist installations. */
     public static EnumSet<ExternalContent> getExternalFolderContent(String folder) {
+        if (ModContentScope.isModWorld()) return allExternalContent();
         return new ExternalDirectoryConfig(root()).content(folder);
     }
 
@@ -479,6 +481,7 @@ public class SongLibrary {
 
     /** A pack inherits its source checklist until it receives an explicit override. */
     public static EnumSet<ExternalContent> getExternalPackContent(String source, Path pack) {
+        if (ModContentScope.isModWorld()) return allExternalContent();
         ExternalDirectoryConfig config = new ExternalDirectoryConfig(root());
         EnumSet<ExternalContent> selected = config.contentOrNull(packFilterKey(source, pack));
         return selected == null ? config.content(source) : selected;
@@ -1287,7 +1290,7 @@ public class SongLibrary {
         return path.toAbsolutePath().normalize().startsWith(root.toAbsolutePath().normalize());
     }
 
-    /** Download caches preserve these directories when a complete mod is transferred. */
+    /** Legacy prepared/download caches may preserve these complete-mod directories. */
     private static boolean looksLikeTransferredMod(Path root) {
         for (String folder : new String[]{"scripts", "custom_events", "custom_notetypes", "images",
                 "characters", "stages", "sounds", "fonts", "animations", "data", "songs"}) {

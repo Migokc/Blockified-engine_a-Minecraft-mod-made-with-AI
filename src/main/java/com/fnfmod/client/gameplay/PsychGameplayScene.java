@@ -2,10 +2,12 @@ package com.fnfmod.client.gameplay;
 
 import com.fnfmod.FnfMod;
 import com.fnfmod.chart.SongChart;
+import com.fnfmod.chart.ChartEventTypes;
 import com.fnfmod.client.camera.GameplayCamera;
 import com.fnfmod.client.math.Easing;
 import com.fnfmod.client.render.PsychCanvas;
 import com.fnfmod.client.render.AnimateAtlas;
+import com.fnfmod.client.render.AnimateAtlasCache;
 import com.fnfmod.client.render.SparrowAtlas;
 import com.fnfmod.client.render.SpriteAtlasCache;
 import com.fnfmod.gameplay.PlaybackPolicy;
@@ -68,6 +70,8 @@ public final class PsychGameplayScene implements AutoCloseable {
         double objectBorderSize;
         int objectBorderColor;
         double angle;
+        double originX = Double.NaN;
+        double originY = Double.NaN;
         double holdTimer;
         double heyTimer;
         boolean visible = true;
@@ -254,8 +258,14 @@ public final class PsychGameplayScene implements AutoCloseable {
             current.sheet().prepareFrame(atlasFrame);
             float sx = (float) scaleX;
             float sy = (float) scaleY;
-            float cx = (float) (x + atlasFrame.frameW * sx * 0.5 - current.offsetX() * sx);
-            float cy = (float) (y + atlasFrame.frameH * sy * 0.5 - current.offsetY() * sy);
+            double ox = effectiveOriginX(atlasFrame);
+            double oy = effectiveOriginY(atlasFrame);
+            float cx = (float) (x + (Double.isFinite(originX) ? ox : ox * sx)
+                    - current.offsetX() * sx);
+            float cy = (float) (y + (Double.isFinite(originY) ? oy : oy * sy)
+                    - current.offsetY() * sy);
+            float localCenterX = (float) ((atlasFrame.frameW * 0.5 - ox) * Math.abs(sx));
+            float localCenterY = (float) ((atlasFrame.frameH * 0.5 - oy) * Math.abs(sx));
             float oldAlpha = SparrowAtlas.globalAlpha;
             float oldTintR = SparrowAtlas.tintR;
             float oldTintG = SparrowAtlas.tintG;
@@ -270,14 +280,16 @@ public final class PsychGameplayScene implements AutoCloseable {
                 for (int dx = -stroke; dx <= stroke; dx++) {
                     for (int dy = -stroke; dy <= stroke; dy++) {
                         if (dx == 0 && dy == 0) continue;
-                        drawFrame(gui, atlasFrame, current, sx, sy, cx + dx, cy + dy, mask);
+                        drawFrame(gui, atlasFrame, current, sx, sy, cx + dx, cy + dy,
+                                localCenterX, localCenterY, mask);
                     }
                 }
             }
             SparrowAtlas.tintR = oldTintR * ((color >> 16 & 255) / 255f);
             SparrowAtlas.tintG = oldTintG * ((color >> 8 & 255) / 255f);
             SparrowAtlas.tintB = oldTintB * ((color & 255) / 255f);
-            drawFrame(gui, atlasFrame, current, sx, sy, cx, cy, null);
+            drawFrame(gui, atlasFrame, current, sx, sy, cx, cy,
+                    localCenterX, localCenterY, null);
             SparrowAtlas.globalAlpha = oldAlpha;
             SparrowAtlas.tintR = oldTintR;
             SparrowAtlas.tintG = oldTintG;
@@ -285,13 +297,14 @@ public final class PsychGameplayScene implements AutoCloseable {
         }
 
         private void drawFrame(GuiGraphics gui, SparrowAtlas.Frame atlasFrame, Animation current,
-                               float sx, float sy, float cx, float cy, ResourceLocation texture) {
+                               float sx, float sy, float cx, float cy,
+                               float localCenterX, float localCenterY, ResourceLocation texture) {
             gui.pose().pushPose();
             gui.pose().translate(cx, cy, 0);
             if (angle != 0) gui.pose().mulPose(com.mojang.math.Axis.ZP.rotationDegrees((float) angle));
             gui.pose().scale(flipX ? -1f : 1f, 1f, 1f);
             if (Math.abs(sx) > 0.0001f) gui.pose().scale(1f, sy / sx, 1f);
-            current.sheet().drawScaled(gui, atlasFrame, 0, 0, Math.abs(sx), texture);
+            current.sheet().drawScaled(gui, atlasFrame, localCenterX, localCenterY, Math.abs(sx), texture);
             gui.pose().popPose();
         }
 
@@ -308,6 +321,30 @@ public final class PsychGameplayScene implements AutoCloseable {
             return y + logicalHeight * scaleY * 0.5;
         }
 
+        private SparrowAtlas.Frame displayedFrame() {
+            Animation current = animations.get(animation);
+            return current == null || current.frames().isEmpty() ? null
+                    : current.frames().get(Math.max(0, Math.min(frame, current.frames().size() - 1)));
+        }
+
+        private double frameWidth() {
+            SparrowAtlas.Frame value = displayedFrame();
+            return value == null ? logicalWidth : value.frameW;
+        }
+
+        private double frameHeight() {
+            SparrowAtlas.Frame value = displayedFrame();
+            return value == null ? logicalHeight : value.frameH;
+        }
+
+        private double effectiveOriginX(SparrowAtlas.Frame value) {
+            return Double.isFinite(originX) ? originX : value.frameW * 0.5;
+        }
+
+        private double effectiveOriginY(SparrowAtlas.Frame value) {
+            return Double.isFinite(originY) ? originY : value.frameH * 0.5;
+        }
+
         Object property(String name) {
             return switch (name) {
                 case "x" -> x; case "y" -> y; case "alpha" -> alpha; case "angle" -> angle;
@@ -315,6 +352,9 @@ public final class PsychGameplayScene implements AutoCloseable {
                 case "color" -> color;
                 case "antialiasing" -> antialiasing;
                 case "width" -> logicalWidth; case "height" -> logicalHeight;
+                case "frameWidth" -> frameWidth(); case "frameHeight" -> frameHeight();
+                case "origin.x", "originX" -> Double.isFinite(originX) ? originX : frameWidth() * 0.5;
+                case "origin.y", "originY" -> Double.isFinite(originY) ? originY : frameHeight() * 0.5;
                 case "cameraPosition[0]" -> cameraX; case "cameraPosition[1]" -> cameraY;
                 case "scale.x" -> scaleX; case "scale.y" -> scaleY;
                 case "specialAnim" -> specialAnim; case "heyTimer" -> heyTimer;
@@ -334,6 +374,8 @@ public final class PsychGameplayScene implements AutoCloseable {
                 case "x" -> x = number; case "y" -> y = number; case "alpha" -> alpha = number;
                 case "angle" -> angle = number; case "scale.x" -> scaleX = number;
                 case "scale.y" -> scaleY = number; case "heyTimer" -> heyTimer = Math.max(0, number);
+                case "origin.x", "originX" -> originX = number;
+                case "origin.y", "originY" -> originY = number;
                 case "holdTimer" -> holdTimer = Math.max(0, number);
                 case "visible" -> visible = bool(value); case "flipX" -> flipX = bool(value);
                 case "color" -> color = (int) ((long) number) & 0xFFFFFF;
@@ -353,6 +395,7 @@ public final class PsychGameplayScene implements AutoCloseable {
             x = baseX;
             y = baseY;
             angle = 0;
+            originX = originY = Double.NaN;
             alpha = 1;
             color = 0xFFFFFF;
             objectBorderSize = 0;
@@ -380,6 +423,12 @@ public final class PsychGameplayScene implements AutoCloseable {
     private CharacterSprite boyfriend;
     private CharacterSprite dad;
     private CharacterSprite girlfriend;
+    private String boyfriendId;
+    private String dadId;
+    private String girlfriendId;
+    private final boolean active;
+    /** Fully constructed swap targets; Change Character becomes a cheap pointer swap. */
+    private final Map<String, CharacterSprite> preparedCharacters = new LinkedHashMap<>();
     private final StageLayout stage;
     private final PsychStageScene stageScene;
     private final PsychAssetResolver assets;
@@ -402,10 +451,15 @@ public final class PsychGameplayScene implements AutoCloseable {
 
     private PsychGameplayScene(CharacterSprite boyfriend, CharacterSprite dad,
                                CharacterSprite girlfriend, StageLayout stage,
-                               PsychStageScene stageScene, PsychAssetResolver assets) {
+                               PsychStageScene stageScene, PsychAssetResolver assets,
+                               boolean active, String boyfriendId, String dadId, String girlfriendId) {
         this.boyfriend = boyfriend;
         this.dad = dad;
         this.girlfriend = girlfriend;
+        this.boyfriendId = boyfriendId;
+        this.dadId = dadId;
+        this.girlfriendId = girlfriendId;
+        this.active = active;
         this.stage = stage;
         this.stageScene = stageScene;
         this.assets = assets;
@@ -419,7 +473,7 @@ public final class PsychGameplayScene implements AutoCloseable {
                 || assets.roots(SongLibrary.ExternalContent.IMAGES).isEmpty()
                 || assets.roots(SongLibrary.ExternalContent.CHARACTERS).isEmpty()) {
             return new PsychGameplayScene(null, null, null, StageLayout.defaults(),
-                    PsychStageScene.load(null, assets), assets);
+                    PsychStageScene.load(null, assets), assets, false, "", "", "");
         }
         StageLayout stage = loadStage(chart.stage, assets);
         PsychStageScene stageScene = loadStageScene(chart.stage, assets);
@@ -427,7 +481,36 @@ public final class PsychGameplayScene implements AutoCloseable {
         CharacterSprite opponent = loadCharacter(chart.player2, stage.opponent(), assets, false);
         CharacterSprite gf = stage.hideGirlfriend() || chart.player3 == null || chart.player3.isBlank()
                 ? null : loadCharacter(chart.player3, stage.girlfriend(), assets, false);
-        return new PsychGameplayScene(bf, opponent, gf, stage, stageScene, assets);
+        PsychGameplayScene scene = new PsychGameplayScene(bf, opponent, gf, stage, stageScene,
+                assets, true, chart.player1, chart.player2, chart.player3);
+        scene.prepareCharacterChanges(chart);
+        return scene;
+    }
+
+    /**
+     * Constructs chart-declared replacements before gameplay starts. The shared
+     * atlas caches already decoded/uploaded the source; this also removes the
+     * remaining character JSON and animation-map work from the event frame.
+     */
+    private void prepareCharacterChanges(SongChart chart) {
+        if (!active || chart == null) return;
+        int prepared = 0;
+        for (SongChart.Event event : chart.events) {
+            if (!ChartEventTypes.is(event.name, ChartEventTypes.CHANGE_CHARACTER)
+                    || event.value2 == null || event.value2.isBlank()) continue;
+            String role = canonicalRole(event.value1);
+            if (!role.equals("boyfriend") && !role.equals("dad") && !role.equals("gf")) continue;
+            String id = event.value2.trim();
+            String cacheKey = characterCacheKey(role, id);
+            if (preparedCharacters.containsKey(cacheKey) || id.equalsIgnoreCase(currentId(role))) continue;
+            double[] position = role.equals("dad") ? stage.opponent()
+                    : role.equals("gf") ? stage.girlfriend() : stage.boyfriend();
+            CharacterSprite sprite = loadCharacter(id, position, assets, role.equals("boyfriend"));
+            if (sprite != null) {
+                preparedCharacters.put(cacheKey, sprite);
+                if (++prepared >= 24) break; // bounded RAM for unusually event-heavy charts
+            }
+        }
     }
 
     private static PsychStageScene loadStageScene(String id, PsychAssetResolver assets) {
@@ -470,12 +553,14 @@ public final class PsychGameplayScene implements AutoCloseable {
             boolean antialiasing = characterAntialiasing(data);
             String renderType = string(data, "renderType", "").toLowerCase(Locale.ROOT);
             String assetPath = string(data, "assetPath", "");
-            boolean animate = renderType.contains("animateatlas") || !assetPath.isBlank();
+            Path animateFolder = assetPath.isBlank() ? null
+                    : AnimateAtlas.resolveFolder(json, assetPath);
+            boolean animate = renderType.contains("animateatlas") || animateFolder != null;
             if (animate) {
-                Path folder = AnimateAtlas.resolveFolder(json, assetPath);
-                loadedAtlas = AnimateAtlas.load(folder);
+                loadedAtlas = AnimateAtlasCache.acquire(animateFolder, antialiasing);
             } else {
-                Path png = assets.image(string(data, "image", ""));
+                String image = string(data, "image", assetPath);
+                Path png = assets.image(image);
                 if (png == null) return null;
                 Path xml = png.resolveSibling(stripExtension(png.getFileName().toString()) + ".xml");
                 loadedAtlas = SpriteAtlasCache.acquire(png, xml, antialiasing);
@@ -528,7 +613,8 @@ public final class PsychGameplayScene implements AutoCloseable {
             if (!animationAsset.isBlank() && !animationAsset.equals(baseAssetPath)) {
                 sheet = sheets.get(animationAsset);
                 if (sheet == null) {
-                    sheet = AnimateAtlas.load(AnimateAtlas.resolveFolder(characterJson, animationAsset));
+                    sheet = AnimateAtlasCache.acquire(
+                            AnimateAtlas.resolveFolder(characterJson, animationAsset), antialiasing);
                     if (sheet != null) {
                         sheet.setAntialiasing(antialiasing);
                         sheets.put(animationAsset, sheet);
@@ -539,10 +625,14 @@ public final class PsychGameplayScene implements AutoCloseable {
             List<SparrowAtlas.Frame> frames;
             if (string(anim, "animType", "").equalsIgnoreCase("symbol")) {
                 frames = new ArrayList<>(sheet.framesBySymbol(prefix));
-            } else if (anim.has("indices") && anim.get("indices").isJsonArray()
-                    && !anim.getAsJsonArray("indices").isEmpty()) {
+            } else if ((anim.has("indices") && anim.get("indices").isJsonArray()
+                    && !anim.getAsJsonArray("indices").isEmpty())
+                    || (anim.has("frameIndices") && anim.get("frameIndices").isJsonArray()
+                    && !anim.getAsJsonArray("frameIndices").isEmpty())) {
                 List<Integer> indices = new ArrayList<>();
-                for (JsonElement index : anim.getAsJsonArray("indices")) {
+                JsonArray indexArray = anim.has("indices")
+                        ? anim.getAsJsonArray("indices") : anim.getAsJsonArray("frameIndices");
+                for (JsonElement index : indexArray) {
                     try { indices.add(index.getAsInt()); } catch (Exception ignored) {}
                 }
                 frames = new ArrayList<>(sheet.framesByIndices(prefix, indices));
@@ -551,7 +641,9 @@ public final class PsychGameplayScene implements AutoCloseable {
             }
             if (name.isBlank() || frames.isEmpty()) continue;
             double[] offsets = pair(anim, "offsets", 0, 0);
-            animations.put(name, new Animation(List.copyOf(frames), number(anim, "fps", 24),
+            double fps = anim.has("fps") ? number(anim, "fps", 24)
+                    : number(anim, "frameRate", 24);
+            animations.put(name, new Animation(List.copyOf(frames), fps,
                     anim.has("looped") ? bool(anim, "looped", false) : bool(anim, "loop", false),
                     offsets[0], offsets[1], sheet));
         }
@@ -780,24 +872,49 @@ public final class PsychGameplayScene implements AutoCloseable {
     }
 
     public boolean changeCharacter(String role, String characterId) {
+        if (!active) return false;
         String canonical = canonicalRole(role);
+        if (!canonical.equals("boyfriend") && !canonical.equals("dad") && !canonical.equals("gf")) {
+            return false;
+        }
+        if (characterId != null && characterId.equalsIgnoreCase(currentId(canonical))) return true;
         double[] position = switch (canonical) {
             case "dad" -> stage.opponent();
             case "gf" -> stage.girlfriend();
             default -> stage.boyfriend();
         };
-        CharacterSprite replacement = loadCharacter(characterId, position, assets,
+        CharacterSprite replacement = preparedCharacters.remove(
+                characterCacheKey(canonical, characterId));
+        if (replacement == null) replacement = loadCharacter(characterId, position, assets,
                 canonical.equals("boyfriend"));
         if (replacement == null) return false;
         CharacterSprite previous;
+        String previousId = currentId(canonical);
         switch (canonical) {
-            case "dad" -> { previous = dad; dad = replacement; }
-            case "gf" -> { previous = girlfriend; girlfriend = replacement; }
-            default -> { previous = boyfriend; boyfriend = replacement; }
+            case "dad" -> { previous = dad; dad = replacement; dadId = characterId; }
+            case "gf" -> { previous = girlfriend; girlfriend = replacement; girlfriendId = characterId; }
+            default -> { previous = boyfriend; boyfriend = replacement; boyfriendId = characterId; }
         }
-        if (previous != null) previous.close();
+        if (previous != null && previousId != null && !previousId.isBlank()) {
+            previous.reset();
+            CharacterSprite displaced = preparedCharacters.put(
+                    characterCacheKey(canonical, previousId), previous);
+            if (displaced != null && displaced != previous) displaced.close();
+        } else if (previous != null) previous.close();
         updateCameraTarget();
         return true;
+    }
+
+    private String currentId(String role) {
+        return switch (role) {
+            case "dad" -> dadId == null ? "" : dadId;
+            case "gf" -> girlfriendId == null ? "" : girlfriendId;
+            default -> boyfriendId == null ? "" : boyfriendId;
+        };
+    }
+
+    private static String characterCacheKey(String role, String id) {
+        return canonicalRole(role) + "\u0000" + (id == null ? "" : id.trim().toLowerCase(Locale.ROOT));
     }
 
     public boolean playAnimation(String role, String animation, boolean force) {
@@ -975,6 +1092,8 @@ public final class PsychGameplayScene implements AutoCloseable {
         if (boyfriend != null) boyfriend.close();
         if (dad != null) dad.close();
         if (girlfriend != null) girlfriend.close();
+        for (CharacterSprite cached : preparedCharacters.values()) cached.close();
+        preparedCharacters.clear();
         stageScene.close();
     }
 }

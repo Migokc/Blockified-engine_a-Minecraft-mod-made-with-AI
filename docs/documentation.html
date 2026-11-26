@@ -90,7 +90,7 @@
               <details class="reference-entry" open><summary><code>Minecraft Command</code><span>Blockified</span></summary><div><p>Runs a Minecraft command. Value 1 is the command; the Chart Editor's Value 2 toggle chooses <code>Player</code> or <code>Server</code>.</p><p>Placeholders include <code>&lt;player&gt;</code>, <code>&lt;opponent&gt;</code>, <code>&lt;speakers&gt;</code>, camera-relative directions such as <code>&lt;forward:2,left:1&gt;</code>, <code>&lt;camera_rotation&gt;</code>, and <code>&lt;character_rotation:degrees&gt;</code>.</p></div></details>
               <details class="reference-entry"><summary><code>Camera Zoom</code><span>Blockified</span></summary><div><p>Persistent zoom. Values: amount <code>-1..0.9</code>, duration in seconds, easing. Amount <code>0</code> restores normal zoom.</p></div></details>
               <details class="reference-entry"><summary><code>Camera Focus</code><span>Blockified</span></summary><div><p>Overrides section focus. Value 1 accepts player/BF, opponent/Dad, GF/speakers, or an extra-character tag; Value 2 is easing. Empty focus restores Must Hit behavior.</p></div></details>
-              <details class="reference-entry"><summary><code>Camera Behavior</code><span>Blockified</span></summary><div><p>Minecraft and Legacy only. Values: focus speed multiplier, easing, and whether sing/animation camera offsets are enabled. Empty values restore defaults.</p></div></details>
+              <details class="reference-entry"><summary><code>Camera Behavior</code><span>Blockified</span></summary><div><p>Minecraft only. Values: focus speed multiplier, easing, and whether sing/animation camera offsets are enabled. Empty values restore defaults.</p></div></details>
               <details class="reference-entry"><summary><code>Camera Follow Pos</code><span>Hybrid</span></summary><div><p>Values 1–2 retain Psych screen coordinates. Extended values add 3D right/up/forward offsets, easing, override mode, machine/camera reference frame, and move duration.</p></div></details>
               <details class="reference-entry"><summary><code>Camera Rotation 3D</code><span>Blockified</span></summary><div><p>Values: pitch, yaw, roll, easing, duration, and layer. The normal/orbit layer moves around an active pivot; camera/view/local rotates the view independently.</p></div></details>
               <details class="reference-entry"><summary><code>Camera Orbit</code><span>Blockified</span></summary><div><p>Values: on/off, follow/pin, pivot X/Y/Z, pivot duration, and easing. Camera Follow Pos supplies the radius/position; Camera Rotation 3D animates around the pivot.</p></div></details>
@@ -121,16 +121,17 @@
             <aside class="callout"><strong>Psych character scripts</strong><span>Blockified does not currently auto-load <code>characters/&lt;character&gt;.lua</code>. Put that behavior in a pack script, stage script, or song script instead.</span></aside>
 
             <h3 id="lua-world-space" data-toc="World-space additions">World-space objects and characters</h3>
-            <p>Psych’s <code>game</code>, <code>hud</code>, and <code>other</code> cameras remain on the fixed 1280×720 canvas. Blockified adds the <code>world</code> camera for Minecraft/Legacy stage space.</p>
+            <p>Psych’s <code>game</code>, <code>hud</code>, and <code>other</code> cameras remain on the fixed 1280×720 canvas. Blockified adds the <code>world</code> camera for Minecraft stage space.</p>
             <div class="api-table">
               <div><code>setObjectCamera(tag, 'world')</code><p>Moves a Lua sprite or text object into 3D stage-local space with real depth.</p></div>
-              <div><code>makeLuaSprite(...[, z])</code> <code>makeLuaText(...[, z])</code><p>Static sprites accept an optional fifth Z argument; text accepts an optional sixth. Animated sprites set Z through <code>setProperty(tag .. '.z', value)</code>.</p></div>
+              <div><code>makeLuaSprite(...[, z])</code> <code>makeLuaText(tag, text, width, x, y[, fontMode][, z])</code><p>Static sprites accept an optional fifth Z argument. Text accepts <code>'smooth'</code> (default) or <code>'pixel'</code> as its sixth argument; older scripts may still use a numeric sixth Z. Animated sprites set Z through <code>setProperty(tag .. '.z', value)</code>.</p></div>
               <div><code>setObjectRotation(tag, pitch, yaw, roll)</code><p>Adds three-axis rotation. Rotation and XYZ scale properties also work on supported main characters, extra characters, and BBS forms.</p></div>
               <div><code>setWorldSpriteBillboard/Lighting(tag, enabled)</code><p>Controls camera-facing and Minecraft light response.</p></div>
               <div><code>setWorldSpriteGravity/Collision/Shadows(tag, enabled)</code><p>Adds client-side entity physics, collision, and vanilla blob shadows during gameplay.</p></div>
               <div><code>setWorldSpriteIRLightsShadows(tag, enabled)</code><p>Adds IRLights projected-shadow participation; enabled by default.</p></div>
               <div><code>setObjectSeeThrough(tag, enabled)</code><p>Lets a world object render through Minecraft geometry.</p></div>
               <div><code>setObjectBorder(tag, size, color, style)</code><p>Adds a fixed-Psych-resolution outline to Lua sprites and performer characters, including BBS forms.</p></div>
+              <div><code>origin.x / origin.y</code> <code>frameWidth / frameHeight</code><p>All flat sprites, text, FNF characters, and extra 2D world characters expose their current unscaled frame size and a writable pivot. For example, <code>setProperty('boyfriend.origin.x', getProperty('boyfriend.frameWidth') * 0.5)</code> centres the horizontal pivot. The same fields are available directly on menu-Lua widget tables.</p></div>
             </div>
             <p>World sprites are backed by client-side entities during gameplay so physics and lighting integrations can see them. Free Cam continues using its editor renderer.</p>
 
@@ -139,7 +140,7 @@
             <div class="api-table">
               <div><code>makeLuaGradient / ui.gradient</code><p>Create a standalone linear, radial, or angular gradient, including color and alpha stops. It can be drawn normally or used as a mask.</p></div>
               <div><code>setObjectGradient(tag, type, stops, angle)</code><p>Apply a non-destructive gradient to existing pixels. Up to 16 color/alpha stops; geometry and strength are tweenable.</p></div>
-              <div><code>setObjectMask(target, source, mode, inverted, hideSource)</code><p>Alpha masks use opacity (opaque black reveals); luminance masks use brightness (white reveals, black hides). Masks remain local to the target, with editable offset, scale, rotation and softness.</p></div>
+              <div><code>setObjectMask(target, source, mode, inverted, hideSource)</code><p>Alpha masks use opacity (opaque black reveals); luminance masks use brightness (white reveals, black hides). The source keeps its own placement, dimensions and transform without changing the target. Parent the objects only when the mask should move with it.</p></div>
               <div><code>setBlendMode(tag, mode)</code><p>Normal, add, multiply, screen, subtract, lighten, darken, difference, and overlay now have distinct rendering in both Lua runtimes, including depth-tested world planes.</p></div>
               <div><code>setObjectClip(tag, type, x, y, width, height, radius, softness)</code><p>Normalized local rectangle, ellipse, or rounded-rectangle clipping without rescaling the source.</p></div>
               <div><code>makeLuaGroup / ui.group</code><p>Composite child layers before applying group opacity/effects. Add members with <code>addToGroup(group, child)</code>. These are flat visual composites, not interactive child-widget containers.</p></div>
@@ -158,11 +159,13 @@
               <div><code>cameraOrbit(pinned, x, y, z, duration, easing)</code><p>Starts or updates the world-camera pivot. Follow mode offsets the focused character; pinned mode uses absolute stage-local XYZ. <code>startCameraOrbit</code> is an alias and <code>stopCameraOrbit()</code> ends it.</p></div>
               <div><code>setCameraFollowPoint(x, y)</code> <code>addCameraFollowPoint(x, y)</code><p>Sets or offsets the Psych-compatible camera follow point. Scroll equivalents are <code>setCameraScroll</code> and <code>addCameraScroll</code>.</p></div>
               <div><code>setCameraBopEnabled(target, enabled)</code><p>Controls game, HUD, or both beat bops. Read it with <code>getCameraBopEnabled(target)</code>.</p></div>
-              <div><code>addBlockifiedCharacter(tag, character, x, y, z, yaw, animation, side)</code><p>Adds a named BBS or 2D performer in Minecraft/Legacy presentation. <code>makeBlockifiedCharacter</code> is an alias.</p></div>
+              <div><code>addBlockifiedCharacter(tag, character, x, y, z, yaw, animation, side)</code><p>Adds a named BBS or 2D performer in Minecraft presentation. <code>makeBlockifiedCharacter</code> is an alias.</p></div>
               <div><code>changeBlockifiedCharacter(tag, character, side)</code><p>Changes an existing extra performer without replacing its tag. Existence, remove, reset-position, all-collision, and all-shadow helpers are also available.</p></div>
               <div><code>getBlockShading()</code> <code>getMobShading()</code><p>Reads current directional-shading state. Change it through <code>triggerEvent('Directional Shading', ...)</code>.</p></div>
               <div><code>doTweenZ / doTweenRotationX/Y/Z</code><p>Extends Psych tweens with depth and three-axis rotation. <code>doTweenAngleX/Y/Z</code> are aliases. All unchanged Psych tween/timer/audio calls keep their normal names and are not repeated here.</p></div>
-              <div><code>setTextQuality / setTextLineSpacing / setTextLetterSpacing</code><p>Adds font oversampling quality and explicit line/letter spacing, with matching getters.</p></div>
+              <div><code>setTextFontMode(tag, mode)</code> <code>getTextFontMode(tag)</code><p>Selects <code>smooth</code> or <code>pixel</code> rendering for custom fonts. Smooth uses anti-aliased glyphs and Psych-pixel outlines; pixel uses crisp glyphs and font-pixel outlines. Minecraft's default font remains pixelated. The old <code>setTextQuality</code>/<code>getTextQuality</code> calls still work, but show a one-time deprecation debug message.</p></div>
+              <div><code>setTextLineSpacing / setTextLetterSpacing</code><p>Changes line/letter spacing, with matching getters.</p></div>
+              <div><code>doTweenText(tag, target, amount, duration, easing, property)</code><p>Tweens Blockified text layout properties: <code>LineSpacing</code>, <code>LetterSpacing</code>, <code>BorderSize</code>, and <code>TextSize</code>. Omitting duration uses one second.</p></div>
               <div><code>achievementExists / unlockAchievement / achievement score calls</code><p>Adds Blockified-backed achievement storage helpers.</p></div>
             </div>
 
@@ -242,7 +245,7 @@
               <div><code>machine.close()</code><p>Closes the Lua menu and releases its machine session. Disabled when the world requires <code>autoOpenMenu</code>.</p></div>
               <div><code>machine.exitWorld()</code><p>Leaves the current world without a prompt, using Minecraft's normal disconnect/save lifecycle. Returns true when queued, false when unavailable or already requested. Disabled in the Menu Editor.</p></div>
             </div>
-            <p>Escape opens Minecraft's pause menu directly on every Lua page. Resuming returns to that same page, without restarting its script or shared music.</p>
+            <p>When a bundled world enables <code>autoOpenMenu</code>, Escape opens Minecraft's pause menu and resuming returns to the same Lua page without restarting its script or shared music. On an ordinary physical, hitbox, or virtual-machine menu, Escape closes the menu normally.</p>
             <pre><code>-- machines/my-machine/menu.lua
 local extras = ui.button('extras', 'Extras', 0.5, 0.5, 180, 24)
 function extras:onClick()
@@ -259,6 +262,7 @@ end</code></pre>
             <p>Named stages support singleplayer/LAN mod worlds. Their index survives world saves and chunk unloads; older anchors register when their chunk next loads, so visit one once if it is not found after updating. Temporary stage chunk loading is released when the session ends. Omitting <code>machine</code> preserves the existing behavior; <code>returnTo = 'world'</code> and <code>'selector'</code> also remain available.</p>
             <h3 id="machine-input" data-toc="Keyboard and cursor input">Keyboard and cursor input</h3>
             <div class="api-table compact">
+              <div><code>debugPrint(text[, color])</code><p>Shows a fading trace above the machine menu for six seconds and writes it to the log. Color accepts a hex/name or integer. The Menu Lua Editor preview shows it too.</p></div>
               <div><code>keyboardPressed(name)</code><p>True while a physical key is held. Uses Psych names such as <code>A</code>, <code>SPACE</code>, <code>LEFT</code>, <code>SHIFT</code>, <code>F1</code>, and <code>NUMPAD1</code>.</p></div>
               <div><code>keyboardJustPressed(name)</code><p>True only during the update in which the physical key was pressed.</p></div>
               <div><code>keyboardReleased(name)</code><p>True only during the update in which the physical key was released.</p></div>
@@ -323,7 +327,7 @@ setProperty('chunkLoadPoints.stage_right.enabled', true)</code></pre>
             <div class="api-table">
               <div><code>Choose Song Audio</code><p>Select one or several files. Recognized Inst/Voices names become the matching stems; common non-OGG formats are converted for the saved copy without renaming the original file.</p></div>
               <div><code>Save / Ctrl+S</code><p>Saves to this song’s assigned folder when one exists; otherwise it uses the normal generated song folder without opening a dialog.</p></div>
-              <div><code>Edit → Choose Saving Folder / Mod</code><p>Assigns an output destination to this song. Select an exact chart folder to write there directly, or select a recognized mod root to use <code>&lt;mod&gt;/data/&lt;song-id&gt;</code>. The mod’s song folder is created when needed.</p></div>
+              <div><code>Edit → Choose Saving Folder / Mod</code><p>Assigns an output destination to this song. An exact ordinary folder keeps the chart and imported audio together. Selecting a recognized mod root writes chart JSON and events to <code>&lt;mod&gt;/data/&lt;song-id&gt;</code>, while copied or converted OGG stems go to the loadable Psych-compatible path <code>&lt;mod&gt;/songs/&lt;song-id&gt;</code>.</p></div>
               <div><code>Saved assignment</code><p>The resolved destination is remembered by song name in <code>config/fnfmod/chart_editor_save_folders.json</code>. Ctrl+S and <em>Save Events</em> reuse it until <strong>Clear Saving Folder</strong> is pressed.</p></div>
               <div><code>Missing destination</code><p>If the remembered folder no longer exists, opening the chart displays a foreground warning, clears the invalid assignment, and returns Ctrl+S to the normal generated song folder.</p></div>
               <div><code>Save As</code><p>Asks every time and also accepts either an exact folder or a mod root. The chosen resolved destination becomes this song’s new saved assignment.</p></div>
@@ -440,7 +444,7 @@ setProperty('chunkLoadPoints.stage_right.enabled', true)</code></pre>
               <div><strong>Implemented</strong><p>Psych-style charts, V-Slice chart/metadata pairs, Codename modern charts, Psych events, weeks, stage/character JSON, Sparrow XML, Adobe Animate atlases, custom events/note types, and broad Psych Lua behavior.</p></div>
               <div><strong>Graceful no-op</strong><p>GLSL shader setters, HScript APIs, video/dialogue playback, arbitrary Haxe/class invocation, Flixel group mutation, controller input, <code>loadSong</code>, and script-driven countdown start are accepted but do not execute.</p></div>
               <div><strong>Sandboxed</strong><p>Lua has no OS, environment, Java, package loading, unrestricted filesystem, or dynamic-code access. Each callback is capped at 5,000,000 Lua instructions and one second of Lua wall time; trusted host work does not consume the wall limit.</p></div>
-              <div><strong>Dedicated servers</strong><p>Gameplay Lua and rich executable assets are disabled. Chart, events, and audio remain playable through validated server transfer and cache.</p></div>
+              <div><strong>Dedicated servers</strong><p>Gameplay Lua is disabled. No song or asset files are transferred: server and clients must have the same local version, verified before play with a compact SHA-256 compatibility fingerprint.</p></div>
             </div>
             <p>Supported easing bases are Smooth, Sine, Cubic, Quint, Circ, Elastic, Quad, Quart, Expo, Back, Bounce, Linear, and Constant, with in, out, and inOut directions.</p>
           </section>

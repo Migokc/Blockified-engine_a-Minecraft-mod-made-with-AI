@@ -52,6 +52,12 @@ public final class CodenameChartParser {
         }
 
         SongChart chart = new SongChart();
+        chart.player1Type = SongChart.normalizePerformerType(LegacyChartParser.optString(root,
+                "blockifiedPlayerType", meta == null ? ""
+                        : LegacyChartParser.optString(meta, "blockifiedPlayerType", "")));
+        chart.player2Type = SongChart.normalizePerformerType(LegacyChartParser.optString(root,
+                "blockifiedOpponentType", meta == null ? ""
+                        : LegacyChartParser.optString(meta, "blockifiedOpponentType", "")));
         if (meta != null) {
             chart.title = LegacyChartParser.optString(meta, "displayName",
                     LegacyChartParser.optString(meta, "name", "Unknown"));

@@ -1,6 +1,7 @@
 package com.fnfmod.client;
 
 import com.fnfmod.client.gui.GameplayScreen;
+import com.fnfmod.client.gui.MinecraftPauseOverlayScreen;
 import com.fnfmod.client.gui.SongSelectScreen;
 import com.fnfmod.client.gui.WaitingScreen;
 import com.fnfmod.client.gui.RollbackWaitingScreen;
@@ -38,7 +39,9 @@ public final class ClientNetHandler {
                     ClientSession.pendingSongExitTarget = FnfPayloads.LeaveC2S.normalizeReturnTarget(returnTarget);
                     ClientSession.lockedWorldMenu = lockedWorldMenu;
                     ClientSession.activePos = p.pos();
-                    mc.setScreen(new SongSelectScreen(p.pos(), p.songs()));
+                    // Song availability is local to the player choosing it. The
+                    // server only coordinates the session; it is not the catalog.
+                    mc.setScreen(new SongSelectScreen(p.pos(), localSongs()));
                 }
                 case 2 -> {
                     if (mc.player != null) {
@@ -53,18 +56,32 @@ public final class ClientNetHandler {
             }
         } else if (payload instanceof FnfPayloads.SessionStateS2C p) {
             if (p.state() == 0) {
-                mc.setScreen(new WaitingScreen(Component.literal(
-                        "Waiting for player 2 (they must click the machine)...")));
+                String message = p.partnerName().isBlank()
+                        ? "Waiting for player 2 at the orange stage marker..."
+                        : p.partnerName();
+                if (!(mc.screen instanceof WaitingScreen waiting)
+                        || !waiting.messageText().equals(message.replaceFirst("\\.{1,3}$", ""))) {
+                    mc.setScreen(new WaitingScreen(Component.literal(message)));
+                }
             } else if (p.state() == 1 && mc.screen instanceof WaitingScreen) {
-                mc.setScreen(new WaitingScreen(Component.literal(
-                        p.partnerName() + " joined! Preparing...")));
+                String message = p.partnerName() + " joined! Preparing...";
+                if (!(mc.screen instanceof WaitingScreen waiting)
+                        || !waiting.messageText().equals(message)) {
+                    mc.setScreen(new WaitingScreen(Component.literal(message)));
+                }
             }
-        } else if (payload instanceof FnfPayloads.FileManifestS2C p) {
-            ClientSession.onManifest(p);
-        } else if (payload instanceof FnfPayloads.FileChunkS2C p) {
-            ClientSession.onChunk(p);
+        } else if (payload instanceof FnfPayloads.JoinGuideS2C p) {
+            com.fnfmod.client.render.SongJoinGuide.accept(p);
+        } else if (payload instanceof FnfPayloads.SongCompatibilityS2C p) {
+            ClientSession.onCompatibility(p);
         } else if (payload instanceof FnfPayloads.StartSongS2C p) {
             ClientSession.onStart(p);
+        } else if (payload instanceof FnfPayloads.BeginSongS2C p) {
+            if (mc.screen instanceof GameplayScreen gameplay) gameplay.onServerBegin(p);
+        } else if (payload instanceof FnfPayloads.NearbySongS2C p) {
+            com.fnfmod.client.audio.NearbySongAudio.onSnapshot(p);
+        } else if (payload instanceof FnfPayloads.NearbyNoteS2C p) {
+            com.fnfmod.client.audio.NearbySongAudio.onNote(p);
         } else if (payload instanceof FnfPayloads.RestartSongS2C p) {
             if (mc.screen instanceof GameplayScreen gameplay) {
                 gameplay.onServerRestart(p);
@@ -76,6 +93,12 @@ public final class ClientNetHandler {
         } else if (payload instanceof FnfPayloads.PartnerEndS2C p) {
             if (mc.screen instanceof GameplayScreen gameplay) {
                 gameplay.onPartnerEnd(p.score(), p.misses(), p.accuracy(), p.failed());
+            }
+        } else if (payload instanceof FnfPayloads.PartnerLeftS2C p) {
+            if (mc.screen instanceof GameplayScreen gameplay) {
+                gameplay.onPartnerLeft(p);
+            } else if (mc.screen instanceof MinecraftPauseOverlayScreen pause) {
+                pause.gameplay().onPartnerLeft(p);
             }
         } else if (payload instanceof FnfPayloads.SessionCancelS2C p) {
             ClientSession.onCancel(p);
@@ -97,7 +120,16 @@ public final class ClientNetHandler {
             ClientSession.activePos = p.pos();
             String compatibilityError = null;
             String activeId = ModContentScope.activeMod().map(ModContentScope.ActiveMod::id).orElse("");
-            if (!activeId.equals(p.modId())) {
+            if (p.modId().isBlank()) {
+                // Remote LAN players keep their own global mod/song library; a
+                // blank server scope means “do not constrain this client”.
+                if (!activeId.isBlank()) {
+                    ModContentScope.clear();
+                    SongLibrary.rescan();
+                    MachineLibrary.rescan();
+                    com.fnfmod.client.render.IconLibrary.rescan();
+                }
+            } else if (!activeId.equals(p.modId())) {
                 ModContentScope.clear();
                 if (ModContentScope.bindClientMod(p.modId())) {
                     SongLibrary.rescan();
@@ -112,10 +144,11 @@ public final class ClientNetHandler {
                         + ", client: " + MachineLibrary.packVersion();
             }
             mc.setScreen(new MachineMenuScreen(p.pos(), p.profileId(), p.machineTag(), p.machineData(),
-                    compatibilityError, p.songs(), p.lockedWorldMenu()));
+                    compatibilityError, localSongs(), p.lockedWorldMenu()));
         } else if (payload instanceof FnfPayloads.MachineTaggedPlayResultS2C p) {
             ClientSession.onTaggedPlayResult(p);
         } else if (payload instanceof FnfPayloads.ModScopeS2C p) {
+            ClientSession.serverAllowsGameplayLua = p.gameplayLuaAllowed();
             com.fnfmod.client.AutoWorldMenuClient.configure(p.automaticMenu());
             if (p.modId().isBlank()) {
                 ModContentScope.clear();
@@ -161,5 +194,12 @@ public final class ClientNetHandler {
         } else if (payload instanceof FnfPayloads.DesignerPlacementStateS2C p) {
             com.fnfmod.client.render.MachineHitboxPreview.setDesignerPlacement(p.mode());
         }
+    }
+
+    private static java.util.List<FnfPayloads.SongInfo> localSongs() {
+        return SongLibrary.getSongs().values().stream().map(entry -> new FnfPayloads.SongInfo(
+                entry.id, entry.displayName, java.util.List.copyOf(entry.difficulties), entry.opponentIcon,
+                entry.opponentIconFile == null ? "" : entry.opponentIconFile.toAbsolutePath().toString()))
+                .toList();
     }
 }

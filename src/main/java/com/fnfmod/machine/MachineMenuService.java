@@ -4,8 +4,6 @@ import com.fnfmod.FnfMod;
 import com.fnfmod.block.FunkinMachineBlockEntity;
 import com.fnfmod.net.FnfPayloads;
 import com.fnfmod.session.SessionManager;
-import com.fnfmod.song.SongEntry;
-import com.fnfmod.song.SongLibrary;
 import com.fnfmod.world.ModContentScope;
 import com.fnfmod.world.ModWorldOptions;
 import net.minecraft.core.BlockPos;
@@ -46,8 +44,8 @@ public final class MachineMenuService {
         }
         PacketDistributor.sendToPlayer(player, new FnfPayloads.OpenMachineMenuS2C(
                 pos, definition.id(), machine.machineTag(), machine.machineData().toString(),
-                ModContentScope.activeMod().map(ModContentScope.ActiveMod::id).orElse(""),
-                MachineLibrary.packVersion(), SessionManager.availableSongs(), false));
+                SessionManager.clientModScopeId(player), SessionManager.clientModScopeVersion(player),
+                SessionManager.availableSongs(), false));
     }
 
     /** Opens the configured pack menu without requiring a physical machine block. */
@@ -79,8 +77,8 @@ public final class MachineMenuService {
         CompoundTag data = automaticData.computeIfAbsent(player.getUUID(), ignored -> new CompoundTag());
         PacketDistributor.sendToPlayer(player, new FnfPayloads.OpenMachineMenuS2C(
                 pos, definition.id(), "world", data.toString(),
-                ModContentScope.activeMod().map(ModContentScope.ActiveMod::id).orElse(""),
-                MachineLibrary.packVersion(), SessionManager.availableSongs(), true));
+                SessionManager.clientModScopeId(player), SessionManager.clientModScopeVersion(player),
+                SessionManager.availableSongs(), true));
     }
 
     public static void handleAction(ServerPlayer player, FnfPayloads.MachineMenuActionC2S payload) {
@@ -104,23 +102,11 @@ public final class MachineMenuService {
 
     public static void handleDirectPlay(ServerPlayer player, FnfPayloads.MachineDirectPlayC2S payload) {
         // Direct play is also used by the built-in Story Mode playlist between
-        // songs. It still requires a reachable real/anchored machine and every
-        // song/difficulty is validated below; only executable custom menus remain
-        // restricted to integrated mod worlds.
+        // songs. The chooser's local manifest validates the song on each client;
+        // the server only checks machine access and coordinates the session.
         boolean automatic = isAutomatic(player, payload.pos());
         if (automatic && (!customMenusAllowed(player) || !ModWorldOptions.autoOpenMenu())) return;
         if (!automatic && machine(player, payload.pos()) == null) return;
-        SongEntry song = SongLibrary.get(payload.songId());
-        if (song == null) {
-            player.displayClientMessage(net.minecraft.network.chat.Component.literal(
-                    "Song not found: " + payload.songId()), true);
-            return;
-        }
-        if (!song.difficulties.contains(payload.difficulty())) {
-            player.displayClientMessage(net.minecraft.network.chat.Component.literal(
-                    "Difficulty not found: " + payload.difficulty()), true);
-            return;
-        }
         if (!SessionManager.onDirectSelectSong(player, payload)) {
             player.displayClientMessage(net.minecraft.network.chat.Component.literal(
                     "Machine is busy or owned by another player."), true);
@@ -143,12 +129,6 @@ public final class MachineMenuService {
             taggedError(player, payload, "Invalid virtual-machine tag.");
             return;
         }
-        SongEntry song = SongLibrary.get(payload.songId());
-        if (song == null || !song.difficulties.contains(payload.difficulty())) {
-            taggedError(player, payload, song == null ? "Song not found: " + payload.songId()
-                    : "Difficulty not found: " + payload.difficulty());
-            return;
-        }
         var level = player.serverLevel();
         var index = VirtualMachineData.get(level);
         var matches = index.find(tag);
@@ -169,8 +149,8 @@ public final class MachineMenuService {
             return;
         }
         if (!SessionManager.onTaggedSelectSong(player, payload.menuPos(),
-                new FnfPayloads.MachineDirectPlayC2S(target, song.id, payload.difficulty(), payload.duet(),
-                        payload.playSide(), payload.playbackMode()))) {
+                new FnfPayloads.MachineDirectPlayC2S(target, payload.songId(), payload.difficulty(),
+                        payload.duet(), payload.playSide(), payload.playbackMode(), payload.meta()))) {
             taggedError(player, payload, "Virtual machine is busy, or the song could not be prepared: " + tag);
         }
     }

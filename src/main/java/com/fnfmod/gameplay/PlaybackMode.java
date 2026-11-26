@@ -5,8 +5,7 @@ import java.util.Locale;
 /** Visual and resource-loading profile selected before a song starts. */
 public enum PlaybackMode {
     MINECRAFT((byte) 1, "Minecraft", "Rich assets only from installed fnfmod/mods packs"),
-    FNF((byte) 0, "FNF", "Psych-style camera and FNF presentation"),
-    LEGACY((byte) 2, "Legacy", "The original Blockified Engine behavior");
+    FNF((byte) 0, "FNF", "Psych-style camera and FNF presentation");
 
     private final byte networkId;
     private final String displayName;

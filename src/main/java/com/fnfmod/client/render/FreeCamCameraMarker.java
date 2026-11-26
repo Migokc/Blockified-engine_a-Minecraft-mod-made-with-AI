@@ -10,9 +10,9 @@ import net.minecraft.world.phys.Vec3;
 import org.joml.Vector3f;
 
 /**
- * Always-visible wireframe showing the exact camera transform captured when
- * free-cam was entered. The body sits behind the optical origin while the
- * frustum and coloured axes make yaw, pitch and roll unambiguous.
+ * Wireframe for the live or authored gameplay camera in Free View. The body
+ * sits behind the optical origin while the frustum and coloured axes make
+ * yaw, pitch and roll unambiguous.
  */
 public final class FreeCamCameraMarker {
 
@@ -20,6 +20,12 @@ public final class FreeCamCameraMarker {
 
     public static void render(PoseStack poseStack, Camera viewingCamera, Vec3 origin,
                               Vector3f cameraLeft, Vector3f cameraUp, Vector3f cameraLook) {
+        render(poseStack, viewingCamera, origin, cameraLeft, cameraUp, cameraLook, false);
+    }
+
+    public static void render(PoseStack poseStack, Camera viewingCamera, Vec3 origin,
+                              Vector3f cameraLeft, Vector3f cameraUp, Vector3f cameraLook,
+                              boolean selected) {
         if (origin == null || cameraLeft == null || cameraUp == null || cameraLook == null) return;
 
         Vec3 right = unit(new Vec3(-cameraLeft.x(), -cameraLeft.y(), -cameraLeft.z()),
@@ -56,6 +62,18 @@ public final class FreeCamCameraMarker {
             line(vertices, pose, lens[i], far[i], 255, 196, 64, 220);
         }
 
+        if (selected) {
+            // A visible selection cage makes the authored camera read as an
+            // editable object rather than an always-active HUD marker.
+            Vec3[] cageBack = rectangle(right, up, forward, -0.38, 0.30, 0.23);
+            Vec3[] cageFront = rectangle(right, up, forward, 0.16, 0.30, 0.23);
+            outline(vertices, pose, cageBack, 255, 235, 98, 255);
+            outline(vertices, pose, cageFront, 255, 235, 98, 255);
+            for (int i = 0; i < 4; i++) {
+                line(vertices, pose, cageBack[i], cageFront[i], 255, 235, 98, 255);
+            }
+        }
+
         // Small top finder gives camera silhouette and makes roll obvious.
         Vec3 finderLeft = up.scale(0.14).subtract(right.scale(0.09)).subtract(forward.scale(0.17));
         Vec3 finderRight = up.scale(0.14).add(right.scale(0.09)).subtract(forward.scale(0.17));
@@ -73,6 +91,32 @@ public final class FreeCamCameraMarker {
         line(vertices, pose, Vec3.ZERO, up.scale(0.38), 80, 255, 100, 255);
         line(vertices, pose, Vec3.ZERO, forward.scale(1.15), 80, 150, 255, 255);
 
+        poseStack.popPose();
+        buffers.endBatch(lines);
+    }
+
+    /** Blender-like orbit pivot handle. It is deliberately world-sized and only
+     * rendered by the editor while the authored orbit option is enabled. */
+    public static void renderPivot(PoseStack poseStack, Camera viewingCamera, Vec3 origin,
+                                   boolean selected) {
+        if (origin == null) return;
+        Vec3 view = viewingCamera.getPosition();
+        MultiBufferSource.BufferSource buffers = Minecraft.getInstance().renderBuffers().bufferSource();
+        RenderType lines = OverlayLines.thickRenderType();
+        VertexConsumer vertices = buffers.getBuffer(lines);
+        poseStack.pushPose();
+        poseStack.translate(origin.x - view.x, origin.y - view.y, origin.z - view.z);
+        PoseStack.Pose pose = poseStack.last();
+        int alpha = selected ? 255 : 225;
+        double radius = selected ? 0.22 : 0.16;
+        line(vertices, pose, new Vec3(-radius, 0, 0), new Vec3(radius, 0, 0), 255, 80, 80, alpha);
+        line(vertices, pose, new Vec3(0, -radius, 0), new Vec3(0, radius, 0), 80, 255, 100, alpha);
+        line(vertices, pose, new Vec3(0, 0, -radius), new Vec3(0, 0, radius), 80, 150, 255, alpha);
+        double d = radius * 0.55;
+        line(vertices, pose, new Vec3(-d, 0, -d), new Vec3(d, 0, -d), 255, 196, 64, alpha);
+        line(vertices, pose, new Vec3(d, 0, -d), new Vec3(d, 0, d), 255, 196, 64, alpha);
+        line(vertices, pose, new Vec3(d, 0, d), new Vec3(-d, 0, d), 255, 196, 64, alpha);
+        line(vertices, pose, new Vec3(-d, 0, d), new Vec3(-d, 0, -d), 255, 196, 64, alpha);
         poseStack.popPose();
         buffers.endBatch(lines);
     }

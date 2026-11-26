@@ -105,12 +105,11 @@
 
           <section class="wiki-section" id="modes">
             <p class="eyebrow">Presentation modes</p>
-            <h2>Three ways to stage the same chart.</h2>
+            <h2>Two ways to stage the same chart.</h2>
             <div class="mode-table" role="table" aria-label="Presentation modes">
               <div class="mode-row heading" role="row"><span>Mode</span><span>Presentation</span><span>Asset behavior</span></div>
-              <div class="mode-row" role="row"><strong>Minecraft</strong><span>Minecraft world camera and performers.</span><span>Complete installed Blockified packs may expose rich assets; lightweight songs keep chart/audio/events and allowed Lua without gaining a pack asset namespace.</span></div>
+              <div class="mode-row" role="row"><strong>Minecraft</strong><span>Minecraft world camera and performers.</span><span>Installed packs may expose rich assets; external packs can opt into images and fonts individually. Lightweight songs keep chart/audio/events and allowed Lua without gaining a pack asset namespace.</span></div>
               <div class="mode-row" role="row"><strong>FNF</strong><span>Fixed 1280×720 Psych-style scene, HUD, characters, stage layers, and camera.</span><span>Uses compatible Psych-family assets allowed by the active content policy.</span></div>
-              <div class="mode-row" role="row"><strong>Legacy</strong><span>The original Blockified presentation and loading behavior.</span><span>Retained for projects made around earlier engine behavior.</span></div>
             </div>
             <p>Play as Player controls the BF side, Opponent controls the Dad side, and Both merges both sides into one centered four-lane input layout in solo play.</p>
           </section>
@@ -165,10 +164,11 @@
             <h2>The server stays authoritative.</h2>
             <p>The first machine user selects and hosts; a second player may join the opponent side. The host’s song, difficulty, presentation mode, and asset policy are authoritative.</p>
             <ul class="plain-list">
-              <li>Dedicated servers expose server-installed songs and transfer chart, event, and audio data when clients need it.</li>
-              <li>Dedicated-server gameplay disables Lua and rich executable mod assets. LAN keeps local scripting and machine menus.</li>
-              <li>Transfers validate file count, bounded names and chunks, declared size, and SHA-1 before cache use.</li>
-              <li>Custom machines are singleplayer/LAN only. LAN guests need matching machine content; assets are not streamed.</li>
+              <li>Servers never send chart, event, audio, image, font, model, or script files. Every participant must install the same song/mod version locally.</li>
+              <li>Before loading, the server and client independently produce a compact file-count, byte-count, and SHA-256 fingerprint. A missing, changed, or extra required file rejects the session.</li>
+              <li>Dedicated-server gameplay disables Lua. Matching local declarative and visual assets remain available under the selected presentation policy; LAN keeps local scripting and machine menus.</li>
+              <li>Once verified, networking carries only session choices, character settings, inputs, note judgements, score state, and similar small gameplay data.</li>
+              <li>Custom machines are singleplayer/LAN only. LAN guests need matching machine content.</li>
             </ul>
           </section>
 

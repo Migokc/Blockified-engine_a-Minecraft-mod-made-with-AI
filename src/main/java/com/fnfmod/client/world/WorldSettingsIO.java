@@ -35,8 +35,12 @@ public final class WorldSettingsIO {
             "scrollSpeedMult", "constantScrollSpeed", "hudStyle",
             "noteSkin", "splashSkin", "holdSplashSkin", "hitsound", "hitsoundVolume",
             "noteColorBase", "noteColorHighlight", "noteColorOutline",
-            "playAs", "animationSet", "opponentAnimationSet",
-            "playerIcon", "botIcon", "ratingX", "ratingY");
+            "playAs", "animationSet", "animationSetType", "animationSetFlipped",
+            "animationSetDirectionsFlipped", "opponentAnimationSet", "opponentAnimationSetType",
+            "opponentAnimationSetFlipped", "opponentAnimationSetDirectionsFlipped",
+            "playerIcon", "botIcon", "ratingX", "ratingY", "ratingSize", "comboSize", "ratingMsSize",
+            "ratingStyle", "ratingShowMs", "comboOffsetX", "comboOffsetY",
+            "ratingMsOffsetX", "ratingMsOffsetY");
 
     private WorldSettingsIO() {}
 

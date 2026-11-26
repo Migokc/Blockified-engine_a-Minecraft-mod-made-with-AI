@@ -149,6 +149,58 @@ public class SparrowAtlas implements AutoCloseable {
     }
 
     /**
+     * Loads the simple Texture Packer text format used by a few V-Slice
+     * characters (notably Spirit): {@code frame name = x y width height}.
+     */
+    public static SparrowAtlas loadPacker(Path png, Path txt, boolean smooth) {
+        return finish(decodePacker(png, txt), smooth);
+    }
+
+    /** Background-safe decoder for V-Slice's {@code renderType: "packer"}. */
+    public static Decoded decodePacker(Path png, Path txt) {
+        NativeImage image = null;
+        try {
+            if (png == null || txt == null || !Files.isRegularFile(png) || !Files.isRegularFile(txt)) {
+                return null;
+            }
+            try (InputStream in = Files.newInputStream(png)) {
+                image = NativeImage.read(in);
+            }
+            List<Frame> allFrames = new ArrayList<>();
+            Map<String, List<Frame>> animations = new LinkedHashMap<>();
+            for (String source : Files.readAllLines(txt)) {
+                int equals = source.lastIndexOf('=');
+                if (equals <= 0) continue;
+                String name = source.substring(0, equals).trim();
+                String[] values = source.substring(equals + 1).trim().split("\\s+");
+                if (name.isEmpty() || values.length < 4) continue;
+                Frame frame = new Frame();
+                frame.name = name;
+                frame.x = Integer.parseInt(values[0]);
+                frame.y = Integer.parseInt(values[1]);
+                frame.w = Integer.parseInt(values[2]);
+                frame.h = Integer.parseInt(values[3]);
+                if (frame.x < 0 || frame.y < 0 || frame.w <= 0 || frame.h <= 0
+                        || frame.x + frame.w > image.getWidth()
+                        || frame.y + frame.h > image.getHeight()) continue;
+                frame.frameW = frame.w;
+                frame.frameH = frame.h;
+                allFrames.add(frame);
+                animations.computeIfAbsent(stripFrameNumber(name), ignored -> new ArrayList<>()).add(frame);
+            }
+            if (allFrames.isEmpty()) {
+                image.close();
+                return null;
+            }
+            return new Decoded(image, allFrames, animations);
+        } catch (Exception error) {
+            if (image != null) image.close();
+            FnfMod.LOGGER.warn("Failed to decode packer atlas {} / {}: {}", png, txt, error.toString());
+            return null;
+        }
+    }
+
+    /**
      * Decodes a Psych pixel-UI note sheet, which ships no XML: the sprite grid itself defines
      * frame size and position. {@code pixelUI/<skin>.png} is a 4x5 grid (row 0 receptors, row 1
      * notes, rows 2-4 press/confirm) and {@code pixelUI/<skin>ENDS.png} is a 4x2 grid (row 0

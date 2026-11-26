@@ -2,6 +2,8 @@ package com.fnfmod.gameplay;
 
 import com.fnfmod.song.SongEntry;
 import com.fnfmod.song.SongLibrary;
+import com.fnfmod.song.ModMinecraftVisualSettings;
+import com.fnfmod.world.ModContentScope;
 
 import java.nio.file.Path;
 
@@ -19,7 +21,7 @@ public record PlaybackPolicy(PlaybackMode mode, boolean songAssets, boolean luaA
         PlaybackMode resolved = mode == null ? PlaybackMode.MINECRAFT : mode;
         boolean assets = entry != null && entry.fullModLayout
                 && (resolved != PlaybackMode.MINECRAFT
-                || isInstalledModSong(entry));
+                || isInstalledModSong(entry) || ModContentScope.isModWorld());
         return new PlaybackPolicy(resolved, assets, true);
     }
 
@@ -27,6 +29,14 @@ public record PlaybackPolicy(PlaybackMode mode, boolean songAssets, boolean luaA
         if (entry != null && !entry.allows(content)) return false;
         if (content == SongLibrary.ExternalContent.LUA && !luaAllowed) return false;
         if (songAssets) return true;
+        // The per-mod switch specifically grants image/font access to an external
+        // mod in Minecraft look without unlocking its other rich resource groups.
+        if (mode == PlaybackMode.MINECRAFT && entry != null && entry.fullModLayout
+                && entry.modRoot != null
+                && (content == SongLibrary.ExternalContent.IMAGES
+                || content == SongLibrary.ExternalContent.FONTS)) {
+            return ModMinecraftVisualSettings.live().enabled(entry.modRoot);
+        }
         return content == SongLibrary.ExternalContent.LUA
                 || content == SongLibrary.ExternalContent.EVENTS
                 || content == SongLibrary.ExternalContent.CHARTS

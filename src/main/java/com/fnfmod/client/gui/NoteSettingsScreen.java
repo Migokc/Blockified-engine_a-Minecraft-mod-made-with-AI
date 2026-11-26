@@ -6,7 +6,6 @@ import com.fnfmod.client.ClientOptions;
 import com.fnfmod.client.audio.SongPlayer;
 import com.fnfmod.client.gameplay.NativeFilePicker;
 import com.fnfmod.client.gameplay.PsychAssetResolver;
-import com.fnfmod.client.math.Easing;
 import com.fnfmod.client.render.NoteSkinConfig;
 import com.fnfmod.client.render.NoteStyle;
 import com.fnfmod.client.render.PsychNoteTextureCache;
@@ -128,13 +127,10 @@ public final class NoteSettingsScreen extends Screen {
     private int colorDragTarget;
     private String status = "Choose a chart to preview its notes and song.";
 
-    private double controlScroll;
-    private double controlScrollTarget;
-    private double controlScrollFrom;
-    private long controlScrollStart;
-    private boolean controlScrollTween;
-    private int contentBottom;
     private static final long SCROLL_NANOS = 200_000_000L;
+    private final TweenedScroll controlScroll = new TweenedScroll(SCROLL_NANOS);
+    private boolean draggingControlThumb;
+    private int contentBottom;
 
     private boolean previousPixel;
     private boolean previousSongRgb;
@@ -176,7 +172,7 @@ public final class NoteSettingsScreen extends Screen {
     private int viewportBottom() { return height - 34; }
     private int controlX() { return panelX() + 10; }
     private int controlWidth() { return panelWidth() - 20; }
-    private int shownY(int baseY) { return baseY - (int) Math.round(controlScroll); }
+    private int shownY(int baseY) { return baseY - (int) Math.round(controlScroll.position()); }
 
     private void buildControls() {
         clearWidgets();
@@ -550,7 +546,7 @@ public final class NoteSettingsScreen extends Screen {
         }
         pixelPreview = previewChart != null && previewChart.pixelUi;
         if (previewEntry != null && previewChart != null) {
-            PlaybackPolicy policy = PlaybackPolicy.resolve(PlaybackMode.LEGACY, previewEntry);
+            PlaybackPolicy policy = PlaybackPolicy.resolve(PlaybackMode.FNF, previewEntry);
             PsychAssetResolver resolver = new PsychAssetResolver(
                     previewEntry.folder, previewEntry, policy, previewChart.stage);
             pixelPreview |= resolver.stageUsesPixelUi(previewChart.stage);
@@ -570,7 +566,7 @@ public final class NoteSettingsScreen extends Screen {
         previewTextures = null;
         previewResolver = null;
         if (previewEntry != null && previewChart != null) {
-            PlaybackPolicy policy = PlaybackPolicy.resolve(PlaybackMode.LEGACY, previewEntry);
+            PlaybackPolicy policy = PlaybackPolicy.resolve(PlaybackMode.FNF, previewEntry);
             previewResolver = new PsychAssetResolver(previewEntry.folder, previewEntry, policy, previewChart.stage);
             previewTextures = new PsychNoteTextureCache(previewResolver.customNoteRoots(),
                     policy.allows(previewEntry, SongLibrary.ExternalContent.IMAGES));
@@ -849,31 +845,18 @@ public final class NoteSettingsScreen extends Screen {
     }
 
     private void updateScroll() {
-        if (!controlScrollTween) return;
-        double progress = (System.nanoTime() - controlScrollStart) / (double) SCROLL_NANOS;
-        if (progress >= 1) {
-            controlScroll = controlScrollTarget;
-            controlScrollTween = false;
-        } else {
-            double eased = Easing.apply("expoOut", progress);
-            controlScroll = controlScrollFrom + (controlScrollTarget - controlScrollFrom) * eased;
-        }
-        placeScrollingWidgets();
+        double before = controlScroll.position();
+        controlScroll.update();
+        if (before != controlScroll.position()) placeScrollingWidgets();
     }
 
     private double maxScroll() { return Math.max(0, contentBottom - viewportBottom() + 4); }
     private void clampScroll() {
-        controlScroll = Mth.clamp(controlScroll, 0, maxScroll());
-        controlScrollTarget = Mth.clamp(controlScrollTarget, 0, maxScroll());
+        controlScroll.clampTo(maxScroll());
     }
 
     private void scrollTo(double target) {
-        updateScroll();
-        controlScrollFrom = controlScroll;
-        controlScrollTarget = Mth.clamp(target, 0, maxScroll());
-        controlScrollStart = System.nanoTime();
-        controlScrollTween = Math.abs(controlScrollTarget - controlScrollFrom) > 0.01;
-        if (!controlScrollTween) controlScroll = controlScrollTarget;
+        controlScroll.animateTo(target, maxScroll());
         placeScrollingWidgets();
     }
 
@@ -886,10 +869,42 @@ public final class NoteSettingsScreen extends Screen {
         }
     }
 
+    private int controlScrollbarX() { return width - 7; }
+
+    private int controlThumbHeight() {
+        int trackHeight = viewportBottom() - viewportTop();
+        int contentHeight = Math.max(trackHeight, contentBottom - viewportTop() + 4);
+        return Math.max(16, trackHeight * trackHeight / Math.max(trackHeight, contentHeight));
+    }
+
+    private void dragControlScrollbarTo(double mouseY) {
+        double max = maxScroll();
+        if (max <= 0) return;
+        int top = viewportTop();
+        int trackHeight = viewportBottom() - top;
+        int thumbHeight = controlThumbHeight();
+        double fraction = (mouseY - top - thumbHeight / 2.0)
+                / Math.max(1.0, trackHeight - thumbHeight);
+        controlScroll.reset(Mth.clamp(fraction, 0, 1) * max, max);
+        placeScrollingWidgets();
+    }
+
+    private void renderControlScrollbar(GuiGraphics gui) {
+        double max = maxScroll();
+        if (max <= 0) return;
+        int x = controlScrollbarX();
+        int top = viewportTop(), bottom = viewportBottom();
+        int trackHeight = bottom - top;
+        int thumbHeight = controlThumbHeight();
+        int thumbY = top + (int) Math.round((trackHeight - thumbHeight) * (controlScroll.position() / max));
+        gui.fill(x, top, x + 3, bottom, 0x66252733);
+        gui.fill(x, thumbY, x + 3, thumbY + thumbHeight, BlockifiedScreenStyle.ACCENT);
+    }
+
     @Override
     public boolean mouseScrolled(double mouseX, double mouseY, double scrollX, double scrollY) {
         if (mouseX >= panelX()) {
-            scrollTo(controlScrollTarget - scrollY * 30);
+            scrollTo(controlScroll.target() - scrollY * 30);
             return true;
         }
         return super.mouseScrolled(mouseX, mouseY, scrollX, scrollY);
@@ -897,6 +912,13 @@ public final class NoteSettingsScreen extends Screen {
 
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
+        if (button == 0 && maxScroll() > 0
+                && mouseX >= controlScrollbarX() - 3 && mouseX <= controlScrollbarX() + 5
+                && mouseY >= viewportTop() && mouseY <= viewportBottom()) {
+            draggingControlThumb = true;
+            dragControlScrollbarTo(mouseY);
+            return true;
+        }
         if (editorMode && button == 0 && saveTargetDropdownOpen && saveTargetButton != null) {
             int menuX = saveTargetButton.getX();
             int menuY = saveTargetMenuY();
@@ -938,6 +960,10 @@ public final class NoteSettingsScreen extends Screen {
 
     @Override
     public boolean mouseDragged(double mouseX, double mouseY, int button, double dragX, double dragY) {
+        if (button == 0 && draggingControlThumb) {
+            dragControlScrollbarTo(mouseY);
+            return true;
+        }
         if (button == 0 && draggingPreviewTimeline) {
             double pixels = Math.max(1.0, timelineRight() - timelineLeft());
             double rate = hasShiftDown() ? 0.2 : 1.0;
@@ -954,6 +980,7 @@ public final class NoteSettingsScreen extends Screen {
 
     @Override
     public boolean mouseReleased(double mouseX, double mouseY, int button) {
+        if (button == 0) draggingControlThumb = false;
         draggingPreviewTimeline = false;
         colorDragTarget = 0;
         return super.mouseReleased(mouseX, mouseY, button);
@@ -1032,6 +1059,8 @@ public final class NoteSettingsScreen extends Screen {
             }
         }
         gui.disableScissor();
+
+        renderControlScrollbar(gui);
 
         renderSaveTargetDropdown(gui, mouseX, mouseY);
 

@@ -22,7 +22,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.stream.Stream;
 
-/** Psych-compatible {@code weeks/*.json} discovery used by Story Mode and menu Lua. */
+/** Psych weeks and V-Slice levels used by Story Mode and menu Lua. */
 public final class WeekLibrary {
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static int generation = Integer.MIN_VALUE;
@@ -45,6 +45,7 @@ public final class WeekLibrary {
         }
         Path global = SongLibrary.globalSharedAssetRoot();
         if (global != null) roots.add(global);
+        roots.addAll(SongLibrary.orderedContentRoots(SongLibrary.ExternalContent.CHARTS));
 
         LinkedHashMap<String, WeekDefinition> found = new LinkedHashMap<>();
         for (Path root : roots) scanRoot(root, found);
@@ -80,7 +81,18 @@ public final class WeekLibrary {
         if (rawRoot == null) return;
         Path root = rawRoot.toAbsolutePath().normalize();
         Path directory = root.resolve("weeks");
-        if (!Files.isDirectory(directory)) return;
+        if (Files.isDirectory(directory)) scanPsychWeeks(root, directory, found);
+        Path levels = root.resolve("data").resolve("levels");
+        if (Files.isDirectory(levels)) {
+            try (Stream<Path> files = Files.list(levels)) {
+                files.filter(Files::isRegularFile)
+                        .filter(path -> path.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".json"))
+                        .sorted().forEach(path -> addVSlice(root, path, found));
+            } catch (Exception ignored) {}
+        }
+    }
+
+    private static void scanPsychWeeks(Path root, Path directory, Map<String, WeekDefinition> found) {
         Map<String, Path> jsons = new LinkedHashMap<>();
         try (Stream<Path> files = Files.list(directory)) {
             files.filter(Files::isRegularFile).filter(path ->
@@ -117,6 +129,29 @@ public final class WeekLibrary {
     private static void add(Path root, Path json, Map<String, WeekDefinition> found) {
         WeekDefinition week = read(root, json);
         if (week != null) found.putIfAbsent(normalize(week.id()), week);
+    }
+
+    private static void addVSlice(Path root, Path json, Map<String, WeekDefinition> found) {
+        try {
+            JsonObject object = JsonParser.parseString(Files.readString(json)).getAsJsonObject();
+            JsonArray songIds = array(object, "songs");
+            if (songIds == null || songIds.isEmpty()) return;
+            List<WeekDefinition.Song> songs = new ArrayList<>();
+            for (JsonElement element : songIds) {
+                String id = string(element, "");
+                if (!id.isBlank()) songs.add(new WeekDefinition.Song(id, "dad", 0x9271FD));
+            }
+            if (songs.isEmpty()) return;
+            // V-Slice identifies levels by their file/folder id; its JSON name is
+            // presentation text and need not match the folder creators organize by.
+            String id = stem(json);
+            WeekDefinition week = new WeekDefinition(id, id, id, List.copyOf(songs),
+                    List.of("normal"), List.of("", "", ""), "stage", "", true, false,
+                    false, false, root, json, resolveImage(root, id, id, "stage"));
+            found.putIfAbsent(normalize(id), week);
+        } catch (Exception error) {
+            FnfMod.LOGGER.warn("Could not read V-Slice level {}: {}", json, error.toString());
+        }
     }
 
     public static WeekDefinition read(Path root, Path json) {

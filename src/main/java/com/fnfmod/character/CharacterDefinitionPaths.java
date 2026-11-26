@@ -207,7 +207,8 @@ public final class CharacterDefinitionPaths {
 
     private static String safeFileStem(String value) {
         if (value == null || value.isBlank() || value.equals(".") || value.equals("..")
-                || value.contains("/") || value.contains("\\")) return null;
+                || value.contains("/") || value.contains("\\")
+                || value.matches(".*[<>:\"|?*\\x00-\\x1F].*")) return null;
         return value;
     }
 

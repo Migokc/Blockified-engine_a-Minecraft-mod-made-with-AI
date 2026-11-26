@@ -24,6 +24,12 @@ public class SongChart {
     public boolean needsVoices = true;
     public String player1 = "bf";
     public String player2 = "dad";
+    /**
+     * Optional Blockified performer kinds for the two chart roles. Blank keeps
+     * the user's existing Default (song) behavior for older/imported charts.
+     */
+    public String player1Type = "";
+    public String player2Type = "";
     /** Psych girlfriend/speakers character id (gfVersion). */
     public String player3 = "gf";
     /** Psych stage id used to discover stages/<stage>.lua. */
@@ -50,6 +56,21 @@ public class SongChart {
     public final List<Bookmark> bookmarks = new ArrayList<>();
     /** Sections, kept for editor round-trips and legacy saving. */
     public final List<Section> sections = new ArrayList<>();
+
+    /** Normalizes chart/event performer kinds without turning an omitted value into 3D. */
+    public static String normalizePerformerType(String raw) {
+        if (raw == null) return "";
+        String value = raw.trim().toLowerCase(java.util.Locale.ROOT);
+        return switch (value) {
+            case "2d", "character", "sprite" -> "2d";
+            case "3d", "animation", "form", "model" -> "3d";
+            default -> "";
+        };
+    }
+
+    public String performerType(boolean playerSide) {
+        return normalizePerformerType(playerSide ? player1Type : player2Type);
+    }
 
     public static class Note {
         public double timeMs;

@@ -41,8 +41,8 @@ public final class ChartEventTypes {
     private static final List<Definition> BUILTINS = List.of(
             definition(MINECRAFT_COMMAND, "", "player"),
             new Definition(CAMERA_ZOOM, "0", "", "smooth", "", "", ""),
-            definition(CAMERA_FOCUS, "player", "smooth"),
-            new Definition(CAMERA_BEHAVIOR, "1", "smooth", "true", "", "", ""),
+            definition(CAMERA_FOCUS, "player", "psych"),
+            new Definition(CAMERA_BEHAVIOR, "1", "psych", "true", "", "", ""),
             definition(HEY, "", "0.6"),
             definition(SET_GF_SPEED, "1", ""),
             definition(ADD_CAMERA_ZOOM, "0.015", "0.03"),
@@ -186,12 +186,12 @@ public final class ChartEventTypes {
                     "Value 3: Easing curve plus in/out/inOut direction. constant snaps immediately.");
             case CAMERA_FOCUS -> String.join("\n",
                     "Overrides Must Hit camera focus until released.",
-                    "Value 1: player/BF, opponent/Dad, GF/speakers, or an Add Character tag in Legacy/Minecraft mode. Leave empty to restore normal Must Hit section focus.",
-                    "Value 2: Easing curve plus in/out/inOut direction. Ignored when Value 1 is empty.");
+                    "Value 1: player/BF, opponent/Dad, GF/speakers, or an Add Character tag in Minecraft mode. Leave empty to restore normal Must Hit section focus.",
+                    "Value 2: psych (default) uses Psych Engine's continuous follow; timed easing curves are also supported. Ignored when Value 1 is empty.");
             case CAMERA_BEHAVIOR -> String.join("\n",
-                    "Legacy and Minecraft only. Changes how section-focus camera movement behaves; FNF mode ignores it.",
+                    "Minecraft only. Changes how section-focus camera movement behaves; FNF mode ignores it.",
                     "Value 1: Speed multiplier. 1 is normal; 2 is twice as fast; 0.5 is half speed.",
-                    "Value 2: Easing curve plus in/out/inOut direction. constant snaps to the target.",
+                    "Value 2: psych (default) uses Psych Engine's continuous follow. Timed easing curves remain available; constant snaps to the target.",
                     "Value 3: Animation camera offsets. true/on (default) enables sing offsets; false/off disables them, including for an orbit pivot. Leave all values empty to restore defaults.");
             // Meanings and examples mirror Psych Engine 1.0.4 ChartingState event help.
             case HEY -> String.join("\n",
@@ -246,7 +246,8 @@ public final class ChartEventTypes {
             case CHANGE_CHARACTER -> String.join("\n",
                     "Changes one character during the song.",
                     "Value 1: Character slot: Dad, BF, or GF.",
-                    "Value 2: New character ID. Outside the FNF scene this can select a Blockified BBS character mapping.");
+                    "Value 2: New character ID. Outside the FNF scene this can select a Blockified BBS character mapping.",
+                    "Value 3: Auto/current keeps the old behavior. 2D or 3D changes the performer kind when that side's setting is Default (song).");
             case CHANGE_SCROLL_SPEED -> String.join("\n",
                     "Changes the song's scroll-speed multiplier.",
                     "Value 1: Multiplier; 1 is the chart's default speed.",
@@ -277,7 +278,7 @@ public final class ChartEventTypes {
                     "Value 1: Character tag.");
             case TWEEN_CHARACTER -> String.join("\n",
                     "Smoothly moves an Add Character performer to a new position over time. "
-                            + "Works in Legacy and Minecraft modes with no Lua required.",
+                            + "Works in Minecraft mode with no Lua required.",
                     "Value 1: Character tag, such as extraDad.",
                     "Value 2: Target stage-local X,Y,Z in blocks. X is camera-right, Y is up, Z is camera-forward. "
                             + "Leave a component empty to keep its current value.",
@@ -362,6 +363,7 @@ public final class ChartEventTypes {
             case CAMERA_ORBIT -> "pivot X,Y,Z offset/position";
             case ADD_CHARACTER -> "stage X,Y,Z";
             case TWEEN_CHARACTER -> "duration in seconds";
+            case CHANGE_CHARACTER -> "Auto, 2D, or 3D";
             default -> "value 3";
         };
     }

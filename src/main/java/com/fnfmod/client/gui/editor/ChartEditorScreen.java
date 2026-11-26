@@ -481,7 +481,7 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
     private void reloadNoteTextures() {
         if (noteTextures != null) noteTextures.close();
         Path folder = entry != null && entry.folder != null ? entry.folder : suppliedSongFolder;
-        PlaybackPolicy policy = PlaybackPolicy.resolve(PlaybackMode.LEGACY, entry);
+        PlaybackPolicy policy = PlaybackPolicy.resolve(PlaybackMode.FNF, entry);
         noteAssetResolver = new PsychAssetResolver(folder, entry, policy, chart.stage);
         stagePixelUi = noteAssetResolver.stageUsesPixelUi(chart.stage);
         boolean enabled = entry == null || policy.allows(entry, SongLibrary.ExternalContent.IMAGES);
@@ -642,6 +642,17 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
         playerField = labeledBox("Player", x, y, half, chart.player1, "player");
         opponentField = labeledBox("Opponent", x + half + 4, y, half, chart.player2, "opponent");
         y += 31;
+        button(x, y, half, "Player Type: " + performerTypeLabel(chart.player1Type), b -> {
+            chart.player1Type = cyclePerformerType(chart.player1Type, hasShiftDown() ? -1 : 1);
+            b.setMessage(Component.literal("Player Type: " + performerTypeLabel(chart.player1Type)));
+        });
+        button(x + half + 4, y, half,
+                "Opponent Type: " + performerTypeLabel(chart.player2Type), b -> {
+            chart.player2Type = cyclePerformerType(chart.player2Type, hasShiftDown() ? -1 : 1);
+            b.setMessage(Component.literal("Opponent Type: "
+                    + performerTypeLabel(chart.player2Type)));
+        });
+        y += 18;
         button(x, y, w, "Allow Vocals: " + onOff(chart.needsVoices), b -> {
             chart.needsVoices = !chart.needsVoices;
             b.setMessage(Component.literal("Allow Vocals: " + onOff(chart.needsVoices)));
@@ -1016,6 +1027,7 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
         boolean cameraFollow = ChartEventTypes.isCameraFollowPos(eventTypeDraft);
         boolean cameraRotation = ChartEventTypes.isCameraRotation3d(eventTypeDraft);
         boolean cameraOrbit = ChartEventTypes.isCameraOrbit(eventTypeDraft);
+        boolean changeCharacter = ChartEventTypes.is(eventTypeDraft, ChartEventTypes.CHANGE_CHARACTER);
         boolean addCharacter = ChartEventTypes.is(eventTypeDraft, ChartEventTypes.ADD_CHARACTER);
         boolean tweenCharacter = ChartEventTypes.is(eventTypeDraft, ChartEventTypes.TWEEN_CHARACTER);
         boolean extendedCamera = cameraFollow || cameraRotation;
@@ -1096,7 +1108,15 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
                 eventValue1Field = eventValueBox("Value 1", x, y + 72, w, eventValue1Draft,
                         ChartEventTypes.value1Hint(eventTypeDraft));
             }
-            if (cameraFocus || cameraBehavior) {
+            if (changeCharacter) {
+                eventValue2Field = eventValueBox("Value 2", x, y + 99, w,
+                        eventValue2Draft, ChartEventTypes.value2Hint(eventTypeDraft));
+                label("Value 3", x, y + 126, 0xFFDDDDDD, false);
+                button(x, y + 136, w,
+                        "Character Type: " + performerTypeLabel(eventValue3Draft),
+                        b -> cycleChangeCharacterType());
+                actionsY = y + 153;
+            } else if (cameraFocus || cameraBehavior) {
                 buildEasingControl(x, y + 99, w, 2, cameraBehavior,
                         !cameraFocus || !eventValue1Draft.isBlank());
                 if (cameraBehavior) {
@@ -2053,7 +2073,9 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
             Path file = directory.resolve(fileName);
             chartSaveFile = file;
             Files.createDirectories(directory);
-            int importedAudio = savePendingAudio(directory);
+            Path audioDirectory = audioSavingDestination(directory, id);
+            Files.createDirectories(audioDirectory);
+            int importedAudio = savePendingAudio(audioDirectory);
             Files.writeString(file, PsychChartWriter.write(chart));
             Files.writeString(directory.resolve("events.json"), PsychChartWriter.writeEvents(chart));
             if (directory.startsWith(SongLibrary.songsDir())) {
@@ -2062,7 +2084,8 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
             songId = saveId = id;
             SongLibrary.rescan();
             setStatus("Saved chart + events to " + directory.toAbsolutePath()
-                    + (importedAudio == 0 ? "" : " (and " + importedAudio + " audio stem(s))")
+                    + (importedAudio == 0 ? "" : " (and " + importedAudio
+                    + " audio stem(s) to " + audioDirectory.toAbsolutePath() + ")")
                     + (assignmentSaved ? "" : " (folder assignment could not be remembered)"));
         } catch (Exception e) {
             setStatus("Save failed: " + e.getMessage());
@@ -2169,6 +2192,25 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
         // mods container; it may not have pack metadata or content folders yet.
         Path parentName = folder.getParent() == null ? null : folder.getParent().getFileName();
         return parentName != null && parentName.toString().equalsIgnoreCase("mods");
+    }
+
+    /**
+     * Psych-compatible mod saves split chart JSON and audio: data/<song> contains
+     * the charts while songs/<song> contains Inst/Voices. Exact arbitrary output
+     * folders keep the legacy colocated behavior.
+     */
+    private static Path audioSavingDestination(Path chartDirectory, String songId) {
+        Path normalized = chartDirectory.toAbsolutePath().normalize();
+        Path data = normalized.getParent();
+        if (data == null || data.getFileName() == null
+                || !data.getFileName().toString().equalsIgnoreCase("data")) return normalized;
+        Path modRoot = data.getParent();
+        if (modRoot == null || normalized.getFileName() == null) return normalized;
+        String safeSong = sanitizeId(songId);
+        if (safeSong.isBlank() || !normalized.getFileName().toString().equalsIgnoreCase(safeSong)) {
+            return normalized;
+        }
+        return modRoot.resolve("songs").resolve(safeSong).normalize();
     }
 
     private void clearSavingFolder() {
@@ -4127,7 +4169,8 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
         int x = controlX();
         int bottom = activeTab == EditorTab.EVENTS ? height - 26
                 : Math.min(height - 26, activeTab == EditorTab.CHARTING ? 310
-                : activeTab == EditorTab.SECTION ? 270 : 238);
+                : activeTab == EditorTab.SECTION ? 270
+                : activeTab == EditorTab.SONG ? 254 : 238);
         gui.fill(x, CONTROL_TOP, x + controlWidth(), bottom, 0xE6080808);
     }
 
@@ -4581,7 +4624,8 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
     private void buildEasingControl(int x, int y, int width, int valueIndex,
                                     boolean allowDefault, boolean active) {
         label("Value " + valueIndex, x, y, 0xFFDDDDDD, false);
-        EaseChoice choice = easeChoice(eventValue(valueIndex));
+        String[] eases = eventEases();
+        EaseChoice choice = easeChoice(eventValue(valueIndex), eases);
         int directionWidth = Math.min(58, Math.max(40, width / 3));
         int easingWidth = width - directionWidth - 2;
         String easingText = choice.defaultValue ? "Easing: Default"
@@ -4601,17 +4645,18 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
     private void cycleEventEase(int valueIndex, boolean allowDefault, int direction) {
         commitVisibleFields();
         int back = direction < 0 ? -1 : 1;
-        int count = GameplayCamera.EASES.length;
-        EaseChoice current = easeChoice(eventValue(valueIndex));
+        String[] eases = eventEases();
+        int count = eases.length;
+        EaseChoice current = easeChoice(eventValue(valueIndex), eases);
         if (current.defaultValue) {
             // Leaving Default steps into the first ease forward, the last backward.
-            setEventValue(valueIndex, GameplayCamera.EASES[back < 0 ? count - 1 : 0]);
+            setEventValue(valueIndex, eases[back < 0 ? count - 1 : 0]);
             rebuildUi();
             return;
         }
         int index = 0;
         for (int i = 0; i < count; i++) {
-            if (GameplayCamera.EASES[i].equalsIgnoreCase(current.base)) {
+            if (eases[i].equalsIgnoreCase(current.base)) {
                 index = i;
                 break;
             }
@@ -4620,7 +4665,7 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
         if (allowDefault && (back > 0 ? index == count - 1 : index == 0)) {
             setEventValue(valueIndex, "");
         } else {
-            String next = GameplayCamera.EASES[Math.floorMod(index + back, count)];
+            String next = eases[Math.floorMod(index + back, count)];
             setEventValue(valueIndex, composeEase(next, current.direction));
         }
         rebuildUi();
@@ -4628,7 +4673,7 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
 
     private void cycleEventEaseDirection(int valueIndex, int direction) {
         commitVisibleFields();
-        EaseChoice choice = easeChoice(eventValue(valueIndex));
+        EaseChoice choice = easeChoice(eventValue(valueIndex), eventEases());
         if (choice.defaultValue || !directionalEase(choice.base)) return;
         int index = 0;
         for (int i = 0; i < Easing.DIRECTIONS.length; i++) {
@@ -4640,7 +4685,14 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
         rebuildUi();
     }
 
-    private static EaseChoice easeChoice(String raw) {
+    private String[] eventEases() {
+        return ChartEventTypes.isCameraFocus(eventTypeDraft)
+                || ChartEventTypes.isCameraBehavior(eventTypeDraft)
+                || ChartEventTypes.isCameraOrbit(eventTypeDraft)
+                ? GameplayCamera.FOCUS_EASES : GameplayCamera.EASES;
+    }
+
+    private static EaseChoice easeChoice(String raw, String[] eases) {
         if (raw == null || raw.isBlank() || raw.equalsIgnoreCase("default")) {
             return new EaseChoice("smooth", "inOut", true);
         }
@@ -4654,7 +4706,7 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
         else if (base.endsWith("out")) base = base.substring(0, base.length() - 3);
         else if (base.endsWith("in")) base = base.substring(0, base.length() - 2);
         boolean known = false;
-        for (String candidate : GameplayCamera.EASES) {
+        for (String candidate : eases) {
             if (candidate.equalsIgnoreCase(base)) {
                 base = candidate;
                 known = true;
@@ -4669,7 +4721,7 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
 
     private static boolean directionalEase(String base) {
         return !base.equalsIgnoreCase("smooth") && !base.equalsIgnoreCase("linear")
-                && !base.equalsIgnoreCase("constant");
+                && !base.equalsIgnoreCase("constant") && !base.equalsIgnoreCase("psych");
     }
 
     private static String composeEase(String base, String direction) {
@@ -4750,6 +4802,27 @@ public final class ChartEditorScreen extends Screen implements TextInputAwareScr
         commitVisibleFields();
         setEventValue(2, commandRunsAsServer(eventValue2Draft) ? "player" : "server");
         rebuildUi();
+    }
+
+    private void cycleChangeCharacterType() {
+        commitVisibleFields();
+        setEventValue(3, cyclePerformerType(eventValue3Draft, hasShiftDown() ? -1 : 1));
+        rebuildUi();
+    }
+
+    private static String performerTypeLabel(String raw) {
+        return switch (SongChart.normalizePerformerType(raw)) {
+            case "2d" -> "2D Character";
+            case "3d" -> "3D Animation";
+            default -> "Auto";
+        };
+    }
+
+    private static String cyclePerformerType(String raw, int direction) {
+        String current = SongChart.normalizePerformerType(raw);
+        String[] values = {"", "2d", "3d"};
+        int index = current.equals("2d") ? 1 : current.equals("3d") ? 2 : 0;
+        return values[Math.floorMod(index + (direction < 0 ? -1 : 1), values.length)];
     }
 
     /** Unknown/legacy values remain player-run, matching the runtime's safe default. */

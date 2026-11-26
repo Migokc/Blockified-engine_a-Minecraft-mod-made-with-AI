@@ -9,7 +9,7 @@ import java.nio.file.attribute.FileTime;
 import java.util.Comparator;
 import java.util.stream.Stream;
 
-/** Filesystem operations for multiplayer-downloaded song data. */
+/** Filesystem operations for local scan data and downloads left by older Blockified versions. */
 public final class SongCache {
     private SongCache() {}
 
@@ -27,7 +27,7 @@ public final class SongCache {
 
     public static void clear(Path cacheDirectory) {
         deleteChildren(cacheDirectory);
-        FnfMod.LOGGER.info("Cleared FNF song download cache");
+        FnfMod.LOGGER.info("Cleared Blockified local cache");
     }
 
     /** Deletes cached songs that have not been used for the requested number of days. */

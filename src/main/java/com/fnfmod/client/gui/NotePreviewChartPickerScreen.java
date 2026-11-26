@@ -1,6 +1,5 @@
 package com.fnfmod.client.gui;
 
-import com.fnfmod.client.math.Easing;
 import com.fnfmod.client.render.IconLibrary;
 import com.fnfmod.song.SongEntry;
 import net.minecraft.client.gui.GuiGraphics;
@@ -25,9 +24,8 @@ public final class NotePreviewChartPickerScreen extends Screen {
     private SongEntry difficultySong;
     private int difficultyAnchorX, difficultyAnchorY;
     private EditBox search;
-    private double scroll, scrollTarget, scrollFrom;
-    private long scrollStarted;
-    private boolean scrollTween, draggingThumb;
+    private final TweenedScroll scroll = new TweenedScroll(SCROLL_NANOS);
+    private boolean draggingThumb;
 
     public NotePreviewChartPickerScreen(NoteSettingsScreen parent, List<SongEntry> songs) {
         super(Component.literal("Choose Preview Chart"));
@@ -58,8 +56,7 @@ public final class NotePreviewChartPickerScreen extends Screen {
             for (SongEntry song : all) if (label(song).toLowerCase(Locale.ROOT).contains(query)
                     || song.id != null && song.id.toLowerCase(Locale.ROOT).contains(query)) filtered.add(song);
         }
-        scroll = scrollTarget = scrollFrom = 0;
-        scrollTween = false;
+        scroll.reset(0, maxScroll());
         difficultySong = null;
     }
 
@@ -86,7 +83,7 @@ public final class NotePreviewChartPickerScreen extends Screen {
         BlockifiedScreenStyle.inner(gui, panelX() - 4, listY() - 4,
                 panelWidth() + 8, listHeight() + 8);
         super.render(gui, mouseX, mouseY, partialTick);
-        updateScroll();
+        scroll.update();
         gui.drawCenteredString(font, "Choose a Preview Chart", width / 2, 14, 0xFFFFFFFF);
         int x = panelX(), y = listY(), w = panelWidth(), h = listHeight();
         gui.fill(x - 4, y - 4, x + w + 4, y + h + 4, LAYER);
@@ -94,13 +91,12 @@ public final class NotePreviewChartPickerScreen extends Screen {
             gui.drawCenteredString(font, "No installed-mod charts found", width / 2, y + 28, 0xFFFF7777);
             return;
         }
-        scroll = Mth.clamp(scroll, 0, maxScroll());
-        scrollTarget = Mth.clamp(scrollTarget, 0, maxScroll());
+        scroll.clampTo(maxScroll());
         int cols = columns(), left = gridLeft();
         gui.enableScissor(x, y, x + w, y + h);
         for (int i = 0; i < filtered.size(); i++) {
             int bx = left + i % cols * (CARD_W + GAP);
-            int by = (int) (y + i / cols * (CARD_H + GAP) - scroll);
+            int by = (int) (y + i / cols * (CARD_H + GAP) - scroll.position());
             if (by + CARD_H >= y && by <= y + h) drawCard(gui, filtered.get(i), bx, by, mouseX, mouseY);
         }
         gui.disableScissor();
@@ -165,14 +161,14 @@ public final class NotePreviewChartPickerScreen extends Screen {
         int x = panelX() + panelWidth() - 5, y = listY(), h = listHeight();
         gui.fill(x, y, x + 4, y + h, 0x55000000);
         int thumbH = Math.max(16, (int) ((double) h * h / contentHeight()));
-        int thumbY = y + (int) ((h - thumbH) * (scroll / maxScroll()));
+        int thumbY = y + (int) ((h - thumbH) * (scroll.position() / maxScroll()));
         gui.fill(x, thumbY, x + 4, thumbY + thumbH, BlockifiedScreenStyle.ACCENT);
     }
 
     private int cardAt(double mouseX, double mouseY) {
         if (mouseX < panelX() || mouseX >= panelX() + panelWidth()
                 || mouseY < listY() || mouseY >= listY() + listHeight()) return -1;
-        int relX = (int) mouseX - gridLeft(), relY = (int) (mouseY - listY() + scroll);
+        int relX = (int) mouseX - gridLeft(), relY = (int) (mouseY - listY() + scroll.position());
         if (relX < 0 || relY < 0) return -1;
         int cellW = CARD_W + GAP, cellH = CARD_H + GAP;
         int col = relX / cellW, row = relY / cellH;
@@ -224,26 +220,13 @@ public final class NotePreviewChartPickerScreen extends Screen {
     }
 
     @Override public boolean mouseScrolled(double x, double y, double sx, double sy) {
-        scrollTo(scrollTarget - sy * (CARD_H / 2.0)); return true;
+        scroll.animateTo(scroll.target() - sy * (CARD_H / 2.0), maxScroll()); return true;
     }
 
     private void dragTo(double mouseY) {
         int h = listHeight(), thumbH = Math.max(16, (int) ((double) h * h / contentHeight()));
         double fraction = (mouseY - listY() - thumbH / 2.0) / Math.max(1, h - thumbH);
-        scroll = Mth.clamp(fraction, 0, 1) * maxScroll();
-        scrollTarget = scrollFrom = scroll; scrollTween = false;
-    }
-
-    private void scrollTo(double target) {
-        updateScroll(); scrollFrom = scroll; scrollTarget = Mth.clamp(target, 0, maxScroll());
-        scrollStarted = System.nanoTime(); scrollTween = Math.abs(scrollTarget - scrollFrom) > .01;
-    }
-
-    private void updateScroll() {
-        if (!scrollTween) return;
-        double progress = (System.nanoTime() - scrollStarted) / (double) SCROLL_NANOS;
-        if (progress >= 1) { scroll = scrollTarget; scrollTween = false; }
-        else scroll = scrollFrom + (scrollTarget - scrollFrom) * Easing.apply("expoOut", progress);
+        scroll.reset(Mth.clamp(fraction, 0, 1) * maxScroll(), maxScroll());
     }
 
     private void openDifficulty(SongEntry song, double mouseX, double mouseY) {

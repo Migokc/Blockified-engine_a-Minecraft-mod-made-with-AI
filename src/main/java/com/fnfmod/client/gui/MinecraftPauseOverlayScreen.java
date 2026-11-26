@@ -4,12 +4,16 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.screens.PauseScreen;
 
 /** Vanilla pause menu that safely returns to Blockified Engine's paused song. */
-final class MinecraftPauseOverlayScreen extends PauseScreen {
+public final class MinecraftPauseOverlayScreen extends PauseScreen {
     private final GameplayScreen gameplay;
 
     MinecraftPauseOverlayScreen(GameplayScreen gameplay) {
         super(true);
         this.gameplay = gameplay;
+    }
+
+    public GameplayScreen gameplay() {
+        return gameplay;
     }
 
     @Override

@@ -2,6 +2,7 @@ package com.fnfmod.mixin;
 
 import com.fnfmod.client.render.PerformerRotation;
 import com.fnfmod.client.render.BbsObjectBorderRenderer;
+import com.fnfmod.client.render.PerformerRenderVisibility;
 import com.mojang.blaze3d.vertex.PoseStack;
 import net.minecraft.client.player.AbstractClientPlayer;
 import net.minecraft.client.renderer.MultiBufferSource;
@@ -15,6 +16,14 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 @Pseudo
 @Mixin(targets = "mchorse.bbs_mod.client.renderer.MorphRenderer", remap = false)
 public abstract class BbsMorphRendererMixin {
+
+    /** BBS can draw a form outside the vanilla player model path. */
+    @Inject(method = "renderPlayer", at = @At("HEAD"), cancellable = true, remap = false)
+    private static void fnfmod$hideReplacedPerformer(AbstractClientPlayer player, float yaw,
+            float tickDelta, PoseStack poseStack, MultiBufferSource buffers, int light,
+            CallbackInfoReturnable<Boolean> callback) {
+        if (PerformerRenderVisibility.hidden(player)) callback.setReturnValue(true);
+    }
 
     /*
      * BBS renders a morphed player itself and cancels PlayerRenderer at HEAD, so

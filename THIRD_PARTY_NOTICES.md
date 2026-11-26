@@ -2,6 +2,13 @@
 
 Blockified Engine bundles LuaJ JSE 3.0.1 (`org.luaj:luaj-jse:3.0.1`).
 
+Blockified also bundles Junrar 8.1.1 (`com.github.junrar:junrar:8.1.1`) for
+RAR extraction and XZ for Java 1.10 (`org.tukaani:xz:1.10`) for 7z decoding.
+Junrar includes UnRAR-derived code under the [UnRAR license](https://github.com/junrar/junrar/blob/master/LICENSE):
+it may handle RAR archives, but must not be used to create a RAR-compatible
+archiver. XZ for Java 1.10 uses the [BSD Zero Clause license](https://github.com/tukaani-project/xz-java/blob/master/LICENSES/0BSD.txt).
+Apache Commons Compress is provided by Minecraft, not bundled by Blockified.
+
 ## LuaJ
 
 MIT License

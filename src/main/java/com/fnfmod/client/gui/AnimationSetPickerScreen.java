@@ -4,7 +4,8 @@ import com.fnfmod.client.ClientOptions;
 import com.fnfmod.client.FnfKeys;
 import com.fnfmod.client.anim.CharacterAnimations;
 import com.fnfmod.client.gameplay.NativeFilePicker;
-import com.fnfmod.client.math.Easing;
+import com.fnfmod.client.gameplay.WorldCharacter;
+import com.fnfmod.client.gameplay.WorldCharacterLibrary;
 import com.mojang.blaze3d.systems.RenderSystem;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.EditBox;
@@ -18,8 +19,10 @@ import org.joml.Vector3f;
 import org.lwjgl.glfw.GLFW;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
@@ -36,11 +39,8 @@ public final class AnimationSetPickerScreen extends Screen implements TextInputA
     private List<String> all = List.of();
     private List<String> visible = List.of();
     private int selectedIndex;
-    private double scrollPx;
-    private double scrollTargetPx;
-    private double scrollFromPx;
-    private long scrollTweenStart;
-    private boolean scrollTweenActive;
+    private final TweenedScroll scroll = new TweenedScroll(SCROLL_TWEEN_NANOS);
+    private boolean draggingScrollThumb;
     private String previewedSet = "";
     private String previewedAction = "idle";
     private int idleBeat;
@@ -53,6 +53,10 @@ public final class AnimationSetPickerScreen extends Screen implements TextInputA
     private Path botSkinFile;
     private boolean playerSkinSlim;
     private boolean botSkinSlim;
+    private boolean characterFlipped;
+    private boolean characterDirectionsFlipped;
+    private boolean characterFrameCenterCamera;
+    private boolean characterDialogOpen;
     private String playerSkinAccount = "";
     private String botSkinAccount = "";
     private SkinDialog skinDialog = SkinDialog.NONE;
@@ -60,6 +64,11 @@ public final class AnimationSetPickerScreen extends Screen implements TextInputA
     private EditBox accountField;
     private boolean accountLoading;
     private String accountError = "";
+    private enum ContentTab { CHARACTERS, ANIMATIONS }
+    private ContentTab contentTab = ContentTab.ANIMATIONS;
+    private WorldCharacter previewCharacter;
+    private long previewCharacterUpdateNano;
+    private final Map<String, Path> characterPaths = new LinkedHashMap<>();
 
     private enum SkinDialog { NONE, SOURCE, MODEL, ACCOUNT }
 
@@ -71,10 +80,14 @@ public final class AnimationSetPickerScreen extends Screen implements TextInputA
 
     @Override
     protected void init() {
-        all = List.copyOf(CharacterAnimations.listSets());
-        visible = all;
         String current = opponent ? ClientOptions.get().opponentAnimationSet
                 : ClientOptions.get().animationSet;
+        String currentType = opponent ? ClientOptions.get().opponentAnimationSetType
+                : ClientOptions.get().animationSetType;
+        contentTab = ClientOptions.PERFORMER_TYPE_2D.equals(
+                ClientOptions.normalizePerformerType(currentType))
+                ? ContentTab.CHARACTERS : ContentTab.ANIMATIONS;
+        reloadEntries();
         ClientOptions options = ClientOptions.get();
         playerSkinSource = options.playerSkinSource;
         botSkinSource = options.botSkinSource;
@@ -82,20 +95,44 @@ public final class AnimationSetPickerScreen extends Screen implements TextInputA
         botSkinFile = pathOrNull(options.botSkinFile);
         playerSkinSlim = options.playerSkinSlim;
         botSkinSlim = options.botSkinSlim;
+        characterFlipped = opponent ? options.opponentAnimationSetFlipped
+                : options.animationSetFlipped;
+        characterDirectionsFlipped = opponent ? options.opponentAnimationSetDirectionsFlipped
+                : options.animationSetDirectionsFlipped;
+        characterFrameCenterCamera = opponent ? options.opponentAnimationSetFrameCenterCamera
+                : options.animationSetFrameCenterCamera;
         playerSkinAccount = options.playerSkinAccount;
         botSkinAccount = options.botSkinAccount;
         selectedIndex = Math.max(0, indexOf(visible, current));
         resetScroll(true);
 
-        search = addRenderableWidget(new EditBox(font, panelX() + 12, panelY() + 26,
-                Math.max(80, listRight() - panelX() - 20), 18,
-                Component.literal("Search animations")));
-        search.setHint(Component.literal("Search animations..."));
+        search = addRenderableWidget(new EditBox(font, listX(), panelY() + 28,
+                listWidth(), 18,
+                Component.literal("Search performers")));
+        search.setHint(Component.literal(contentTab == ContentTab.CHARACTERS
+                ? "Search characters..." : "Search animations..."));
         search.setMaxLength(128);
         search.setResponder(this::filter);
         setFocused(search);
         search.setFocused(true);
         previewSelection();
+    }
+
+    private void reloadEntries() {
+        characterPaths.clear();
+        if (contentTab == ContentTab.CHARACTERS) {
+            ArrayList<String> characters = new ArrayList<>();
+            characters.add(CharacterAnimations.DEFAULT_SET);
+            for (WorldCharacterLibrary.Entry entry : WorldCharacterLibrary.list()) {
+                String selection = entry.id();
+                characters.add(selection);
+                characterPaths.put(selection.toLowerCase(Locale.ROOT), entry.json());
+            }
+            all = List.copyOf(characters);
+        } else {
+            all = List.copyOf(CharacterAnimations.listSets());
+        }
+        visible = all;
     }
 
     private String role() { return opponent ? "opponent" : "player"; }
@@ -128,39 +165,25 @@ public final class AnimationSetPickerScreen extends Screen implements TextInputA
         return panelX() + Math.max(154, Math.min(250, (int) (panelWidth() * 0.43)));
     }
 
-    private int listTop() { return panelY() + 50; }
+    private int listX() { return panelX() + 12; }
 
-    private int listHeight() { return Math.max(ROW, ((panelHeight() - 96) / ROW) * ROW); }
+    private int listWidth() { return listRight() - listX(); }
+
+    private int tabY() { return panelY() + 50; }
+
+    private int listTop() { return panelY() + 74; }
+
+    private int listHeight() { return Math.max(ROW, ((panelHeight() - 118) / ROW) * ROW); }
 
     private double maxScroll() { return Math.max(0, visible.size() * (double) ROW - listHeight()); }
 
     private void resetScroll(boolean centerSelection) {
         double target = centerSelection ? selectedIndex * (double) ROW - (listHeight() - ROW) / 2.0 : 0;
-        scrollPx = scrollTargetPx = scrollFromPx = Mth.clamp(target, 0, maxScroll());
-        scrollTweenActive = false;
-    }
-
-    private void updateScrollTween() {
-        if (!scrollTweenActive) return;
-        double progress = (System.nanoTime() - scrollTweenStart) / (double) SCROLL_TWEEN_NANOS;
-        if (progress >= 1) {
-            scrollPx = scrollTargetPx;
-            scrollTweenActive = false;
-            return;
-        }
-        double eased = Easing.apply("expoOut", progress);
-        scrollPx = scrollFromPx + (scrollTargetPx - scrollFromPx) * eased;
+        scroll.reset(target, maxScroll());
     }
 
     private void scrollTo(double target) {
-        target = Mth.clamp(target, 0, maxScroll());
-        if (Math.abs(target - scrollTargetPx) < 0.01) return;
-        updateScrollTween();
-        scrollFromPx = scrollPx;
-        scrollTargetPx = target;
-        scrollTweenStart = System.nanoTime();
-        scrollTweenActive = Math.abs(scrollTargetPx - scrollFromPx) > 0.01;
-        if (!scrollTweenActive) scrollPx = scrollTargetPx;
+        scroll.animateTo(target, maxScroll());
     }
 
     private void clampSelection() {
@@ -171,7 +194,7 @@ public final class AnimationSetPickerScreen extends Screen implements TextInputA
         }
         selectedIndex = Mth.clamp(selectedIndex, 0, visible.size() - 1);
         double top = selectedIndex * (double) ROW;
-        double target = scrollTargetPx;
+        double target = scroll.target();
         if (top < target) target = top;
         else if (top + ROW > target + listHeight()) target = top + ROW - listHeight();
         scrollTo(target);
@@ -184,13 +207,33 @@ public final class AnimationSetPickerScreen extends Screen implements TextInputA
     }
 
     private void previewSelection() {
+        closeCharacterPreview();
         String set = selectedSet();
         previewedSet = set;
         previewedAction = "idle";
         idleBeat = 0;
-        previewHasSecondIdle = CharacterAnimations.hasAction(set, role(), "idle2");
+        previewHasSecondIdle = contentTab == ContentTab.ANIMATIONS
+                && CharacterAnimations.hasAction(set, role(), "idle2");
         returnToIdleAt = 0;
         nextIdleAt = 0;
+        if (contentTab == ContentTab.CHARACTERS) {
+            Path json = characterPaths.get(set.toLowerCase(Locale.ROOT));
+            if (json == null) json = WorldCharacterLibrary.resolve(set);
+            previewCharacter = json == null ? null : WorldCharacter.load(json);
+            if (previewCharacter != null) {
+                previewCharacter.setBillboard(false);
+                previewCharacter.setRenderMode("flat");
+                if (characterFlipped) previewCharacter.setFlipX(!previewCharacter.flipX());
+                previewCharacterUpdateNano = System.nanoTime();
+                previewedAction = previewCharacter.current();
+                previewHasSecondIdle = previewCharacter.animationNames().stream()
+                        .anyMatch(name -> name.equalsIgnoreCase("idle2")
+                                || name.equalsIgnoreCase("danceRight"));
+                nextIdleAt = System.nanoTime() + PREVIEW_BEAT_NANOS;
+            }
+            CharacterAnimations.stopPreview();
+            return;
+        }
         if (minecraft == null || minecraft.player == null) return;
         if (set.isEmpty() || CharacterAnimations.isDisabled(set)) {
             CharacterAnimations.stopPreview();
@@ -201,6 +244,19 @@ public final class AnimationSetPickerScreen extends Screen implements TextInputA
     }
 
     private void playPreview(String action, boolean temporary) {
+        if (previewCharacter != null) {
+            String psychAction = switch (action) {
+                case "left" -> characterDirectionsFlipped ? "singRIGHT" : "singLEFT";
+                case "down" -> "singDOWN";
+                case "up" -> "singUP";
+                case "right" -> characterDirectionsFlipped ? "singLEFT" : "singRIGHT";
+                default -> action;
+            };
+            if (previewCharacter.play(psychAction, true)) previewedAction = psychAction;
+            returnToIdleAt = temporary ? System.nanoTime() + PREVIEW_BEAT_NANOS : 0;
+            nextIdleAt = 0;
+            return;
+        }
         if (minecraft == null || minecraft.player == null || previewedSet.isEmpty()
                 || CharacterAnimations.isDisabled(previewedSet)) return;
         long now = System.nanoTime();
@@ -213,6 +269,14 @@ public final class AnimationSetPickerScreen extends Screen implements TextInputA
 
     /** Match gameplay: characters with two idles alternate them once per preview beat. */
     private void playIdlePreview() {
+        if (previewCharacter != null) {
+            previewCharacter.dance(true);
+            previewedAction = previewCharacter.current();
+            idleBeat++;
+            returnToIdleAt = 0;
+            nextIdleAt = System.nanoTime() + PREVIEW_BEAT_NANOS;
+            return;
+        }
         if (minecraft == null || minecraft.player == null || previewedSet.isEmpty()
                 || CharacterAnimations.isDisabled(previewedSet)) return;
         boolean loop = CharacterAnimations.loopIdle(previewedSet, role());
@@ -238,6 +302,13 @@ public final class AnimationSetPickerScreen extends Screen implements TextInputA
 
     private void updatePreview() {
         long now = System.nanoTime();
+        if (previewCharacter != null) {
+            double dt = previewCharacterUpdateNano == 0 ? 0
+                    : Math.min(0.1, (now - previewCharacterUpdateNano) / 1.0e9);
+            previewCharacterUpdateNano = now;
+            previewCharacter.update(dt, 125, 1);
+            previewedAction = previewCharacter.current();
+        }
         if (returnToIdleAt > 0 && now >= returnToIdleAt) {
             returnToIdleAt = 0;
             playIdlePreview();
@@ -249,16 +320,26 @@ public final class AnimationSetPickerScreen extends Screen implements TextInputA
     private void choose() {
         String set = selectedSet();
         if (set.isEmpty()) return;
-        if (opponent) ClientOptions.get().opponentAnimationSet = set;
-        else ClientOptions.get().animationSet = set;
         ClientOptions options = ClientOptions.get();
         if (opponent) {
+            options.opponentAnimationSet = set;
+            options.opponentAnimationSetType = contentTab == ContentTab.CHARACTERS
+                    ? ClientOptions.PERFORMER_TYPE_2D : ClientOptions.PERFORMER_TYPE_3D;
+            options.opponentAnimationSetFlipped = characterFlipped;
+            options.opponentAnimationSetDirectionsFlipped = characterDirectionsFlipped;
+            options.opponentAnimationSetFrameCenterCamera = characterFrameCenterCamera;
             options.botSkinSource = botSkinSource;
             options.botSkinFile = botSkinFile == null ? "" : botSkinFile.toString();
             options.botSkinSlim = botSkinSlim;
             options.botSkinAccount = botSkinAccount;
             options.botUsePlayerSkin = ClientOptions.SKIN_SOURCE_PLAYER.equals(botSkinSource);
         } else {
+            options.animationSet = set;
+            options.animationSetType = contentTab == ContentTab.CHARACTERS
+                    ? ClientOptions.PERFORMER_TYPE_2D : ClientOptions.PERFORMER_TYPE_3D;
+            options.animationSetFlipped = characterFlipped;
+            options.animationSetDirectionsFlipped = characterDirectionsFlipped;
+            options.animationSetFrameCenterCamera = characterFrameCenterCamera;
             options.playerSkinSource = playerSkinSource;
             options.playerSkinFile = playerSkinFile == null ? "" : playerSkinFile.toString();
             options.playerSkinSlim = playerSkinSlim;
@@ -286,7 +367,8 @@ public final class AnimationSetPickerScreen extends Screen implements TextInputA
 
     private boolean skinChoiceAllowed() {
         String set = selectedSet();
-        return !set.isEmpty() && CharacterAnimations.allowsPlayerSkinSelection(set, role());
+        return contentTab == ContentTab.ANIMATIONS && !set.isEmpty()
+                && CharacterAnimations.allowsPlayerSkinSelection(set, role());
     }
 
     private boolean skinChoiceSupported() {
@@ -325,12 +407,22 @@ public final class AnimationSetPickerScreen extends Screen implements TextInputA
         int listRight = listRight();
         BlockifiedScreenStyle.panel(gui, x0, y0, boxW, boxH);
         gui.drawCenteredString(font, title, x0 + boxW / 2, y0 + 9, 0xFFFFFFFF);
+        int tabWidth = (listWidth() - 4) / 2;
+        renderTab(gui, listX(), tabY(), tabWidth, "Characters",
+                contentTab == ContentTab.CHARACTERS, mouseX, mouseY);
+        renderTab(gui, listX() + tabWidth + 4, tabY(), listWidth() - tabWidth - 4,
+                "Animations", contentTab == ContentTab.ANIMATIONS, mouseX, mouseY);
 
-        clampSelection();
-        updateScrollTween();
+        // Merely rendering must not force the selected row back onscreen. Wheel
+        // and thumb scrolling are viewport operations; only keyboard selection
+        // changes should call clampSelection() to follow the active row.
+        if (visible.isEmpty()) selectedIndex = 0;
+        else selectedIndex = Mth.clamp(selectedIndex, 0, visible.size() - 1);
+        scroll.update();
+        scroll.clampTo(maxScroll());
         int top = listTop(), height = listHeight();
-        int first = Math.max(0, (int) Math.floor(scrollPx / ROW));
-        double offset = scrollPx - first * (double) ROW;
+        int first = Math.max(0, (int) Math.floor(scroll.position() / ROW));
+        double offset = scroll.position() - first * (double) ROW;
         gui.enableScissor(x0 + 12, top, listRight, top + height);
         for (int row = 0; row < height / ROW + 2; row++) {
             int index = first + row;
@@ -348,7 +440,9 @@ public final class AnimationSetPickerScreen extends Screen implements TextInputA
         }
         gui.disableScissor();
         if (visible.isEmpty()) {
-            gui.drawCenteredString(font, "No matching animations", (x0 + 12 + listRight) / 2,
+            gui.drawCenteredString(font, contentTab == ContentTab.CHARACTERS
+                            ? "No matching characters" : "No matching animations",
+                    (x0 + 12 + listRight) / 2,
                     top + 8, 0xFFAAAAAA);
         }
 
@@ -361,10 +455,32 @@ public final class AnimationSetPickerScreen extends Screen implements TextInputA
         int buttonWidth = (boxW - 12 - (buttonCount - 1) * 8) / buttonCount;
         renderButton(gui, x0 + 6, buttonY, buttonWidth, "Cancel", mouseX, mouseY);
         renderButton(gui, x0 + 14 + buttonWidth, buttonY, buttonWidth,
-                skinButtonLabel(), mouseX, mouseY, skinButtonEnabled());
+                contentTab == ContentTab.CHARACTERS ? "Options..." : skinButtonLabel(),
+                mouseX, mouseY, contentTab == ContentTab.CHARACTERS || skinButtonEnabled());
         renderButton(gui, x0 + 22 + buttonWidth * 2, buttonY, buttonWidth, "Select", mouseX, mouseY);
         super.render(gui, mouseX, mouseY, partialTick);
-        if (skinDialog != SkinDialog.NONE) renderSkinDialog(gui, mouseX, mouseY);
+        if (characterDialogOpen) renderCharacterDialog(gui, mouseX, mouseY);
+        else if (skinDialog != SkinDialog.NONE) renderSkinDialog(gui, mouseX, mouseY);
+    }
+
+    private void renderCharacterDialog(GuiGraphics gui, int mouseX, int mouseY) {
+        gui.pose().pushPose();
+        gui.pose().translate(0, 0, 1000);
+        gui.fill(0, 0, width, height, 0xB8000000);
+        int w = Math.min(290, width - 32), h = 134;
+        int x = (width - w) / 2, y = (height - h) / 2;
+        BlockifiedScreenStyle.panel(gui, x, y, w, h);
+        gui.drawCenteredString(font, "2D Character Options", x + w / 2, y + 10, 0xFFFFFFFF);
+        renderModalButton(gui, x + 12, y + 30, w - 24,
+                characterFlipped ? "Sprite: Flipped" : "Sprite: Normal", mouseX, mouseY);
+        renderModalButton(gui, x + 12, y + 54, w - 24,
+                characterDirectionsFlipped ? "LEFT/RIGHT: Swapped" : "LEFT/RIGHT: Normal",
+                mouseX, mouseY);
+        renderModalButton(gui, x + 12, y + 78, w - 24,
+                characterFrameCenterCamera ? "Camera: Frame Center" : "Camera: JSON Offset",
+                mouseX, mouseY);
+        renderModalButton(gui, x + 12, y + 102, w - 24, "Done", mouseX, mouseY);
+        gui.pose().popPose();
     }
 
     private void renderSkinDialog(GuiGraphics gui, int mouseX, int mouseY) {
@@ -430,10 +546,26 @@ public final class AnimationSetPickerScreen extends Screen implements TextInputA
         int trackX = listRight - 3;
         int thumbHeight = Math.max(12,
                 (int) Math.round(height * (height / (visible.size() * (double) ROW))));
-        int thumbY = top + (int) Math.round((height - thumbHeight) * (scrollPx / max));
+        int thumbY = top + (int) Math.round((height - thumbHeight) * (scroll.position() / max));
         gui.fill(trackX, top, trackX + 2, top + height, 0xFF252733);
         gui.fill(trackX, thumbY, trackX + 2, thumbY + thumbHeight,
                 BlockifiedScreenStyle.ACCENT);
+    }
+
+    private int scrollbarX() { return listRight() - 3; }
+
+    private int scrollbarThumbHeight() {
+        return Math.max(12, (int) Math.round(listHeight()
+                * (listHeight() / Math.max(1.0, visible.size() * (double) ROW))));
+    }
+
+    private void dragScrollbarTo(double mouseY) {
+        double max = maxScroll();
+        if (max <= 0) return;
+        int thumb = scrollbarThumbHeight();
+        double fraction = (mouseY - listTop() - thumb / 2.0)
+                / Math.max(1.0, listHeight() - thumb);
+        scroll.reset(Mth.clamp(fraction, 0, 1) * max, max);
     }
 
     private void renderPreview(GuiGraphics gui, int left, int top, int right, int bottom) {
@@ -445,7 +577,16 @@ public final class AnimationSetPickerScreen extends Screen implements TextInputA
         int previewBottom = bottom - 24;
         int centerX = (left + right) / 2;
         int centerY = (top + previewBottom) / 2 + 16;
-        if (minecraft != null && minecraft.player != null && !previewedSet.isEmpty()
+        if (previewCharacter != null) {
+            int availableW = Math.max(20, right - left - 18);
+            int availableH = Math.max(20, previewBottom - top - 24);
+            float scaledW = (float) (Math.max(1, previewCharacter.refW())
+                    * Math.max(0.01, Math.abs(previewCharacter.scaleX())));
+            float scaledH = (float) (Math.max(1, previewCharacter.refH())
+                    * Math.max(0.01, Math.abs(previewCharacter.scaleY())));
+            float fit = Math.min(availableW / scaledW, availableH / scaledH);
+            previewCharacter.drawPreview(gui, centerX, centerY, fit);
+        } else if (minecraft != null && minecraft.player != null && !previewedSet.isEmpty()
                 && !CharacterAnimations.isDisabled(previewedSet)) {
             float[] camera = CharacterAnimations.baseCameraOffset(previewedSet, role());
             int shiftX = Math.round(-camera[0] * 12);
@@ -486,11 +627,25 @@ public final class AnimationSetPickerScreen extends Screen implements TextInputA
                 !enabled ? 0xFF22232B : hover ? 0xFF505675 : 0xFF303442);
         gui.renderOutline(x, y, buttonWidth, 18, enabled ? 0xFF6A7080 : 0xFF42444F);
         gui.drawCenteredString(font, text, x + buttonWidth / 2, y + 5,
-                enabled ? 0xFFFFFFFF : 0xFF777986);
+                 enabled ? 0xFFFFFFFF : 0xFF777986);
+    }
+
+    private void renderTab(GuiGraphics gui, int x, int y, int w, String text, boolean selected,
+                           int mouseX, int mouseY) {
+        boolean hover = mouseX >= x && mouseX < x + w && mouseY >= y && mouseY < y + 20;
+        gui.fill(x, y, x + w, y + 20, selected ? BlockifiedScreenStyle.ACCENT_DARK
+                : hover ? BlockifiedScreenStyle.ACCENT_DEEP : 0xFF252733);
+        if (selected) gui.fill(x, y + 18, x + w, y + 20, BlockifiedScreenStyle.ACCENT);
+        gui.drawCenteredString(font, text, x + w / 2, y + 6,
+                selected ? 0xFFFFFFFF : BlockifiedScreenStyle.TEXT_MUTED);
     }
 
     @Override
     public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
+        if (characterDialogOpen) {
+            if (keyCode == GLFW.GLFW_KEY_ESCAPE) characterDialogOpen = false;
+            return true;
+        }
         if (skinDialog != SkinDialog.NONE) {
             if (keyCode == GLFW.GLFW_KEY_ESCAPE) {
                 skinDialog = skinDialog == SkinDialog.ACCOUNT ? SkinDialog.SOURCE : SkinDialog.NONE;
@@ -530,16 +685,34 @@ public final class AnimationSetPickerScreen extends Screen implements TextInputA
 
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
+        if (characterDialogOpen) return clickCharacterDialog(mouseX, mouseY, button);
         if (skinDialog != SkinDialog.NONE) return clickSkinDialog(mouseX, mouseY, button);
         if (button == GLFW.GLFW_MOUSE_BUTTON_LEFT) {
             int x0 = panelX(), y0 = panelY(), boxW = panelWidth(), boxH = panelHeight();
             int listRight = listRight(), top = listTop();
+            int tabWidth = (listWidth() - 4) / 2;
+            if (mouseY >= tabY() && mouseY < tabY() + 20) {
+                if (mouseX >= listX() && mouseX < listX() + tabWidth) {
+                    switchTab(ContentTab.CHARACTERS);
+                    return true;
+                }
+                if (mouseX >= listX() + tabWidth + 4 && mouseX < listX() + listWidth()) {
+                    switchTab(ContentTab.ANIMATIONS);
+                    return true;
+                }
+            }
+            if (maxScroll() > 0 && mouseX >= scrollbarX() - 3 && mouseX <= scrollbarX() + 5
+                    && mouseY >= top && mouseY <= top + listHeight()) {
+                draggingScrollThumb = true;
+                dragScrollbarTo(mouseY);
+                return true;
+            }
             if (mouseX >= x0 + 12 && mouseX < listRight
                     && mouseY >= top && mouseY < top + listHeight()) {
                 search.setFocused(false);
                 setFocused(null);
-                updateScrollTween();
-                int index = (int) Math.floor((mouseY - top + scrollPx) / ROW);
+                scroll.update();
+                int index = (int) Math.floor((mouseY - top + scroll.position()) / ROW);
                 if (index >= 0 && index < visible.size()) {
                     selectedIndex = index;
                     previewSelection();
@@ -557,10 +730,10 @@ public final class AnimationSetPickerScreen extends Screen implements TextInputA
             if (mouseY >= buttonY && mouseY < buttonY + 18
                     && mouseX >= x0 + 14 + buttonWidth
                     && mouseX < x0 + 14 + buttonWidth * 2) {
-                if (!skinButtonEnabled()) return true;
-                search.setFocused(false);
-                setFocused(null);
-                skinDialog = SkinDialog.SOURCE;
+                if (contentTab != ContentTab.CHARACTERS && !skinButtonEnabled()) return true;
+                search.setFocused(false); setFocused(null);
+                if (contentTab == ContentTab.CHARACTERS) characterDialogOpen = true;
+                else skinDialog = SkinDialog.SOURCE;
                 return true;
             }
             if (mouseY >= buttonY && mouseY < buttonY + 18
@@ -574,6 +747,21 @@ public final class AnimationSetPickerScreen extends Screen implements TextInputA
     }
 
     @Override
+    public boolean mouseDragged(double mouseX, double mouseY, int button, double dragX, double dragY) {
+        if (button == GLFW.GLFW_MOUSE_BUTTON_LEFT && draggingScrollThumb) {
+            dragScrollbarTo(mouseY);
+            return true;
+        }
+        return super.mouseDragged(mouseX, mouseY, button, dragX, dragY);
+    }
+
+    @Override
+    public boolean mouseReleased(double mouseX, double mouseY, int button) {
+        if (button == GLFW.GLFW_MOUSE_BUTTON_LEFT) draggingScrollThumb = false;
+        return super.mouseReleased(mouseX, mouseY, button);
+    }
+
+    @Override
     public boolean charTyped(char codePoint, int modifiers) {
         if (skinDialog == SkinDialog.ACCOUNT && accountField != null) {
             if (accountLoading) return true;
@@ -584,11 +772,9 @@ public final class AnimationSetPickerScreen extends Screen implements TextInputA
 
     @Override
     public boolean mouseScrolled(double mouseX, double mouseY, double scrollX, double scrollY) {
-        if (skinDialog != SkinDialog.NONE) return true;
+        if (characterDialogOpen || skinDialog != SkinDialog.NONE) return true;
         if (scrollY != 0) {
-            selectedIndex += scrollY > 0 ? -1 : 1;
-            clampSelection();
-            previewSelection();
+            scrollTo(scroll.target() - scrollY * ROW * 1.5);
         }
         return true;
     }
@@ -600,6 +786,7 @@ public final class AnimationSetPickerScreen extends Screen implements TextInputA
 
     @Override
     public void onClose() {
+        closeCharacterPreview();
         CharacterAnimations.stopPreview();
         if (minecraft != null) minecraft.setScreen(parent);
     }
@@ -607,12 +794,16 @@ public final class AnimationSetPickerScreen extends Screen implements TextInputA
     @Override
     public void removed() {
         super.removed();
-        if (!(minecraft != null && minecraft.screen == this)) CharacterAnimations.stopPreview();
+        if (!(minecraft != null && minecraft.screen == this)) {
+            closeCharacterPreview();
+            CharacterAnimations.stopPreview();
+        }
     }
 
     @Override
     public boolean isTextInputActive() {
-        return skinDialog == SkinDialog.ACCOUNT || search != null && search.isFocused();
+        return characterDialogOpen || skinDialog == SkinDialog.ACCOUNT
+                || search != null && search.isFocused();
     }
 
     @Override
@@ -635,6 +826,45 @@ public final class AnimationSetPickerScreen extends Screen implements TextInputA
     private static String trim(String text, int max) {
         if (text == null || text.length() <= max) return text == null ? "" : text;
         return text.substring(0, Math.max(0, max - 3)) + "...";
+    }
+
+    private void switchTab(ContentTab tab) {
+        if (tab == contentTab) return;
+        contentTab = tab;
+        reloadEntries();
+        visible = all;
+        selectedIndex = 0;
+        resetScroll(false);
+        if (search != null) {
+            search.setValue("");
+            search.setHint(Component.literal(tab == ContentTab.CHARACTERS
+                    ? "Search characters..." : "Search animations..."));
+        }
+        previewSelection();
+    }
+
+    private boolean clickCharacterDialog(double mouseX, double mouseY, int button) {
+        if (button != GLFW.GLFW_MOUSE_BUTTON_LEFT) return true;
+        int w = Math.min(290, width - 32), h = 134;
+        int x = (width - w) / 2, y = (height - h) / 2;
+        if (mouseX < x + 12 || mouseX >= x + w - 12) return true;
+        int row = modalRow(mouseY, y + 30, 4);
+        if (row == 0) {
+            characterFlipped = !characterFlipped;
+            previewSelection();
+            characterDialogOpen = true;
+        } else if (row == 1) {
+            characterDirectionsFlipped = !characterDirectionsFlipped;
+        } else if (row == 2) {
+            characterFrameCenterCamera = !characterFrameCenterCamera;
+        } else if (row == 3) characterDialogOpen = false;
+        return true;
+    }
+
+    private void closeCharacterPreview() {
+        if (previewCharacter != null) previewCharacter.close();
+        previewCharacter = null;
+        previewCharacterUpdateNano = 0;
     }
 
     private boolean clickSkinDialog(double mouseX, double mouseY, int button) {

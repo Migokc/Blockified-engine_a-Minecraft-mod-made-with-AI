@@ -1,6 +1,7 @@
 package com.fnfmod.client.render;
 
 import com.fnfmod.FnfMod;
+import com.fnfmod.song.SongLibrary;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -80,6 +81,32 @@ public final class AnimateAtlas extends SparrowAtlas {
         int height() { return Math.max(1, (int) Math.ceil(maxY) - (int) Math.floor(minY)); }
     }
 
+    /** Background-safe parsed Animate source. It owns no Minecraft/GL resources. */
+    public static final class Decoded {
+        private final Path folder;
+        private final Timeline main;
+        private final Map<String, Timeline> symbols;
+        private final Map<String, Sprite> sprites;
+        private final Bounds bounds;
+
+        private Decoded(Path folder, Timeline main, Map<String, Timeline> symbols,
+                        Map<String, Sprite> sprites, Bounds bounds) {
+            this.folder = folder;
+            this.main = main;
+            this.symbols = symbols;
+            this.sprites = sprites;
+            this.bounds = bounds;
+        }
+
+        public long estimatedBytes() {
+            long bytes = 0;
+            for (Sprite sprite : sprites.values()) {
+                bytes += (long) sprite.width() * sprite.height() * 4L;
+            }
+            return bytes;
+        }
+    }
+
     private final ResourceLocation textureId;
     private final NativeImage pixels;
     private DynamicTexture texture;
@@ -122,22 +149,30 @@ public final class AnimateAtlas extends SparrowAtlas {
 
     /** Loads a folder containing Animation.json and spritemapN.json/png files. */
     public static AnimateAtlas load(Path folder) {
+        return finish(decode(folder));
+    }
+
+    /** Parses timelines and decodes spritemaps without touching Minecraft's renderer. */
+    public static Decoded decode(Path folder) {
         if (folder == null) return null;
         Path normalized = folder.toAbsolutePath().normalize();
         Path animationJson = normalized.resolve("Animation.json");
         if (!Files.isRegularFile(animationJson)) return null;
-        ResourceLocation id = null;
-        DynamicTexture texture = null;
-        NativeImage pixels = null;
         try {
             JsonObject root = JsonParser.parseString(Files.readString(animationJson)).getAsJsonObject();
             Map<String, Sprite> sprites = loadSprites(normalized);
-            if (sprites.isEmpty()) return null;
+            if (sprites.isEmpty()) {
+                FnfMod.LOGGER.warn("Animate atlas {} contains no readable spritemap sprites", normalized);
+                return null;
+            }
 
             JsonObject animation = object(root, "AN");
             Timeline main = parseTimeline(string(animation, "SN", string(animation, "N", "main")),
                     object(animation, "TL"));
-            if (main.frameCount <= 0) return null;
+            if (main.frameCount <= 0) {
+                FnfMod.LOGGER.warn("Animate atlas {} contains no timeline frames", normalized);
+                return null;
+            }
 
             Map<String, Timeline> symbols = new LinkedHashMap<>();
             JsonObject dictionary = object(root, "SD");
@@ -154,18 +189,35 @@ public final class AnimateAtlas extends SparrowAtlas {
             if (width > MAX_OUTPUT_SIDE || height > MAX_OUTPUT_SIDE) {
                 throw new IllegalArgumentException("composed frame is too large: " + width + "x" + height);
             }
+            return new Decoded(normalized, main, Map.copyOf(symbols), Map.copyOf(sprites), bounds);
+        } catch (Exception error) {
+            FnfMod.LOGGER.warn("Failed to decode Animate atlas {}: {}", normalized, error.toString());
+            return null;
+        }
+    }
+
+    /** Creates the reusable GPU canvas from an already-decoded Animate source. */
+    public static AnimateAtlas finish(Decoded decoded) {
+        if (decoded == null) return null;
+        ResourceLocation id = null;
+        DynamicTexture texture = null;
+        NativeImage pixels = null;
+        try {
+            int width = decoded.bounds.width();
+            int height = decoded.bounds.height();
             pixels = new NativeImage(width, height, true);
             texture = new DynamicTexture(pixels);
             texture.setFilter(true, false);
             id = FnfMod.id("animate_atlas/" + NEXT_ID.incrementAndGet());
             Minecraft.getInstance().getTextureManager().register(id, texture);
-            return new AnimateAtlas(id, width, height, Math.floor(bounds.minX), Math.floor(bounds.minY),
-                    pixels, texture, main, symbols, sprites);
+            return new AnimateAtlas(id, width, height,
+                    Math.floor(decoded.bounds.minX), Math.floor(decoded.bounds.minY),
+                    pixels, texture, decoded.main, decoded.symbols, decoded.sprites);
         } catch (Exception error) {
             if (id != null) Minecraft.getInstance().getTextureManager().release(id);
             else if (texture != null) texture.close();
             else if (pixels != null) pixels.close();
-            FnfMod.LOGGER.warn("Failed to load Animate atlas {}: {}", normalized, error.toString());
+            FnfMod.LOGGER.warn("Failed to finish Animate atlas {}: {}", decoded.folder, error.toString());
             return null;
         }
     }
@@ -203,6 +255,27 @@ public final class AnimateAtlas extends SparrowAtlas {
             candidates.add(parent.resolve("images").resolve(value));
             Path mod = parent.getParent();
             if (mod != null) candidates.add(mod.resolve("images").resolve(value));
+
+            // V-Slice mods commonly place definitions in data/characters and
+            // Animate data in <mod>/<library>/images.  Such mods have no outer
+            // assets/ directory, so also resolve against a bounded ancestor walk.
+            // Classic PNG+XML loading is a separate path and remains supported.
+            Path ancestor = parent;
+            for (int depth = 0; ancestor != null && depth < 8;
+                 depth++, ancestor = ancestor.getParent()) {
+                if (!library.isBlank()) {
+                    candidates.add(ancestor.resolve(library).resolve("images").resolve(value));
+                }
+                candidates.add(ancestor.resolve("shared").resolve("images").resolve(value));
+                candidates.add(ancestor.resolve("images").resolve(value));
+            }
+        }
+        // Polymod/V-Slice resolves a mod and the base game's assets as one
+        // virtual filesystem. Keep the character's own mod first, then fall
+        // back to enabled image roots so a mod definition can reuse a base
+        // Animation.json atlas.
+        for (Path root : SongLibrary.orderedPickerContentRoots(SongLibrary.ExternalContent.IMAGES)) {
+            addAssetFolderCandidates(candidates, root, library, value);
         }
         for (Path candidate : candidates) {
             Path normalized = candidate.normalize();
@@ -211,6 +284,20 @@ public final class AnimateAtlas extends SparrowAtlas {
             }
         }
         return null;
+    }
+
+    private static void addAssetFolderCandidates(List<Path> candidates, Path root,
+                                                 String library, String value) {
+        if (root == null) return;
+        if (!library.isBlank()) {
+            candidates.add(root.resolve(library).resolve("images").resolve(value));
+            candidates.add(root.resolve("assets").resolve(library).resolve("images").resolve(value));
+        }
+        candidates.add(root.resolve("shared/images").resolve(value));
+        candidates.add(root.resolve("images").resolve(value));
+        candidates.add(root.resolve("assets/shared/images").resolve(value));
+        candidates.add(root.resolve("assets/images").resolve(value));
+        candidates.add(root.resolve(value));
     }
 
     private static Map<String, Sprite> loadSprites(Path folder) throws Exception {
@@ -223,10 +310,21 @@ public final class AnimateAtlas extends SparrowAtlas {
         }
         Map<String, Sprite> result = new LinkedHashMap<>();
         for (Path mapPath : maps) {
-            JsonObject atlas = object(JsonParser.parseString(Files.readString(mapPath)).getAsJsonObject(), "ATLAS");
-            JsonObject meta = object(atlas, "meta");
+            JsonObject root = JsonParser.parseString(Files.readString(mapPath)).getAsJsonObject();
+            JsonObject atlas = object(root, "ATLAS");
+            // Better Texture Atlas (the format used by current V-Slice) writes
+            // meta next to ATLAS. Some older exports nest it inside ATLAS, so
+            // accept both rather than tying the loader to one extension version.
+            JsonObject meta = root.has("meta") && root.get("meta").isJsonObject()
+                    ? root.getAsJsonObject("meta") : object(atlas, "meta");
             String imageName = string(meta, "image", "");
-            if (imageName.isBlank()) continue;
+            // Compatible exporters occasionally omit meta.image while retaining
+            // the conventional spritemapN.json/spritemapN.png pair.
+            if (imageName.isBlank()) {
+                String mapName = mapPath.getFileName().toString();
+                int dot = mapName.lastIndexOf('.');
+                imageName = (dot < 0 ? mapName : mapName.substring(0, dot)) + ".png";
+            }
             Path imagePath = folder.resolve(imageName).normalize();
             if (!imagePath.startsWith(folder) || !Files.isRegularFile(imagePath)) continue;
             BufferedImage sheet = ImageIO.read(imagePath.toFile());
@@ -512,12 +610,36 @@ public final class AnimateAtlas extends SparrowAtlas {
 
     private static Matrix matrix(JsonObject object) {
         JsonArray values = array(object, "MX");
-        if (values.size() < 6) return Matrix.IDENTITY;
-        try {
-            return new Matrix(values.get(0).getAsDouble(), values.get(1).getAsDouble(),
-                    values.get(2).getAsDouble(), values.get(3).getAsDouble(),
-                    values.get(4).getAsDouble(), values.get(5).getAsDouble());
-        } catch (Exception ignored) { return Matrix.IDENTITY; }
+        if (values.size() >= 6) {
+            try {
+                return finiteMatrix(values.get(0).getAsDouble(), values.get(1).getAsDouble(),
+                        values.get(2).getAsDouble(), values.get(3).getAsDouble(),
+                        values.get(4).getAsDouble(), values.get(5).getAsDouble());
+            } catch (Exception ignored) { return Matrix.IDENTITY; }
+        }
+
+        // Newer Animate atlases (including V-Slice multi-atlas characters) can
+        // store the same 2D affine transform as a column-major 4x4 matrix. The
+        // previous MX-only reader silently replaced every M3D transform with an
+        // identity matrix, stacking articulated character pieces at the wrong
+        // positions. Extract the XY basis and translation without applying TRP
+        // again: M3D already contains the complete symbol transform.
+        values = array(object, "M3D");
+        if (values.size() >= 16) {
+            try {
+                return finiteMatrix(values.get(0).getAsDouble(), values.get(1).getAsDouble(),
+                        values.get(4).getAsDouble(), values.get(5).getAsDouble(),
+                        values.get(12).getAsDouble(), values.get(13).getAsDouble());
+            } catch (Exception ignored) { return Matrix.IDENTITY; }
+        }
+        return Matrix.IDENTITY;
+    }
+
+    private static Matrix finiteMatrix(double a, double b, double c, double d,
+                                       double tx, double ty) {
+        return Double.isFinite(a) && Double.isFinite(b) && Double.isFinite(c)
+                && Double.isFinite(d) && Double.isFinite(tx) && Double.isFinite(ty)
+                ? new Matrix(a, b, c, d, tx, ty) : Matrix.IDENTITY;
     }
 
     private static double alpha(JsonObject symbol) {

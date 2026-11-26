@@ -695,10 +695,22 @@ public final class FreeCamObjects {
     public double selectedSizeBlocks() {
         Obj o = selected();
         if (o == null) return 1;
-        double sx = Math.abs(o.scaleX) * (o.worldChar != null ? o.worldChar.scaleX() : 1);
-        double sy = Math.abs(o.scaleY) * (o.worldChar != null ? o.worldChar.scaleY() : 1);
+        double sx = visualScaleX(o);
+        double sy = visualScaleY(o);
         double blocks = Math.max(o.width * sx, o.height * sy) / 64.0;
         return Math.max(0.4, blocks);
+    }
+
+    private static double visualScaleX(Obj o) {
+        double characterScale = o.worldChar == null ? 1 : Math.abs(o.worldChar.scaleX());
+        double worldScale = o.type == Type.CHARACTER_2D ? WorldCharacter.WORLD_RENDER_SCALE : 1;
+        return Math.abs(o.scaleX) * characterScale * worldScale;
+    }
+
+    private static double visualScaleY(Obj o) {
+        double characterScale = o.worldChar == null ? 1 : Math.abs(o.worldChar.scaleY());
+        double worldScale = o.type == Type.CHARACTER_2D ? WorldCharacter.WORLD_RENDER_SCALE : 1;
+        return Math.abs(o.scaleY) * characterScale * worldScale;
     }
 
     public void cancelTransform() {
@@ -1678,8 +1690,8 @@ public final class FreeCamObjects {
         poseStack.translate(wp.x - cam.x, wp.y - cam.y, wp.z - cam.z);
         poseStack.mulPose(Axis.YP.rotationDegrees(-facing.toYRot()));
 
-        double hw = o.width * Math.abs(o.scaleX) * 0.5 * LuaWorldObjectRenderer.PIXEL_SCALE + 0.1;
-        double hh = o.height * Math.abs(o.scaleY) * 0.5 * LuaWorldObjectRenderer.PIXEL_SCALE + 0.1;
+        double hw = o.width * visualScaleX(o) * 0.5 * LuaWorldObjectRenderer.PIXEL_SCALE + 0.1;
+        double hh = o.height * visualScaleY(o) * 0.5 * LuaWorldObjectRenderer.PIXEL_SCALE + 0.1;
         double hd = 0.05;
         float r = snapDragging ? 0.4f : 1f;
         float g = snapDragging ? 1f : 0.9f;
@@ -1751,12 +1763,14 @@ public final class FreeCamObjects {
                 LuaWorldObject.Frame rf = new LuaWorldObject.Frame(
                         f.x, f.y, f.w, f.h, f.frameX, f.frameY, f.rotated);
                 double[] off = o.worldChar.currentOffset();
-                double sx = o.scaleX * o.worldChar.scaleX() * (o.worldChar.flipX() ? -1 : 1);
-                double sy = o.scaleY * o.worldChar.scaleY();
+                double sx = o.scaleX * o.worldChar.scaleX() * WorldCharacter.WORLD_RENDER_SCALE
+                        * (o.worldChar.flipX() ? -1 : 1);
+                double sy = o.scaleY * o.worldChar.scaleY() * WorldCharacter.WORLD_RENDER_SCALE;
                 return new LuaWorldObject.Sprite(
                         o.worldChar.texture(), o.worldChar.texWidth(), o.worldChar.texHeight(),
                         rf, off[0], off[1],
                         o.x, o.y, o.z, o.width, o.height, o.worldChar.refW(), o.worldChar.refH(),
+                        o.worldChar.originX(), o.worldChar.originY(),
                         sx, sy, o.alpha * o.worldChar.alpha(), o.rotZ, o.rotX, o.rotY,
                         o.worldChar.color(), o.billboard, o.lighting, renderMode(o), o.seeThrough);
             }
@@ -1772,6 +1786,7 @@ public final class FreeCamObjects {
                         o.character.texture(), o.character.texWidth(), o.character.texHeight(),
                         rf, off[0], off[1],
                         o.x, o.y, o.z, o.width, o.height, o.character.refW(), o.character.refH(),
+                        o.character.refW()/2.0, o.character.refH()/2.0,
                         o.scaleX, o.scaleY, o.alpha, o.rotZ, o.rotX, o.rotY,
                         0xFFFFFF, o.billboard, o.lighting, renderMode(o), o.seeThrough);
             }
@@ -1794,6 +1809,7 @@ public final class FreeCamObjects {
         return new LuaWorldObject.Sprite(
                 tex, tw, th, null, 0, 0,
                 o.x, o.y, o.z, o.width, o.height, o.width, o.height,
+                o.width/2.0, o.height/2.0,
                 o.scaleX, o.scaleY, alpha, o.rotZ, o.rotX, o.rotY,
                 color, o.billboard, o.lighting, renderMode(o), o.seeThrough);
     }
@@ -1803,7 +1819,7 @@ public final class FreeCamObjects {
         String bStyle = "shadow".equals(o.borderStyle) ? "shadow" : "outline";
         return new LuaWorldObject.Text(
                 Minecraft.getInstance().font, o.text == null ? "" : o.text,
-                o.x, o.y, o.z, 0, o.textSize,
+                o.x, o.y, o.z, 0, o.width, o.height, Double.NaN, Double.NaN, o.textSize,
                 o.scaleX, o.scaleY, o.alpha, o.rotZ, o.rotX, o.rotY,
                 o.color, o.billboard, o.lighting, renderMode(o), o.seeThrough,
                 bSize, o.borderColor, bStyle, o.textAlign, o.italic, 0, 0, false, false);
@@ -1813,11 +1829,12 @@ public final class FreeCamObjects {
     private void addSelectionMarkers(List<LuaWorldObject> out) {
         Obj o = selected();
         if (o == null) return;
-        double hw = Math.max(24, o.width * Math.abs(o.scaleX)) + 8;
-        double hh = Math.max(24, o.height * Math.abs(o.scaleY)) + 8;
+        double hw = Math.max(24, o.width * visualScaleX(o)) + 8;
+        double hh = Math.max(24, o.height * visualScaleY(o)) + 8;
         out.add(new LuaWorldObject.Sprite(
                 WHITE, 16, 16, null, 0, 0,
                 o.x, o.y, o.z, hw, hh, hw, hh,
+                hw/2.0, hh/2.0,
                 1, 1, 0.15, o.rotZ, o.rotX, o.rotY,
                 0xFFE24A, o.billboard, false, LuaWorldObject.RenderMode.FLAT, true));
     }

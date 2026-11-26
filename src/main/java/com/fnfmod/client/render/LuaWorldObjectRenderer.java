@@ -108,6 +108,25 @@ public final class LuaWorldObjectRenderer {
         poseStack.popPose();
     }
 
+    /** The midpoint of the exact frame quad sent to the sprite renderer. */
+    public static double[] spriteFrameCenter(LuaWorldObject.Sprite sprite) {
+        LuaWorldSpriteRenderer.Bounds bounds = LuaWorldSpriteRenderer.visibleBounds(sprite);
+        return new double[]{bounds.centerX(), bounds.centerY()};
+    }
+
+    /** A point attached to the sprite's local plane, including live scale/flip/rotation. */
+    public static Vec3 spritePointWorld(Vec3 entityOrigin, Direction facing,
+                                        LuaWorldObject.Sprite sprite, double localX, double localY) {
+        PoseStack transform = new PoseStack();
+        transform.mulPose(Axis.YP.rotationDegrees(-(facing == null ? Direction.NORTH : facing).toYRot()));
+        applyLocalRotation(transform, sprite);
+        transform.scale((float) sprite.scaleX() * PIXEL_SCALE,
+                (float) -sprite.scaleY() * PIXEL_SCALE, PIXEL_SCALE);
+        org.joml.Vector3f offset = transform.last().pose().transformPosition(
+                (float) localX, (float) localY, 0, new org.joml.Vector3f());
+        return entityOrigin.add(offset.x(), offset.y(), offset.z());
+    }
+
     private static void orientSprite(PoseStack poseStack, Camera camera,
                                      Direction stageFacing, boolean billboard) {
         if (billboard) poseStack.mulPose(camera.rotation());

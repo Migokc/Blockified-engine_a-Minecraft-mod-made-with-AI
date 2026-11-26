@@ -34,6 +34,10 @@ public final class PsychChartWriter {
         song.addProperty("needsVoices", chart.needsVoices);
         song.addProperty("player1", chart.player1);
         song.addProperty("player2", chart.player2);
+        String playerType = SongChart.normalizePerformerType(chart.player1Type);
+        String opponentType = SongChart.normalizePerformerType(chart.player2Type);
+        if (!playerType.isBlank()) song.addProperty("blockifiedPlayerType", playerType);
+        if (!opponentType.isBlank()) song.addProperty("blockifiedOpponentType", opponentType);
         song.addProperty("gfVersion", chart.player3);
         song.addProperty("stage", chart.stage);
         if (chart.pixelUi) {

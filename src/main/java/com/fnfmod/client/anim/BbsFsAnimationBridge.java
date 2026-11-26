@@ -82,10 +82,17 @@ final class BbsFsAnimationBridge {
     private static Method formCopy;
     private static Method formPlayState;
     private static Field formStates;
+    /** Live BBS state players; used to keep beat idles from cutting forced animations short. */
+    private static Field formStatePlayers;
     private static Method statesGetById;
+    private static Method statePlayerGetState;
+    private static Method statePlayerCanBeRemoved;
     private static Method animationStatesGetAllTyped;
     private static Field animationStateProperties;
+    /** BBS FS <= 2.5 stores animation channels in FormProperties.properties. */
     private static Field formPropertiesMap;
+    /** BBS FS >= 2.6 stores typed animation tracks in FormProperties.tracks. */
+    private static Field formPropertiesTracks;
     private static Method formGetId;
     private static Method formGetIdOrName;
     private static Method formGetDisplayName;
@@ -151,6 +158,7 @@ final class BbsFsAnimationBridge {
             Class<?> formUtilsClass = Class.forName("mchorse.bbs_mod.forms.FormUtils");
             Class<?> animationStatesClass = Class.forName("mchorse.bbs_mod.forms.states.AnimationStates");
             Class<?> animationStateClass = Class.forName("mchorse.bbs_mod.forms.states.AnimationState");
+            Class<?> statePlayerClass = Class.forName("mchorse.bbs_mod.forms.states.StatePlayer");
             Class<?> formPropertiesClass = Class.forName("mchorse.bbs_mod.film.replays.FormProperties");
             Class<?> bbsClientClass = Class.forName("mchorse.bbs_mod.BBSModClient");
             Class<?> categoriesClass = Class.forName("mchorse.bbs_mod.forms.FormCategories");
@@ -163,10 +171,19 @@ final class BbsFsAnimationBridge {
             formCopy = findMethod(formUtilsClass, "copy", true, 1, formClass);
             formPlayState = findMethod(formClass, "playState", false, 1, String.class);
             formStates = formClass.getField("states");
+            formStatePlayers = findOptionalDeclaredField(formClass, "statePlayers");
             statesGetById = findMethod(animationStatesClass, "getById", false, 1, String.class);
-            animationStatesGetAllTyped = findMethod(animationStatesClass, "getAllTyped", false, 0);
-            animationStateProperties = animationStateClass.getField("properties");
-            formPropertiesMap = formPropertiesClass.getField("properties");
+            statePlayerGetState = findOptionalMethod(statePlayerClass, "getState", false, 0);
+            statePlayerCanBeRemoved = findOptionalMethod(statePlayerClass,
+                    "canBeRemoved", false, 0);
+            // These members are needed only when a selected Minecraft skin must suppress
+            // texture-changing animation tracks. They must not decide whether the entire BBS
+            // bridge starts: BBS FS 2.6 replaced the old `properties` map with typed `tracks`.
+            animationStatesGetAllTyped = findOptionalMethod(animationStatesClass,
+                    "getAllTyped", false, 0);
+            animationStateProperties = findOptionalField(animationStateClass, "properties");
+            formPropertiesMap = findOptionalField(formPropertiesClass, "properties");
+            formPropertiesTracks = findOptionalField(formPropertiesClass, "tracks");
             formGetId = findOptionalMethod(formClass, "getFormId", false, 0);
             formGetIdOrName = findOptionalMethod(formClass, "getFormIdOrName", false, 0);
             formGetDisplayName = findOptionalMethod(formClass, "getDisplayName", false, 0);
@@ -247,6 +264,20 @@ final class BbsFsAnimationBridge {
         return FORM_CACHE.containsKey(key(name));
     }
 
+    /** Loads a form bundle and its referenced models without applying it to a player. */
+    static synchronized boolean preload(String requestedForm, java.nio.file.Path bundledForm) {
+        if (!isAvailable()) return false;
+        try {
+            Object template = bundledForm == null ? null : loadBundledForm(bundledForm);
+            if (template != null) return true;
+            refreshForms();
+            return requestedForm != null && FORM_CACHE.get(key(requestedForm)) != null;
+        } catch (Throwable error) {
+            warnOnce("Failed to preload a BBS FS form", error);
+            return false;
+        }
+    }
+
     static synchronized boolean play(Player player, String requestedForm, String state) {
         return play(player, requestedForm, null, state);
     }
@@ -315,6 +346,9 @@ final class BbsFsAnimationBridge {
 
             Object form = morphGetForm.invoke(morph);
             if (form == null) return false;
+            // BBS can replace the local form with a deserialized server copy after
+            // sendPlayerForm(). Mark the exact live instance before every trigger.
+            BbsTextureKeyframeCompat.control(form);
 
             Object states = formStates.get(form);
             if (states == null || statesGetById.invoke(states, state) == null) return false;
@@ -332,6 +366,34 @@ final class BbsFsAnimationBridge {
         }
     }
 
+    /**
+     * Reports whether the exact BBS state is still active on the live form. This
+     * follows BBS's own tick/duration/looping rules, avoiding a guessed timer that
+     * can end a Play Animation event early on the next chart beat.
+     */
+    static synchronized boolean isStatePlaying(Player player, String state) {
+        if (!isAvailable() || player == null || state == null || state.isBlank()
+                || formStatePlayers == null || statePlayerGetState == null) return false;
+        try {
+            Object morph = morphGet.invoke(null, player);
+            Object form = morph == null ? null : morphGetForm.invoke(morph);
+            if (form == null) return false;
+            Object states = formStates.get(form);
+            Object wanted = states == null ? null : statesGetById.invoke(states, state);
+            Object players = formStatePlayers.get(form);
+            if (wanted == null || !(players instanceof Iterable<?> iterable)) return false;
+            for (Object active : iterable) {
+                if (active == null || statePlayerGetState.invoke(active) != wanted) continue;
+                if (statePlayerCanBeRemoved == null) return true;
+                Object removable = statePlayerCanBeRemoved.invoke(active);
+                return !(removable instanceof Boolean value) || !value;
+            }
+        } catch (Throwable error) {
+            warnOnce("Failed to inspect a BBS FS animation state", error);
+        }
+        return false;
+    }
+
 
     static synchronized void restoreAll() {
         if (!isAvailable() || ORIGINAL_FORMS.isEmpty()) return;
@@ -341,6 +403,7 @@ final class BbsFsAnimationBridge {
             ORIGINAL_FORMS.clear();
             APPLIED_FORMS.clear();
             FORCED_LIGHTING.clear();
+            BbsTextureKeyframeCompat.clear();
             return;
         }
 
@@ -351,6 +414,7 @@ final class BbsFsAnimationBridge {
             try {
                 Object morph = morphGet.invoke(null, player);
                 if (morph == null) continue;
+                BbsTextureKeyframeCompat.release(morphGetForm.invoke(morph));
                 Object original = entry.getValue().form();
                 Object restored = original == null ? null : formCopy.invoke(null, original);
                 morphSetForm.invoke(morph, restored);
@@ -366,6 +430,7 @@ final class BbsFsAnimationBridge {
         ORIGINAL_FORMS.clear();
         APPLIED_FORMS.clear();
         FORCED_LIGHTING.clear();
+        BbsTextureKeyframeCompat.clear();
     }
 
     /** Restores one performer without disturbing the other song characters. */
@@ -380,6 +445,7 @@ final class BbsFsAnimationBridge {
         try {
             Object morph = morphGet.invoke(null, player);
             if (morph == null) return;
+            BbsTextureKeyframeCompat.release(morphGetForm.invoke(morph));
             Object original = saved.form();
             Object restored = original == null ? null : formCopy.invoke(null, original);
             morphSetForm.invoke(morph, restored);
@@ -411,9 +477,12 @@ final class BbsFsAnimationBridge {
             ORIGINAL_FORMS.put(player.getUUID(), new OriginalForm(original));
         }
 
+        Object previous = morphGetForm.invoke(morph);
         Object copy = formCopy.invoke(null, template);
         if (applySelectedSkin(copy, skinSource)) suppressSkinReplacingTextureKeyframes(copy);
+        BbsTextureKeyframeCompat.release(previous);
         morphSetForm.invoke(morph, copy);
+        BbsTextureKeyframeCompat.control(copy);
         APPLIED_FORMS.put(player.getUUID(), appliedKey);
         // A newly applied form resets to default lighting; re-force it if requested.
         applyLighting(player, copy);
@@ -450,6 +519,7 @@ final class BbsFsAnimationBridge {
 
             Object morph = morphGet.invoke(null, player);
             if (morph == null) return false;
+            BbsTextureKeyframeCompat.release(morphGetForm.invoke(morph));
             Object copy = restored == null ? null : formCopy.invoke(null, restored);
             morphSetForm.invoke(morph, copy);
             sendPlayerForm.invoke(null, copy);
@@ -679,24 +749,33 @@ final class BbsFsAnimationBridge {
      */
     private static void suppressSkinReplacingTextureKeyframes(Object form) {
         if (form == null || formStates == null || animationStatesGetAllTyped == null
-                || animationStateProperties == null || formPropertiesMap == null) return;
+                || animationStateProperties == null
+                || (formPropertiesMap == null && formPropertiesTracks == null)) return;
         try {
             Object states = formStates.get(form);
             Object all = states == null ? null : animationStatesGetAllTyped.invoke(states);
             if (!(all instanceof Iterable<?> iterable)) return;
             for (Object state : iterable) {
                 Object properties = animationStateProperties.get(state);
-                Object rawMap = properties == null ? null : formPropertiesMap.get(properties);
+                Object rawMap = properties == null ? null
+                        : (formPropertiesTracks != null
+                        ? formPropertiesTracks.get(properties)
+                        : formPropertiesMap.get(properties));
                 if (!(rawMap instanceof Map<?, ?> raw)) continue;
-                @SuppressWarnings("unchecked")
-                Map<String, Object> channels = (Map<String, Object>) raw;
-                channels.keySet().removeIf(key -> key != null
-                        && (key.equalsIgnoreCase("texture")
-                        || key.toLowerCase(Locale.ROOT).startsWith("texture.materials.")));
+                // Old keys are Strings; 2.6 keys are TrackId records whose toString() is the
+                // same serialized track path. Only root-form texture tracks are removed, so
+                // textures belonging to animated nested body parts remain intact.
+                raw.keySet().removeIf(BbsFsAnimationBridge::isRootTextureTrack);
             }
         } catch (Throwable error) {
             warnOnce("Failed to preserve a selected Minecraft skin across BBS texture keyframes", error);
         }
+    }
+
+    private static boolean isRootTextureTrack(Object track) {
+        if (track == null) return false;
+        String key = String.valueOf(track).trim().toLowerCase(Locale.ROOT);
+        return key.equals("texture") || key.startsWith("texture.materials.");
     }
 
     private static String playerModel(Object form) {
@@ -1220,6 +1299,24 @@ final class BbsFsAnimationBridge {
                 .sorted(Comparator.comparing(Method::toGenericString))
                 .findFirst()
                 .orElse(null);
+    }
+
+    private static Field findOptionalField(Class<?> owner, String name) {
+        try {
+            return owner.getField(name);
+        } catch (ReflectiveOperationException ignored) {
+            return null;
+        }
+    }
+
+    private static Field findOptionalDeclaredField(Class<?> owner, String name) {
+        try {
+            Field field = owner.getDeclaredField(name);
+            field.setAccessible(true);
+            return field;
+        } catch (ReflectiveOperationException | RuntimeException ignored) {
+            return null;
+        }
     }
 
 

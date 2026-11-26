@@ -1,7 +1,6 @@
 package com.fnfmod.client.gui;
 
 import com.fnfmod.client.ClientOptions;
-import com.fnfmod.client.math.Easing;
 import com.fnfmod.client.render.IconLibrary;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.EditBox;
@@ -25,11 +24,8 @@ public class IconPickerScreen extends Screen implements TextInputAwareScreen {
     private List<String> all = List.of();
     private List<String> visible = List.of();
     private int selectedIndex;
-    private double scrollPx;
-    private double scrollTargetPx;
-    private double scrollFromPx;
-    private long scrollTweenStart;
-    private boolean scrollTweenActive;
+    private final TweenedScroll scroll = new TweenedScroll(SCROLL_TWEEN_NANOS);
+    private boolean draggingScrollThumb;
 
     public IconPickerScreen(Screen parent, boolean player) {
         super(Component.literal(player ? "Player Icon" : "Opponent Icon"));
@@ -90,33 +86,29 @@ public class IconPickerScreen extends Screen implements TextInputAwareScreen {
 
     private double maxScroll() { return Math.max(0, visible.size() * (double) ROW - listHeight()); }
 
-    private void resetScroll(boolean centerSelection) {
-        double target = centerSelection ? selectedIndex * (double) ROW - (listHeight() - ROW) / 2.0 : 0;
-        scrollPx = scrollTargetPx = scrollFromPx = Mth.clamp(target, 0, maxScroll());
-        scrollTweenActive = false;
+    private int scrollbarX() { return panelX() + panelWidth() - 9; }
+
+    private int scrollbarThumbHeight() {
+        return Math.max(12, (int) Math.round(listHeight()
+                * (listHeight() / Math.max(1.0, visible.size() * (double) ROW))));
     }
 
-    private void updateScrollTween() {
-        if (!scrollTweenActive) return;
-        double progress = (System.nanoTime() - scrollTweenStart) / (double) SCROLL_TWEEN_NANOS;
-        if (progress >= 1) {
-            scrollPx = scrollTargetPx;
-            scrollTweenActive = false;
-            return;
-        }
-        double eased = Easing.apply("expoOut", progress);
-        scrollPx = scrollFromPx + (scrollTargetPx - scrollFromPx) * eased;
+    private void dragScrollbarTo(double mouseY) {
+        double max = maxScroll();
+        if (max <= 0) return;
+        int thumb = scrollbarThumbHeight();
+        double fraction = (mouseY - listTop() - thumb / 2.0)
+                / Math.max(1.0, listHeight() - thumb);
+        scroll.reset(Mth.clamp(fraction, 0, 1) * max, max);
+    }
+
+    private void resetScroll(boolean centerSelection) {
+        double target = centerSelection ? selectedIndex * (double) ROW - (listHeight() - ROW) / 2.0 : 0;
+        scroll.reset(target, maxScroll());
     }
 
     private void scrollTo(double target) {
-        target = Mth.clamp(target, 0, maxScroll());
-        if (Math.abs(target - scrollTargetPx) < 0.01) return;
-        updateScrollTween();
-        scrollFromPx = scrollPx;
-        scrollTargetPx = target;
-        scrollTweenStart = System.nanoTime();
-        scrollTweenActive = Math.abs(scrollTargetPx - scrollFromPx) > 0.01;
-        if (!scrollTweenActive) scrollPx = scrollTargetPx;
+        scroll.animateTo(target, maxScroll());
     }
 
     private void clampSelection() {
@@ -127,7 +119,7 @@ public class IconPickerScreen extends Screen implements TextInputAwareScreen {
         }
         selectedIndex = Mth.clamp(selectedIndex, 0, visible.size() - 1);
         double top = selectedIndex * (double) ROW;
-        double target = scrollTargetPx;
+        double target = scroll.target();
         if (top < target) target = top;
         else if (top + ROW > target + listHeight()) target = top + ROW - listHeight();
         scrollTo(target);
@@ -152,10 +144,11 @@ public class IconPickerScreen extends Screen implements TextInputAwareScreen {
 
         if (visible.isEmpty()) selectedIndex = 0;
         else selectedIndex = Mth.clamp(selectedIndex, 0, visible.size() - 1);
-        updateScrollTween();
+        scroll.update();
+        scroll.clampTo(maxScroll());
         int top = listTop(), height = listHeight();
-        int first = Math.max(0, (int) Math.floor(scrollPx / ROW));
-        double offset = scrollPx - first * (double) ROW;
+        int first = Math.max(0, (int) Math.floor(scroll.position() / ROW));
+        double offset = scroll.position() - first * (double) ROW;
         gui.enableScissor(x0 + 12, top, x0 + boxW - 12, top + height);
         for (int row = 0; row < height / ROW + 2; row++) {
             int index = first + row;
@@ -183,7 +176,7 @@ public class IconPickerScreen extends Screen implements TextInputAwareScreen {
         if (max > 0) {
             int trackX = x0 + boxW - 9;
             int thumbHeight = Math.max(12, (int) Math.round(height * (height / (visible.size() * (double) ROW))));
-            int thumbY = top + (int) Math.round((height - thumbHeight) * (scrollPx / max));
+            int thumbY = top + (int) Math.round((height - thumbHeight) * (scroll.position() / max));
             gui.fill(trackX, top, trackX + 2, top + height, 0xFF252733);
             gui.fill(trackX, thumbY, trackX + 2, thumbY + thumbHeight,
                     BlockifiedScreenStyle.ACCENT);
@@ -227,12 +220,18 @@ public class IconPickerScreen extends Screen implements TextInputAwareScreen {
         if (button == GLFW.GLFW_MOUSE_BUTTON_LEFT) {
             int x0 = panelX(), y0 = panelY(), boxW = panelWidth(), boxH = panelHeight();
             int top = listTop();
+            if (maxScroll() > 0 && mouseX >= scrollbarX() - 3 && mouseX <= scrollbarX() + 5
+                    && mouseY >= top && mouseY <= top + listHeight()) {
+                draggingScrollThumb = true;
+                dragScrollbarTo(mouseY);
+                return true;
+            }
             if (mouseX >= x0 + 12 && mouseX < x0 + boxW - 12
                     && mouseY >= top && mouseY < top + listHeight()) {
                 search.setFocused(false);
                 setFocused(null);
-                updateScrollTween();
-                int index = (int) Math.floor((mouseY - top + scrollPx) / ROW);
+                scroll.update();
+                int index = (int) Math.floor((mouseY - top + scroll.position()) / ROW);
                 if (index >= 0 && index < visible.size()) selectedIndex = index;
                 return true;
             }
@@ -253,11 +252,26 @@ public class IconPickerScreen extends Screen implements TextInputAwareScreen {
     }
 
     @Override
+    public boolean mouseDragged(double mouseX, double mouseY, int button, double dragX, double dragY) {
+        if (button == GLFW.GLFW_MOUSE_BUTTON_LEFT && draggingScrollThumb) {
+            dragScrollbarTo(mouseY);
+            return true;
+        }
+        return super.mouseDragged(mouseX, mouseY, button, dragX, dragY);
+    }
+
+    @Override
+    public boolean mouseReleased(double mouseX, double mouseY, int button) {
+        if (button == GLFW.GLFW_MOUSE_BUTTON_LEFT) draggingScrollThumb = false;
+        return super.mouseReleased(mouseX, mouseY, button);
+    }
+
+    @Override
     public boolean mouseScrolled(double mouseX, double mouseY, double scrollX, double scrollY) {
         if (scrollY != 0) {
             // Wheel movement navigates the viewport; selection changes only by
             // click/keyboard so scrolling a long icon library cannot overwrite it.
-            scrollTo(scrollTargetPx - scrollY * ROW * 1.5);
+            scrollTo(scroll.target() - scrollY * ROW * 1.5);
         }
         return true;
     }

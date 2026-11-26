@@ -971,6 +971,29 @@ public final class CharacterAnimations {
                 ? new float[]{entry.camX, entry.camY} : null;
     }
 
+    /** True while BBS is still evaluating the state mapped to this FNF action. */
+    public static synchronized boolean isActionPlaying(Player player, String setName,
+                                                        String role, String action) {
+        if (!available || player == null || action == null || action.isBlank()) return false;
+        AnimSet set = resolveSet(setName);
+        if (set == null) return false;
+        AnimEntry entry = set.resolve(role, action);
+        if (entry == null && !DEFAULT_SET.equals(key(setName))) {
+            AnimSet fallback = resolveSet(DEFAULT_SET);
+            if (fallback != null) entry = fallback.resolve(role, action);
+        }
+        return entry != null && !entry.state.isBlank()
+                && BbsFsAnimationBridge.isStatePlaying(player, entry.state);
+    }
+
+    /** Applies the character's BBS form up front, before the first animation plays. */
+    public static synchronized boolean preload(String setName, String role) {
+        if (!available) return false;
+        AnimSet set = resolveSet(setName);
+        return set != null && BbsFsAnimationBridge.preload(
+                set.form(role), set.bundledForm(role));
+    }
+
     /** Applies the character's BBS form up front, before the first animation plays. */
     public static synchronized boolean prepare(Player player, String setName, String role) {
         return prepareResolved(player, setName, role, null);

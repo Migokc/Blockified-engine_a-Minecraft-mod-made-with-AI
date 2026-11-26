@@ -41,6 +41,10 @@ public final class LegacyChartParser {
         chart.needsVoices = optBool(song, "needsVoices", true);
         chart.player1 = optString(song, "player1", "bf");
         chart.player2 = optString(song, "player2", "dad");
+        chart.player1Type = SongChart.normalizePerformerType(optString(song,
+                "blockifiedPlayerType", optString(song, "player1Type", "")));
+        chart.player2Type = SongChart.normalizePerformerType(optString(song,
+                "blockifiedOpponentType", optString(song, "player2Type", "")));
         chart.player3 = optString(song, "gfVersion", optString(song, "player3", "gf"));
         chart.stage = optString(song, "stage", "stage");
         // Pixel UI: Blockified's own "uiStyle" (pixel/normal) or Psych's legacy isPixelStage.

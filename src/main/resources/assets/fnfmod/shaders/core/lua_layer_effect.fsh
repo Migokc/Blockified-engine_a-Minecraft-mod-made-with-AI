@@ -53,15 +53,16 @@ void main() {
         c*=mix(vec4(1.0),gradient(clamp(t,0.0,1.0)),clamp(GradientStrength,0.0,1.0));
     }
     if (HasMask!=0) {
-        vec2 q=p-.5-MaskTransform.xy;
-        float a=radians(-MaskStyle.x);
-        q=mat2(cos(a),sin(a),-sin(a),cos(a))*q;
-        q=q/max(abs(MaskTransform.zw),vec2(.00001))*sign(MaskTransform.zw)+.5;
+        // The CPU maps the target's placed pixels into the mask object's own
+        // rectangle. Masks therefore remain independent unless Lua parents them.
+        vec2 q=vec2(
+            MaskTransform.x*p.x+MaskTransform.y*p.y+MaskStyle.x,
+            MaskTransform.z*p.x+MaskTransform.w*p.y+MaskStyle.y);
         float m=0.0;
         if (HasMask==1) {
-            if (MaskStyle.y<=0.0) m=maskAt(q);
+            if (MaskStyle.z<=0.0) m=maskAt(q);
             else for(int x=-1;x<=1;x++) for(int y=-1;y<=1;y++)
-                m+=maskAt(q+vec2(x,y)*MaskStyle.y)/9.0;
+                m+=maskAt(q+vec2(x,y)*MaskStyle.z)/9.0;
         }
         // A missing mask fails closed, even if inversion was requested.
         if (HasMask==1 && MaskInvert==1) m=1.0-m;
